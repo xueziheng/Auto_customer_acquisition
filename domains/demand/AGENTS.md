@@ -167,3 +167,16 @@ NeedUnitScopeReader只提供真实员工与Need/机会/account绑定；业务交
 也不推进 Need 状态。quantity、unit 或 recurrence 真正变化后，业务事实、历史与
 `NeedCatalogFactsChanged` 必须在同一租户事务提交；相同命令重放不得重复发布。事件只携带
 Need/当前簇定位与变更种类，未归簇时 `cluster_id=None`，不得伪造单成员 Catalog 簇。
+
+目录事实读取必须一次取得租户绑定的完整双向成员快照；簇→Need 与 Need→簇集合不相等、
+成员租户不一致或成员产品类别不等于簇类别时失败关闭，且不得产出 `facts_hash`。未归簇 Need
+不属于目录簇。
+
+所有计数先按 account 聚合：同账户多条 Need 的数量覆盖视为未知，复购 True+False 只计一个
+True 账户并输出固定 mixed display code。数量只纳入正整数、人工确认且仍绑定当前完整数量事实
+哈希的单位；只做既有单位契约允许的空白/大小写规范化，不换算，混合单位不合计。
+
+国家只接受 workflow 提供的完整非 Agent 证据与精确大写已分配 ISO-2。证据摘要仅携带安全
+Provenance 元数据和绑定事实值的内容哈希，不得带值、原话、URL 内容或 reasoning。`facts_observed_at`
+取所有参与持久事实的最新时间，不使用读取时钟；`facts_hash` 对稳定排序后的决策字段做 canonical
+SHA-256，排除展示文案和读取时间。Demand 不读取 Catalog Policy，也不决定是否创建提案或 Product。

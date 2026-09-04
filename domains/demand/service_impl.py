@@ -21,6 +21,7 @@ from domains.demand.errors import (
     HypothesisAlreadyResolvedError,
     InsufficientEvidenceError,
     MissingWebEvidenceError,
+    NeedUnitError,
     SourcingThresholdNotMetError,
 )
 from domains.demand.models import (
@@ -35,24 +36,31 @@ from domains.demand.models import (
 )
 from domains.demand.repository import DemandUnitOfWork
 from domains.demand.schemas import (
+    CatalogEvidenceSummary,
     CustomerReplyEvidenceClaim,
+    DemandCatalogAccountFact,
     DemandSignalView,
     EvidenceSummary,
     HypothesisDiscoveryView,
     HypothesisView,
+    NeedClusterCatalogFacts,
     NeedClusterPriorityFacts,
     NeedClusterView,
     NeedFieldView,
+    NeedQuoteFacts,
     SignalCaptureRequest,
     ValidatedNeedView,
     VerifiedCustomerReplyEvidence,
+    catalog_evidence_summary,
 )
 from domains.demand.service import (
     CustomerReplyEvidenceVerifier,
     DemandAccountNameReader,
+    DemandCatalogAccountFactsReader,
     mutable_need_field_names,
     promotable_need_field_names,
 )
+from domains.demand.unit_facts import require_current_unit
 from shared.errors import InvalidStateTransition, ValidationError
 from shared.events.catalog import (
     DemandSignalCaptured,
@@ -89,6 +97,7 @@ from shared.schemas.provenance import (
     Provenance,
     SourceType,
 )
+from shared.schemas.quote_facts import canonical_fact_hash
 
 _SNAPSHOT_ARTIFACT_REF = re.compile(r"art_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _WEB_CONTENT_HASH = re.compile(r"[0-9a-f]{64}")
@@ -252,6 +261,7 @@ class DemandServiceImpl:
         *,
         now: Callable[[], datetime],
         account_names: DemandAccountNameReader | None = None,
+        catalog_accounts: DemandCatalogAccountFactsReader | None = None,
         customer_evidence: CustomerReplyEvidenceVerifier | None = None,
     ) -> None:
         if not callable(uow_factory) or not callable(now):
@@ -263,6 +273,11 @@ class DemandServiceImpl:
         ):
             raise ValidationError("需求账户展示名依赖无效")
         self._account_names = account_names
+        if catalog_accounts is not None and not isinstance(
+            catalog_accounts, DemandCatalogAccountFactsReader
+        ):
+            raise ValidationError("需求目录账户事实依赖无效")
+        self._catalog_accounts = catalog_accounts
         if customer_evidence is not None and not isinstance(
             customer_evidence, CustomerReplyEvidenceVerifier
         ):
@@ -1360,6 +1375,298 @@ class DemandServiceImpl:
                 cluster_member_count=len(members),
                 facts_observed_at=observed_at,
             )
+
+    async def get_cluster_catalog_facts(
+        self,
+        tenant_id: TenantId,
+        cluster_id: NeedClusterId,
+    ) -> NeedClusterCatalogFacts:
+        """从单次成员快照构造按账户去重、无单位换算的目录事实。"""
+        self._validate_catalog_query(tenant_id, cluster_id, 1)
+        async with self._uow_factory(tenant_id) as uow:
+            snapshot = await uow.clusters.get_catalog_snapshot(tenant_id, cluster_id)
+        if snapshot is None:
+            raise ValidationError("需求簇不存在")
+        cluster = snapshot.cluster
+        needs = snapshot.needs
+        member_ids = tuple(cluster.member_need_ids)
+        reverse_ids = tuple(need.need_id for need in needs)
+        if (
+            cluster.tenant_id != tenant_id
+            or cluster.cluster_id != cluster_id
+            or not isinstance(cluster.category, str)
+            or not cluster.category
+            or cluster.category != cluster.category.strip()
+            or not member_ids
+            or len(member_ids) != len(set(member_ids))
+            or len(reverse_ids) != len(set(reverse_ids))
+            or set(member_ids) != set(reverse_ids)
+        ):
+            raise ValidationError("需求簇成员链不完整")
+        for need in needs:
+            if (
+                need.tenant_id != tenant_id
+                or need.cluster_id != cluster_id
+                or need.product_category.value != cluster.category
+            ):
+                raise ValidationError("需求簇成员链不完整")
+
+        created_at = self._priority_fact_version_time(
+            cluster.created_at, "需求簇事实版本时间无效"
+        )
+        updated_at = self._priority_fact_version_time(
+            cluster.updated_at, "需求簇事实版本时间无效"
+        )
+        if updated_at < created_at:
+            raise ValidationError("需求簇事实版本时间无效")
+        if self._catalog_accounts is None:
+            raise ValidationError("需求目录账户事实依赖未配置")
+
+        sorted_needs = tuple(sorted(needs, key=lambda item: str(item.need_id)))
+        account_ids = tuple(
+            sorted({need.account_id for need in sorted_needs}, key=str)
+        )
+        account_facts: dict[ProspectAccountId, DemandCatalogAccountFact] = {}
+        for account_id in account_ids:
+            fact = await self._catalog_accounts.get_account_catalog_fact(
+                tenant_id, account_id
+            )
+            if (
+                not isinstance(fact, DemandCatalogAccountFact)
+                or fact.tenant_id != tenant_id
+                or fact.account_id != account_id
+            ):
+                raise ValidationError("需求目录账户事实结果无效")
+            account_facts[account_id] = fact
+
+        evidence: list[CatalogEvidenceSummary] = []
+        observed_times = [created_at, updated_at]
+        needs_by_account: dict[ProspectAccountId, list[ValidatedNeed]] = {
+            account_id: [] for account_id in account_ids
+        }
+        for need in sorted_needs:
+            needs_by_account[need.account_id].append(need)
+            observed_times.append(
+                self._priority_fact_version_time(
+                    need.created_at, "已验证需求事实版本时间无效"
+                )
+            )
+            for field_name in (
+                "product_category",
+                "quantity",
+                "unit",
+                "recurring_requirement",
+            ):
+                field = getattr(need, field_name)
+                if field is None:
+                    continue
+                try:
+                    summary = catalog_evidence_summary(
+                        tenant_id=tenant_id,
+                        subject_id=str(need.need_id),
+                        field_name=field_name,
+                        value=field.value,
+                        provenance=field.provenance,
+                    )
+                except (TypeError, ValueError, ValidationError):
+                    raise ValidationError("需求目录事实来源无效") from None
+                evidence.append(summary)
+                observed_times.append(summary.observed_at)
+                if summary.confirmed_at is not None:
+                    observed_times.append(summary.confirmed_at)
+
+        known_countries: list[str] = []
+        unknown_country_count = 0
+        for account_id in account_ids:
+            fact = account_facts[account_id]
+            if fact.country_code is None or fact.country_evidence is None:
+                unknown_country_count += 1
+                continue
+            known_countries.append(fact.country_code)
+            evidence.append(fact.country_evidence)
+            observed_times.append(fact.country_evidence.observed_at)
+            if fact.country_evidence.confirmed_at is not None:
+                observed_times.append(fact.country_evidence.confirmed_at)
+
+        recurring_true = 0
+        recurring_false = 0
+        recurring_unknown = 0
+        mixed_recurrence = False
+        covered_quantities: list[tuple[str, int]] = []
+        for account_id in account_ids:
+            account_needs = needs_by_account[account_id]
+            recurrence_values = {
+                need.recurring_requirement.value
+                for need in account_needs
+                if need.recurring_requirement is not None
+            }
+            if True in recurrence_values:
+                recurring_true += 1
+                if False in recurrence_values:
+                    mixed_recurrence = True
+            elif False in recurrence_values:
+                recurring_false += 1
+            else:
+                recurring_unknown += 1
+            if len(account_needs) != 1:
+                continue
+            need = account_needs[0]
+            try:
+                unit = require_current_unit(self._need_quote_facts(need))
+            except (NeedUnitError, TypeError, ValueError, ValidationError):
+                continue
+            normalized_unit = " ".join(unit.value.split()).casefold()
+            if not normalized_unit or need.quantity is None:
+                continue
+            covered_quantities.append((normalized_unit, need.quantity.value))
+
+        covered_count = len(covered_quantities)
+        all_accounts_covered = covered_count == len(account_ids)
+        units = {unit for unit, _quantity in covered_quantities}
+        unified_unit = (
+            next(iter(units)) if all_accounts_covered and len(units) == 1 else None
+        )
+        safe_total_quantity = (
+            sum(quantity for _unit, quantity in covered_quantities)
+            if unified_unit is not None
+            else None
+        )
+        evidence_tuple = tuple(sorted(evidence, key=self._catalog_evidence_sort_key))
+        decision_fields = {
+            "version": "need-cluster-catalog-facts-v1",
+            "tenant_id": tenant_id,
+            "cluster_id": cluster_id,
+            "cluster_category": cluster.category,
+            "member_need_ids": tuple(sorted(member_ids, key=str)),
+            "distinct_account_ids": account_ids,
+            "member_count": len(member_ids),
+            "distinct_account_count": len(account_ids),
+            "known_country_codes": tuple(sorted(set(known_countries))),
+            "unknown_country_account_count": unknown_country_count,
+            "recurring_true_account_count": recurring_true,
+            "recurring_false_account_count": recurring_false,
+            "recurring_unknown_account_count": recurring_unknown,
+            "quantity_unit_covered_account_count": covered_count,
+            "unified_unit": unified_unit,
+            "safe_total_quantity": safe_total_quantity,
+            "evidence_summaries": evidence_tuple,
+        }
+        return NeedClusterCatalogFacts(
+            tenant_id=tenant_id,
+            cluster_id=cluster_id,
+            cluster_category=cluster.category,
+            member_need_ids=tuple(sorted(member_ids, key=str)),
+            distinct_account_ids=account_ids,
+            member_count=len(member_ids),
+            distinct_account_count=len(account_ids),
+            known_country_codes=tuple(sorted(set(known_countries))),
+            unknown_country_account_count=unknown_country_count,
+            recurring_true_account_count=recurring_true,
+            recurring_false_account_count=recurring_false,
+            recurring_unknown_account_count=recurring_unknown,
+            quantity_unit_covered_account_count=covered_count,
+            unified_unit=unified_unit,
+            safe_total_quantity=safe_total_quantity,
+            evidence_summaries=evidence_tuple,
+            display_codes=("recurring_mixed_same_account",) if mixed_recurrence else (),
+            facts_observed_at=max(observed_times),
+            facts_hash=canonical_fact_hash(decision_fields),
+        )
+
+    async def list_catalog_cluster_ids(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int = 50,
+    ) -> tuple[NeedClusterId, ...]:
+        self._validate_catalog_query(tenant_id, None, limit)
+        async with self._uow_factory(tenant_id) as uow:
+            return await uow.clusters.list_catalog_cluster_ids(
+                tenant_id, limit=limit
+            )
+
+    async def list_catalog_cluster_ids_for_account(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        *,
+        limit: int = 50,
+    ) -> tuple[NeedClusterId, ...]:
+        self._validate_catalog_query(tenant_id, None, limit)
+        if (
+            not isinstance(account_id, str)
+            or not account_id
+            or account_id != account_id.strip()
+            or len(account_id) > 40
+        ):
+            raise ValidationError("潜在企业标识无效")
+        async with self._uow_factory(tenant_id) as uow:
+            return await uow.clusters.list_catalog_cluster_ids_for_account(
+                tenant_id, account_id, limit=limit
+            )
+
+    @staticmethod
+    def _validate_catalog_query(
+        tenant_id: TenantId,
+        cluster_id: NeedClusterId | None,
+        limit: int,
+    ) -> None:
+        if (
+            not isinstance(tenant_id, str)
+            or not tenant_id
+            or tenant_id != tenant_id.strip()
+            or len(tenant_id) > 40
+            or type(limit) is not int
+            or not 1 <= limit <= 200
+            or (
+                cluster_id is not None
+                and (
+                    not isinstance(cluster_id, str)
+                    or not cluster_id
+                    or cluster_id != cluster_id.strip()
+                    or len(cluster_id) > 40
+                )
+            )
+        ):
+            raise ValidationError("需求目录事实查询无效")
+
+    @staticmethod
+    def _catalog_evidence_sort_key(
+        summary: CatalogEvidenceSummary,
+    ) -> tuple[str, str, str, str, str, str, str]:
+        return (
+            summary.source_type.value,
+            summary.source_id,
+            summary.extracted_by,
+            str(summary.confirmed_by or ""),
+            summary.confirmed_at.isoformat() if summary.confirmed_at else "",
+            summary.observed_at.isoformat(),
+            summary.content_hash,
+        )
+
+    @staticmethod
+    def _need_quote_facts(need: ValidatedNeed) -> NeedQuoteFacts:
+        """复用单位域的完整当前绑定门禁，不复制判定规则。"""
+        return NeedQuoteFacts(
+            tenant_id=need.tenant_id,
+            need_id=need.need_id,
+            account_id=need.account_id,
+            status=need.status.value,
+            product_category=need.product_category,
+            application=need.application,
+            material=need.material,
+            size_spec=need.size_spec,
+            packaging=need.packaging,
+            destination=need.destination,
+            current_supply_issue=need.current_supply_issue,
+            certification_required=need.certification_required,
+            unit=need.unit,
+            quantity=need.quantity,
+            required_by=need.required_by,
+            target_price=need.target_price,
+            unit_quantity_fact_hash=need.unit_quantity_fact_hash,
+            unit_confirmation_id=need.unit_confirmation_id,
+        )
 
     async def try_assign_cluster(
         self,

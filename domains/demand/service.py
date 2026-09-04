@@ -33,6 +33,9 @@ from domains.demand.http_schemas import (
     NeedUnitPreparationView as NeedUnitPreparationView,  # noqa: PLC0414 - 同类型公开重导出
 )
 from domains.demand.schemas import (
+    CatalogEvidenceSummary as CatalogEvidenceSummary,  # noqa: PLC0414
+)
+from domains.demand.schemas import (
     CustomerReplyEvidenceClaim,
     DemandSignalView,
     HypothesisDiscoveryView,
@@ -50,6 +53,18 @@ from domains.demand.schemas import (
     ValidatedNeedView,
     VerifiedCustomerReplyEvidence,
     VerifiedNeedUnitEvidence,
+)
+from domains.demand.schemas import (
+    DemandCatalogAccountFact as DemandCatalogAccountFact,  # noqa: PLC0414
+)
+from domains.demand.schemas import (
+    NeedClusterCatalogFacts as NeedClusterCatalogFacts,  # noqa: PLC0414
+)
+from domains.demand.schemas import (
+    catalog_country_code_or_none as catalog_country_code_or_none,  # noqa: PLC0414
+)
+from domains.demand.schemas import (
+    catalog_evidence_summary as catalog_evidence_summary,  # noqa: PLC0414
 )
 from domains.demand.unit_facts import (
     assess_quote_preparation as assess_quote_preparation,  # noqa: PLC0414
@@ -207,6 +222,18 @@ class DemandAccountNameReader(Protocol):
         account_ids: tuple[ProspectAccountId, ...],
     ) -> dict[ProspectAccountId, str]: ...
 
+
+@runtime_checkable
+class DemandCatalogAccountFactsReader(Protocol):
+    """上层逐账户读取 Prospecting 的窄国家事实；Demand 不跨域导入。"""
+
+    async def get_account_catalog_fact(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+    ) -> DemandCatalogAccountFact:
+        """返回同租户、同账户的精确 ISO-2 国家事实或显式未知。"""
+        ...
 
 @runtime_checkable
 class DemandService(Protocol):
@@ -455,6 +482,33 @@ class DemandService(Protocol):
         数量或账户字段。观察时间是持久事实版本时间（未归簇 Need.created_at；
         归簇 Cluster.updated_at），重复读取不得使用服务时钟制造新版本。
         """
+        ...
+
+    async def get_cluster_catalog_facts(
+        self,
+        tenant_id: TenantId,
+        cluster_id: NeedClusterId,
+    ) -> NeedClusterCatalogFacts:
+        """读取经双向成员链核验、按账户保守聚合的目录决策事实。"""
+        ...
+
+    async def list_catalog_cluster_ids(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int = 50,
+    ) -> tuple[NeedClusterId, ...]:
+        """按稳定持久顺序列出真实需求簇，不伪造未归簇单成员簇。"""
+        ...
+
+    async def list_catalog_cluster_ids_for_account(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        *,
+        limit: int = 50,
+    ) -> tuple[NeedClusterId, ...]:
+        """列出账户已归属的真实需求簇；未归簇 Need 不进入结果。"""
         ...
 
     async def try_assign_cluster(

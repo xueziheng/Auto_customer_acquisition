@@ -41,8 +41,12 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
 )
 from shared.schemas.money import Money
-from shared.schemas.provenance import FactualField, SourceType
-from shared.schemas.quote_facts import NeedFactDTO, QuoteEmployeeFact
+from shared.schemas.provenance import FactualField, Provenance, SourceType
+from shared.schemas.quote_facts import (
+    NeedFactDTO,
+    QuoteEmployeeFact,
+    canonical_fact_hash,
+)
 from shared.schemas.quote_facts import (
     NeedQuoteFacts as NeedQuoteFacts,  # noqa: PLC0414 - 保持公开类型或测试fixture身份
 )
@@ -546,6 +550,160 @@ class NeedCatalogEventLocator:
 
     need_id: ValidatedNeedId
     cluster_id: NeedClusterId | None
+
+
+@dataclass(frozen=True)
+class CatalogEvidenceSummary:
+    """目录聚合可公开携带的最小证据指纹，不含事实值或原始来源正文。"""
+
+    source_type: SourceType
+    source_id: str
+    extracted_by: str
+    confirmed_by: EmployeeId | None
+    confirmed_at: datetime | None
+    observed_at: datetime
+    content_hash: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.source_type, SourceType)
+            or self.source_type is SourceType.AGENT_INFERENCE
+            or not isinstance(self.source_id, str)
+            or not self.source_id
+            or self.source_id != self.source_id.strip()
+            or not isinstance(self.extracted_by, str)
+            or not self.extracted_by
+            or self.extracted_by != self.extracted_by.strip()
+            or not _is_strict_utc(self.observed_at)
+            or (self.confirmed_at is not None and not _is_strict_utc(self.confirmed_at))
+            or (self.confirmed_by is None) != (self.confirmed_at is None)
+            or not isinstance(self.content_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", self.content_hash) is None
+        ):
+            raise ValueError("目录证据摘要无效")
+
+
+@dataclass(frozen=True)
+class DemandCatalogAccountFact:
+    """Prospecting 经 workflow 映射给 Demand 的窄账户国家事实。"""
+
+    tenant_id: TenantId
+    account_id: ProspectAccountId
+    country_code: str | None
+    country_evidence: CatalogEvidenceSummary | None
+
+    def __post_init__(self) -> None:
+        if (
+            not _is_exact_identity(self.tenant_id)
+            or not _is_exact_identity(self.account_id)
+            or (self.country_code is None) != (self.country_evidence is None)
+            or (
+                self.country_code is not None
+                and self.country_code not in _ISO_3166_ALPHA_2
+            )
+        ):
+            raise ValueError("目录账户事实无效")
+
+
+@dataclass(frozen=True)
+class NeedClusterCatalogFacts:
+    """经双向成员链核验、按账户聚合的目录候选决策事实。"""
+
+    tenant_id: TenantId
+    cluster_id: NeedClusterId
+    cluster_category: str
+    member_need_ids: tuple[ValidatedNeedId, ...]
+    distinct_account_ids: tuple[ProspectAccountId, ...]
+    member_count: int
+    distinct_account_count: int
+    known_country_codes: tuple[str, ...]
+    unknown_country_account_count: int
+    recurring_true_account_count: int
+    recurring_false_account_count: int
+    recurring_unknown_account_count: int
+    quantity_unit_covered_account_count: int
+    unified_unit: str | None
+    safe_total_quantity: int | None
+    evidence_summaries: tuple[CatalogEvidenceSummary, ...]
+    display_codes: tuple[str, ...]
+    facts_observed_at: datetime
+    facts_hash: str
+
+
+def _is_strict_utc(value: object) -> bool:
+    return (
+        isinstance(value, datetime)
+        and value.tzinfo is not None
+        and value.utcoffset() == UTC.utcoffset(value)
+    )
+
+
+def _is_exact_identity(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value == value.strip()
+        and len(value) <= 40
+    )
+
+
+def catalog_country_code_or_none(value: object) -> str | None:
+    """只接受精确已分配大写 ISO-2；不维护别名或执行推断。"""
+
+    return value if isinstance(value, str) and value in _ISO_3166_ALPHA_2 else None
+
+
+def catalog_evidence_summary(
+    *,
+    tenant_id: TenantId,
+    subject_id: str,
+    field_name: str,
+    value: object,
+    provenance: Provenance,
+) -> CatalogEvidenceSummary:
+    """从完整事实生成安全摘要；哈希绑定值和白名单来源元数据。"""
+
+    if (
+        not _is_exact_identity(tenant_id)
+        or not _is_exact_identity(subject_id)
+        or not isinstance(field_name, str)
+        or not field_name
+        or field_name != field_name.strip()
+        or not isinstance(provenance, Provenance)
+        or provenance.source_type is SourceType.AGENT_INFERENCE
+        or not _is_strict_utc(provenance.extracted_at)
+        or (
+            provenance.confirmed_at is not None
+            and not _is_strict_utc(provenance.confirmed_at)
+        )
+    ):
+        raise ValueError("目录事实来源无效")
+    safe_provenance = {
+        "source_type": provenance.source_type,
+        "source_id": provenance.source_id,
+        "extracted_by": provenance.extracted_by,
+        "confirmed_by": provenance.confirmed_by,
+        "confirmed_at": provenance.confirmed_at,
+        "observed_at": provenance.extracted_at,
+    }
+    return CatalogEvidenceSummary(
+        source_type=provenance.source_type,
+        source_id=provenance.source_id,
+        extracted_by=provenance.extracted_by,
+        confirmed_by=provenance.confirmed_by,
+        confirmed_at=provenance.confirmed_at,
+        observed_at=provenance.extracted_at,
+        content_hash=canonical_fact_hash(
+            {
+                "version": "catalog-qualified-fact-v1",
+                "tenant_id": tenant_id,
+                "subject_id": subject_id,
+                "field_name": field_name,
+                "value": value,
+                "provenance": safe_provenance,
+            }
+        ),
+    )
 
 
 @dataclass(frozen=True)

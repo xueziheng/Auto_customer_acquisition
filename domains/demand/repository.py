@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol, Self, runtime_checkable
 
 from domains.demand.models import (
@@ -38,6 +39,14 @@ class SnapshotArtifactEvidenceRepository(Protocol):
         artifact_id: ArtifactId,
         content_hash: str,
     ) -> bool: ...
+
+
+@dataclass(frozen=True)
+class NeedClusterCatalogSnapshot:
+    """单次租户读取获得的簇、正向成员关系与 Need 反向归属快照。"""
+
+    cluster: NeedCluster
+    needs: tuple[ValidatedNeed, ...]
 
 
 @runtime_checkable
@@ -252,3 +261,26 @@ class NeedClusterRepository(Protocol):
     async def list_for_radar(
         self, tenant_id: TenantId, *, limit: int
     ) -> list[NeedCluster]: ...
+
+    async def get_catalog_snapshot(
+        self,
+        tenant_id: TenantId,
+        cluster_id: NeedClusterId,
+    ) -> NeedClusterCatalogSnapshot | None:
+        """单次 tenant-bound 查询读取完整双向成员集合。"""
+        ...
+
+    async def list_catalog_cluster_ids(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int,
+    ) -> tuple[NeedClusterId, ...]: ...
+
+    async def list_catalog_cluster_ids_for_account(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        *,
+        limit: int,
+    ) -> tuple[NeedClusterId, ...]: ...

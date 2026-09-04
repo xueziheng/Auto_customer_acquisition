@@ -7,18 +7,23 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.demand.models import NeedCluster
-from domains.demand.repository import NeedClusterRepository
-from infra.db.tables import NeedClusterMemberRow, NeedClusterRow
+from domains.demand.repository import (
+    NeedClusterCatalogSnapshot,
+    NeedClusterRepository,
+)
+from infra.db.repositories.need_hypotheses import _row_to_need
+from infra.db.tables import NeedClusterMemberRow, NeedClusterRow, ValidatedNeedRow
 from shared.errors import TenantIsolationViolation, ValidationError
 from shared.schemas.identifiers import (
     NeedClusterId,
+    ProspectAccountId,
     TenantId,
     ValidatedNeedId,
 )
@@ -145,6 +150,110 @@ class NeedClusterRepositoryImpl(NeedClusterRepository):
             )
         ).scalars().all()
         return [await self._hydrate(row) for row in rows]
+
+    async def get_catalog_snapshot(
+        self,
+        tenant_id: TenantId,
+        cluster_id: NeedClusterId,
+    ) -> NeedClusterCatalogSnapshot | None:
+        """用一次联表读取同时取得 membership 正向集合和 Need 反向集合。"""
+        self._require_tenant(tenant_id, "need_cluster_get_catalog_snapshot")
+        member_ids = (
+            select(func.array_agg(NeedClusterMemberRow.need_id))
+            .where(
+                NeedClusterMemberRow.tenant_id == str(self._tenant_id),
+                NeedClusterMemberRow.cluster_id == str(cluster_id),
+            )
+            .scalar_subquery()
+        )
+        rows = (
+            await self._session.execute(
+                select(
+                    NeedClusterRow,
+                    ValidatedNeedRow,
+                    member_ids.label("member_need_ids"),
+                )
+                .outerjoin(
+                    ValidatedNeedRow,
+                    and_(
+                        ValidatedNeedRow.tenant_id == NeedClusterRow.tenant_id,
+                        ValidatedNeedRow.cluster_id == NeedClusterRow.cluster_id,
+                    ),
+                )
+                .where(
+                    NeedClusterRow.tenant_id == str(self._tenant_id),
+                    NeedClusterRow.cluster_id == str(cluster_id),
+                )
+                .order_by(ValidatedNeedRow.need_id)
+            )
+        ).all()
+        if not rows:
+            return None
+        cluster_row = rows[0][0]
+        raw_member_ids = rows[0][2] or []
+        cluster = NeedCluster(
+            cluster_id=NeedClusterId(cluster_row.cluster_id),
+            tenant_id=TenantId(cluster_row.tenant_id),
+            category=cluster_row.category,
+            member_need_ids=[
+                ValidatedNeedId(value) for value in raw_member_ids
+            ],
+            keywords=list(cast(list[str], cluster_row.keywords)),
+            countries=list(cast(list[str], cluster_row.countries)),
+            total_potential_quantity=cluster_row.total_potential_quantity,
+            recurring_demand=cluster_row.recurring_demand,
+            created_at=cluster_row.created_at,
+            updated_at=cluster_row.updated_at,
+        )
+        needs = tuple(_row_to_need(row[1]) for row in rows if row[1] is not None)
+        return NeedClusterCatalogSnapshot(cluster=cluster, needs=needs)
+
+    async def list_catalog_cluster_ids(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int,
+    ) -> tuple[NeedClusterId, ...]:
+        self._require_tenant(tenant_id, "need_cluster_list_catalog_ids")
+        values = (
+            await self._session.execute(
+                select(NeedClusterRow.cluster_id)
+                .where(NeedClusterRow.tenant_id == str(self._tenant_id))
+                .order_by(NeedClusterRow.updated_at.desc(), NeedClusterRow.cluster_id)
+                .limit(limit)
+            )
+        ).scalars().all()
+        return tuple(NeedClusterId(value) for value in values)
+
+    async def list_catalog_cluster_ids_for_account(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        *,
+        limit: int,
+    ) -> tuple[NeedClusterId, ...]:
+        self._require_tenant(tenant_id, "need_cluster_list_catalog_ids_for_account")
+        values = (
+            await self._session.execute(
+                select(NeedClusterRow.cluster_id)
+                .join(
+                    ValidatedNeedRow,
+                    and_(
+                        ValidatedNeedRow.tenant_id == NeedClusterRow.tenant_id,
+                        ValidatedNeedRow.cluster_id == NeedClusterRow.cluster_id,
+                    ),
+                )
+                .where(
+                    NeedClusterRow.tenant_id == str(self._tenant_id),
+                    ValidatedNeedRow.tenant_id == str(self._tenant_id),
+                    ValidatedNeedRow.account_id == str(account_id),
+                )
+                .group_by(NeedClusterRow.cluster_id, NeedClusterRow.updated_at)
+                .order_by(NeedClusterRow.updated_at.desc(), NeedClusterRow.cluster_id)
+                .limit(limit)
+            )
+        ).scalars().all()
+        return tuple(NeedClusterId(value) for value in values)
 
     async def _insert_members(
         self,
