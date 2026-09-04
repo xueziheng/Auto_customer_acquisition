@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError as PydanticValidationError
@@ -10,12 +12,17 @@ from pydantic import ValidationError as PydanticValidationError
 from domains.products.catalog_rules import evaluate_catalog_facts
 from domains.products.schemas import (
     CatalogClusterFactsInput,
+    CatalogProposalEvaluationResult,
     CatalogProposalPolicyContent,
     CatalogProposalRuleResult,
 )
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
+    CatalogProposalEvaluationId,
+    CatalogProposalPolicyVersionId,
     NeedClusterId,
     ProspectAccountId,
+    RunId,
     TenantId,
     ValidatedNeedId,
 )
@@ -43,6 +50,161 @@ def test_rule_result_rejects_free_form_explanation() -> None:
             actual_value=3,
             required_value=3,
             explanation_code="复购客户数达到策略门槛",
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {
+            "rule": "distinct_accounts",
+            "status": "passed",
+            "actual_value": True,
+            "required_value": 3,
+            "explanation_code": "去重客户数达到策略门槛",
+        },
+        {
+            "rule": "distinct_accounts",
+            "status": "passed",
+            "actual_value": -1,
+            "required_value": 3,
+            "explanation_code": "去重客户数达到策略门槛",
+        },
+        {
+            "rule": "distinct_accounts",
+            "status": "passed",
+            "actual_value": 2_147_483_648,
+            "required_value": 3,
+            "explanation_code": "去重客户数达到策略门槛",
+        },
+        {
+            "rule": "distinct_accounts",
+            "status": "passed",
+            "actual_value": 2,
+            "required_value": 3,
+            "explanation_code": "去重客户数达到策略门槛",
+        },
+        {
+            "rule": "distinct_accounts",
+            "status": "failed",
+            "actual_value": 3,
+            "required_value": 3,
+            "explanation_code": "去重客户数未达到策略门槛",
+        },
+        {
+            "rule": "recurring_accounts",
+            "status": "unknown",
+            "actual_value": 1,
+            "required_value": 2,
+            "explanation_code": "复购客户事实不完整",
+        },
+        {
+            "rule": "recurring_accounts",
+            "status": "not_required",
+            "actual_value": 1,
+            "required_value": 2,
+            "explanation_code": "策略不要求复购客户数",
+        },
+    ),
+)
+def test_count_rule_result_rejects_non_exact_or_incoherent_values(
+    payload: dict[str, object],
+) -> None:
+    """公共规则 DTO 不能接纳 bool、溢出值、猜测值或矛盾比较。"""
+
+    with pytest.raises(PydanticValidationError):
+        CatalogProposalRuleResult.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {
+            "rule": "membership_integrity",
+            "status": "passed",
+            "actual_value": False,
+            "required_value": True,
+            "explanation_code": "成员关系与品类完整一致",
+        },
+        {
+            "rule": "membership_integrity",
+            "status": "passed",
+            "actual_value": 1,
+            "required_value": True,
+            "explanation_code": "成员关系与品类完整一致",
+        },
+        {
+            "rule": "membership_integrity",
+            "status": "passed",
+            "actual_value": True,
+            "required_value": False,
+            "explanation_code": "成员关系与品类完整一致",
+        },
+    ),
+)
+def test_membership_rule_result_requires_exact_boolean_semantics(
+    payload: dict[str, object],
+) -> None:
+    """成员完整性不能以整数或 false+passed 自相矛盾。"""
+
+    with pytest.raises(PydanticValidationError):
+        CatalogProposalRuleResult.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "actual_value",
+    (" vehicle", "vehicle\n", "veh\x00icle", "veh\u0085icle", "v" * 65),
+)
+def test_unified_unit_rule_result_rejects_unsafe_text(actual_value: str) -> None:
+    """统一单位必须是可展示、可持久化的短文本。"""
+
+    with pytest.raises(PydanticValidationError):
+        CatalogProposalRuleResult(
+            rule="unified_unit",
+            status="passed",
+            actual_value=actual_value,
+            required_value=True,
+            explanation_code="有效数量单位已经统一",
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {
+            "status": "passed",
+            "actual_value": None,
+            "required_value": True,
+            "explanation_code": "有效数量单位已经统一",
+        },
+        {
+            "status": "failed",
+            "actual_value": "vehicle",
+            "required_value": True,
+            "explanation_code": "有效数量单位不统一",
+        },
+        {
+            "status": "not_required",
+            "actual_value": "vehicle",
+            "required_value": True,
+            "explanation_code": "策略不要求统一单位",
+        },
+        {
+            "status": "unknown",
+            "actual_value": "vehicle",
+            "required_value": None,
+            "explanation_code": "统一单位事实未知",
+        },
+    ),
+)
+def test_unified_unit_rule_result_rejects_gate_inconsistency(
+    payload: dict[str, object],
+) -> None:
+    """统一单位规则的 gate、状态和值必须相互自证。"""
+
+    with pytest.raises(PydanticValidationError):
+        CatalogProposalRuleResult.model_validate(
+            {"rule": "unified_unit", **payload}
         )
 
 
@@ -251,3 +413,143 @@ def test_damaged_facts_return_one_fixed_blocked_shape_without_guessed_zeroes() -
     assert result.rule_results[0].status == "unknown"
     assert all(item.actual_value is None for item in result.rule_results)
     assert result.rule_results[0].explanation_code == "目录事实损坏，评估已阻断"
+    assert [item.required_value for item in result.rule_results] == [
+        True,
+        3,
+        None,
+        None,
+        None,
+        None,
+    ]
+
+
+def test_evaluation_result_rejects_blocked_and_normal_shape_crossovers() -> None:
+    """blocked_reason 与六条固定阻断规则必须是不可拆分的一种结果形状。"""
+
+    damaged = CatalogClusterFactsInput.model_construct(
+        **{**_facts().model_dump(mode="python"), "member_count": 999}
+    )
+    blocked = evaluate_catalog_facts(_policy(), damaged)
+    normal = evaluate_catalog_facts(_policy(), _facts())
+
+    with pytest.raises(PydanticValidationError):
+        CatalogProposalEvaluationResult(
+            rule_results=(normal.rule_results[0], *blocked.rule_results[1:]),
+            overall_passed=False,
+            blocked_reason="catalog_facts_invalid",
+        )
+    with pytest.raises(PydanticValidationError):
+        CatalogProposalEvaluationResult(
+            rule_results=blocked.rule_results,
+            overall_passed=False,
+            blocked_reason=None,
+        )
+    with pytest.raises(PydanticValidationError):
+        CatalogProposalEvaluationResult(
+            rule_results=blocked.rule_results,
+            overall_passed=True,
+            blocked_reason="catalog_facts_invalid",
+        )
+
+
+def test_evaluation_result_rejects_impossible_optional_requirement_shape() -> None:
+    """规则各自合法也不能绕过策略中 optional 门槛不得超过客户数的关系。"""
+
+    normal = evaluate_catalog_facts(_policy(), _facts())
+    impossible_recurring = CatalogProposalRuleResult(
+        rule="recurring_accounts",
+        status="passed",
+        actual_value=4,
+        required_value=4,
+        explanation_code="复购客户数达到策略门槛",
+    )
+
+    with pytest.raises(PydanticValidationError):
+        CatalogProposalEvaluationResult(
+            rule_results=(
+                *normal.rule_results[:2],
+                impossible_recurring,
+                *normal.rule_results[3:],
+            ),
+            overall_passed=True,
+            blocked_reason=None,
+        )
+
+
+@pytest.mark.parametrize(
+    ("rule", "explanation_code"),
+    (
+        ("recurring_accounts", "复购客户数达到策略门槛"),
+        ("distinct_countries", "已知国家数达到策略门槛"),
+        ("quantity_unit_coverage", "数量单位覆盖达到策略门槛"),
+    ),
+)
+def test_evaluation_result_rejects_optional_actual_above_account_count(
+    rule: str,
+    explanation_code: str,
+) -> None:
+    """复购、国家与数量覆盖的实际账户数都不能超过去重客户数。"""
+
+    normal = evaluate_catalog_facts(_policy(), _facts())
+    position = {
+        "recurring_accounts": 2,
+        "distinct_countries": 3,
+        "quantity_unit_coverage": 4,
+    }[rule]
+    impossible = CatalogProposalRuleResult.model_validate(
+        {
+            "rule": rule,
+            "status": "passed",
+            "actual_value": 4,
+            "required_value": 2,
+            "explanation_code": explanation_code,
+        }
+    )
+    rules = list(normal.rule_results)
+    rules[position] = impossible
+
+    with pytest.raises(PydanticValidationError):
+        CatalogProposalEvaluationResult(
+            rule_results=tuple(rules),
+            overall_passed=True,
+            blocked_reason=None,
+        )
+
+
+def test_persisted_evaluation_revalidates_rule_result_contract() -> None:
+    """内部实体不得持久化空规则、矛盾 overall 或自由底层异常文本。"""
+
+    facts = _facts()
+    result = evaluate_catalog_facts(_policy(), facts)
+    payload: dict[str, object] = {
+        "tenant_id": facts.tenant_id,
+        "evaluation_id": CatalogProposalEvaluationId("cpe_catalog"),
+        "cluster_id": facts.cluster_id,
+        "policy_version_id": CatalogProposalPolicyVersionId("cpv_catalog"),
+        "facts_hash": facts.facts_hash,
+        "facts": facts,
+        "rule_results": result.rule_results,
+        "overall_passed": result.overall_passed,
+        "blocked_reason": result.blocked_reason,
+        "proposed_by_run": RunId("run_catalog"),
+        "created_at": NOW,
+    }
+    evaluation_type = cast(
+        Any,
+        importlib.import_module(
+            "domains.products.models"
+        ).CatalogProposalEvaluation,
+    )
+
+    for changes in (
+        {"rule_results": ()},
+        {"overall_passed": False},
+        {"blocked_reason": "database timeout"},
+        {
+            "facts": CatalogClusterFactsInput.model_construct(
+                **{**facts.model_dump(mode="python"), "member_count": 999}
+            )
+        },
+    ):
+        with pytest.raises(ValidationError):
+            evaluation_type(**{**payload, **changes})

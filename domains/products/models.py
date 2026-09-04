@@ -9,9 +9,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
+from typing import Literal
+
+from pydantic import ValidationError as PydanticValidationError
 
 from domains.products.schemas import (
     CatalogClusterFactsInput,
+    CatalogProposalEvaluationResult,
     CatalogProposalPolicyContent,
     CatalogProposalRuleResult,
 )
@@ -130,6 +134,16 @@ class CatalogProposalPolicyVersion:
         _catalog_identity(self.proposed_by, "proposed_by", 40)
         _catalog_identity(self.creation_key, "creation_key")
         _catalog_hash(self.content_hash, "content_hash")
+        from domains.products.catalog_rules import catalog_policy_content_hash
+
+        try:
+            validated_content = CatalogProposalPolicyContent.model_validate(
+                self.content.model_dump(mode="python")
+            )
+        except (AttributeError, PydanticValidationError, TypeError, ValueError):
+            raise ValidationError("策略 content 无效") from None
+        if self.content_hash != catalog_policy_content_hash(validated_content):
+            raise ValidationError("content_hash 与策略内容不一致")
         _catalog_hash(self.creation_request_hash, "creation_request_hash")
         _catalog_utc(self.created_at, "created_at")
         for field_name in ("activated_at", "terminal_at"):
@@ -154,7 +168,7 @@ class CatalogProposalEvaluation:
     facts: CatalogClusterFactsInput
     rule_results: tuple[CatalogProposalRuleResult, ...]
     overall_passed: bool
-    blocked_reason: str | None
+    blocked_reason: Literal["catalog_facts_invalid"] | None
     proposed_by_run: RunId
     created_at: datetime
 
@@ -169,8 +183,28 @@ class CatalogProposalEvaluation:
             _catalog_identity(getattr(self, field_name), field_name, 40)
         _catalog_hash(self.facts_hash, "facts_hash")
         _catalog_utc(self.created_at, "created_at")
-        if self.facts_hash != self.facts.facts_hash:
+        try:
+            validated_facts = CatalogClusterFactsInput.model_validate(
+                self.facts.model_dump(mode="python")
+            )
+        except (AttributeError, PydanticValidationError, TypeError, ValueError):
+            raise ValidationError("评估 facts 快照无效") from None
+        if self.facts_hash != validated_facts.facts_hash:
             raise ValidationError("评估 facts_hash 与事实快照不一致")
+        if self.tenant_id != validated_facts.tenant_id:
+            raise ValidationError("评估 tenant_id 与事实快照不一致")
+        if self.cluster_id != validated_facts.cluster_id:
+            raise ValidationError("评估 cluster_id 与事实快照不一致")
+        try:
+            CatalogProposalEvaluationResult.model_validate(
+                {
+                    "rule_results": self.rule_results,
+                    "overall_passed": self.overall_passed,
+                    "blocked_reason": self.blocked_reason,
+                }
+            )
+        except (PydanticValidationError, TypeError, ValueError):
+            raise ValidationError("评估规则结果无效") from None
 
 
 @dataclass(frozen=True)

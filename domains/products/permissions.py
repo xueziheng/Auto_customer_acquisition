@@ -106,7 +106,7 @@ class Phase2ProductAuthorizer:
             }
         ),
         ProductAction.CATALOG_POLICY_PROPOSE: frozenset(
-            {ProductRole.BOSS, ProductRole.PRODUCT, ProductRole.SOURCING}
+            {ProductRole.PRODUCT, ProductRole.SOURCING}
         ),
         ProductAction.CATALOG_POLICY_READ: frozenset(
             {

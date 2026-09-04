@@ -6,6 +6,7 @@ import importlib
 import json
 from dataclasses import is_dataclass
 from datetime import UTC, datetime, timedelta, timezone
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError as PydanticValidationError
@@ -23,7 +24,7 @@ from domains.products.schemas import (
     CatalogProposalPolicyContent,
     CatalogProposalPolicyView,
 )
-from shared.errors import PermissionDenied
+from shared.errors import PermissionDenied, ValidationError
 from shared.schemas.identifiers import (
     ApprovalId,
     CatalogProposalPolicyVersionId,
@@ -239,7 +240,7 @@ def test_policy_view_is_safe_strict_and_utc() -> None:
     (
         (ProductRole.PRODUCT, ProductAction.CATALOG_POLICY_PROPOSE, True),
         (ProductRole.SOURCING, ProductAction.CATALOG_POLICY_PROPOSE, True),
-        (ProductRole.BOSS, ProductAction.CATALOG_POLICY_PROPOSE, True),
+        (ProductRole.BOSS, ProductAction.CATALOG_POLICY_PROPOSE, False),
         (ProductRole.SALES, ProductAction.CATALOG_POLICY_PROPOSE, False),
         (ProductRole.SYSTEM, ProductAction.CATALOG_EVALUATE, True),
         (ProductRole.PRODUCT, ProductAction.CATALOG_EVALUATE, False),
@@ -275,6 +276,31 @@ def test_catalog_internal_entities_are_frozen_dataclasses() -> None:
         entity = _symbol("domains.products.models", name)
         assert is_dataclass(entity)
         assert entity.__dataclass_params__.frozen is True
+
+
+def test_policy_entity_recomputes_and_rejects_tampered_content_hash() -> None:
+    """仅检查 hash 形状会让被篡改的策略内容冒充已审批版本。"""
+
+    policy_version_type = cast(
+        Any, _symbol("domains.products.models", "CatalogProposalPolicyVersion")
+    )
+    policy_state = cast(
+        Any, _symbol("domains.products.models", "CatalogProposalPolicyState")
+    )
+    with pytest.raises(ValidationError, match="content_hash"):
+        policy_version_type(
+            tenant_id=TENANT,
+            policy_version_id=CatalogProposalPolicyVersionId("cpv_catalog"),
+            content=_controlled_policy(),
+            content_hash="b" * 64,
+            base_active_version_id=None,
+            proposed_by=EmployeeId("emp_catalog"),
+            creation_key="catalog-policy-key",
+            creation_request_hash=HASH_A,
+            approval_id=None,
+            state=policy_state.PENDING_APPROVAL,
+            created_at=NOW,
+        )
 
 
 def test_catalog_service_protocol_exposes_only_bounded_domain_operations() -> None:

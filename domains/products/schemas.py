@@ -50,6 +50,7 @@ CatalogRuleStatus = Literal["passed", "failed", "unknown", "not_required"]
 CatalogExplanationCode = Literal[
     "目录事实损坏，评估已阻断",
     "成员关系与品类完整一致",
+    "成员关系或品类不一致",
     "去重客户数达到策略门槛",
     "去重客户数未达到策略门槛",
     "复购客户数达到策略门槛",
@@ -296,39 +297,113 @@ class CatalogProposalRuleResult(_CatalogFrozenModel):
     explanation_code: CatalogExplanationCode
 
     @model_validator(mode="after")
-    def validate_explanation_mapping(self) -> Self:
+    def validate_semantics(self) -> Self:
         if self.explanation_code == "目录事实损坏，评估已阻断":
             if self.status != "unknown" or self.actual_value is not None:
                 raise ValueError("损坏事实只能产生无 actual_value 的 unknown 结果")
-            return self
-        expected: dict[tuple[CatalogRuleName, CatalogRuleStatus], str] = {
-            ("membership_integrity", "passed"): "成员关系与品类完整一致",
-            ("distinct_accounts", "passed"): "去重客户数达到策略门槛",
-            ("distinct_accounts", "failed"): "去重客户数未达到策略门槛",
-            ("recurring_accounts", "passed"): "复购客户数达到策略门槛",
-            ("recurring_accounts", "failed"): "复购客户数未达到策略门槛",
-            ("recurring_accounts", "unknown"): "复购客户事实不完整",
-            ("recurring_accounts", "not_required"): "策略不要求复购客户数",
-            ("distinct_countries", "passed"): "已知国家数达到策略门槛",
-            ("distinct_countries", "failed"): "已知国家数未达到策略门槛",
-            ("distinct_countries", "unknown"): "客户国家事实不完整",
-            ("distinct_countries", "not_required"): "策略不要求已知国家数",
-            ("quantity_unit_coverage", "passed"): "数量单位覆盖达到策略门槛",
-            ("quantity_unit_coverage", "failed"): "数量单位覆盖未达到策略门槛",
-            ("quantity_unit_coverage", "unknown"): "数量单位事实不完整",
-            ("quantity_unit_coverage", "not_required"): "策略不要求数量单位覆盖",
-            ("unified_unit", "passed"): "有效数量单位已经统一",
-            ("unified_unit", "failed"): "有效数量单位不统一",
-            ("unified_unit", "unknown"): (
-                "统一单位事实不完整"
-                if self.required_value is True
-                else "统一单位事实未知"
-            ),
-            ("unified_unit", "not_required"): "策略不要求统一单位",
-        }
-        if self.explanation_code != expected.get((self.rule, self.status)):
-            raise ValueError("explanation_code 与规则状态不一致")
+        else:
+            expected: dict[tuple[CatalogRuleName, CatalogRuleStatus], str] = {
+                ("membership_integrity", "passed"): "成员关系与品类完整一致",
+                ("membership_integrity", "failed"): "成员关系或品类不一致",
+                ("distinct_accounts", "passed"): "去重客户数达到策略门槛",
+                ("distinct_accounts", "failed"): "去重客户数未达到策略门槛",
+                ("recurring_accounts", "passed"): "复购客户数达到策略门槛",
+                ("recurring_accounts", "failed"): "复购客户数未达到策略门槛",
+                ("recurring_accounts", "unknown"): "复购客户事实不完整",
+                ("recurring_accounts", "not_required"): "策略不要求复购客户数",
+                ("distinct_countries", "passed"): "已知国家数达到策略门槛",
+                ("distinct_countries", "failed"): "已知国家数未达到策略门槛",
+                ("distinct_countries", "unknown"): "客户国家事实不完整",
+                ("distinct_countries", "not_required"): "策略不要求已知国家数",
+                ("quantity_unit_coverage", "passed"): "数量单位覆盖达到策略门槛",
+                ("quantity_unit_coverage", "failed"): "数量单位覆盖未达到策略门槛",
+                ("quantity_unit_coverage", "unknown"): "数量单位事实不完整",
+                (
+                    "quantity_unit_coverage",
+                    "not_required",
+                ): "策略不要求数量单位覆盖",
+                ("unified_unit", "passed"): "有效数量单位已经统一",
+                ("unified_unit", "failed"): "有效数量单位不统一",
+                ("unified_unit", "unknown"): (
+                    "统一单位事实不完整"
+                    if self.required_value is True
+                    else "统一单位事实未知"
+                ),
+                ("unified_unit", "not_required"): "策略不要求统一单位",
+            }
+            if self.explanation_code != expected.get((self.rule, self.status)):
+                raise ValueError("explanation_code 与规则状态不一致")
+
+        if self.rule == "membership_integrity":
+            self._validate_membership()
+        elif self.rule == "unified_unit":
+            self._validate_unified_unit()
+        else:
+            self._validate_count_rule()
         return self
+
+    def _validate_membership(self) -> None:
+        if self.required_value is not True:
+            raise ValueError("membership_integrity.required_value 必须固定为 true")
+        if self.status == "passed" and self.actual_value is not True:
+            raise ValueError("membership_integrity passed 必须携带 actual_value=true")
+        if self.status == "failed" and self.actual_value is not False:
+            raise ValueError("membership_integrity failed 必须携带 actual_value=false")
+        if self.status == "unknown" and self.actual_value is not None:
+            raise ValueError("membership_integrity unknown 不得猜测 actual_value")
+        if self.status == "not_required":
+            raise ValueError("membership_integrity 是固定必需规则")
+
+    def _validate_count_rule(self) -> None:
+        minimum = 2 if self.rule in {"distinct_accounts", "distinct_countries"} else 1
+        if self.required_value is not None:
+            required_value = cast(int, self.required_value)
+            _storage_safe_count(required_value, "required_value", minimum=minimum)
+        else:
+            required_value = None
+        if self.actual_value is not None:
+            actual_value = cast(int, self.actual_value)
+            _storage_safe_count(actual_value, "actual_value")
+        else:
+            actual_value = None
+        if self.rule == "distinct_accounts" and required_value is None:
+            raise ValueError("distinct_accounts.required_value 是固定必需门槛")
+        if self.status == "unknown":
+            if actual_value is not None:
+                raise ValueError("unknown count 规则不得携带猜测 actual_value")
+            return
+        if self.status == "not_required":
+            if required_value is not None:
+                raise ValueError("not_required count 规则必须 required_value=None")
+            if actual_value is None:
+                raise ValueError("事实充分的 not_required count 必须携带 actual_value")
+            return
+        if required_value is None or actual_value is None:
+            raise ValueError("passed/failed count 规则必须携带 actual 与 required")
+        comparison_passed = actual_value >= required_value
+        if (self.status == "passed") != comparison_passed:
+            raise ValueError("count 状态与 actual>=required 比较不一致")
+
+    def _validate_unified_unit(self) -> None:
+        if self.required_value is not None and self.required_value is not True:
+            raise ValueError("unified_unit.required_value 只能是 true 或 None")
+        if self.actual_value is not None:
+            if type(self.actual_value) is not str:
+                raise ValueError("unified_unit.actual_value 只能是 str 或 None")
+            _bounded_text(self.actual_value, "actual_value", 64)
+            if any(not character.isprintable() for character in self.actual_value):
+                raise ValueError("unified_unit.actual_value 不得包含控制字符")
+        if self.status == "passed":
+            if self.required_value is not True or self.actual_value is None:
+                raise ValueError("unified_unit passed 必须启用 gate 并携带单位")
+        elif self.status == "failed":
+            if self.required_value is not True or self.actual_value is not None:
+                raise ValueError("unified_unit failed 必须启用 gate 且单位为空")
+        elif self.status == "unknown":
+            if self.actual_value is not None:
+                raise ValueError("unified_unit unknown 不得猜测 actual_value")
+        elif self.required_value is not None or self.actual_value is None:
+            raise ValueError("unified_unit not_required 必须关闭 gate 并携带已知单位")
 
 
 class CatalogProposalEvaluationResult(_CatalogFrozenModel):
@@ -342,13 +417,49 @@ class CatalogProposalEvaluationResult(_CatalogFrozenModel):
     def validate_result(self) -> Self:
         if tuple(item.rule for item in self.rule_results) != _CATALOG_RULE_ORDER:
             raise ValueError("目录评估规则顺序无效")
+        distinct_required = cast(int, self.rule_results[1].required_value)
+        recurring_required = cast(int | None, self.rule_results[2].required_value)
+        quantity_required = cast(int | None, self.rule_results[4].required_value)
+        unified_required = cast(bool | None, self.rule_results[5].required_value)
+        if (
+            (recurring_required is not None and recurring_required > distinct_required)
+            or (
+                quantity_required is not None
+                and quantity_required > distinct_required
+            )
+            or (unified_required is True and quantity_required is None)
+        ):
+            raise ValueError("评估的策略 required 形状不一致")
+        blocked_code = "目录事实损坏，评估已阻断"
+        if self.blocked_reason is not None:
+            if self.overall_passed:
+                raise ValueError("blocked 评估的 overall_passed 必须为 false")
+            if any(
+                item.status != "unknown"
+                or item.actual_value is not None
+                or item.explanation_code != blocked_code
+                for item in self.rule_results
+            ):
+                raise ValueError("blocked 评估必须使用固定的六规则 unknown 形状")
+            return self
+        if any(item.explanation_code == blocked_code for item in self.rule_results):
+            raise ValueError("正常评估不得携带 blocked explanation code")
+        distinct_actual = cast(int, self.rule_results[1].actual_value)
+        optional_actuals = (
+            self.rule_results[2].actual_value,
+            self.rule_results[3].actual_value,
+            self.rule_results[4].actual_value,
+        )
+        if any(
+            value is not None and cast(int, value) > distinct_actual
+            for value in optional_actuals
+        ):
+            raise ValueError("可选规则 actual_value 不得超过去重客户数")
         blocks = any(
             item.status == "failed"
             or (item.status == "unknown" and item.required_value is not None)
             for item in self.rule_results
         )
-        if self.blocked_reason is not None:
-            blocks = True
         if self.overall_passed == blocks:
             raise ValueError("overall_passed 与规则结果不一致")
         return self
