@@ -12,6 +12,9 @@ from contextlib import AbstractAsyncContextManager
 from typing import Protocol, runtime_checkable
 
 from domains.demand.errors import (
+    CatalogClusterNotFoundError as CatalogClusterNotFoundError,  # noqa: PLC0414
+)
+from domains.demand.errors import (
     NeedUnitError as NeedUnitError,  # noqa: PLC0414 - 保持既有类身份的公共错误端口
 )
 from domains.demand.errors import (

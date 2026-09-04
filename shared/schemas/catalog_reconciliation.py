@@ -48,6 +48,7 @@ class CatalogReconciliationCheckpoint(BaseModel):
             or len(tenant) > 40
             or isinstance(self.version, bool)
             or (self.position_at is None) != (self.entity_id is None)
+            or (self.version == 0 and self.position_at is not None)
         ):
             raise ValueError("Catalog 恢复 checkpoint 无效")
         if self.position_at is None:

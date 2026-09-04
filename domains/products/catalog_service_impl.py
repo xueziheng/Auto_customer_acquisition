@@ -614,17 +614,19 @@ def _reconciliation_cursor(
 ) -> CatalogPageCursor | None:
     if cursor is None:
         return None
-    if (
-        not isinstance(cursor, CatalogReconciliationCursor)
-        or cursor.tenant_id != tenant_id
-        or cursor.stream != stream
-    ):
+    if not isinstance(cursor, CatalogReconciliationCursor):
+        raise ValidationError("Catalog 恢复游标与查询不匹配")
+    try:
+        checked = CatalogReconciliationCursor.model_validate(cursor)
+    except (PydanticValidationError, TypeError, ValueError):
+        raise ValidationError("Catalog 恢复游标与查询不匹配") from None
+    if checked.tenant_id != tenant_id or checked.stream != stream:
         raise ValidationError("Catalog 恢复游标与查询不匹配")
     return CatalogPageCursor(
         tenant_id=tenant_id,
-        stream=cursor.stream,
-        position_at=cursor.position_at,
-        entity_id=cursor.entity_id,
+        stream=checked.stream,
+        position_at=checked.position_at,
+        entity_id=checked.entity_id,
     )
 
 
@@ -794,7 +796,7 @@ class CatalogProposalServiceImpl:
                 )
             if len(page.items) > limit:
                 raise TransientError(_POLICY_UNAVAILABLE)
-            return CatalogPolicyReconciliationPage(
+            result = CatalogPolicyReconciliationPage(
                 tenant_id=tenant_id,
                 items=tuple(
                     CatalogPolicyReconciliationItem(
@@ -807,6 +809,13 @@ class CatalogProposalServiceImpl:
                     page.next_cursor, tenant_id, "pending_policies"
                 ),
             )
+            if checked_cursor is not None and any(
+                (item.created_at, str(item.policy_version_id))
+                <= (checked_cursor.position_at, checked_cursor.entity_id)
+                for item in result.items
+            ):
+                raise TransientError(_POLICY_UNAVAILABLE)
+            return result
         except Exception as error:  # noqa: BLE001 -- 仓储错误统一脱敏
             _raise_storage_error(error)
 
@@ -1198,7 +1207,7 @@ class CatalogProposalServiceImpl:
                 )
             if len(page.items) > limit:
                 raise TransientError(_PROPOSAL_UNAVAILABLE)
-            return CatalogProposalReconciliationPage(
+            result = CatalogProposalReconciliationPage(
                 tenant_id=tenant_id,
                 items=tuple(
                     CatalogProposalReconciliationItem(
@@ -1213,6 +1222,13 @@ class CatalogProposalServiceImpl:
                     page.next_cursor, tenant_id, "awaiting_proposals"
                 ),
             )
+            if checked_cursor is not None and any(
+                (item.created_at, str(item.proposal_id))
+                <= (checked_cursor.position_at, checked_cursor.entity_id)
+                for item in result.items
+            ):
+                raise TransientError(_PROPOSAL_UNAVAILABLE)
+            return result
         except Exception as error:  # noqa: BLE001 -- 仓储错误统一脱敏
             _raise_storage_error(error)
 

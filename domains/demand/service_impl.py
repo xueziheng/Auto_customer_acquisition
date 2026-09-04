@@ -18,6 +18,7 @@ from decimal import Decimal, InvalidOperation
 from typing import cast
 
 from domains.demand.errors import (
+    CatalogClusterNotFoundError,
     HypothesisAlreadyResolvedError,
     InsufficientEvidenceError,
     MissingWebEvidenceError,
@@ -1377,7 +1378,7 @@ class DemandServiceImpl:
         async with self._uow_factory(tenant_id) as uow:
             snapshot = await uow.clusters.get_catalog_snapshot(tenant_id, cluster_id)
         if snapshot is None:
-            raise ValidationError("需求簇不存在")
+            raise CatalogClusterNotFoundError("需求簇不存在")
         cluster = snapshot.cluster
         needs = snapshot.needs
         member_ids = tuple(cluster.member_need_ids)
@@ -1598,22 +1599,36 @@ class DemandServiceImpl:
         cursor: CatalogClusterCursor | None = None,
     ) -> CatalogClusterIdPage:
         self._validate_catalog_query(tenant_id, None, limit)
-        if cursor is not None and (
-            not isinstance(cursor, CatalogClusterCursor)
-            or cursor.tenant_id != tenant_id
-        ):
-            raise ValidationError("目录需求簇游标与租户不匹配")
+        if cursor is None:
+            checked_cursor = None
+        else:
+            if (
+                not isinstance(cursor, CatalogClusterCursor)
+                or cursor.tenant_id != tenant_id
+                or cursor.stream != "catalog_clusters"
+            ):
+                raise ValidationError("目录需求簇游标与查询不匹配")
+            try:
+                checked_cursor = CatalogClusterCursor.model_validate(cursor)
+            except (TypeError, ValueError):
+                raise ValidationError("目录需求簇游标与查询不匹配") from None
         async with self._uow_factory(tenant_id) as uow:
             page = await uow.clusters.list_catalog_cluster_id_page(
-                tenant_id, limit=limit, cursor=cursor
+                tenant_id, limit=limit, cursor=checked_cursor
             )
-        if (
-            not isinstance(page, CatalogClusterIdPage)
-            or page.tenant_id != tenant_id
-            or len(page.items) > limit
+        try:
+            checked_page = CatalogClusterIdPage.model_validate(page)
+        except (TypeError, ValueError):
+            raise ValidationError("目录需求簇页面事实无效") from None
+        if checked_page.tenant_id != tenant_id or len(checked_page.items) > limit:
+            raise ValidationError("目录需求簇页面事实无效")
+        if checked_cursor is not None and any(
+            (item.created_at, str(item.cluster_id))
+            <= (checked_cursor.created_at, str(checked_cursor.cluster_id))
+            for item in checked_page.items
         ):
             raise ValidationError("目录需求簇页面事实无效")
-        return page
+        return checked_page
 
     async def list_catalog_cluster_ids_for_account(
         self,

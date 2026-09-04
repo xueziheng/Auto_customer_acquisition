@@ -1052,12 +1052,14 @@ class CatalogClusterIdPage(_CatalogCursorModel):
     @model_validator(mode="after")
     def validate_page(self) -> Self:
         order = tuple((item.created_at, str(item.cluster_id)) for item in self.items)
+        cluster_ids = tuple(str(item.cluster_id) for item in self.items)
         if (
             not _is_exact_identity(self.tenant_id)
             or not self.tenant_id.startswith("tn_")
             or len(order) > 200
             or tuple(sorted(order)) != order
             or len(set(order)) != len(order)
+            or len(set(cluster_ids)) != len(cluster_ids)
             or self.next_cursor is not None
             and (
                 self.next_cursor.tenant_id != self.tenant_id

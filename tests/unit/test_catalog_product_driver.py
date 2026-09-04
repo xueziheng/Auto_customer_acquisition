@@ -19,6 +19,7 @@ from domains.products.catalog_rules import (
 )
 from domains.products.service import (
     CatalogPolicyChangeSnapshot,
+    CatalogPolicyNotFoundError,
     CatalogPolicyReconciliationItem,
     CatalogPolicyReconciliationPage,
     CatalogProductProposalView,
@@ -325,6 +326,14 @@ def _driver(
 
 def test_public_reconciliation_cursors_reject_wrong_tenant_stream_and_time() -> None:
     with pytest.raises(PydanticValidationError):
+        CatalogReconciliationCheckpoint(
+            tenant_id=TENANT,
+            stream="pending_policies",
+            position_at=NOW,
+            entity_id=str(POLICY_ID),
+            version=0,
+        )
+    with pytest.raises(PydanticValidationError):
         CatalogReconciliationCursor(
             tenant_id=TENANT,
             stream="awaiting_proposals",
@@ -380,6 +389,21 @@ def test_public_reconciliation_cursors_reject_wrong_tenant_stream_and_time() -> 
                 created_at=NOW.replace(year=2027),
                 cluster_id=cluster_id,
             ),
+        )
+    with pytest.raises(PydanticValidationError):
+        CatalogClusterIdPage(
+            tenant_id=TENANT,
+            items=(
+                CatalogClusterReconciliationItem(
+                    cluster_id=cluster_id,
+                    created_at=NOW,
+                ),
+                CatalogClusterReconciliationItem(
+                    cluster_id=cluster_id,
+                    created_at=NOW + timedelta(minutes=1),
+                ),
+            ),
+            next_cursor=None,
         )
 
 
@@ -515,6 +539,116 @@ async def test_active_policy_advances_cluster_cursor_then_wraps_without_starvati
 
 
 @pytest.mark.asyncio
+async def test_returned_pages_cannot_regress_before_loaded_checkpoints() -> None:
+    pending = _policy(
+        policy_id=CatalogProposalPolicyVersionId(
+            "cpv_01M0VKA9S6KX7HRBG3G3ETYD12"
+        ),
+        state="pending_approval",
+    )
+    products = _Products()
+    products.policy_pages = [
+        CatalogPolicyReconciliationPage(
+            tenant_id=TENANT,
+            items=(
+                CatalogPolicyReconciliationItem(
+                    policy_version_id=pending.policy_version_id,
+                    created_at=NOW,
+                ),
+            ),
+            next_cursor=None,
+        )
+    ]
+    products.snapshots[pending.policy_version_id] = CatalogPolicyChangeSnapshot(
+        candidate=pending,
+        base=None,
+        current=None,
+        base_is_current=True,
+    )
+    checkpoints = _Checkpoints()
+    checkpoints.values["pending_policies"] = CatalogReconciliationCheckpoint(
+        tenant_id=TENANT,
+        stream="pending_policies",
+        position_at=NOW,
+        entity_id="cpv_01M0VKA9S6KX7HRBG3G3ETYD13",
+        version=1,
+    )
+    engine = _Engine()
+
+    with pytest.raises(TransientError):
+        await _driver(_Demand([]), products, engine, checkpoints)._recover_policies()
+    assert engine.starts == []
+    assert checkpoints.advances == []
+
+    proposal, evaluation = _proposal(
+        NeedClusterId("ncl_01M0VKA9S6KX7HRBG3G3ETYD12"),
+        suffix="01M0VKA9S6KX7HRBG3G3ETYD12",
+    )
+    products = _Products()
+    products.active = _policy()
+    products.proposal_pages = [
+        CatalogProposalReconciliationPage(
+            tenant_id=TENANT,
+            items=(
+                CatalogProposalReconciliationItem(
+                    proposal_id=proposal.proposal_id,
+                    created_at=proposal.created_at,
+                ),
+            ),
+            next_cursor=None,
+        )
+    ]
+    products.proposals[proposal.proposal_id] = proposal
+    products.evaluations[evaluation.evaluation_id] = evaluation
+    checkpoints = _Checkpoints()
+    checkpoints.values["awaiting_proposals"] = CatalogReconciliationCheckpoint(
+        tenant_id=TENANT,
+        stream="awaiting_proposals",
+        position_at=NOW,
+        entity_id="cpr_01M0VKA9S6KX7HRBG3G3ETYD13",
+        version=1,
+    )
+    engine = _Engine()
+
+    with pytest.raises(TransientError):
+        await _driver(_Demand([]), products, engine, checkpoints)._recover_proposals()
+    assert engine.starts == []
+    assert checkpoints.advances == []
+
+    cluster_id = NeedClusterId("ncl_01M0VKA9S6KX7HRBG3G3ETYD12")
+    demand = _Demand(
+        [
+            CatalogClusterIdPage(
+                tenant_id=TENANT,
+                items=(
+                    CatalogClusterReconciliationItem(
+                        cluster_id=cluster_id,
+                        created_at=NOW,
+                    ),
+                ),
+                next_cursor=None,
+            )
+        ]
+    )
+    checkpoints = _Checkpoints()
+    checkpoints.values["catalog_clusters"] = CatalogReconciliationCheckpoint(
+        tenant_id=TENANT,
+        stream="catalog_clusters",
+        position_at=NOW,
+        entity_id="ncl_01M0VKA9S6KX7HRBG3G3ETYD13",
+        version=1,
+    )
+    engine = _Engine()
+
+    with pytest.raises(TransientError):
+        await _driver(demand, _Products(), engine, checkpoints)._scan_clusters(
+            _policy()
+        )
+    assert engine.starts == []
+    assert checkpoints.advances == []
+
+
+@pytest.mark.asyncio
 async def test_unknown_policy_read_is_fixed_retryable_and_skips_cluster_page() -> None:
     products = _Products()
     products.active = RuntimeError("secret facts and dsn")
@@ -588,7 +722,7 @@ async def test_known_stale_item_does_not_poison_later_policy_item() -> None:
     products.proposal_pages = [
         CatalogProposalReconciliationPage(tenant_id=TENANT, items=(), next_cursor=None)
     ]
-    products.snapshots[first.policy_version_id] = ValidationError("stale")
+    products.snapshots[first.policy_version_id] = CatalogPolicyNotFoundError("stale")
     products.snapshots[second.policy_version_id] = CatalogPolicyChangeSnapshot(
         candidate=second,
         base=None,
@@ -608,6 +742,108 @@ async def test_known_stale_item_does_not_poison_later_policy_item() -> None:
     result = await _driver(_Demand([]), products, _Engine()).scan_once()
 
     assert result.started_policy_runs == 1
+
+
+@pytest.mark.asyncio
+async def test_generic_item_validation_failures_do_not_advance_checkpoints() -> None:
+    pending = _policy(state="pending_approval")
+    products = _Products()
+    products.policy_pages = [
+        CatalogPolicyReconciliationPage(
+            tenant_id=TENANT,
+            items=(
+                CatalogPolicyReconciliationItem(
+                    policy_version_id=pending.policy_version_id,
+                    created_at=pending.created_at,
+                ),
+            ),
+            next_cursor=None,
+        )
+    ]
+    products.snapshots[pending.policy_version_id] = ValidationError("corrupt")
+    original = products.get_policy_change_snapshot
+
+    async def get_snapshot(*args, **kwargs):
+        value = await original(*args, **kwargs)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    products.get_policy_change_snapshot = get_snapshot
+    checkpoints = _Checkpoints()
+
+    with pytest.raises(TransientError, match="目录产品调度部分流暂不可用"):
+        await _driver(_Demand([]), products, _Engine(), checkpoints).scan_once()
+
+    assert all(stream != "pending_policies" for stream, *_ in checkpoints.advances)
+
+    cluster_id = NeedClusterId("ncl_01M0VKA9S6KX7HRBG3G3ETYD12")
+    proposal, _evaluation = _proposal(
+        cluster_id,
+        suffix="01M0VKA9S6KX7HRBG3G3ETYD12",
+    )
+    products = _Products()
+    products.proposal_pages = [
+        CatalogProposalReconciliationPage(
+            tenant_id=TENANT,
+            items=(
+                CatalogProposalReconciliationItem(
+                    proposal_id=proposal.proposal_id,
+                    created_at=proposal.created_at,
+                ),
+            ),
+            next_cursor=None,
+        )
+    ]
+    products.proposals[proposal.proposal_id] = ValidationError("corrupt")
+    original_proposal = products.get_proposal
+
+    async def get_proposal(*args, **kwargs):
+        value = await original_proposal(*args, **kwargs)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    products.get_proposal = get_proposal
+    checkpoints = _Checkpoints()
+
+    with pytest.raises(TransientError):
+        await _driver(
+            _Demand([]), products, _Engine(), checkpoints
+        )._recover_proposals()
+    assert checkpoints.advances == []
+
+    demand = _Demand(
+        [
+            CatalogClusterIdPage(
+                tenant_id=TENANT,
+                items=(
+                    CatalogClusterReconciliationItem(
+                        cluster_id=cluster_id,
+                        created_at=NOW,
+                    ),
+                ),
+                next_cursor=None,
+            )
+        ]
+    )
+    demand.facts[cluster_id] = ValidationError("corrupt")
+    original_facts = demand.get_cluster_catalog_facts
+
+    async def get_facts(*args, **kwargs):
+        value = await original_facts(*args, **kwargs)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    demand.get_cluster_catalog_facts = get_facts
+    checkpoints = _Checkpoints()
+
+    with pytest.raises(TransientError):
+        await _driver(demand, _Products(), _Engine(), checkpoints)._scan_clusters(
+            _policy()
+        )
+    assert checkpoints.advances == []
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ from domains.approvals.service_impl import ApprovalServiceImpl
 from domains.demand.service import (
     CatalogClusterCursor,
     CatalogClusterIdPage,
+    CatalogClusterNotFoundError,
     CatalogClusterReconciliationItem,
 )
 from domains.demand.service_impl import DemandServiceImpl
@@ -21,8 +22,10 @@ from domains.products.catalog_rules import catalog_policy_content_hash
 from domains.products.catalog_service_impl import CatalogProposalServiceImpl
 from domains.products.permissions import Phase2ProductAuthorizer
 from domains.products.service import (
+    CatalogPolicyNotFoundError,
     CatalogPolicyReconciliationItem,
     CatalogPolicyReconciliationPage,
+    CatalogProposalNotFoundError,
     CatalogProposalPolicyContent,
     CatalogProposalPolicyView,
     CatalogProposalReconciliationItem,
@@ -39,6 +42,7 @@ from infra.db.catalog_reconciliation_checkpoints import (
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
 from infra.db.outbox import PostgresEventBus
 from infra.db.outbox_delivery import OutboxDeliverer
+from infra.db.repositories.need_clusters import NeedClusterRepositoryImpl
 from infra.db.workflow_engine import PostgresWorkflowEngine
 from shared.errors import TradeOSError, ValidationError
 from shared.events.catalog import NeedClusterMembershipChanged
@@ -377,6 +381,43 @@ async def test_demand_cluster_page_uses_created_at_id_keyset_and_wraps(
         await service.list_catalog_cluster_id_page(
             tenant, limit=2, cursor=wrong_tenant_cursor
         )
+    wrong_stream_cursor = first.next_cursor.model_copy(
+        update={"stream": "pending_policies"}
+    )
+    with pytest.raises(TradeOSError):
+        await service.list_catalog_cluster_id_page(
+            tenant, limit=2, cursor=wrong_stream_cursor
+        )
+    with pytest.raises(CatalogClusterNotFoundError):
+        await service.get_cluster_catalog_facts(
+            tenant,
+            NeedClusterId(new_id("ncl")),
+        )
+
+
+@pytest.mark.asyncio
+async def test_demand_repository_rejects_wrong_stream_before_sql() -> None:
+    tenant = TenantId(new_id("tn"))
+
+    class NoSqlSession:
+        async def execute(self, *args, **kwargs):
+            del args, kwargs
+            raise AssertionError("wrong-stream cursor 不得到达 SQL")
+
+    cursor = CatalogClusterCursor(
+        tenant_id=tenant,
+        stream="catalog_clusters",
+        created_at=NOW,
+        cluster_id=NeedClusterId(new_id("ncl")),
+    ).model_copy(update={"stream": "pending_policies"})
+    repository = NeedClusterRepositoryImpl(cast(object, NoSqlSession()), tenant)
+
+    with pytest.raises(ValidationError, match="stream"):
+        await repository.list_catalog_cluster_id_page(
+            tenant,
+            limit=2,
+            cursor=cursor,
+        )
 
 
 @pytest.mark.asyncio
@@ -483,11 +524,11 @@ async def test_real_pg_checkpoints_traverse_all_streams_with_fresh_driver_each_c
 
         async def get_policy_change_snapshot(self, *args, **kwargs):
             del args, kwargs
-            raise ValidationError("stale")
+            raise CatalogPolicyNotFoundError("stale")
 
         async def get_proposal(self, *args, **kwargs):
             del args, kwargs
-            raise ValidationError("stale")
+            raise CatalogProposalNotFoundError("stale")
 
         async def get_evaluation(self, *args, **kwargs):
             del args, kwargs
@@ -531,7 +572,7 @@ async def test_real_pg_checkpoints_traverse_all_streams_with_fresh_driver_each_c
 
         async def get_cluster_catalog_facts(self, *args, **kwargs):
             del args, kwargs
-            raise ValidationError("stale")
+            raise CatalogClusterNotFoundError("stale")
 
     class Engine:
         async def start(self, *args, **kwargs):

@@ -245,6 +245,8 @@ class NeedClusterRepositoryImpl(NeedClusterRepository):
             or cursor.tenant_id != self._tenant_id
         ):
             raise TenantIsolationViolation("目录需求簇游标不可跨租户使用")
+        if cursor is not None and cursor.stream != "catalog_clusters":
+            raise ValidationError("目录需求簇游标 stream 无效")
         statement = select(
             NeedClusterRow.cluster_id, NeedClusterRow.created_at
         ).where(NeedClusterRow.tenant_id == str(self._tenant_id))

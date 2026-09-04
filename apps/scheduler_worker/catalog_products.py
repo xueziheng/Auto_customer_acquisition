@@ -9,10 +9,13 @@ from typing import Literal, Protocol
 from domains.demand.service import (
     CatalogClusterCursor,
     CatalogClusterIdPage,
+    CatalogClusterNotFoundError,
     DemandService,
 )
 from domains.products.service import (
+    CatalogPolicyNotFoundError,
     CatalogPolicyReconciliationPage,
+    CatalogProposalNotFoundError,
     CatalogProposalPolicyView,
     CatalogProposalReconciliationPage,
     CatalogProposalService,
@@ -20,7 +23,7 @@ from domains.products.service import (
     ProductActor,
     ProductRole,
 )
-from shared.errors import TradeOSError, TransientError, ValidationError
+from shared.errors import TransientError, ValidationError
 from shared.schemas.catalog_reconciliation import (
     CatalogReconciliationCheckpoint,
     CatalogReconciliationCheckpointStream,
@@ -135,9 +138,12 @@ class CatalogProductDriver:
             checkpoint = await self._checkpoints.load(self._tenant_id, stream)
         except Exception:  # noqa: BLE001 -- checkpoint 底层文本不得跨日志边界
             raise TransientError("目录产品调度 checkpoint 暂不可用") from None
+        try:
+            checkpoint = CatalogReconciliationCheckpoint.model_validate(checkpoint)
+        except (TypeError, ValueError):
+            raise TransientError("目录产品调度 checkpoint 结果未知") from None
         if (
-            not isinstance(checkpoint, CatalogReconciliationCheckpoint)
-            or checkpoint.tenant_id != self._tenant_id
+            checkpoint.tenant_id != self._tenant_id
             or checkpoint.stream != stream
         ):
             raise TransientError("目录产品调度 checkpoint 结果未知")
@@ -148,31 +154,38 @@ class CatalogProductDriver:
         checkpoint: CatalogReconciliationCheckpoint,
         cursor: CatalogReconciliationCursor | CatalogClusterCursor | None,
     ) -> None:
+        next_position_at = (
+            cursor.position_at
+            if isinstance(cursor, CatalogReconciliationCursor)
+            else cursor.created_at
+            if isinstance(cursor, CatalogClusterCursor)
+            else None
+        )
+        next_entity_id = (
+            cursor.entity_id
+            if isinstance(cursor, CatalogReconciliationCursor)
+            else str(cursor.cluster_id)
+            if isinstance(cursor, CatalogClusterCursor)
+            else None
+        )
         try:
             advanced = await self._checkpoints.compare_and_set(
                 checkpoint,
-                next_position_at=(
-                    cursor.position_at
-                    if isinstance(cursor, CatalogReconciliationCursor)
-                    else cursor.created_at
-                    if isinstance(cursor, CatalogClusterCursor)
-                    else None
-                ),
-                next_entity_id=(
-                    cursor.entity_id
-                    if isinstance(cursor, CatalogReconciliationCursor)
-                    else str(cursor.cluster_id)
-                    if isinstance(cursor, CatalogClusterCursor)
-                    else None
-                ),
+                next_position_at=next_position_at,
+                next_entity_id=next_entity_id,
             )
         except Exception:  # noqa: BLE001 -- CAS 不确定时当前页保守重放
             raise TransientError("目录产品调度 checkpoint 暂不可用") from None
+        try:
+            advanced = CatalogReconciliationCheckpoint.model_validate(advanced)
+        except (TypeError, ValueError):
+            raise TransientError("目录产品调度 checkpoint 结果未知") from None
         if (
-            not isinstance(advanced, CatalogReconciliationCheckpoint)
-            or advanced.tenant_id != self._tenant_id
+            advanced.tenant_id != self._tenant_id
             or advanced.stream != checkpoint.stream
             or advanced.version != checkpoint.version + 1
+            or advanced.position_at != next_position_at
+            or advanced.entity_id != next_entity_id
         ):
             raise TransientError("目录产品调度 checkpoint 结果未知")
 
@@ -227,19 +240,29 @@ class CatalogProductDriver:
 
     async def _recover_policies(self) -> int:
         checkpoint = await self._load_checkpoint("pending_policies")
+        cursor = self._product_cursor(checkpoint)
         try:
             page = await self._products.list_pending_policy_reconciliation(
                 self._tenant_id,
                 actor=self._actor,
                 limit=self._limit,
-                cursor=self._product_cursor(checkpoint),
+                cursor=cursor,
             )
         except Exception:  # noqa: BLE001 -- page/cursor 不确定时不推进游标
             raise TransientError("目录产品调度策略恢复页暂不可用") from None
+        try:
+            page = CatalogPolicyReconciliationPage.model_validate(page)
+        except (TypeError, ValueError):
+            raise TransientError("目录产品调度策略恢复页结果未知") from None
         if (
-            not isinstance(page, CatalogPolicyReconciliationPage)
-            or page.tenant_id != self._tenant_id
+            page.tenant_id != self._tenant_id
             or len(page.items) > self._limit
+            or cursor is not None
+            and any(
+                (item.created_at, str(item.policy_version_id))
+                <= (cursor.position_at, cursor.entity_id)
+                for item in page.items
+            )
         ):
             raise TransientError("目录产品调度策略恢复页结果未知")
         started = 0
@@ -258,9 +281,7 @@ class CatalogProductDriver:
                         self._tenant_id, item.policy_version_id
                     ),
                 )
-            except TradeOSError as error:
-                if error.is_retryable:
-                    raise TransientError("目录产品调度策略恢复暂不可用") from None
+            except CatalogPolicyNotFoundError:
                 continue
             except Exception:  # noqa: BLE001 -- 未知结果保守重放当前页
                 raise TransientError("目录产品调度策略恢复暂不可用") from None
@@ -270,19 +291,29 @@ class CatalogProductDriver:
 
     async def _recover_proposals(self) -> int:
         checkpoint = await self._load_checkpoint("awaiting_proposals")
+        cursor = self._product_cursor(checkpoint)
         try:
             page = await self._products.list_awaiting_proposal_reconciliation(
                 self._tenant_id,
                 actor=self._actor,
                 limit=self._limit,
-                cursor=self._product_cursor(checkpoint),
+                cursor=cursor,
             )
         except Exception:  # noqa: BLE001 -- page/cursor 不确定时不推进游标
             raise TransientError("目录产品调度提案恢复页暂不可用") from None
+        try:
+            page = CatalogProposalReconciliationPage.model_validate(page)
+        except (TypeError, ValueError):
+            raise TransientError("目录产品调度提案恢复页结果未知") from None
         if (
-            not isinstance(page, CatalogProposalReconciliationPage)
-            or page.tenant_id != self._tenant_id
+            page.tenant_id != self._tenant_id
             or len(page.items) > self._limit
+            or cursor is not None
+            and any(
+                (item.created_at, str(item.proposal_id))
+                <= (cursor.position_at, cursor.entity_id)
+                for item in page.items
+            )
         ):
             raise TransientError("目录产品调度提案恢复页结果未知")
         started = 0
@@ -316,9 +347,7 @@ class CatalogProductDriver:
                         self._tenant_id, proposal.proposal_id
                     ),
                 )
-            except TradeOSError as error:
-                if error.is_retryable:
-                    raise TransientError("目录产品调度提案恢复暂不可用") from None
+            except CatalogProposalNotFoundError:
                 continue
             except Exception:  # noqa: BLE001 -- 未知结果保守重放当前页
                 raise TransientError("目录产品调度提案恢复暂不可用") from None
@@ -328,18 +357,28 @@ class CatalogProductDriver:
 
     async def _scan_clusters(self, policy: CatalogProposalPolicyView) -> int:
         checkpoint = await self._load_checkpoint("catalog_clusters")
+        cursor = self._cluster_cursor(checkpoint)
         try:
             page = await self._demand.list_catalog_cluster_id_page(
                 self._tenant_id,
                 limit=self._limit,
-                cursor=self._cluster_cursor(checkpoint),
+                cursor=cursor,
             )
         except Exception:  # noqa: BLE001 -- page/cursor 不确定时不推进游标
             raise TransientError("目录产品调度需求簇页面暂不可用") from None
+        try:
+            page = CatalogClusterIdPage.model_validate(page)
+        except (TypeError, ValueError):
+            raise TransientError("目录产品调度需求簇页面结果未知") from None
         if (
-            not isinstance(page, CatalogClusterIdPage)
-            or page.tenant_id != self._tenant_id
+            page.tenant_id != self._tenant_id
             or len(page.items) > self._limit
+            or cursor is not None
+            and any(
+                (item.created_at, str(item.cluster_id))
+                <= (cursor.created_at, str(cursor.cluster_id))
+                for item in page.items
+            )
         ):
             raise TransientError("目录产品调度需求簇页面结果未知")
         started = 0
@@ -361,9 +400,7 @@ class CatalogProductDriver:
                         facts.facts_hash,
                     ),
                 )
-            except TradeOSError as error:
-                if error.is_retryable:
-                    raise TransientError("目录产品调度需求簇评估暂不可用") from None
+            except CatalogClusterNotFoundError:
                 continue
             except Exception:  # noqa: BLE001 -- 未知结果保守重放当前页
                 raise TransientError("目录产品调度需求簇评估暂不可用") from None

@@ -110,6 +110,10 @@ class PostgresCatalogReconciliationCheckpointStore:
     ) -> CatalogReconciliationCheckpoint:
         if not isinstance(current, CatalogReconciliationCheckpoint):
             raise ValidationError("Catalog checkpoint 当前版本无效")
+        try:
+            current = CatalogReconciliationCheckpoint.model_validate(current)
+        except (PydanticValidationError, TypeError, ValueError):
+            raise ValidationError("Catalog checkpoint 当前版本无效") from None
         self._require_scope(current.tenant_id, current.stream)
         if current.version == 0 and (
             current.position_at is not None or current.entity_id is not None

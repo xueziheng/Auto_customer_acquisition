@@ -51,6 +51,10 @@ class NeedUnitUnavailableError(TradeOSError):
         super().__init__(_UNIT_MESSAGES[code])
 
 
+class CatalogClusterNotFoundError(ValidationError):
+    """同租户目录扫描中的需求簇已删除；调用方可把该项视为确定 stale。"""
+
+
 class InsufficientEvidenceError(PolicyViolation):
     """证据不足，不能晋升为已验证需求。
 
