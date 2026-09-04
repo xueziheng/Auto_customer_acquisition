@@ -6,6 +6,12 @@ from typing import Protocol, runtime_checkable
 
 from domains.products.models import (
     CandidateStatus,
+    CatalogCultivationCase,
+    CatalogProductProposal,
+    CatalogProductProposalState,
+    CatalogProposalEvaluation,
+    CatalogProposalPolicyState,
+    CatalogProposalPolicyVersion,
     Product,
     ProductCustomerView,
     ProductInternalView,
@@ -19,8 +25,28 @@ from domains.products.models import (
     QualifiedProductMatch,
 )
 from domains.products.permissions import ProductActor
-from domains.products.schemas import CandidateProductCreate, ProductSupplyCardView
-from shared.schemas.identifiers import ProductId, TenantId
+from domains.products.schemas import (
+    CandidateProductCreate,
+    CatalogApprovalDecisionInput,
+    CatalogClusterFactsInput,
+    CatalogCultivationCaseView,
+    CatalogPolicyChangeSnapshot,
+    CatalogProductProposalView,
+    CatalogProposalEvaluationView,
+    CatalogProposalPolicyContent,
+    CatalogProposalPolicyView,
+    ProductSupplyCardView,
+)
+from shared.schemas.identifiers import (
+    ApprovalId,
+    CatalogCultivationCaseId,
+    CatalogProductProposalId,
+    CatalogProposalEvaluationId,
+    CatalogProposalPolicyVersionId,
+    ProductId,
+    RunId,
+    TenantId,
+)
 
 
 @runtime_checkable
@@ -76,8 +102,135 @@ class ProductService(Protocol):
         ...
 
 
+@runtime_checkable
+class CatalogProposalService(Protocol):
+    """目录培养提案公共服务；只声明领域动作，不包含仓储或编排实现。"""
+
+    async def create_policy_candidate(
+        self,
+        tenant_id: TenantId,
+        content: CatalogProposalPolicyContent,
+        *,
+        idempotency_key: str,
+        actor: ProductActor,
+    ) -> CatalogProposalPolicyVersionId: ...
+
+    async def get_active_policy(
+        self, tenant_id: TenantId, *, actor: ProductActor
+    ) -> CatalogProposalPolicyView | None:
+        """没有活动策略时返回 None；不得生成生产默认策略。"""
+        ...
+
+    async def list_policy_versions(
+        self, tenant_id: TenantId, *, actor: ProductActor, limit: int
+    ) -> tuple[CatalogProposalPolicyView, ...]: ...
+
+    async def get_policy_change_snapshot(
+        self,
+        tenant_id: TenantId,
+        policy_version_id: CatalogProposalPolicyVersionId,
+        *,
+        actor: ProductActor,
+    ) -> CatalogPolicyChangeSnapshot: ...
+
+    async def bind_policy_approval(
+        self,
+        tenant_id: TenantId,
+        policy_version_id: CatalogProposalPolicyVersionId,
+        approval_id: ApprovalId,
+        request_hash: str,
+        *,
+        actor: ProductActor,
+    ) -> CatalogProposalPolicyView: ...
+
+    async def apply_policy_decision(
+        self,
+        tenant_id: TenantId,
+        policy_version_id: CatalogProposalPolicyVersionId,
+        decision: CatalogApprovalDecisionInput,
+        *,
+        actor: ProductActor,
+    ) -> CatalogProposalPolicyView: ...
+
+    async def evaluate_cluster(
+        self,
+        tenant_id: TenantId,
+        facts: CatalogClusterFactsInput,
+        *,
+        proposed_by_run: RunId,
+        actor: ProductActor,
+    ) -> CatalogProposalEvaluationView: ...
+
+    async def get_evaluation(
+        self,
+        tenant_id: TenantId,
+        evaluation_id: CatalogProposalEvaluationId,
+        *,
+        actor: ProductActor,
+    ) -> CatalogProposalEvaluationView: ...
+
+    async def list_evaluations(
+        self, tenant_id: TenantId, *, actor: ProductActor, limit: int
+    ) -> tuple[CatalogProposalEvaluationView, ...]: ...
+
+    async def get_proposal(
+        self,
+        tenant_id: TenantId,
+        proposal_id: CatalogProductProposalId,
+        *,
+        actor: ProductActor,
+    ) -> CatalogProductProposalView: ...
+
+    async def list_proposals(
+        self, tenant_id: TenantId, *, actor: ProductActor, limit: int
+    ) -> tuple[CatalogProductProposalView, ...]: ...
+
+    async def bind_proposal_approval(
+        self,
+        tenant_id: TenantId,
+        proposal_id: CatalogProductProposalId,
+        approval_id: ApprovalId,
+        request_hash: str,
+        *,
+        actor: ProductActor,
+    ) -> CatalogProductProposalView: ...
+
+    async def apply_cultivation_decision(
+        self,
+        tenant_id: TenantId,
+        proposal_id: CatalogProductProposalId,
+        decision: CatalogApprovalDecisionInput,
+        current_facts: CatalogClusterFactsInput,
+        *,
+        actor: ProductActor,
+    ) -> CatalogProductProposalView: ...
+
+    async def get_cultivation_case(
+        self,
+        tenant_id: TenantId,
+        cultivation_case_id: CatalogCultivationCaseId,
+        *,
+        actor: ProductActor,
+    ) -> CatalogCultivationCaseView: ...
+
+    async def list_cultivation_cases(
+        self, tenant_id: TenantId, *, actor: ProductActor, limit: int
+    ) -> tuple[CatalogCultivationCaseView, ...]: ...
+
 __all__ = (
     "CandidateStatus",
+    "CatalogCultivationCase",
+    "CatalogCultivationCaseView",
+    "CatalogProductProposal",
+    "CatalogProductProposalState",
+    "CatalogProductProposalView",
+    "CatalogProposalEvaluation",
+    "CatalogProposalEvaluationView",
+    "CatalogProposalPolicyContent",
+    "CatalogProposalPolicyState",
+    "CatalogProposalPolicyVersion",
+    "CatalogProposalPolicyView",
+    "CatalogProposalService",
     "Product",
     "ProductActor",
     "ProductCustomerView",

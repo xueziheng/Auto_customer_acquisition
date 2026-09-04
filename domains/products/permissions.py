@@ -27,6 +27,12 @@ class ProductAction(str, Enum):
     SALES_VIEW = "sales_view"
     CUSTOMER_VIEW = "customer_view"
     SUPPLY_LIST = "supply_list"
+    CATALOG_POLICY_PROPOSE = "catalog_policy_propose"
+    CATALOG_POLICY_READ = "catalog_policy_read"
+    CATALOG_EVALUATE = "catalog_evaluate"
+    CATALOG_PROPOSAL_READ = "catalog_proposal_read"
+    CATALOG_CULTIVATION_READ = "catalog_cultivation_read"
+    CATALOG_SYSTEM_APPLY = "catalog_system_apply"
 
 
 @dataclass(frozen=True)
@@ -99,6 +105,35 @@ class Phase2ProductAuthorizer:
                 ProductRole.FINANCE,
             }
         ),
+        ProductAction.CATALOG_POLICY_PROPOSE: frozenset(
+            {ProductRole.BOSS, ProductRole.PRODUCT, ProductRole.SOURCING}
+        ),
+        ProductAction.CATALOG_POLICY_READ: frozenset(
+            {
+                ProductRole.BOSS,
+                ProductRole.PRODUCT,
+                ProductRole.SOURCING,
+                ProductRole.FINANCE,
+            }
+        ),
+        ProductAction.CATALOG_EVALUATE: frozenset({ProductRole.SYSTEM}),
+        ProductAction.CATALOG_PROPOSAL_READ: frozenset(
+            {
+                ProductRole.BOSS,
+                ProductRole.PRODUCT,
+                ProductRole.SOURCING,
+                ProductRole.FINANCE,
+            }
+        ),
+        ProductAction.CATALOG_CULTIVATION_READ: frozenset(
+            {
+                ProductRole.BOSS,
+                ProductRole.PRODUCT,
+                ProductRole.SOURCING,
+                ProductRole.FINANCE,
+            }
+        ),
+        ProductAction.CATALOG_SYSTEM_APPLY: frozenset({ProductRole.SYSTEM}),
     }
 
     def __init__(self, tenant_id: TenantId) -> None:
