@@ -34,6 +34,7 @@ from infra.db.tables import (
     ApprovalPackageRow,
     CatalogCultivationCaseRow,
     CatalogProductProposalRow,
+    CatalogProposalEvaluationRow,
     OutboxEventRow,
     ProductRow,
     SourcingCaseRow,
@@ -42,8 +43,19 @@ from infra.db.tables import (
 from infra.db.workflow_engine import PostgresWorkflowEngine
 from notification_gateway.jobs import NotificationJob
 from shared.errors import TransientError, ValidationError
-from shared.events.catalog import ApprovalDecided
-from shared.schemas.identifiers import ApprovalId, EmployeeId, TenantId, new_id
+from shared.events.catalog import (
+    ApprovalDecided,
+    CatalogProductProposalCreated,
+    NeedClusterMembershipChanged,
+)
+from shared.schemas.identifiers import (
+    ApprovalId,
+    EmployeeId,
+    RunId,
+    TenantId,
+    ValidatedNeedId,
+    new_id,
+)
 from shared.schemas.provenance import SourceType
 from tests.integration.test_catalog_proposal_service import (
     NOW,
@@ -55,6 +67,9 @@ from tests.integration.test_need_units import (
 )
 from workflows.catalog_product_proposal import (
     CatalogCultivationApprovalDecidedHandler,
+    CatalogProductApplication,
+    build_catalog_evaluation_workflow_definition,
+    build_catalog_evaluation_workflow_handlers,
     build_catalog_product_workflow_definition,
     build_catalog_product_workflow_handlers,
     catalog_cultivation_idempotency_key,
@@ -197,7 +212,9 @@ def _demand_facts(facts: CatalogClusterFactsInput) -> NeedClusterCatalogFacts:
     )
 
 
-async def _seed_parents(engine: AsyncEngine) -> dict[str, str]:
+async def _seed_parents(
+    engine: AsyncEngine, *, seed_evaluation_run: bool = True
+) -> dict[str, str]:
     values = {
         "tenant": new_id("tn"),
         "owner": new_id("emp"),
@@ -225,16 +242,17 @@ async def _seed_parents(engine: AsyncEngine) -> dict[str, str]:
             ),
             values | {"now": NOW},
         )
-        await connection.execute(
-            text(
-                "INSERT INTO workflow_runs "
-                "(run_id,tenant_id,workflow_type,workflow_version,subject_ref,"
-                "current_step,status,context,idempotency_key) VALUES "
-                "(:run,:tenant,'catalog_cluster_evaluation',1,:cluster,'evaluate',"
-                "'running','{}'::jsonb,:key)"
-            ),
-            values | {"key": f"catalog-evaluation:seed:{values['run']}"},
-        )
+        if seed_evaluation_run:
+            await connection.execute(
+                text(
+                    "INSERT INTO workflow_runs "
+                    "(run_id,tenant_id,workflow_type,workflow_version,subject_ref,"
+                    "current_step,status,context,idempotency_key) VALUES "
+                    "(:run,:tenant,'catalog_cluster_evaluation',1,:cluster,'evaluate',"
+                    "'running','{}'::jsonb,:key)"
+                ),
+                values | {"key": f"catalog-evaluation:seed:{values['run']}"},
+            )
     return values
 
 
@@ -346,6 +364,190 @@ async def _approve(
     event = deserialize(ApprovalDecided, event_payload)
     await CatalogCultivationApprovalDecidedHandler(workflow, approvals).handle(event)
     return pending, event, event_payload
+
+
+@pytest.mark.asyncio
+async def test_real_facts_event_drives_evaluation_outbox_and_cultivation_once(
+    unit_engine: AsyncEngine,
+) -> None:
+    """真实事件链须保留 run 绑定、outbox 元数据与重复投递幂等。"""
+    clock = _Clock()
+    values = await _seed_parents(unit_engine, seed_evaluation_run=False)
+    tenant = TenantId(values["tenant"])
+    boss = EmployeeId(values["reviewer"])
+    factory = async_sessionmaker(unit_engine, expire_on_commit=False)
+    await _active_policy(unit_engine, factory, values)
+    products = CatalogProposalServiceImpl(
+        lambda scoped: SqlAlchemyCatalogProductsUnitOfWork(factory, scoped),
+        Phase2ProductAuthorizer(tenant),
+        now=clock,
+    )
+    approvals = ApprovalServiceImpl(
+        lambda scoped: SqlAlchemyApprovalUnitOfWork(factory, scoped, now=clock),
+        catalog_actor_reader=_BossReader(tenant, boss),
+        now=clock,
+    )
+    system = ProductActor("system:catalog-cultivation", ProductRole.SYSTEM, tenant)
+    facts = _routable_facts(values)
+    demand = _Demand(_demand_facts(facts))
+    handlers = {
+        **build_catalog_evaluation_workflow_handlers(demand, products, system),
+        **build_catalog_product_workflow_handlers(
+            demand, products, approvals, system, now=clock
+        ),
+    }
+    workflow = PostgresWorkflowEngine(factory, handlers, now=clock)
+    workflow.register(build_catalog_evaluation_workflow_definition())
+    workflow.register(build_catalog_product_workflow_definition())
+    application = CatalogProductApplication(demand, products, workflow, system)
+    facts_event = NeedClusterMembershipChanged(
+        tenant_id=tenant,
+        occurred_at=clock(),
+        cluster_id=facts.cluster_id,
+        changed_need_id=ValidatedNeedId(new_id("vnd")),
+        member_count=999,
+    )
+
+    evaluation_run = await application.handle_need_cluster_membership_changed(
+        facts_event
+    )
+    duplicate_evaluation_run = (
+        await application.handle_need_cluster_membership_changed(facts_event)
+    )
+    assert isinstance(evaluation_run, str)
+    assert duplicate_evaluation_run == evaluation_run
+    assert await workflow.poll_due(tenant, 10) == 1
+
+    async with unit_engine.connect() as connection:
+        evaluation_run_state = (
+            await connection.execute(
+                text(
+                    "SELECT current_step,status,last_error FROM workflow_runs "
+                    "WHERE tenant_id=:tenant AND run_id=:run"
+                ),
+                {"tenant": str(tenant), "run": str(evaluation_run)},
+            )
+        ).one()
+        assert tuple(evaluation_run_state) == (
+            "evaluate",
+            "completed",
+            None,
+        )
+        evaluation_row = (
+            await connection.execute(
+                select(
+                    CatalogProposalEvaluationRow.proposed_by_run,
+                    CatalogProposalEvaluationRow.evaluation_id,
+                ).where(
+                    CatalogProposalEvaluationRow.tenant_id == str(tenant)
+                )
+            )
+        ).one()
+        proposal_row = (
+            await connection.execute(
+                select(
+                    CatalogProductProposalRow.proposed_by_run,
+                    CatalogProductProposalRow.evaluation_id,
+                ).where(
+                    CatalogProductProposalRow.tenant_id == str(tenant)
+                )
+            )
+        ).one()
+        proposal_payload = (
+            await connection.execute(
+                select(OutboxEventRow.event_payload).where(
+                    OutboxEventRow.tenant_id == str(tenant),
+                    OutboxEventRow.event_type == "CatalogProductProposalCreated",
+                )
+            )
+        ).scalar_one()
+        evaluation_context = await connection.scalar(
+            select(WorkflowRunRow.context).where(
+                WorkflowRunRow.tenant_id == str(tenant),
+                WorkflowRunRow.run_id == str(evaluation_run),
+            )
+        )
+    assert evaluation_row.proposed_by_run == str(evaluation_run)
+    assert proposal_row.proposed_by_run == str(evaluation_run)
+    assert evaluation_row.evaluation_id == proposal_row.evaluation_id
+    assert set(evaluation_context) == {
+        "cluster_id",
+        "policy_version_id",
+        "policy_content_hash",
+        "facts_hash",
+        "evaluation_id",
+        "evaluation_state",
+    }
+    assert set(proposal_payload) == {
+        "tenant_id",
+        "occurred_at",
+        "run_id",
+        "proposal_id",
+        "evaluation_id",
+        "cluster_id",
+        "policy_version_id",
+        "facts_hash",
+    }
+    proposal_event = deserialize(CatalogProductProposalCreated, proposal_payload)
+    assert proposal_event.run_id == evaluation_run
+
+    cultivation_run = await application.handle_catalog_product_proposal_created(
+        proposal_event
+    )
+    duplicate_cultivation_run = (
+        await application.handle_catalog_product_proposal_created(proposal_event)
+    )
+    assert isinstance(cultivation_run, str)
+    assert duplicate_cultivation_run == cultivation_run
+    assert await workflow.poll_due(tenant, 10) == 3
+    pending = await _pending(approvals, tenant, boss)
+    assert pending.state == "pending"
+
+    async with unit_engine.connect() as connection:
+        workflow_counts = dict(
+            (
+                await connection.execute(
+                    select(WorkflowRunRow.workflow_type, func.count())
+                    .where(WorkflowRunRow.tenant_id == str(tenant))
+                    .group_by(WorkflowRunRow.workflow_type)
+                )
+            ).all()
+        )
+        cultivation_context = await connection.scalar(
+            select(WorkflowRunRow.context).where(
+                WorkflowRunRow.tenant_id == str(tenant),
+                WorkflowRunRow.run_id == str(cultivation_run),
+            )
+        )
+    assert workflow_counts == {
+        "catalog_cluster_evaluation": 1,
+        "catalog_product_cultivation": 1,
+    }
+    assert set(cultivation_context) == {
+        "proposal_id",
+        "evaluation_id",
+        "cluster_id",
+        "policy_version_id",
+        "policy_content_hash",
+        "facts_hash",
+        "owner_employee",
+        "proposed_by_run",
+        "change_set_ref",
+        "approval_id",
+        "approval_timeout_seconds",
+        "approval_state",
+    }
+
+    clock.value = pending.expires_at - timedelta(seconds=1)
+    await approvals.decide(tenant, ApprovalId(pending.approval_id), True, boss)
+    clock.value = pending.expires_at + timedelta(seconds=1)
+    assert await workflow.poll_due(tenant, 1) == 1
+    assert await workflow.poll_due(tenant, 10) == 1
+    fact = await approvals.read_catalog_fact(tenant, ApprovalId(pending.approval_id))
+    completed = await workflow.get_run(tenant, RunId(str(cultivation_run)))
+    assert fact.state is ApprovalState.APPLIED
+    assert completed.status.value == "completed"
+    assert completed.context["application_state"] == "applied"
 
 
 @pytest.mark.asyncio

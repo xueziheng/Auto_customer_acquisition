@@ -47,9 +47,9 @@ def build_catalog_evaluation_workflow_definition() -> WorkflowDefinition:
         workflow_type=CATALOG_EVALUATION_WORKFLOW_TYPE,
         version=1,
         steps=(
-            StepDefinition("evaluate_cluster", "catalog_product_evaluation.evaluate"),
+            StepDefinition("evaluate", "catalog_product_evaluation.evaluate"),
         ),
-        transitions={"evaluate_cluster": ()},
+        transitions={"evaluate": ()},
     )
 
 

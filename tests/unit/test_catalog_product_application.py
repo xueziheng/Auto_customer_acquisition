@@ -387,6 +387,45 @@ async def test_policy_event_mismatch_is_permanent_and_dependency_failure_is_reda
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "active_policy",
+    (
+        None,
+        _policy().model_copy(
+            update={
+                "policy_version_id": CatalogProposalPolicyVersionId(
+                    "cpv_01K00000000000000000000099"
+                )
+            }
+        ),
+    ),
+)
+async def test_stale_proposal_event_is_noop_when_active_policy_is_absent_or_replaced(
+    active_policy: CatalogProposalPolicyView | None,
+) -> None:
+    """旧 proposal outbox 可晚于策略替换投递，不能因此毒化消费者。"""
+    demand, products, engine = _Demand(), _Products(), _Engine()
+    products.active = active_policy
+    app = _application(demand, products, engine)
+
+    result = await app.handle_catalog_product_proposal_created(
+        CatalogProductProposalCreated(
+            tenant_id=TENANT,
+            occurred_at=NOW,
+            run_id=RunId("run_01K00000000000000000000000"),
+            proposal_id=PROPOSAL_ID,
+            evaluation_id=EVALUATION_ID,
+            cluster_id=CLUSTER,
+            policy_version_id=POLICY_ID,
+            facts_hash=FACTS_HASH,
+        )
+    )
+
+    assert result is None
+    assert engine.starts == []
+
+
+@pytest.mark.asyncio
 async def test_submit_policy_forwards_original_key_and_starts_after_commit() -> None:
     """若应用 trim/重建 key 或未在 Products commit 后启动 workflow，本测试应失败。"""
     demand, products, engine = _Demand(), _Products(), _Engine()

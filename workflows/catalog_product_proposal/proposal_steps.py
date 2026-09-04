@@ -123,7 +123,10 @@ async def _dependency[T](operation: Callable[[], Awaitable[T]], subject: str) ->
     try:
         return await operation()
     except CatalogApprovalContractError as error:
-        if error.code == "catalog_storage_unavailable":
+        if error.code in {
+            "catalog_storage_unavailable",
+            "catalog_approval_not_found",
+        }:
             raise TransientError(f"{subject}暂不可用") from None
         raise ValidationError(f"{subject}事实无效") from None
     except TransientError:
@@ -320,7 +323,14 @@ async def _apply(
     if (
         not isinstance(result, CatalogProductProposalView)
         or result.proposal_id != proposal.proposal_id
+        or result.evaluation_id != proposal.evaluation_id
+        or result.cluster_id != proposal.cluster_id
+        or result.policy_version_id != proposal.policy_version_id
         or result.facts_hash != proposal.facts_hash
+        or result.owner_employee != proposal.owner_employee
+        or result.proposed_by_run != proposal.proposed_by_run
+        or result.approval_id != proposal.approval_id
+        or result.created_at != proposal.created_at
     ):
         raise TransientError("目录产品培养应用结果暂不可用")
     if decision.state == "approved":
@@ -482,7 +492,15 @@ class ExpireProposalStep(ApplyCultivationStep):
         *_, fact, _ = await _approval(run, self._demand, self._products, self._approvals, self._actor)
         if fact.state is ApprovalState.PENDING:
             raise TransientError("目录产品培养审批过期状态暂不可用")
-        return await _apply(run, self._demand, self._products, self._approvals, self._actor)
+        result = await _apply(
+            run, self._demand, self._products, self._approvals, self._actor
+        )
+        if result[0] != "advance" or result[1] != "mark_applied":
+            return result
+        *_, fact, _ = await _approval(
+            run, self._demand, self._products, self._approvals, self._actor
+        )
+        return await _mark_applied(run, self._approvals, fact)
 
 
 class MarkAppliedStep(ApplyCultivationStep):

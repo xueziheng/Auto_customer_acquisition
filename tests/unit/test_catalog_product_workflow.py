@@ -11,6 +11,7 @@ from domains.approvals.catalog_contract import CatalogCultivationApprovalChange
 from domains.approvals.service import (
     CATALOG_CULTIVATION_NAMESPACE,
     ApprovalState,
+    CatalogApprovalContractError,
     CatalogApprovalFact,
     catalog_package_fields,
 )
@@ -263,6 +264,7 @@ class _Approvals:
     def __init__(self) -> None:
         self.command: Any | None = None
         self.fact: CatalogApprovalFact | None = None
+        self.read_error: CatalogApprovalContractError | None = None
         self.marked: list[tuple[object, ...]] = []
         self.failed: list[tuple[object, ...]] = []
 
@@ -275,6 +277,8 @@ class _Approvals:
         return APPROVAL_ID
 
     async def read_catalog_fact(self, tenant_id, approval_id):
+        if self.read_error is not None:
+            raise self.read_error
         assert self.fact is not None
         return self.fact
 
@@ -345,7 +349,7 @@ def _evaluation_run() -> WorkflowRun:
         workflow_type="catalog_cluster_evaluation",
         workflow_version=1,
         subject_ref=str(CLUSTER),
-        current_step="evaluate_cluster",
+        current_step="evaluate",
         status=StepStatus.RUNNING,
         created_at=NOW,
         context=evaluation_workflow_context(TENANT, _policy(), _demand_facts()),
@@ -381,7 +385,7 @@ def test_workflow_definitions_and_keys_are_exact() -> None:
     evaluation = build_catalog_evaluation_workflow_definition()
     cultivation = build_catalog_product_workflow_definition()
     assert evaluation.workflow_type == "catalog_cluster_evaluation"
-    assert tuple(step.step_name for step in evaluation.steps) == ("evaluate_cluster",)
+    assert tuple(step.step_name for step in evaluation.steps) == ("evaluate",)
     assert cultivation.workflow_type == "catalog_product_cultivation"
     assert tuple(step.step_name for step in cultivation.steps) == (
         "assemble_package",
@@ -424,7 +428,8 @@ def test_mapping_is_explicit_strict_and_unsupported_evidence_fails_closed() -> N
         _policy(),
         NOW + timedelta(days=3),
     )
-    assert command.contract_namespace if hasattr(command, "contract_namespace") else True
+    _, proposed_change, *_ = catalog_package_fields(command)
+    assert proposed_change["schema_version"] == "catalog-cultivation-v1"
     assert command.change_set_ref == f"catalog-cultivation:{PROPOSAL_ID}:{POLICY_ID}:{FACTS_HASH}"
     assert command.warning == "该提案不代表正式产品、已确认供应或客户可报价价格。"
     assert command.evidence_refs == (
@@ -529,6 +534,104 @@ async def test_products_commit_precedes_receipt_and_applied_replay_converges_pro
     assert replay[0] == "complete"
     assert len(products.decisions) == 3
     assert len(approvals.marked) == 1
+
+
+@pytest.mark.asyncio
+async def test_expiry_race_applies_products_then_repairs_receipt_inline() -> None:
+    """若 expire 节点返回无效 successor，Products 提交后会遗失 applied 收据。"""
+    demand, products, approvals = _Demand(), _Products(), _Approvals()
+    products.proposal = _proposal("pending_review")
+    command = build_cultivation_approval_command(
+        TENANT, products.proposal, _evaluation(), _policy(), NOW + timedelta(days=3)
+    )
+    approvals.fact = _approval_fact(command, ApprovalState.APPROVED)
+    handler = build_catalog_product_workflow_handlers(
+        demand, products, approvals, _system(), now=lambda: NOW
+    )["catalog_product_cultivation.expire"]
+
+    result = await handler.execute(_cultivation_run("expire_proposal"))
+
+    assert result == ("complete", None, {"application_state": "applied"})
+    assert len(products.decisions) == 1
+    assert len(approvals.marked) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "wrong_value"),
+    (
+        ("proposal_id", CatalogProductProposalId("cpr_01K00000000000000000000099")),
+        ("approval_id", ApprovalId("apr_01K00000000000000000000099")),
+        ("owner_employee", EmployeeId("emp_01K00000000000000000000099")),
+        (
+            "evaluation_id",
+            CatalogProposalEvaluationId("cpe_01K00000000000000000000099"),
+        ),
+        ("cluster_id", NeedClusterId("ncl_01K0000000000000000000099")),
+        (
+            "policy_version_id",
+            CatalogProposalPolicyVersionId("cpv_01K00000000000000000000099"),
+        ),
+        ("proposed_by_run", RunId("run_01K00000000000000000000099")),
+        ("facts_hash", "f" * 64),
+        ("created_at", NOW + timedelta(seconds=1)),
+    ),
+)
+async def test_apply_result_must_match_every_immutable_proposal_binding(
+    field: str, wrong_value: object
+) -> None:
+    """若只核对 proposal/facts，串错审批、owner 或来源评估仍会写 applied。"""
+    demand, products, approvals = _Demand(), _Products(), _Approvals()
+    products.proposal = _proposal("pending_review")
+    command = build_cultivation_approval_command(
+        TENANT, products.proposal, _evaluation(), _policy(), NOW + timedelta(days=3)
+    )
+    approvals.fact = _approval_fact(command, ApprovalState.APPROVED)
+    products.result_override = products.proposal.model_copy(
+        update={"state": "cultivation_queued", field: wrong_value}
+    )
+    handler = build_catalog_product_workflow_handlers(
+        demand, products, approvals, _system(), now=lambda: NOW
+    )["catalog_product_cultivation.apply"]
+
+    with pytest.raises(TransientError, match="目录产品培养应用结果暂不可用"):
+        await handler.execute(_cultivation_run("apply_cultivation"))
+
+    assert approvals.marked == []
+    assert approvals.failed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("contract_error", "expected_error", "message"),
+    (
+        (
+            CatalogApprovalContractError("catalog_approval_not_found"),
+            TransientError,
+            "目录产品培养审批读取暂不可用",
+        ),
+        (
+            CatalogApprovalContractError("catalog_contract_invalid"),
+            ValidationError,
+            "目录产品培养审批读取事实无效",
+        ),
+    ),
+)
+async def test_approval_not_found_retries_but_malformed_contract_is_permanent(
+    contract_error: CatalogApprovalContractError,
+    expected_error: type[Exception],
+    message: str,
+) -> None:
+    """未读到事实可由跨事务可见性恢复，结构错误才是永久失败。"""
+    demand, products, approvals = _Demand(), _Products(), _Approvals()
+    products.proposal = _proposal("pending_review")
+    approvals.read_error = contract_error
+    handler = build_catalog_product_workflow_handlers(
+        demand, products, approvals, _system(), now=lambda: NOW
+    )["catalog_product_cultivation.wait"]
+
+    with pytest.raises(expected_error, match=message):
+        await handler.execute(_cultivation_run("wait_for_decision"))
 
 
 @pytest.mark.asyncio

@@ -283,8 +283,7 @@ class CatalogProductApplication:
         except Exception:  # noqa: BLE001
             raise TransientError("目录产品提案事件事实暂不可用") from None
         if (
-            policy is None
-            or proposal.proposal_id != proposal_id
+            proposal.proposal_id != proposal_id
             or proposal.evaluation_id != evaluation_id
             or proposal.cluster_id != cluster_id
             or proposal.policy_version_id != policy_id
@@ -296,6 +295,8 @@ class CatalogProductApplication:
             or evaluation.proposed_by_run != event.run_id
         ):
             raise ValidationError("目录产品提案事件事实无效")
+        if policy is None or policy.policy_version_id != policy_id:
+            return None
         try:
             current = map_catalog_facts(
                 await self._demand.get_cluster_catalog_facts(
