@@ -121,7 +121,13 @@ def _decode_value(value: object, kind: str) -> object:
             raise ValueError("布尔事实类型无效")
         return value
     if kind == "quantity":
-        return int(cast(int | str, value))
+        if type(value) is not int or value <= 0:
+            raise ValueError("数量事实类型无效")
+        return value
+    if kind == "unit":
+        if type(value) is not str:
+            raise ValueError("单位事实类型无效")
+        return value
     if kind == "required_by":
         return date.fromisoformat(str(value))
     if kind == "target_price":
@@ -428,14 +434,19 @@ def _need_to_row(need: ValidatedNeed) -> ValidatedNeedRow:
 
 
 def _row_to_need(row: ValidatedNeedRow) -> ValidatedNeed:
-    def field(name: str) -> FactualField[Any] | None:
+    def decoded(
+        raw: dict[str, object] | None, value_kind: str
+    ) -> FactualField[Any] | None:
         try:
-            return _json_to_factual(
-                cast(dict[str, object] | None, getattr(row, name)),
-                _FIELD_KINDS[name],
-            )
-        except (TypeError, KeyError, ValueError) as exc:
-            raise ValidationError("字段快照损坏") from exc
+            return _json_to_factual(raw, value_kind)
+        except (AttributeError, TypeError, KeyError, ValueError):
+            raise ValidationError("字段快照损坏") from None
+
+    def field(name: str) -> FactualField[Any] | None:
+        return decoded(
+            cast(dict[str, object] | None, getattr(row, name)),
+            _FIELD_KINDS[name],
+        )
 
     product_category = field("product_category")
     if product_category is None:
@@ -474,7 +485,7 @@ def _row_to_need(row: ValidatedNeedRow) -> ValidatedNeed:
         cluster_id=(
             NeedClusterId(row.cluster_id) if row.cluster_id is not None else None
         ),
-        unit=_json_to_factual(row.unit, "str"),
+        unit=decoded(row.unit, "unit"),
         unit_quantity_fact_hash=row.unit_quantity_fact_hash,
         unit_confirmation_id=row.unit_confirmation_id,
     )

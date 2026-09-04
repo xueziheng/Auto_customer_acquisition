@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
-from domains.demand.schemas import CatalogEvidenceSummary, DemandCatalogAccountFact
+from domains.demand.schemas import DemandCatalogAccountFact, catalog_evidence_summary
 from domains.demand.service_impl import DemandServiceImpl
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
 from shared.schemas.identifiers import (
@@ -69,18 +69,24 @@ class _Accounts:
         tenant_id: TenantId,
         account_id: ProspectAccountId,
     ) -> DemandCatalogAccountFact:
+        provenance = Provenance(
+            source_type=SourceType.CONVERSATION,
+            source_id=f"account_country_{account_id}",
+            extracted_by="human",
+            extracted_at=NOW,
+            confirmed_by=ACTOR,
+            confirmed_at=NOW,
+        )
         return DemandCatalogAccountFact(
             tenant_id=tenant_id,
             account_id=account_id,
             country_code="US",
-            country_evidence=CatalogEvidenceSummary(
-                source_type=SourceType.CONVERSATION,
-                source_id=f"account_country_{account_id}",
-                extracted_by="human",
-                confirmed_by=ACTOR,
-                confirmed_at=NOW,
-                observed_at=NOW,
-                content_hash="a" * 64,
+            country_evidence=catalog_evidence_summary(
+                tenant_id=tenant_id,
+                subject_id=str(account_id),
+                field_name="country",
+                value="US",
+                provenance=provenance,
             ),
         )
 

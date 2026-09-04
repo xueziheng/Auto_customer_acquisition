@@ -593,13 +593,30 @@ class DemandCatalogAccountFact:
     country_evidence: CatalogEvidenceSummary | None
 
     def __post_init__(self) -> None:
+        evidence = self.country_evidence
         if (
             not _is_exact_identity(self.tenant_id)
             or not _is_exact_identity(self.account_id)
-            or (self.country_code is None) != (self.country_evidence is None)
+            or (self.country_code is None) != (evidence is None)
             or (
                 self.country_code is not None
                 and self.country_code not in _ISO_3166_ALPHA_2
+            )
+            or (
+                evidence is not None
+                and evidence.content_hash
+                != _catalog_evidence_content_hash(
+                    tenant_id=self.tenant_id,
+                    subject_id=str(self.account_id),
+                    field_name="country",
+                    value=self.country_code,
+                    source_type=evidence.source_type,
+                    source_id=evidence.source_id,
+                    extracted_by=evidence.extracted_by,
+                    confirmed_by=evidence.confirmed_by,
+                    confirmed_at=evidence.confirmed_at,
+                    observed_at=evidence.observed_at,
+                )
             )
         ):
             raise ValueError("目录账户事实无效")
@@ -653,6 +670,39 @@ def catalog_country_code_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value in _ISO_3166_ALPHA_2 else None
 
 
+def _catalog_evidence_content_hash(
+    *,
+    tenant_id: TenantId,
+    subject_id: str,
+    field_name: str,
+    value: object,
+    source_type: SourceType,
+    source_id: str,
+    extracted_by: str,
+    confirmed_by: EmployeeId | None,
+    confirmed_at: datetime | None,
+    observed_at: datetime,
+) -> str:
+    """将事实身份、值与安全来源字段绑定为不可重放承诺。"""
+    return canonical_fact_hash(
+        {
+            "version": "catalog-qualified-fact-v1",
+            "tenant_id": tenant_id,
+            "subject_id": subject_id,
+            "field_name": field_name,
+            "value": value,
+            "provenance": {
+                "source_type": source_type,
+                "source_id": source_id,
+                "extracted_by": extracted_by,
+                "confirmed_by": confirmed_by,
+                "confirmed_at": confirmed_at,
+                "observed_at": observed_at,
+            },
+        }
+    )
+
+
 def catalog_evidence_summary(
     *,
     tenant_id: TenantId,
@@ -678,14 +728,6 @@ def catalog_evidence_summary(
         )
     ):
         raise ValueError("目录事实来源无效")
-    safe_provenance = {
-        "source_type": provenance.source_type,
-        "source_id": provenance.source_id,
-        "extracted_by": provenance.extracted_by,
-        "confirmed_by": provenance.confirmed_by,
-        "confirmed_at": provenance.confirmed_at,
-        "observed_at": provenance.extracted_at,
-    }
     return CatalogEvidenceSummary(
         source_type=provenance.source_type,
         source_id=provenance.source_id,
@@ -693,15 +735,17 @@ def catalog_evidence_summary(
         confirmed_by=provenance.confirmed_by,
         confirmed_at=provenance.confirmed_at,
         observed_at=provenance.extracted_at,
-        content_hash=canonical_fact_hash(
-            {
-                "version": "catalog-qualified-fact-v1",
-                "tenant_id": tenant_id,
-                "subject_id": subject_id,
-                "field_name": field_name,
-                "value": value,
-                "provenance": safe_provenance,
-            }
+        content_hash=_catalog_evidence_content_hash(
+            tenant_id=tenant_id,
+            subject_id=subject_id,
+            field_name=field_name,
+            value=value,
+            source_type=provenance.source_type,
+            source_id=provenance.source_id,
+            extracted_by=provenance.extracted_by,
+            confirmed_by=provenance.confirmed_by,
+            confirmed_at=provenance.confirmed_at,
+            observed_at=provenance.extracted_at,
         ),
     )
 

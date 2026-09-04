@@ -10,9 +10,14 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from domains.demand.schemas import CatalogEvidenceSummary, DemandCatalogAccountFact
+from domains.demand.schemas import (
+    CatalogEvidenceSummary,
+    DemandCatalogAccountFact,
+    catalog_evidence_summary,
+)
 from domains.demand.service_impl import DemandServiceImpl
 from domains.demand.unit_facts import quantity_fact_hash
+from infra.db.repositories.need_hypotheses import _need_to_row, _row_to_need
 from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import (
     EmployeeId,
@@ -46,6 +51,63 @@ def _provenance(source_id: str, *, observed_at: datetime = NOW) -> Provenance:
         confirmed_at=observed_at,
         source_quote="redacted by the catalog projection",
     )
+
+
+def test_account_country_fact_rejects_forged_content_hash() -> None:
+    """Accepting a well-shaped arbitrary digest would sever the country evidence commitment."""
+    account_id = ProspectAccountId("acc_country")
+    forged = CatalogEvidenceSummary(
+        source_type=SourceType.CONVERSATION,
+        source_id="account_country_source",
+        extracted_by="human",
+        confirmed_by=ACTOR,
+        confirmed_at=NOW,
+        observed_at=NOW,
+        content_hash="a" * 64,
+    )
+
+    with pytest.raises(ValueError, match="目录账户事实无效"):
+        DemandCatalogAccountFact(
+            tenant_id=TENANT,
+            account_id=account_id,
+            country_code="US",
+            country_evidence=forged,
+        )
+
+
+def test_country_commitment_changes_with_identity_value_and_safe_provenance() -> None:
+    """Omitting an identity, country, or safe source field would let commitments be replayed."""
+    account_id = ProspectAccountId("acc_country")
+
+    def committed(
+        tenant_id: TenantId,
+        subject_id: ProspectAccountId,
+        country_code: str,
+        provenance: Provenance,
+    ) -> str:
+        return catalog_evidence_summary(
+            tenant_id=tenant_id,
+            subject_id=str(subject_id),
+            field_name="country",
+            value=country_code,
+            provenance=provenance,
+        ).content_hash
+
+    provenance = _provenance("account_country_source")
+    hashes = {
+        committed(TENANT, account_id, "US", provenance),
+        committed(OTHER_TENANT, account_id, "US", provenance),
+        committed(TENANT, ProspectAccountId("acc_other"), "US", provenance),
+        committed(TENANT, account_id, "DE", provenance),
+        committed(
+            TENANT,
+            account_id,
+            "US",
+            replace(provenance, extracted_by="employee"),
+        ),
+    }
+
+    assert len(hashes) == 5
 
 
 def _need(
@@ -99,6 +161,35 @@ def _need(
     )
 
 
+@pytest.mark.parametrize(
+    ("field_name", "malformed_value"),
+    [
+        ("quantity", True),
+        ("quantity", 1.5),
+        ("quantity", "10"),
+        ("quantity", 0),
+        ("quantity", -1),
+        ("unit", 10),
+    ],
+)
+def test_catalog_snapshot_decoder_rejects_malformed_quantity_and_unit(
+    field_name: str,
+    malformed_value: object,
+) -> None:
+    """Coercing persisted JSON would turn corruption into catalog decision facts."""
+    row = _need_to_row(
+        _need("decode", "acc_decode", quantity=10, unit="pcs", recurring=None)
+    )
+    payload = dict(getattr(row, field_name))
+    payload["value"] = malformed_value
+    setattr(row, field_name, payload)
+
+    with pytest.raises(ValidationError, match="^字段快照损坏$") as caught:
+        _row_to_need(row)
+
+    assert caught.value.__cause__ is None
+
+
 @dataclass(frozen=True)
 class _Snapshot:
     cluster: NeedCluster
@@ -144,19 +235,18 @@ class _Accounts:
         account_id: ProspectAccountId,
     ) -> DemandCatalogAccountFact:
         country = self.countries[str(account_id)]
+        provenance = _provenance(f"account_country_{account_id}")
         return DemandCatalogAccountFact(
             tenant_id=tenant_id,
             account_id=account_id,
             country_code=country,
             country_evidence=(
-                CatalogEvidenceSummary(
-                    source_type=SourceType.CONVERSATION,
-                    source_id=f"account_country_{account_id}",
-                    extracted_by="human",
-                    confirmed_by=ACTOR,
-                    confirmed_at=NOW,
-                    observed_at=NOW,
-                    content_hash="a" * 64,
+                catalog_evidence_summary(
+                    tenant_id=tenant_id,
+                    subject_id=str(account_id),
+                    field_name="country",
+                    value=country,
+                    provenance=provenance,
                 )
                 if country is not None
                 else None
