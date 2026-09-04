@@ -26,6 +26,11 @@ OWNER = "emp_01K00000000000000000000010"
 HASH_A = "a" * 64
 HASH_B = "b" * 64
 BOSS = "emp_01K00000000000000000000011"
+EVIDENCE_CONTENT_HASH = "c" * 64
+EVIDENCE_REF = (
+    "catalog-evidence-v1:conversation:msg_01K00000000000000000000000:"
+    + EVIDENCE_CONTENT_HASH
+)
 
 
 def test_catalog_policy_hash_matches_the_existing_products_creation_commitment() -> (
@@ -146,7 +151,7 @@ def _cultivation_hash(**changes):
         "policy_content_hash": HASH_A,
         "facts_hash": HASH_B,
         "rule_results": _rules(),
-        "evidence_refs": ("msg_01K00000000000000000000000",),
+        "evidence_refs": (EVIDENCE_REF,),
         "proposed_by_run": RUN,
         "owner_employee": OWNER,
         "change_set_ref": f"catalog-cultivation:{PROPOSAL}:{POLICY}:{HASH_B}",
@@ -193,7 +198,7 @@ def _cultivation_command():
         policy_content_hash=HASH_A,
         facts_hash=HASH_B,
         rule_results=_rules(),
-        evidence_refs=("msg_01K00000000000000000000000",),
+        evidence_refs=(EVIDENCE_REF,),
         proposed_by_run=RUN,
         owner_employee=OWNER,
         change_set_ref=f"catalog-cultivation:{PROPOSAL}:{POLICY}:{HASH_B}",
@@ -277,7 +282,7 @@ def test_catalog_commands_are_strict_and_cannot_carry_raw_urls_prices_or_probabi
         "policy_content_hash": HASH_A,
         "facts_hash": HASH_B,
         "rule_results": _rules(),
-        "evidence_refs": ("msg_01K00000000000000000000000",),
+        "evidence_refs": (EVIDENCE_REF,),
         "proposed_by_run": RUN,
         "owner_employee": OWNER,
         "change_set_ref": f"catalog-cultivation:{PROPOSAL}:{POLICY}:{HASH_B}",
@@ -304,6 +309,239 @@ def test_catalog_commands_are_strict_and_cannot_carry_raw_urls_prices_or_probabi
             cultivation_values
             | {"evidence_refs": ("https://example.invalid/original",)}
         )
+
+
+@pytest.mark.parametrize(
+    "unsafe_ref",
+    ("0.42", "9.99", "www.example.com/raw", "customer_verbatim"),
+)
+def test_catalog_cultivation_rejects_unbranded_evidence_even_with_matching_hash(
+    unsafe_ref: str,
+) -> None:
+    """任意 source_id/原文形字符串即使参与 request hash 也不是安全原件 locator。"""
+    from pydantic import ValidationError as SchemaError
+
+    from domains.approvals.catalog_contract import CatalogCultivationApprovalCommand
+
+    values = _cultivation_command().model_dump(mode="python")
+    values["evidence_refs"] = (unsafe_ref,)
+    values["request_hash"] = _cultivation_hash(evidence_refs=(unsafe_ref,))
+
+    with pytest.raises(SchemaError):
+        CatalogCultivationApprovalCommand.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    ("source_type", "source_id"),
+    (
+        ("conversation", "msg_01K00000000000000000000000"),
+        ("web_page", "d" * 64),
+        ("upload", "upl_01K00000000000000000000000"),
+    ),
+)
+def test_catalog_evidence_locator_round_trips_only_routable_sources(
+    source_type: str, source_id: str
+) -> None:
+    """Task11 显式组装后仍可解析出原域授权路由所需的完整 locator。"""
+    from domains.approvals.catalog_contract import (
+        CatalogEvidenceLocator,
+        catalog_evidence_locator,
+        parse_catalog_evidence_locator,
+    )
+
+    encoded = catalog_evidence_locator(
+        source_type=source_type,
+        source_id=source_id,
+        content_hash=EVIDENCE_CONTENT_HASH,
+    )
+
+    assert parse_catalog_evidence_locator(encoded) == CatalogEvidenceLocator(
+        source_type=source_type,
+        source_id=source_id,
+        content_hash=EVIDENCE_CONTENT_HASH,
+    )
+    assert encoded == (
+        f"catalog-evidence-v1:{source_type}:{source_id}:{EVIDENCE_CONTENT_HASH}"
+    )
+
+
+@pytest.mark.parametrize("source_type", ("employee_input", "external_api"))
+def test_catalog_evidence_locator_fails_closed_for_sources_without_a_route(
+    source_type: str,
+) -> None:
+    from pydantic import ValidationError as SchemaError
+
+    from domains.approvals.catalog_contract import CatalogEvidenceLocator
+
+    with pytest.raises(SchemaError):
+        CatalogEvidenceLocator(
+            source_type=source_type,
+            source_id="wcf_01K00000000000000000000000",
+            content_hash=EVIDENCE_CONTENT_HASH,
+        )
+
+
+@pytest.mark.parametrize(
+    ("source_type", "source_id"),
+    (
+        ("conversation", "0.42"),
+        ("conversation", "customer_verbatim"),
+        ("web_page", "www.example.com/raw"),
+        ("upload", "9.99"),
+    ),
+)
+def test_catalog_evidence_locator_rejects_wrong_source_identity_shape(
+    source_type: str, source_id: str
+) -> None:
+    from pydantic import ValidationError as SchemaError
+
+    from domains.approvals.catalog_contract import CatalogEvidenceLocator
+
+    with pytest.raises(SchemaError):
+        CatalogEvidenceLocator(
+            source_type=source_type,
+            source_id=source_id,
+            content_hash=EVIDENCE_CONTENT_HASH,
+        )
+
+
+def _replace_rules(
+    *replacements: tuple[int, dict[str, object]],
+):
+    from domains.approvals.catalog_contract import CatalogRuleResultFact
+
+    rules = list(_rules())
+    for position, changes in replacements:
+        rules[position] = CatalogRuleResultFact.model_validate(
+            rules[position].model_dump(mode="python") | changes
+        )
+    return tuple(rules)
+
+
+@pytest.mark.parametrize(
+    "rules",
+    (
+        _replace_rules(
+            (
+                2,
+                {
+                    "status": "passed",
+                    "actual_value": 4,
+                    "required_value": 2,
+                    "explanation_code": "复购客户数达到策略门槛",
+                },
+            )
+        ),
+        _replace_rules((3, {"actual_value": 4})),
+        _replace_rules((4, {"actual_value": 4})),
+        _replace_rules(
+            (1, {"actual_value": 5}),
+            (
+                2,
+                {
+                    "status": "passed",
+                    "actual_value": 4,
+                    "required_value": 4,
+                    "explanation_code": "复购客户数达到策略门槛",
+                },
+            ),
+        ),
+        _replace_rules(
+            (1, {"actual_value": 5}),
+            (
+                4,
+                {
+                    "status": "passed",
+                    "actual_value": 4,
+                    "required_value": 4,
+                    "explanation_code": "数量单位覆盖达到策略门槛",
+                },
+            ),
+        ),
+        _replace_rules(
+            (
+                5,
+                {
+                    "status": "passed",
+                    "actual_value": "pcs",
+                    "required_value": True,
+                    "explanation_code": "有效数量单位已经统一",
+                },
+            )
+        ),
+        _replace_rules(
+            (
+                2,
+                {
+                    "status": "unknown",
+                    "actual_value": None,
+                    "required_value": None,
+                    "explanation_code": "目录事实损坏，评估已阻断",
+                },
+            )
+        ),
+        _replace_rules(
+            (
+                4,
+                {
+                    "status": "passed",
+                    "actual_value": 2,
+                    "required_value": 2,
+                    "explanation_code": "数量单位覆盖达到策略门槛",
+                },
+            ),
+            (
+                5,
+                {
+                    "status": "failed",
+                    "actual_value": None,
+                    "required_value": True,
+                    "explanation_code": "有效数量单位不统一",
+                },
+            ),
+        ),
+    ),
+)
+def test_catalog_cultivation_rejects_six_rule_cross_field_contradictions(
+    rules,
+) -> None:
+    """六条各自合法仍不能伪造不可能的同一评估结果。"""
+    from pydantic import ValidationError as SchemaError
+
+    from domains.approvals.catalog_contract import CatalogCultivationApprovalCommand
+
+    values = _cultivation_command().model_dump(mode="python")
+    values["rule_results"] = rules
+    values["request_hash"] = _cultivation_hash(rule_results=rules)
+
+    with pytest.raises(SchemaError):
+        CatalogCultivationApprovalCommand.model_validate(values)
+
+
+def test_catalog_cultivation_accepts_only_the_complete_fixed_blocked_shape() -> None:
+    from domains.approvals.catalog_contract import (
+        CatalogCultivationApprovalCommand,
+        CatalogRuleResultFact,
+    )
+
+    required_values = (True, 3, None, None, None, None)
+    blocked = tuple(
+        CatalogRuleResultFact(
+            rule=rule.rule,
+            status="unknown",
+            actual_value=None,
+            required_value=required,
+            explanation_code="目录事实损坏，评估已阻断",
+        )
+        for rule, required in zip(_rules(), required_values, strict=True)
+    )
+    values = _cultivation_command().model_dump(mode="python")
+    values["rule_results"] = blocked
+    values["request_hash"] = _cultivation_hash(rule_results=blocked)
+
+    assert (
+        CatalogCultivationApprovalCommand.model_validate(values).rule_results == blocked
+    )
 
 
 @pytest.mark.parametrize(
@@ -391,6 +629,26 @@ async def test_catalog_postgres_concurrent_replay_converges_across_all_states(
     )
     assert policy_ids[0] == policy_ids[1]
     assert cultivation_ids[0] == cultivation_ids[1]
+    from domains.approvals.schemas import ApprovalReaderIdentity
+
+    pending = await service.list_for_reader(
+        TENANT,
+        reader=ApprovalReaderIdentity(employee_id=BOSS, role="boss"),
+        limit=2,
+    )
+    assert [item.approval_id for item in pending] == [
+        str(cultivation_ids[0]),
+        str(policy_ids[0]),
+    ]
+    assert all(item.can_current_user_decide for item in pending)
+    assert (
+        await service.list_for_reader(
+            "tn_other",
+            reader=ApprovalReaderIdentity(employee_id=BOSS, role="boss"),
+            limit=2,
+        )
+        == []
+    )
     async with sessions() as session:
         assert (
             await session.scalar(

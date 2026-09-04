@@ -21,6 +21,10 @@ PROPOSER = EmployeeId("emp_01K00000000000000000000000")
 APPROVER = EmployeeId("emp_01K00000000000000000000001")
 CHANGE_SET = "playbook:pbv_01K00000000000000000000000:" + "a" * 64
 COUNTRY_POLICY_CHANGE_SET = "country_policy:cpp_01K00000000000000000000000:" + "b" * 64
+CATALOG_EVIDENCE_REF = (
+    "catalog-evidence-v1:conversation:msg_01K00000000000000000000000:"
+    + "c" * 64
+)
 
 
 class _Bus:
@@ -116,6 +120,24 @@ class _Approvals:
             in {"catalog-policy-v1", "catalog-cultivation-v1"}
             else None
         )
+
+    async def list_catalog_pending_candidates(
+        self, tenant_id, *, scan_started_at, after, limit
+    ):
+        values = sorted(
+            (
+                p
+                for p in self._store.packages.values()
+                if p.tenant_id == tenant_id
+                and p.contract_namespace
+                in {"catalog-policy-v1", "catalog-cultivation-v1"}
+                and p.created_at <= scan_started_at
+                and p.state.value == "pending"
+                and (after is None or (p.expires_at, p.approval_id) > after)
+            ),
+            key=lambda p: (p.expires_at, p.approval_id),
+        )
+        return tuple(values[:limit])
 
     async def list_quote_pending_candidates(
         self, tenant_id, *, scan_started_at, after, limit
@@ -893,7 +915,7 @@ def _catalog_cultivation_command(*, expires_at_limit=NOW + timedelta(days=3)):
         "policy_content_hash": "a" * 64,
         "facts_hash": "b" * 64,
         "rule_results": _catalog_rules(),
-        "evidence_refs": ("msg_01K00000000000000000000000",),
+        "evidence_refs": (CATALOG_EVIDENCE_REF,),
         "proposed_by_run": "run_01K00000000000000000000000",
         "owner_employee": PROPOSER,
         "change_set_ref": (
@@ -1146,6 +1168,81 @@ async def test_catalog_decision_requires_current_eligible_independent_boss() -> 
     await service.decide(TENANT, approval_id, True, APPROVER)
     assert len(factory.store.events) == 1
     assert (await service.read_catalog_fact(TENANT, approval_id)).state.value == "approved"
+
+
+@pytest.mark.asyncio
+async def test_catalog_pending_list_and_detail_share_the_current_boss_guard() -> None:
+    from domains.approvals.schemas import ApprovalReaderIdentity
+    from shared.errors import PermissionDenied
+
+    factory = _Factory()
+    actors = _CatalogActorReader()
+    service = ApprovalServiceImpl(
+        factory, catalog_actor_reader=actors, now=lambda: NOW
+    )
+    policy_id = await service.submit_catalog(_catalog_policy_command())
+    cultivation_id = await service.submit_catalog(_catalog_cultivation_command())
+    boss = ApprovalReaderIdentity(employee_id=APPROVER, role="boss")
+
+    pending = await service.list_for_reader(TENANT, reader=boss)
+    assert {item.approval_id for item in pending} == {
+        str(policy_id),
+        str(cultivation_id),
+    }
+    assert all(item.can_current_user_decide for item in pending)
+    assert (
+        await service.get_for_reader(TENANT, policy_id, reader=boss)
+    ).can_current_user_decide
+
+    actors.active = False
+    with pytest.raises(PermissionDenied):
+        await service.list_for_reader(TENANT, reader=boss)
+    with pytest.raises(PermissionDenied):
+        await service.get_for_reader(TENANT, policy_id, reader=boss)
+
+    actors.active = True
+    actors.role = "manager"
+    manager = ApprovalReaderIdentity(employee_id=APPROVER, role="manager")
+    assert await service.list_for_reader(TENANT, reader=manager) == []
+    with pytest.raises(PermissionDenied):
+        await service.get_for_reader(TENANT, policy_id, reader=manager)
+
+
+@pytest.mark.asyncio
+async def test_catalog_pending_reader_without_actor_source_fails_closed() -> None:
+    from domains.approvals.schemas import ApprovalReaderIdentity
+    from shared.errors import PermissionDenied
+
+    factory = _Factory()
+    service = ApprovalServiceImpl(factory, now=lambda: NOW)
+    approval_id = await service.submit_catalog(_catalog_policy_command())
+    boss = ApprovalReaderIdentity(employee_id=APPROVER, role="boss")
+
+    with pytest.raises(PermissionDenied, match="目录审批决定人事实不可用"):
+        await service.list_for_reader(TENANT, reader=boss)
+    with pytest.raises(PermissionDenied, match="目录审批决定人事实不可用"):
+        await service.get_for_reader(TENANT, approval_id, reader=boss)
+
+
+@pytest.mark.asyncio
+async def test_catalog_owner_can_read_but_never_sees_a_decide_button() -> None:
+    from domains.approvals.schemas import ApprovalReaderIdentity
+
+    factory = _Factory()
+    actors = _CatalogActorReader()
+    actors.employee_id = PROPOSER
+    service = ApprovalServiceImpl(
+        factory, catalog_actor_reader=actors, now=lambda: NOW
+    )
+    approval_id = await service.submit_catalog(_catalog_policy_command())
+    owner = ApprovalReaderIdentity(employee_id=PROPOSER, role="boss")
+
+    pending = await service.list_for_reader(TENANT, reader=owner)
+    assert [item.approval_id for item in pending] == [str(approval_id)]
+    assert pending[0].can_current_user_decide is False
+    assert (
+        await service.get_for_reader(TENANT, approval_id, reader=owner)
+    ).can_current_user_decide is False
 
 
 @pytest.mark.asyncio

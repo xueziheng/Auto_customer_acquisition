@@ -39,6 +39,17 @@ class ApprovalRepository(Protocol):
         """跨状态读取两个明确 Catalog namespace 的唯一 canonical 包。"""
         ...
 
+    async def list_catalog_pending_candidates(
+        self,
+        tenant_id: TenantId,
+        *,
+        scan_started_at: datetime,
+        after: tuple[datetime, ApprovalId] | None,
+        limit: int,
+    ) -> tuple[ApprovalPackage, ...]:
+        """稳定、有界扫描两个明确 Catalog namespace 的 pending 包。"""
+        ...
+
     async def list_quote_pending_candidates(
         self,
         tenant_id: TenantId,

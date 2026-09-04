@@ -23,6 +23,11 @@ from shared.schemas.identifiers import (
 )
 
 _LOWER_HASH = re.compile(r"[0-9a-f]{64}\Z")
+_ROUTABLE_SOURCE_ID = {
+    "conversation": re.compile(r"msg_[0-7][0-9A-HJKMNP-TV-Z]{25}\Z"),
+    "web_page": _LOWER_HASH,
+    "upload": re.compile(r"upl_[0-7][0-9A-HJKMNP-TV-Z]{25}\Z"),
+}
 _POLICY_REF = re.compile(r"catalog-policy:(cpv_[^:\s]{1,36}):([0-9a-f]{64})\Z")
 _CULTIVATION_REF = re.compile(
     r"catalog-cultivation:(cpr_[^:\s]{1,36}):(cpv_[^:\s]{1,36}):([0-9a-f]{64})\Z"
@@ -158,6 +163,56 @@ class CatalogPolicyVersionFact(_CatalogContractModel):
         if self.content_hash != catalog_policy_content_hash(self.content):
             raise ValueError("content_hash 与策略内容不一致")
         return self
+
+
+class CatalogEvidenceLocator(_CatalogContractModel):
+    """可由原域授权路由解析的 Evidence 定位，不授予原件读权。"""
+
+    source_type: Literal["conversation", "web_page", "upload"]
+    source_id: str
+    content_hash: str
+
+    @model_validator(mode="after")
+    def validate_locator(self) -> Self:
+        pattern = _ROUTABLE_SOURCE_ID[self.source_type]
+        if type(self.source_id) is not str or pattern.fullmatch(self.source_id) is None:
+            raise ValueError("Evidence source_id 与可路由来源类型不一致")
+        _hash(self.content_hash, "content_hash")
+        return self
+
+
+def catalog_evidence_locator(
+    *,
+    source_type: Literal["conversation", "web_page", "upload"],
+    source_id: str,
+    content_hash: str,
+) -> str:
+    """显式组装可逆的 Catalog Evidence 安全引用。"""
+    locator = CatalogEvidenceLocator(
+        source_type=source_type,
+        source_id=source_id,
+        content_hash=content_hash,
+    )
+    return (
+        "catalog-evidence-v1:"
+        f"{locator.source_type}:{locator.source_id}:{locator.content_hash}"
+    )
+
+
+def parse_catalog_evidence_locator(value: str) -> CatalogEvidenceLocator:
+    """解析安全引用；原件仍须经过对应域的授权 reader。"""
+    if type(value) is not str or len(value) > 200:
+        raise ValueError("Catalog Evidence locator 无效")
+    parts = value.split(":")
+    if len(parts) != 4 or parts[0] != "catalog-evidence-v1":
+        raise ValueError("Catalog Evidence locator 无效")
+    return CatalogEvidenceLocator.model_validate(
+        {
+            "source_type": parts[1],
+            "source_id": parts[2],
+            "content_hash": parts[3],
+        }
+    )
 
 
 class CatalogRuleResultFact(_CatalogContractModel):
@@ -359,10 +414,57 @@ def _safe_evidence_refs(values: tuple[str, ...]) -> tuple[str, ...]:
     if not values or len(values) > 100 or len(set(values)) != len(values):
         raise ValueError("evidence_refs 无效")
     for value in values:
-        _identity(value, "evidence_ref")
-        if "://" in value or any(character.isspace() for character in value):
-            raise ValueError("evidence_ref 不得承载 URL 或原文")
+        parse_catalog_evidence_locator(value)
     return values
+
+
+def _validate_cultivation_rules(
+    values: tuple[CatalogRuleResultFact, ...],
+) -> None:
+    if tuple(item.rule for item in values) != _RULE_ORDER:
+        raise ValueError("目录评估规则顺序无效")
+    distinct = values[1]
+    recurring = values[2]
+    countries = values[3]
+    quantity = values[4]
+    unified = values[5]
+    distinct_required = cast(int, distinct.required_value)
+    recurring_required = cast(int | None, recurring.required_value)
+    quantity_required = cast(int | None, quantity.required_value)
+    unified_required = cast(bool | None, unified.required_value)
+    if (
+        recurring_required is not None
+        and recurring_required > distinct_required
+        or quantity_required is not None
+        and quantity_required > distinct_required
+        or unified_required is True
+        and quantity_required is None
+    ):
+        raise ValueError("评估的策略 required 形状不一致")
+    blocked_code = "目录事实损坏，评估已阻断"
+    blocked = tuple(item.explanation_code == blocked_code for item in values)
+    if any(blocked):
+        if not all(blocked) or any(
+            item.status != "unknown" or item.actual_value is not None for item in values
+        ):
+            raise ValueError("blocked 评估必须使用固定的六规则 unknown 形状")
+        return
+    distinct_actual = cast(int, distinct.actual_value)
+    optional_actuals = (
+        recurring.actual_value,
+        countries.actual_value,
+        quantity.actual_value,
+    )
+    if any(
+        value is not None and cast(int, value) > distinct_actual
+        for value in optional_actuals
+    ):
+        raise ValueError("可选规则 actual_value 不得超过去重客户数")
+    if unified_required is True and unified.actual_value is None:
+        quantity_actual = cast(int, quantity.actual_value)
+        expected = "unknown" if quantity_actual < distinct_actual else "failed"
+        if unified.status != expected:
+            raise ValueError("统一单位结果与数量单位覆盖不一致")
 
 
 def catalog_cultivation_request_hash(
@@ -443,8 +545,7 @@ class CatalogCultivationApprovalCommand(_CatalogContractModel):
         _hash(self.facts_hash, "facts_hash")
         _utc(self.expires_at_limit, "expires_at_limit")
         _safe_evidence_refs(self.evidence_refs)
-        if tuple(item.rule for item in self.rule_results) != _RULE_ORDER:
-            raise ValueError("目录评估规则顺序无效")
+        _validate_cultivation_rules(self.rule_results)
         expected_ref = (
             f"catalog-cultivation:{self.proposal_id}:"
             f"{self.policy_version_id}:{self.facts_hash}"
@@ -999,6 +1100,7 @@ __all__ = (
     "CatalogApprovalFactReader",
     "CatalogCultivationApprovalChange",
     "CatalogCultivationApprovalCommand",
+    "CatalogEvidenceLocator",
     "CatalogPolicyApprovalChange",
     "CatalogPolicyApprovalCommand",
     "CatalogPolicyContentFact",
@@ -1006,10 +1108,12 @@ __all__ = (
     "CatalogRuleResultFact",
     "catalog_change_set_ref",
     "catalog_cultivation_request_hash",
+    "catalog_evidence_locator",
     "catalog_package_fact",
     "catalog_package_fields",
     "catalog_policy_content_hash",
     "catalog_policy_request_hash",
+    "parse_catalog_evidence_locator",
     "same_catalog_request",
     "validate_catalog_change_set_ref",
     "validate_catalog_command",

@@ -177,6 +177,37 @@ class ApprovalServiceImpl:
     def _catalog_fact(package: ApprovalPackage) -> CatalogApprovalFact | None:
         return catalog_package_fact(package)
 
+    async def _current_catalog_boss(
+        self,
+        tenant_id: TenantId,
+        employee_id: EmployeeId,
+        *,
+        claimed_role: str | None = None,
+    ) -> CatalogApprovalActorFact:
+        if self._catalog_actor_reader is None:
+            raise PermissionDenied("目录审批决定人事实不可用")
+        try:
+            actor = CatalogApprovalActorFact.model_validate(
+                (
+                    await self._catalog_actor_reader.read_actor(
+                        tenant_id, employee_id
+                    )
+                ).model_dump(mode="python")
+            )
+        except Exception:  # noqa: BLE001 -- 员工源异常不得暴露给审批调用方
+            raise PermissionDenied("目录审批决定人事实不可用") from None
+        if (
+            actor.tenant_id != tenant_id
+            or actor.employee_id != employee_id
+            or actor.current_role != "boss"
+            or not actor.active
+            or not actor.eligible
+        ):
+            raise PermissionDenied("当前员工无目录审批资格")
+        if claimed_role is not None and claimed_role != actor.current_role:
+            raise PermissionDenied("当前员工角色与请求身份不一致")
+        return actor
+
     @classmethod
     def _marker(cls, package: ApprovalPackage) -> bool:
         """仅标记quote；Catalog先严格校验但不进入报价授权分支。"""
@@ -401,6 +432,21 @@ class ApprovalServiceImpl:
         reader: ApprovalReaderIdentity | None = None,
     ) -> ApprovalView:
         """投影在guard内完成，可信身份角色漂移明确拒绝。"""
+        catalog_fact = self._catalog_fact(package)
+        if catalog_fact is not None:
+            view = self._view(
+                package, now=_utc(self._now()), current_employee=employee_id
+            )
+            if reader is None:
+                return replace(view, can_current_user_decide=False)
+            if employee_id is None:
+                raise PermissionDenied("目录审批读取需要当前员工")
+            await self._current_catalog_boss(
+                package.tenant_id,
+                employee_id,
+                claimed_role=reader.role,
+            )
+            return view
         if not self._marker(package):
             if reader is not None and reader.role not in {"boss", "manager"}:
                 raise PermissionDenied("当前角色无旧审批读取权限")
@@ -462,6 +508,30 @@ class ApprovalServiceImpl:
                     result.append(
                         await self._read_view(
                             package, employee_id=reader.employee_id, reader=reader
+                        )
+                    )
+        if reader.role == "boss":
+            async with self._uow_factory(tenant_id) as uow:
+                catalog = await uow.approvals.list_catalog_pending_candidates(
+                    tenant_id,
+                    scan_started_at=scan_started_at,
+                    after=None,
+                    limit=limit,
+                )
+            if catalog:
+                await self._current_catalog_boss(
+                    tenant_id,
+                    reader.employee_id,
+                    claimed_role=reader.role,
+                )
+                for package in catalog:
+                    if self._catalog_fact(package) is None:
+                        raise CatalogApprovalContractError("catalog_contract_invalid")
+                    result.append(
+                        self._view(
+                            package,
+                            now=_utc(self._now()),
+                            current_employee=reader.employee_id,
                         )
                     )
         after = None
@@ -745,26 +815,7 @@ class ApprovalServiceImpl:
         catalog_fact = self._catalog_fact(package)
         if catalog_fact is not None:
             _optional_id(decided_by, "decided_by", "emp")
-            if self._catalog_actor_reader is None:
-                raise PermissionDenied("目录审批决定人事实不可用")
-            try:
-                actor = CatalogApprovalActorFact.model_validate(
-                    (
-                        await self._catalog_actor_reader.read_actor(
-                            tenant_id, decided_by
-                        )
-                    ).model_dump(mode="python")
-                )
-            except Exception:  # noqa: BLE001 -- 员工源异常不向审批日志或调用方透传
-                raise PermissionDenied("目录审批决定人事实不可用") from None
-            if (
-                actor.tenant_id != tenant_id
-                or actor.employee_id != decided_by
-                or actor.current_role != "boss"
-                or not actor.active
-                or not actor.eligible
-            ):
-                raise PermissionDenied("当前员工无目录审批资格")
+            await self._current_catalog_boss(tenant_id, decided_by)
             yield catalog_fact.request_hash
             return
         if not self._marker(package):
