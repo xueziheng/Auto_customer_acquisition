@@ -5714,3 +5714,128 @@ class SupplierPriceRecordRow(Base):
     artifact_id: Mapped[str] = mapped_column(String(32))
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EmailInboundCursorRow(Base):
+    """只存受信绑定、固定起点和opaque水位，不存邮件内容。"""
+
+    __tablename__ = "email_inbound_cursors"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "mailbox_alias", name="pk_email_inbound_cursors"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "configured_identity_id"],
+            ["sending_identities.tenant_id", "sending_identities.identity_id"],
+            name="fk_email_inbound_cursor_identity",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "version >= 1 AND octet_length(provider_cursor) BETWEEN 1 AND 32768 AND after_epoch >= 0",
+            name="ck_email_inbound_cursor_version",
+        ),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    mailbox_alias: Mapped[str] = mapped_column(String(32))
+    configured_identity_id: Mapped[str] = mapped_column(String(40))
+    route_id: Mapped[str] = mapped_column(String(32))
+    config_version: Mapped[str] = mapped_column(String(32))
+    provider_cursor: Mapped[str] = mapped_column(Text)
+    version: Mapped[int] = mapped_column(BigInteger)
+    bootstrap_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    after_epoch: Mapped[int] = mapped_column(BigInteger)
+    confirmed_by: Mapped[str] = mapped_column(String(40))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    blocked_reason: Mapped[str | None] = mapped_column(String(40))
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EmailInboundReceiptRow(Base):
+    """已处理Provider项目只增账本；关联证据仅摘要。"""
+
+    __tablename__ = "email_inbound_receipts"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "mailbox_alias",
+            "provider_ref_digest",
+            name="pk_email_inbound_receipts",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "mailbox_alias"],
+            ["email_inbound_cursors.tenant_id", "email_inbound_cursors.mailbox_alias"],
+            name="fk_email_inbound_receipt_cursor",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "raw_artifact_id"],
+            ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
+            name="fk_email_inbound_receipt_raw",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "message_id"],
+            ["messages.tenant_id", "messages.message_id"],
+            name="fk_email_inbound_receipt_message",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "provider_ref_digest ~ '^[0-9a-f]{64}$' AND item_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="ck_email_inbound_receipt_hash",
+        ),
+        CheckConstraint(
+            "(raw_artifact_id IS NULL AND raw_hash IS NULL AND raw_size IS NULL) OR (raw_artifact_id IS NOT NULL AND raw_hash IS NOT NULL AND raw_size IS NOT NULL AND raw_hash ~ '^[0-9a-f]{64}$' AND raw_size BETWEEN 1 AND 4194304)",
+            name="ck_email_inbound_receipt_raw",
+        ),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    mailbox_alias: Mapped[str] = mapped_column(String(32))
+    provider_ref_digest: Mapped[str] = mapped_column(String(64))
+    item_fingerprint: Mapped[str] = mapped_column(String(64))
+    parser_version: Mapped[str] = mapped_column(String(32))
+    guard_version: Mapped[str] = mapped_column(String(32))
+    disposition: Mapped[str] = mapped_column(String(40))
+    raw_artifact_id: Mapped[str | None] = mapped_column(String(32))
+    raw_hash: Mapped[str | None] = mapped_column(String(64))
+    raw_size: Mapped[int | None] = mapped_column(BigInteger)
+    message_id: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EmailInboundReviewRow(Base):
+    """未形成Message的技术待核对，不借假Message授权。"""
+
+    __tablename__ = "email_inbound_reviews"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "review_id", name="pk_email_inbound_reviews"),
+        UniqueConstraint(
+            "tenant_id",
+            "mailbox_alias",
+            "provider_ref_digest",
+            name="uq_email_inbound_review_receipt",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "mailbox_alias", "provider_ref_digest"],
+            [
+                "email_inbound_receipts.tenant_id",
+                "email_inbound_receipts.mailbox_alias",
+                "email_inbound_receipts.provider_ref_digest",
+            ],
+            name="fk_email_inbound_review_receipt",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "raw_artifact_id"],
+            ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
+            name="fk_email_inbound_review_raw",
+            ondelete="RESTRICT",
+        ),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    review_id: Mapped[str] = mapped_column(String(40))
+    mailbox_alias: Mapped[str] = mapped_column(String(32))
+    provider_ref_digest: Mapped[str] = mapped_column(String(64))
+    raw_artifact_id: Mapped[str | None] = mapped_column(String(32))
+    reason: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

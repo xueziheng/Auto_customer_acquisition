@@ -27,3 +27,32 @@ v1只取唯一精确Message-ID/In-Reply-To和带时区Date，不猜客户账户�
 5b receipt fingerprint必须显式规范化投影route所有绑定/版本、provider摘要、固定disposition/parser_version、
 原值Message-ID/In-Reply-To、UTC时间、Raw ID/hash/size；不得对已排除敏感字段的model_dump直接求hash。
 这些输入只在受信事务计算摘要，不进入日志/业务普通字段/模型。initial起点重启时沿耐久初值，不能用新时间重建。
+
+## Task5b耐久事务与人工绑定
+
+采纳[Task5b子规格](../superpowers/specs/2026-09-05-email-inbound-5b.md)。0058之后0059新增三张tenant技术表，
+整页tenant锁/cursor CAS/receipt预检与bound Conversations及Outreach UoW唯一commit。未知提交以新session
+核耐久cursor及完整receipt，不删Raw、不以内存成功替代。独立driver沿原singleton同backend生命周期。
+绑定仅真人明确指定真实sid；SendingIdentity公开窄boss授权，受信单mailbox/route/configversion不受请求覆盖，
+cursor保留confirmed_by/confirmed_at及固定bootstrap起点。同owner重启原行恢复，无行disabled，禁止换身份或重置。
+Conversations新增当前员工事实式固定read/retry权限端口，复用active boss下限，review不伪造Message。
+retry只接受expected_version，原位CAS；未到期Retry-After不得人工越过。永久协议/history/poison固定blocked，
+不自动重试、不编辑cursor/跳最新/自由关联。安全API供Task8/9消费，本批不提供Web页面。
+
+### 具名机械装配例外
+
+API与scheduler可复用唯一apps/composition_support/email_inbound.py，仅构造本批fetch/raw.read
+具名Gateway/registry/slot/Store/wrapper。各进程typed显式传入tenant、route、当前授权port、lease owner、
+sessionfactory和外部port；不建engine/workflow/全系统registry，不读环境或启动循环，无全局实例。
+构造无IO，资源对称释放仍归原进程生命周期；ADR0025四reader的禁registry规则不变。
+
+### 5b最终消费者与日志口径
+
+原StandardAuditLogger为独立运行日志，不是持久业务表；保持原TransactionAwareAudit的allow缓冲与提交后flush。
+提交前缓冲/deny sink异常、Message、事件/outbox、receipt/review写失败均整页回滚。提交后日志sink失败记录固定错误，
+已提交业务不得伪称回滚或重做。
+
+自动入站driver以前述原InboundMessageStored消费者已在同进程完整注册为前提；reply_factory=None的
+受控环境仅可人工绑定/状态/待核对查询，scheduler inbound_body能力明确disabled/required_ports_missing。
+绑定active仅是绑定技术状态，运行能力必须读取原scheduler健康投影；Task8不得把两者合并为已运行。
+无消费者时零fetch、零cursor推进、零新入站事件；Task6补齐原回复组合后自然启用，不造临时队列或空ack。

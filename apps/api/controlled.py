@@ -14,6 +14,7 @@ import uvicorn
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from apps.composition_support.email_inbound import InboundMailbox
 from connectors.object_store.config import S3ObjectStoreSettings
 from infra.controlled.config import ControlledConfig, ControlledError
 from infra.controlled.network import install_network_boundary
@@ -21,6 +22,7 @@ from infra.controlled.providers import ControlledGmailTransport
 from infra.db.schema import assert_database_schema_current
 from infra.db.session import create_engine_from
 from infra.db.tables import EmployeeRow
+from shared.schemas.identifiers import TenantId
 
 from .runtime import create_runtime_app_from_settings
 from .runtime_config import Phase1RuntimeSettings
@@ -138,6 +140,12 @@ def main() -> int:
             secret_resolver=config,
             object_store_settings=S3ObjectStoreSettings.from_environ(environment),
             model_client=ControlledModelClient(),
+            inbound_mailbox=InboundMailbox(
+                tenant_id=TenantId(config.tenant_id),
+                mailbox_alias="primary",
+                route_id="controlled",
+                config_version="v1",
+            ),
             gmail_transport=ControlledGmailTransport(
                 Path(sys.argv[1]).parent / "mail.sqlite", tenant_id=config.tenant_id
             ),

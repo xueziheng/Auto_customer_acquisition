@@ -2,7 +2,9 @@
 
 ## 触发
 
-`ReplyReceived` 事件（conversations 域在入站消息落库并分类后发布）。subject_ref = message_id。
+`InboundMessageStored` 事件（conversations 域在入站消息落库的同一事务发布）。
+原 scheduler consumer 校验真实出站关联后启动 subject_ref = message_id 的原流程。
+`ReplyReceived` 是分类落库后的结果事件，不能反向触发本流程。
 
 ## 状态与步骤
 
@@ -33,3 +35,9 @@ decide_next          三分支：
 ## Phase 1 范围
 
 以上全部。
+
+## 耐久邮件入站（ADR0026）
+
+inbound.py 只编排完整 ArchivedInboundPage，所有域服务共享外层事务；opaque cursor不解码。
+inbound_management.py 只负责真人绑定、当前active boss权限、只读待核对与带版本原位重试；
+不得接受正文、任意cursor、换身份或跳水位。关联仅精确In-Reply-To和真实SENT，不能视为客户认证或已验证需求。

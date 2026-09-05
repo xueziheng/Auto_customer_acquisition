@@ -191,3 +191,7 @@ email.inbound.fetch独立LOW/FREE/NONE manifest，只tenant→permission；EXECU
 Gateway内Raw.put后bounded实际读回验证，完整候选guard后隔离；ledger只ipg一次性handle。
 独立task-owned槽拒绝child领取/清理，只有SUCCEEDED且route/cursor绑定一致可交付，失败/取消清槽。
 此批没有Message入库、正文worker、需求分类或模型读取许可（ADR0026）。
+
+Task5b增加email.inbound.raw.read具名LOW/FREE/NONE工具，当前active boss经Conversations公开权限端口授权。
+按精确review读取真实同tenant EMAIL_RAW，最大4MiB有界完整性验证；成功ledger后wrapper再次核当前权限和原件引用，
+一次性task-owned handle才可释放下载字节。禁止任意artifact覆盖、模型读取或在HTTP执行HTML。

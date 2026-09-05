@@ -86,3 +86,6 @@ ARF 投诉 typed 读取、交付确定性错误分类。不做：回复正文 wo
 GmailInboundReader使用独立gic1游标，profile锚定后固定bootstrap/history；预算和解析规则见ADR0026。
 只提取原值候选header，不查账户/发送事实、不写Message、不触发分类。原件只在Gateway内归档。
 ControlledGmailTransport外部场景是显式受控Provider seam，真实Gmail不默认启用；原feedback保持兼容。
+
+Task5b消费者只传耐久opaque cursor；初始化时间/after先保存再profile锚定，重启不得换新起点。
+只有原scheduler完整回复消费者已注册且持singleton才自动抓取；关联与Message入库不在Connector。

@@ -48,6 +48,7 @@ from .routers.crm import OpportunityIntakeBody
 from .routers.crm import router as crm_router
 from .routers.customer_discovery import router as customer_discovery_router
 from .routers.demand_radar import router as demand_radar_router
+from .routers.email_inbound import router as email_inbound_router
 from .routers.health import ReadinessProbe, build_capability_router, build_health_router
 from .routers.inbox import router as inbox_router
 from .routers.notifications import router as notifications_router
@@ -172,6 +173,7 @@ def create_app(
     app.include_router(approvals_router)
     app.include_router(notifications_router)
     app.include_router(inbox_router)
+    app.include_router(email_inbound_router)
     app.include_router(products_router, prefix="/products")
     app.include_router(sourcing_router)
     app.include_router(costing_quotes_router, prefix="/costing-quotes")

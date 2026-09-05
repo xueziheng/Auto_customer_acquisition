@@ -64,6 +64,12 @@ class CatalogProductDriverProtocol(Protocol):
     async def scan_once(self) -> object: ...
 
 
+class InboundDriverProtocol(Protocol):
+    """独立入站技术页驱动，由原singleton控制阶段与生命周期。"""
+
+    async def scan_once(self) -> int: ...
+
+
 class RuntimeLifecycleObserver(Protocol):
     """只观察原 worker 的锁后运行与停止，不获取锁、不启动任务。"""
 
@@ -129,6 +135,7 @@ class SchedulerRuntime:
     quote_expiry_driver: QuoteExpiryDriver | None = None
     sourcing_admission_driver: SourcingAdmissionDriverProtocol | None = None
     catalog_product_driver: CatalogProductDriverProtocol | None = None
+    inbound_driver: InboundDriverProtocol | None = None
     lifecycle: RuntimeLifecycleObserver | None = None
     capabilities: tuple[RuntimeCapability, ...] = ()
 
@@ -147,6 +154,11 @@ class SchedulerRuntime:
             getattr(self.catalog_product_driver, "scan_once", None)
         ):
             raise ValidationError("scheduler catalog product driver 无效")
+
+        if self.inbound_driver is not None and not callable(
+            getattr(self.inbound_driver, "scan_once", None)
+        ):
+            raise ValidationError("scheduler 入站driver无效")
 
 
 class RuntimeFactory(Protocol):
@@ -246,6 +258,7 @@ async def _run_cycle(
         runtime.quote_expiry_driver is not None
         or runtime.sourcing_admission_driver is not None
         or runtime.catalog_product_driver is not None
+        or runtime.inbound_driver is not None
     ) and confirm_lock is None:
         raise RuntimeError("单副本阶段扫描缺少 scheduler 锁确认")
     pre_count = 0
@@ -315,6 +328,20 @@ async def _run_cycle(
             )
         await confirm_lock()
 
+    if runtime.inbound_driver is not None:
+        assert confirm_lock is not None
+        await confirm_lock()
+        try:
+            await runtime.inbound_driver.scan_once()
+        except Exception as error:  # noqa: BLE001 - phase 独立且日志固定
+            _log_phase_error(
+                phase="email_inbound",
+                error=error,
+                tenant_id=runtime.tenant_id,
+                cycle=cycle,
+            )
+        await confirm_lock()
+
     workflow_succeeded = False
     try:
         workflow_count = await runtime.workflow.poll_due(
@@ -333,6 +360,7 @@ async def _run_cycle(
         if (
             runtime.sourcing_admission_driver is not None
             or runtime.catalog_product_driver is not None
+            or runtime.inbound_driver is not None
         ):
             assert confirm_lock is not None
             await confirm_lock()

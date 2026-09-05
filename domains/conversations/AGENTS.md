@@ -49,7 +49,7 @@
 
 ## 事件
 
-发布：`ReplyReceived`
+发布：`InboundMessageStored`（入站落库前置事件）、`ReplyReceived`（分类结果）
 订阅：无（邮件进来由 connectors → workflows 驱动写入）
 
 ## Phase 1 范围

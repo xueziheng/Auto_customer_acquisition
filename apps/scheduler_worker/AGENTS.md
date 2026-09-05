@@ -116,3 +116,12 @@ Demand/Products/Approvals 公开服务协作，不得导入其 repository、mode
 `catalog_products.need_cluster_membership_changed` 两个不同 durable consumer。`ApprovalDecided`
 继续按审批类型鉴别，不得以 Catalog handler 死信其他审批。组合与恢复不得创建
 Product、Sourcing、供应商/联系人、发送、报价、价格、外部 provider 或 Tool Gateway 动作，也不得创建测试策略。
+
+## 邮件入站阶段（ADR0026）
+
+InboundDriver只在本进程已注册完整reply_qualification及原InboundMessageStored消费者时启用。
+缺消费者时健康能力inbound_body为disabled/required_ports_missing，人工绑定仅代表固定邮箱配置，
+不表示自动抓取已启用；不得拉取后制造无人消费的入站事件。Task6完整组合后才自动启用。
+原singleton cycle在入站扫描前、返回后及后置outbox前核验同一backend；失锁零后续推进。
+driver不持有锁、不建循环，opaque游标只从tenant账本读取；永久错误等待真人带版本原位核对，
+429/暂态到期才能重试，不能绕过Retry-After、重置history或换身份。

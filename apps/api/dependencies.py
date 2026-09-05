@@ -10,6 +10,7 @@ from typing import Annotated, Protocol, runtime_checkable
 from fastapi import Depends, Header, Request
 
 from agent_runtime.trade_manager import TradeManagerAgent
+from apps.composition_support.email_inbound import InboundComposition
 from artifact_store.store import RawArtifactKind, RawArtifactMeta
 from domains.approvals.service import ApprovalService
 from domains.commitments.service import CommitmentService
@@ -299,6 +300,7 @@ class ConfiguredApiDependencies:
     products: ProductService | None = None
     catalog_products: CatalogProposalService | None = None
     catalog_product_application: CatalogProductApplication | None = None
+    email_inbound: InboundComposition | None = None
     runtime_capabilities: tuple[RuntimeCapability, ...] = ()
     model_lifecycle: ApiOwnedResource | None = None
     object_store_lifecycle: ApiOwnedResource | None = None

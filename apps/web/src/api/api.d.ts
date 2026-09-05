@@ -1282,6 +1282,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/email-inbound/binding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bind */
+        post: operations["bind_email_inbound_binding_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/email-inbound/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry */
+        post: operations["retry_email_inbound_retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/email-inbound/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Reviews */
+        get: operations["reviews_email_inbound_reviews_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/email-inbound/reviews/{review_id}/raw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Raw */
+        get: operations["raw_email_inbound_reviews__review_id__raw_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/email-inbound/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Status */
+        get: operations["status_email_inbound_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health/capabilities": {
         parameters: {
             query?: never;
@@ -4312,6 +4397,53 @@ export interface components {
             tenant_id: string;
             /** Title */
             title: string;
+        };
+        /** InboundBindingRequest */
+        InboundBindingRequest: {
+            /** Identity Id */
+            identity_id: string;
+        };
+        /**
+         * InboundDisposition
+         * @enum {string}
+         */
+        InboundDisposition: "candidate" | "too_large" | "message_gone" | "malformed" | "header_limit" | "mime_limit" | "text_too_large" | "missing_message_id" | "invalid_message_id" | "invalid_in_reply_to" | "invalid_sent_at" | "no_body" | "skipped_label" | "skipped_delivery_report" | "credential_marker";
+        /** InboundRetryRequest */
+        InboundRetryRequest: {
+            /** Expected Version */
+            expected_version: number;
+        };
+        /** InboundReviewView */
+        InboundReviewView: {
+            /** Archived */
+            archived: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Reason */
+            reason: components["schemas"]["InboundDisposition"] | "unknown_outbound";
+            /** Review Id */
+            review_id: string;
+        };
+        /** InboundStatus */
+        InboundStatus: {
+            /** Identity Id */
+            identity_id?: string | null;
+            /** Last Succeeded At */
+            last_succeeded_at?: string | null;
+            /** Next Retry At */
+            next_retry_at?: string | null;
+            /** Reason */
+            reason?: ("provider_transient" | "rate_limited" | "provider_permanent" | "provider_auth_required" | "page_integrity" | "receipt_conflict" | "domain_rejected" | "storage_unavailable") | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "disabled" | "active" | "blocked" | "waiting";
+            /** Version */
+            version?: number | null;
         };
         /**
          * InboxMessageView
@@ -12049,6 +12181,162 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DemandSignalView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    bind_email_inbound_binding_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InboundBindingRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboundStatus"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    retry_email_inbound_retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InboundRetryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboundStatus"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    reviews_email_inbound_reviews_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                after?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboundReviewView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    raw_email_inbound_reviews__review_id__raw_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                review_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    status_email_inbound_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboundStatus"];
                 };
             };
             /** @description 请求参数无效 */

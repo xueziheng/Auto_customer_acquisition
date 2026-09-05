@@ -13,3 +13,11 @@ API/worker保留其公开factory签名和最终本层类型，同class重导出�
 outreach_fact_readers.py、delivery_material_reader.py 四个公开事实映射/单次 scope 模块。
 各进程独立实例；不得读环境、建 engine/registry/workflow、产生业务副作用、重写授权规则，
 不得 import app 进程。地址仅 Gateway 材料端口消费，不得记录或进入模型/Workflow。
+
+## ADR0026入站机械装配例外
+
+仅email_inbound.py可构造本批email.inbound.fetch与email.inbound.raw.read的独立Gateway、
+具名manifest registry、slot、Store及wrapper；每次调用独立实例，不建全系统registry、
+workflow或engine，不扫描注册。tenant/route/当前授权端口/lease owner/session factory/外部
+transport必须由进程typed显式注入；禁止环境读取、全局缓存、循环、业务角色规则与app进程import。
+资源归原进程工厂对称aclose；构造不做IO。四个ADR0025 reader原禁止registry规则不变。

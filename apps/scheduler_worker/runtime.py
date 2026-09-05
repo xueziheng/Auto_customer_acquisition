@@ -390,6 +390,7 @@ class _NoSignalUvicornServer(uvicorn.Server):
 
 @dataclass
 class SchedulerHealthState:
+    capabilities: tuple[RuntimeCapability, ...] = ()
     _ready: set[str] = field(default_factory=set, repr=False)
     _running: bool = field(default=False, init=False, repr=False)
     _stop_event: asyncio.Event | None = field(default=None, init=False, repr=False)
@@ -429,6 +430,10 @@ def _health_app(state: SchedulerHealthState) -> FastAPI:
     @app.get("/health/live")
     async def live() -> dict[str, str]:
         return {"status": "live"}
+
+    @app.get("/health/capabilities")
+    async def capabilities() -> list[RuntimeCapability]:
+        return list(state.capabilities)
 
     @app.get("/health/ready")
     async def ready() -> JSONResponse:
@@ -998,6 +1003,14 @@ class SchedulerBootstrap(Protocol):
     ) -> ReplyQualificationComposition | None: ...
 
 
+from apps.composition_support.email_inbound import (
+    InboundRuntimePorts,
+    build_inbound_composition,
+)
+
+from .inbound_driver import InboundDriver
+
+
 class SchedulerRuntimeFactory:
     """生产 composition root：只注入 typed 业务依赖，其余资源在此构造/释放。"""
 
@@ -1007,6 +1020,7 @@ class SchedulerRuntimeFactory:
         dependencies: SchedulerDomainDependencies | None = None,
         *,
         bootstrap: SchedulerBootstrap | None = None,
+        inbound_ports: InboundRuntimePorts | None = None,
         resolver_factory: Callable[[], AsyncTxtResolver] = DnsPythonAsyncResolver,
         health_server_factory: Callable[
             [SchedulerHealthState, int], SchedulerHealthServer
@@ -1028,6 +1042,7 @@ class SchedulerRuntimeFactory:
         self._environ = environ
         self._dependencies = dependencies
         self._bootstrap = bootstrap
+        self._inbound_ports = inbound_ports
         self._resolver_factory = resolver_factory
         self._health_server_factory = health_server_factory
         if not callable(hunter_transport_factory):
@@ -1054,6 +1069,7 @@ class SchedulerRuntimeFactory:
         health_task: asyncio.Task[None] | None = None
         primary: BaseException | None = None
         quotation = None
+        inbound = None
         try:
             factory = async_sessionmaker(bind=engine, expire_on_commit=False)
             await assert_database_schema_current(engine)
@@ -1436,6 +1452,41 @@ class SchedulerRuntimeFactory:
                     secrets,
                     tool_user,
                 )
+            if self._inbound_ports is not None:
+                ports = self._inbound_ports
+                messaging = dependencies.campaign_messaging
+                if ports.profile.tenant_id != config.tenant_id or messaging is None:
+                    raise ValidationError("scheduler 入站组合不完整")
+
+                def inbound_outreach(
+                    factory: OutreachUnitOfWorkFactory, audit: FeedbackAuditSink
+                ) -> OutreachService:
+                    return OutreachServiceImpl(
+                        factory,
+                        messaging.contact_eligibility,
+                        messaging.sending_identity_eligibility,
+                        messaging.campaign_approvals,
+                        messaging.reply_status,
+                        Phase1OutreachAuthorizer(config.tenant_id),
+                        audit,
+                        now=self._now,
+                    )
+
+                inbound = build_inbound_composition(
+                    ports.profile,
+                    factory,
+                    sending_identities=sending,
+                    employees=employee_scope,
+                    employee_actor=scheduler_employee_actor,
+                    outreach_builder=inbound_outreach,
+                    provider=ports.provider,
+                    secret_resolver=ports.secret_resolver,
+                    secret_ref=ports.secret_ref,
+                    object_settings=ports.object_settings,
+                    fingerprint_key_ref=ports.fingerprint_key_ref,
+                    lease_owner=ports.lease_owner,
+                    now=self._now,
+                )
             if self._bootstrap is not None:
                 reply = self._bootstrap.build_reply(core, campaign_outreach)
                 if reply is not None and (
@@ -1759,7 +1810,7 @@ class SchedulerRuntimeFactory:
             health_server = self._health_server_factory(health, config.health_port)
             health_task = asyncio.create_task(health_server.serve())
             await asyncio.wait_for(health_server.wait_started(), timeout=10)
-            yield SchedulerRuntime(
+            runtime = SchedulerRuntime(
                 engine,
                 outbox,
                 workflow,
@@ -1782,6 +1833,9 @@ class SchedulerRuntimeFactory:
                 ),
                 sourcing_admission_driver=sourcing_admission_driver,
                 catalog_product_driver=catalog_runtime.driver,
+                inbound_driver=InboundDriver(inbound, now=self._now)
+                if inbound is not None and dependencies.reply_qualification is not None
+                else None,
                 lifecycle=health,
                 capabilities=(
                     RuntimeCapability(
@@ -1827,7 +1881,17 @@ class SchedulerRuntimeFactory:
                         reason="composed" if quotation else "not_requested",
                     ),
                     RuntimeCapability(
-                        name="inbound_body", status="disabled", reason="not_implemented"
+                        name="inbound_body",
+                        status="enabled"
+                        if inbound is not None
+                        and dependencies.reply_qualification is not None
+                        else "disabled",
+                        reason="composed"
+                        if inbound is not None
+                        and dependencies.reply_qualification is not None
+                        else "required_ports_missing"
+                        if inbound
+                        else "not_requested",
                     ),
                     RuntimeCapability(
                         name="full_reply", status="disabled", reason="not_implemented"
@@ -1840,12 +1904,19 @@ class SchedulerRuntimeFactory:
                     ),
                 ),
             )
+            health.capabilities = runtime.capabilities
+            yield runtime
         except BaseException as error:
             primary = error
             raise
         finally:
             health.stopped()
             cleanup_error: BaseException | None = None
+            if inbound is not None:
+                try:
+                    await inbound.aclose()
+                except BaseException as error:  # noqa: BLE001 - 保留原异常并完成资源释放
+                    cleanup_error = error
             if quotation is not None:
                 try:
                     await quotation.lifecycle.aclose()

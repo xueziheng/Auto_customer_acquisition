@@ -7,11 +7,14 @@ import sys
 from decimal import Decimal
 from pathlib import Path
 
+from apps.composition_support.email_inbound import InboundMailbox, InboundRuntimePorts
+from connectors.object_store.config import S3ObjectStoreSettings
 from domains.opportunities.scoring import ScoringPolicy
 from domains.opportunities.service_impl import HandoffPolicy
 from infra.controlled.config import ControlledConfig
 from infra.controlled.network import install_network_boundary
 from infra.controlled.providers import ControlledDnsResolver, ControlledGmailTransport
+from shared.schemas.identifiers import TenantId
 from shared.schemas.money import CurrencyCode, Money
 
 from .bootstrap import CanonicalSchedulerBootstrap
@@ -44,6 +47,24 @@ def main() -> int:
         factory = SchedulerRuntimeFactory(
             config.runtime_environment(),
             bootstrap=bootstrap,
+            inbound_ports=InboundRuntimePorts(
+                profile=InboundMailbox(
+                    tenant_id=TenantId(config.tenant_id),
+                    mailbox_alias="primary",
+                    route_id="controlled",
+                    config_version="v1",
+                ),
+                provider=ControlledGmailTransport(
+                    path.parent / "mail.sqlite", tenant_id=config.tenant_id
+                ),
+                secret_resolver=config,
+                secret_ref="CONTROLLED_GMAIL",
+                object_settings=S3ObjectStoreSettings.from_environ(
+                    config.runtime_environment()
+                ),
+                fingerprint_key_ref="CONTROLLED_FINGERPRINT",
+                lease_owner="controlled-scheduler-inbound",
+            ),
             resolver_factory=ControlledDnsResolver,
             health_server_factory=lambda state, port: SchedulerHealthServer(
                 state, port, host="127.0.0.1"

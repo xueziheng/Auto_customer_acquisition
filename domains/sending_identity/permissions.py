@@ -18,6 +18,7 @@ from shared.schemas.identifiers import SendingIdentityId, TenantId
 
 class SendingIdentityAction(str, Enum):
     IDENTITY_REGISTER = "identity:register"
+    INBOUND_BIND = "inbound:bind"
     AUTH_CHECK_BEGIN = "auth:check_begin"
     AUTH_RESULT_RECORD = "auth:result_record"
     WARMUP_START = "warmup:start"
@@ -167,6 +168,7 @@ class StandardAuditLogger:
 _BOSS_ACTIONS = frozenset(
     {
         SendingIdentityAction.IDENTITY_REGISTER,
+        SendingIdentityAction.INBOUND_BIND,
         SendingIdentityAction.AUTH_CHECK_BEGIN,
         SendingIdentityAction.WARMUP_START,
         SendingIdentityAction.IDENTITY_READ,

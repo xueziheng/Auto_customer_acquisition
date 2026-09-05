@@ -24,6 +24,10 @@ from apps.composition_support.campaign_approval_reader import (
 from apps.composition_support.delivery_material_reader import (
     CurrentDeliveryMaterialReader,
 )
+from apps.composition_support.email_inbound import (
+    InboundMailbox,
+    build_inbound_composition,
+)
 from apps.composition_support.employee_readers import (
     RequestScopedCatalogApprovalActorReader as RequestScopedCatalogApprovalActorReader,  # noqa: PLC0414 - 保持公开类型身份
 )
@@ -49,6 +53,7 @@ from connectors.gmail.client import (
     GmailSendResult,
     SecretResolver,
 )
+from connectors.gmail.inbound_transport import GmailInboundHttpTransport
 from connectors.gmail.transport import GmailHttpTransport
 from connectors.object_store.bounded import S3BoundedObjectBlobTransport
 from connectors.object_store.config import S3ObjectStoreSettings
@@ -847,6 +852,7 @@ def build_phase1_dependencies(
     secret_resolver: SecretResolver | None = None,
     object_store_settings: S3ObjectStoreSettings | None = None,
     model_client: StructuredJsonModelClient | None = None,
+    inbound_mailbox: InboundMailbox | None = None,
 ) -> ConfiguredApiDependencies:
     """同步装配，零数据库连接、Provider SDK 初始化与解析器进程启动。
 
@@ -1529,7 +1535,31 @@ def build_phase1_dependencies(
         )
         for name in capability_names
     )
+    inbound = None
+    if inbound_mailbox is not None:
+        if (
+            inbound_mailbox.tenant_id != tenant
+            or object_store_settings is None
+            or gmail_transport is None
+        ):
+            raise ValidationError("入站组合缺少显式受信依赖")
+        inbound = build_inbound_composition(
+            inbound_mailbox,
+            factory,
+            sending_identities=sending_identities,
+            employees=employees,
+            employee_actor=employee_system_actor,
+            outreach_builder=build_feedback_outreach,
+            provider=cast(GmailInboundHttpTransport, gmail_transport),
+            secret_resolver=resolved_secret_resolver,
+            secret_ref=settings.gmail_oauth_token_ref,
+            object_settings=object_store_settings,
+            fingerprint_key_ref=settings.tool_call_fingerprint_key_ref,
+            lease_owner="api-email-inbound",
+            now=now,
+        )
     return ConfiguredApiDependencies(
+        email_inbound=inbound,
         runtime_capabilities=capabilities,
         opportunities=opportunities,
         outreach=outreach,

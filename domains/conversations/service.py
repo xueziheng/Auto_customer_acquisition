@@ -26,6 +26,9 @@ from domains.conversations.schemas import (
     ReplyWorkStatus,
 )
 from domains.conversations.source_access import (
+    require_inbound_review_access as require_inbound_review_access,  # noqa: PLC0414 - 窄公开权限端口
+)
+from domains.conversations.source_access import (
     require_inbound_source_access as require_inbound_source_access,  # noqa: PLC0414 - 显式公开纯权限端口
 )
 
