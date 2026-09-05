@@ -437,6 +437,19 @@ def test_registry_rejects_prompt_symlink_to_sibling_file(tmp_path: Path) -> None
     _assert_invalid_load(canonical)
 
 
+def test_registry_rejects_directory_symlink_inside_canonical(tmp_path: Path) -> None:
+    canonical = tmp_path / "canonical"
+    manifest = _manifest()
+    manifest["prompt_ref"] = "prompts/system.md"
+    path = _write_manifest(canonical, manifest)
+    prompt_assets = path.parent / "prompt-assets"
+    prompt_assets.mkdir()
+    (prompt_assets / "system.md").write_text("prompt", encoding="utf-8")
+    (path.parent / "prompts").symlink_to(prompt_assets.name, target_is_directory=True)
+
+    _assert_invalid_load(canonical)
+
+
 def test_registry_rejects_manifest_link_outside_canonical(tmp_path: Path) -> None:
     canonical = tmp_path / "canonical"
     manifest_path = _write_manifest(canonical, _manifest())
@@ -455,6 +468,28 @@ def test_registry_rejects_unsupported_deep_manifest_layout(tmp_path: Path) -> No
     (deep / "manifest.yaml").write_text(
         yaml.safe_dump(_manifest(), allow_unicode=True), encoding="utf-8"
     )
+
+    _assert_invalid_load(canonical)
+
+
+def test_registry_rejects_deep_manifest_beside_valid_version(tmp_path: Path) -> None:
+    canonical = tmp_path / "canonical"
+    path = _write_manifest(canonical, _manifest())
+    misplaced = path.parent / "assets" / "deeper" / "manifest.yaml"
+    misplaced.parent.mkdir(parents=True)
+    misplaced.write_text(
+        yaml.safe_dump(_manifest(), allow_unicode=True), encoding="utf-8"
+    )
+
+    _assert_invalid_load(canonical)
+
+
+def test_registry_rejects_empty_semver_directory_beside_valid_version(
+    tmp_path: Path,
+) -> None:
+    canonical = tmp_path / "canonical"
+    path = _write_manifest(canonical, _manifest())
+    (path.parent.parent / "2.0.0").mkdir()
 
     _assert_invalid_load(canonical)
 

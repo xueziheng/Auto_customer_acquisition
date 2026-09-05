@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ _TRUNCATED = "匹配技能数量超过上限，已截断"
 
 _MANIFEST_NAME = "manifest.yaml"
 _MANIFEST_LIMIT = 262_144
+_MAX_SCAN_DEPTH = 64
+_MAX_SCAN_ENTRIES = 10_000
 _SKILL_ID = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 _TOOL_ID = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 _ASCII_NUMERIC = re.compile(r"^[0-9]+$")
@@ -204,13 +207,6 @@ def _is_within(path: Path, parent: Path) -> bool:
     return path == parent or path.is_relative_to(parent)
 
 
-def _resolve_inside(path: Path, parent: Path) -> Path:
-    resolved = path.resolve(strict=True)
-    if not _is_within(resolved, parent):
-        raise _RegistryInvalid
-    return resolved
-
-
 def _canonical_dir(skills_dir: str) -> Path:
     requested = Path(skills_dir)
     if requested.name == "canonical":
@@ -225,47 +221,68 @@ def _canonical_dir(skills_dir: str) -> Path:
 
 def _manifest_paths(canonical: Path) -> list[tuple[Path, str, str | None]]:
     candidates: list[tuple[Path, str, str | None]] = []
-    for raw_skill_dir in sorted(canonical.iterdir(), key=lambda item: item.name):
-        if raw_skill_dir.name.startswith("._"):
-            continue
-        if raw_skill_dir.name in _EXCLUDED_CANONICAL_NAMES:
-            continue
-        if not raw_skill_dir.is_dir():
-            if raw_skill_dir.name == _MANIFEST_NAME:
-                raise _RegistryInvalid
-            continue
-        skill_dir = _resolve_inside(raw_skill_dir, canonical)
-        direct_manifest = skill_dir / _MANIFEST_NAME
-        found = False
-        if direct_manifest.exists():
-            candidates.append(
-                (_resolve_inside(direct_manifest, canonical), raw_skill_dir.name, None)
-            )
-            found = True
-        for raw_child in sorted(skill_dir.iterdir(), key=lambda item: item.name):
-            if raw_child.name.startswith("._") or not raw_child.is_dir():
-                continue
-            version_dir = _resolve_inside(raw_child, canonical)
-            version_manifest = version_dir / _MANIFEST_NAME
-            if not version_manifest.exists():
-                continue
-            for child in version_dir.iterdir():
-                if not child.is_dir() or child.name.startswith("._"):
-                    continue
-                nested_dir = _resolve_inside(child, canonical)
-                if (nested_dir / _MANIFEST_NAME).exists():
+    skill_dirs: set[Path] = set()
+    semver_dirs: set[Path] = set()
+    version_manifest_dirs: set[Path] = set()
+    stack: list[tuple[Path, int]] = [(canonical, 0)]
+    entries_seen = 0
+
+    while stack:
+        directory, depth = stack.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                entries_seen += 1
+                if entries_seen > _MAX_SCAN_ENTRIES:
                     raise _RegistryInvalid
-            candidates.append(
-                (
-                    _resolve_inside(version_manifest, canonical),
-                    raw_skill_dir.name,
-                    raw_child.name,
+                if entry.name.startswith("._"):
+                    continue
+
+                entry_path = Path(entry.path)
+                if entry.is_symlink():
+                    resolved = entry_path.resolve(strict=True)
+                    if not _is_within(resolved, canonical) or resolved.is_dir():
+                        raise _RegistryInvalid
+
+                if entry.is_dir(follow_symlinks=False):
+                    child_depth = depth + 1
+                    if child_depth > _MAX_SCAN_DEPTH:
+                        raise _RegistryInvalid
+                    if entry.name in _EXCLUDED_CANONICAL_NAMES:
+                        continue
+                    if child_depth == 1:
+                        skill_dirs.add(entry_path)
+                    elif child_depth == 2 and _SEMVER.fullmatch(entry.name):
+                        semver_dirs.add(entry_path)
+                    stack.append((entry_path, child_depth))
+                    continue
+
+                if entry.name != _MANIFEST_NAME:
+                    continue
+                if not entry_path.is_file():
+                    raise _RegistryInvalid
+                relative = entry_path.relative_to(canonical)
+                if len(relative.parts) == 2:
+                    directory_skill_id = relative.parts[0]
+                    directory_version = None
+                elif len(relative.parts) == 3:
+                    directory_skill_id = relative.parts[0]
+                    directory_version = relative.parts[1]
+                    version_manifest_dirs.add(entry_path.parent)
+                else:
+                    raise _RegistryInvalid
+                candidates.append(
+                    (entry_path, directory_skill_id, directory_version)
                 )
-            )
-            found = True
-        if not found:
-            raise _RegistryInvalid
-    return candidates
+
+    if semver_dirs - version_manifest_dirs:
+        raise _RegistryInvalid
+    registered_skill_dirs = {
+        canonical / directory_skill_id
+        for _path, directory_skill_id, _version in candidates
+    }
+    if skill_dirs - registered_skill_dirs:
+        raise _RegistryInvalid
+    return sorted(candidates, key=lambda candidate: str(candidate[0]))
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
