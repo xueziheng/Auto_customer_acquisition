@@ -92,9 +92,9 @@ def _facts() -> NeedClusterCatalogFacts:
         cluster_id=CLUSTER,
         cluster_category="three-wheelers",
         member_need_ids=(
-            ValidatedNeedId("vnd_01K00000000000000000000000"),
-            ValidatedNeedId("vnd_01K00000000000000000000001"),
-            ValidatedNeedId("vnd_01K00000000000000000000002"),
+            ValidatedNeedId("need_01K00000000000000000000000"),
+            ValidatedNeedId("need_01K00000000000000000000001"),
+            ValidatedNeedId("need_01K00000000000000000000002"),
         ),
         distinct_account_ids=(
             ProspectAccountId("acct_01K0000000000000000000000"),
@@ -256,7 +256,7 @@ async def test_membership_event_rereads_current_facts_and_starts_metadata_only_r
         tenant_id=TENANT,
         occurred_at=NOW,
         cluster_id=CLUSTER,
-        changed_need_id=ValidatedNeedId("vnd_01K00000000000000000000000"),
+        changed_need_id=ValidatedNeedId("need_01K00000000000000000000000"),
         member_count=999,
     )
 
@@ -289,7 +289,7 @@ async def test_missing_policy_and_unclustered_fact_change_are_acknowledged_noops
         NeedCatalogFactsChanged(
             tenant_id=TENANT,
             occurred_at=NOW,
-            need_id=ValidatedNeedId("vnd_01K00000000000000000000000"),
+            need_id=ValidatedNeedId("need_01K00000000000000000000000"),
             cluster_id=None,
             change_kind="quantity",
         )
@@ -299,7 +299,7 @@ async def test_missing_policy_and_unclustered_fact_change_are_acknowledged_noops
             tenant_id=TENANT,
             occurred_at=NOW,
             cluster_id=CLUSTER,
-            changed_need_id=ValidatedNeedId("vnd_01K00000000000000000000000"),
+            changed_need_id=ValidatedNeedId("need_01K00000000000000000000000"),
             member_count=3,
         )
     )
@@ -365,7 +365,7 @@ async def test_policy_event_mismatch_is_permanent_and_dependency_failure_is_reda
                 tenant_id=TENANT,
                 occurred_at=NOW,
                 cluster_id=CLUSTER,
-                changed_need_id=ValidatedNeedId("vnd_01K00000000000000000000000"),
+                changed_need_id=ValidatedNeedId("need_01K00000000000000000000000"),
                 member_count=3,
             )
         )

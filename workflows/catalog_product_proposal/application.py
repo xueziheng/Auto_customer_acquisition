@@ -67,6 +67,17 @@ def _id(value: object, prefix: str, subject: str) -> str:
     return value
 
 
+def _subject_id(value: object, subject: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value != value.strip()
+        or len(value) > 40
+    ):
+        raise ValidationError(f"{subject}无效")
+    return value
+
+
 def _limit(value: int) -> int:
     if type(value) is not int or not 1 <= value <= 200:
         raise ValidationError("目录产品事件批量上限无效")
@@ -202,13 +213,13 @@ class CatalogProductApplication:
         cluster_id = NeedClusterId(
             _id(event.cluster_id, "ncl", "目录需求簇成员事件 cluster_id")
         )
-        _id(event.changed_need_id, "vnd", "目录需求簇成员事件 need_id")
+        _subject_id(event.changed_need_id, "目录需求簇成员事件 need_id")
         return await self._evaluate_cluster(event.tenant_id, cluster_id)
 
     async def handle_need_catalog_facts_changed(
         self, event: NeedCatalogFactsChanged
     ):
-        _id(event.need_id, "vnd", "目录需求事实事件 need_id")
+        _subject_id(event.need_id, "目录需求事实事件 need_id")
         if event.change_kind not in {"quantity", "unit", "recurring_requirement"}:
             raise ValidationError("目录需求事实事件 change_kind 无效")
         if event.cluster_id is None:

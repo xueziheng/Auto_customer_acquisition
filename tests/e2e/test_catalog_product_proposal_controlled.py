@@ -156,7 +156,7 @@ async def _seed_controlled_catalog_facts(stack: E2EStack) -> _ControlledCatalogF
 
     product_employee_id = EmployeeId(new_id("emp"))
     account_ids = tuple(ProspectAccountId(new_id("acct")) for _ in range(3))
-    need_ids = tuple(ValidatedNeedId(new_id("vnd")) for _ in range(3))
+    need_ids = tuple(ValidatedNeedId(new_id("need")) for _ in range(3))
     async with stack.factory() as session:
         session.add(
             EmployeeRow(
