@@ -16,6 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from domains.demand.service import DemandService
 from shared.errors import ValidationError
 from shared.schemas.identifiers import TenantId, ValidatedNeedId, new_id
+from tests.integration.test_need_units import (
+    unit_engine as unit_engine,  # noqa: PLC0414 -- 每例隔离真实 PostgreSQL
+)
 
 NOW = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
 
@@ -29,12 +32,10 @@ class MutableClock:
 
 
 @pytest_asyncio.fixture
-async def demand_db(db_url: str) -> AsyncIterator[AsyncEngine]:
-    engine = importlib.import_module("infra.db.session").create_engine_from(db_url)
-    try:
-        yield engine
-    finally:
-        await engine.dispose()
+async def demand_db(unit_engine: AsyncEngine) -> AsyncIterator[AsyncEngine]:
+    """复购与归簇事实必须在每例独立数据库验证，避免污染迁移保护测试。"""
+
+    yield unit_engine
 
 
 def _service(
