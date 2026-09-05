@@ -1051,7 +1051,10 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
                 await page.set_viewport_size({"width": 1440, "height": 900})
             # 真实 scheduler/worker 消费：outbox drain → workflow → tool-gateway
             # → DNS connector → 本地 fake DNS；测试不直接写认证结果。
-            from apps.scheduler_worker.main import _run_cycle
+            from apps.scheduler_worker.main import (
+                WorkerStartStatus,
+                run_scheduler_worker,
+            )
             from apps.scheduler_worker.runtime import (
                 SchedulerDomainDependencies,
                 SchedulerRuntimeFactory,
@@ -1077,7 +1080,21 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
                 ),
                 resolver_factory=lambda: _LocalDnsResolver(dns_port),
             )() as runtime:
-                await _run_cycle(runtime, 1)
+                stop = asyncio.Event()
+
+                async def stop_after_first_cycle(
+                    _interval: float, stop_event: asyncio.Event
+                ) -> None:
+                    stop_event.set()
+
+                result = await run_scheduler_worker(
+                    runtime,
+                    stop_event=stop,
+                    wait=stop_after_first_cycle,
+                    install_signal_handlers=False,
+                )
+                assert result.status is WorkerStartStatus.STARTED
+                assert result.cycles_completed == 1
             # 证据一：本地 fake DNS 确实收到三个 TXT 查询（真实 connector 边界）
             assert {
                 "cold.example.com.",
