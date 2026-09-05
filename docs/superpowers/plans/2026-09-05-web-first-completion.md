@@ -185,6 +185,10 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 ### Task 5：入站正文插件与不可变归档
 
+本任务拆为5a技术读取/归档与5b耐久入库/关联/待核对入口。5a已完成并通过独立复审：初始源码`0daa7e2d`，修复源码`904a2947`，交付文档HEAD `46df91c3`。独立gic1游标、typed Gmail读取、Gateway内Raw写后实际读回、task-owned一次性交付槽与完整候选护栏均已实现。审查发现的任意codec提前解压及Date尾部歧义均已真实复现并修复，最终97项单元通过；6项真实PG/MinIO/Gateway定向组另有分轮证据。初始80项、HTTP59项、较早216项兼容组各按报告版本记录，不合并为全量总数。静态、结构和增量敏感检查通过。
+
+5a正式契约见`docs/superpowers/specs/2026-09-05-email-inbound-5a.md`和ADR0026。它只产生技术候选页，不验证客户关联、不写Message/Need/Opportunity；`parse_inbound_content`供后续授权Raw重读复用，已解析不等于已过护栏。5b仍需完成整页事务、实际SENT关联、永久失败恢复和待核对API，以及与Web发件身份配置衔接的明确邮箱绑定，故整体Task5尚未勾选。
+
 **Files:**
 - 读取：`connectors/gmail/AGENTS.md`、`artifact_store/AGENTS.md`、`tool_gateway/AGENTS.md`、`domains/conversations/AGENTS.md`。
 - 新增候选：`connectors/gmail/inbound.py`、`tool_gateway/handlers/email_inbound.py`、`workflows/reply_qualification/inbound.py`。
