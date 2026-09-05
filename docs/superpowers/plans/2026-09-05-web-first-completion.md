@@ -27,9 +27,9 @@
 
 实施基线选最新已验收的 Catalog 分支 `codex/phase2-catalog-product-proposal`，核对时 HEAD 为 `1b760b2`。规划开始时主目录 HEAD 为 `130dc85`，不是完整最新实现；本次规划文档的本地提交不改变该功能基线。
 
-本计划和配套设计保存在主目录，当前未执行分支切换或合并。实施时在已核验最新基线上创建 `codex/web-core-completion` 隔离工作树，并把本任务规划文档带入；不覆盖既有工作树的未跟踪截图、用户改动或共享 `.git/objects`。
+用户已确认执行。本计划和配套设计已从主目录带入 `.worktrees/web-core-completion`，执行分支为 `codex/web-core-completion`，功能基线 `1b760b2`、计划带入提交 `ec801a8`。既有工作树的截图、用户改动和共享 `.git/objects` 保持独立；本轮未执行合并。
 
-目前计划勾选只表示未来实施任务，不能把旧计划未勾选解释为功能未实现。后端 8741 / 前端 335 是历史验收证据，后续以实际同版本结果更新，不能累加各轮测试数量。
+本计划的勾选按各任务实施与审查证据更新；不能把其他旧计划未勾选解释为功能未实现。后端 8741 / 前端 335 是历史验收证据，后续以实际同版本结果更新，不能累加各轮测试数量。
 
 ## 1. 分批交付与依赖
 
@@ -87,13 +87,15 @@ git diff --check
 - 新增：`agent_runtime/skill_router/service.py`、`tests/unit/test_skill_router.py`。
 - 按实际新增契约更新：`agent_runtime/skill_router/router.py` 与技能 schema；原始上游 prompt 不改。
 
+**子规格：** `docs/superpowers/specs/2026-09-05-skill-router-contract.md`。实现与修复提交 `143983f`、`ca7827dd`、`5ab99feb`；最终聚焦测试 85 passed，ruff/mypy/结构检查通过，独立审查通过。
+
 **Interfaces:** 实现已有 `load_registry(skills_dir: str) -> int`、`select(trigger: str, *, max_skills: int = 3) -> list[SkillManifest]`、`get(skill_id: str, version: str | None = None) -> SkillManifest`。拟新增实现名 `FileSkillRouter`。
 
-- [ ] 写测试证明精确 trigger、最高合法版本、指定历史版本和无匹配空结果。
-- [ ] 写拒绝测试：重复同 ID/version、缺字段、非法版本、空 eval 引用、prompt 越出允许目录、非法风险/工具值、非正 max_skills。
-- [ ] 运行单文件确认测试击中缺失实现，然后实现纯注册/选择；加载不联网、不调用模型、不写业务表。
-- [ ] 核对 schema 与 SkillManifest 的字段差异，尤其 description/upstream_ref/evals，不静默丢失会影响护栏的字段；补正式映射和兼容测试。
-- [ ] 运行聚焦测试、结构检查，提交本任务。
+- [x] 写测试证明精确 trigger、最高合法版本、指定历史版本和无匹配空结果。
+- [x] 写拒绝测试：重复同 ID/version、缺字段、非法版本、空 eval 引用、prompt 越出允许目录、非法风险/工具值、非正 max_skills。
+- [x] 运行单文件确认测试击中缺失实现，然后实现纯注册/选择；加载不联网、不调用模型、不写业务表。
+- [x] 核对 schema 与 SkillManifest 的字段差异，尤其 description/upstream_ref/evals，不静默丢失会影响护栏的字段；补正式映射和兼容测试。
+- [x] 运行聚焦测试、结构检查，提交本任务。
 
 拟议行为测试（`skill_registry_dir` 是本测试文件创建的受控 manifest 目录 fixture，包含 demand.infer_buyer_need 的 1.0.0 和 1.1.0，以及其受控 prompt/eval 文件）：
 
@@ -342,11 +344,11 @@ git diff --check
 
 ## 10. 规划自检与执行规则
 
-- [ ] 开始实现前再次读取本计划与设计，确认分支和部署假设没有变化。
+- [x] 开始实现前再次读取本计划与设计，确认分支和部署假设没有变化。
 - [ ] 每批先补该批的接口/数据迁移详细规格，再写对应失败测试；不能一次同时改七个批次。
 - [ ] W0–W6 覆盖设计 A1–A10；每个测试证据归属一个真实代码版本。
 - [ ] 发生跨域公共契约、事件字段或共享规则变更时先留 ADR，执行时分配最新编号。
 - [ ] 不创建平行 Agent 规则入口；所有长期执行约束仍在 AGENTS.md，规格与计划只描述这次交付。
 - [ ] 完成标准按批次的 Exit gate 和 A1–A10 判定，不用百分比猜测完成。
 
-建议从 **Task 0 → Task 1 → Task 2** 开始；本次交付止于规划，所有实施任务保持未勾选。
+执行顺序从 **Task 0 → Task 1 → Task 2** 开始，逐批实现与审查。用户已批准本机受控范围内的实施；任务通过门禁后才勾选，不从组件测试推导已完成整条业务链。
