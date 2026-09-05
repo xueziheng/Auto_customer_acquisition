@@ -404,7 +404,7 @@ async def test_real_facts_event_drives_evaluation_outbox_and_cultivation_once(
         tenant_id=tenant,
         occurred_at=clock(),
         cluster_id=facts.cluster_id,
-        changed_need_id=ValidatedNeedId(new_id("vnd")),
+        changed_need_id=ValidatedNeedId(new_id("need")),
         member_count=999,
     )
 

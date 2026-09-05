@@ -155,7 +155,7 @@ async def _seed_controlled_catalog_facts(stack: E2EStack) -> _ControlledCatalogF
     """只 seed 合成 Account/Need/Provenance；目录业务行仍全部走真实端口。"""
 
     product_employee_id = EmployeeId(new_id("emp"))
-    account_ids = tuple(ProspectAccountId(new_id("acct")) for _ in range(3))
+    account_ids = tuple(ProspectAccountId(new_id("acc")) for _ in range(3))
     need_ids = tuple(ValidatedNeedId(new_id("need")) for _ in range(3))
     async with stack.factory() as session:
         session.add(

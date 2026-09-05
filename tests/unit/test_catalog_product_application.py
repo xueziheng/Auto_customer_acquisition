@@ -97,9 +97,9 @@ def _facts() -> NeedClusterCatalogFacts:
             ValidatedNeedId("need_01K00000000000000000000002"),
         ),
         distinct_account_ids=(
-            ProspectAccountId("acct_01K0000000000000000000000"),
-            ProspectAccountId("acct_01K0000000000000000000001"),
-            ProspectAccountId("acct_01K0000000000000000000002"),
+            ProspectAccountId("acc_01K00000000000000000000000"),
+            ProspectAccountId("acc_01K00000000000000000000001"),
+            ProspectAccountId("acc_01K00000000000000000000002"),
         ),
         member_count=3,
         distinct_account_count=3,
@@ -311,11 +311,42 @@ async def test_missing_policy_and_unclustered_fact_change_are_acknowledged_noops
 
 
 @pytest.mark.asyncio
+async def test_catalog_fact_events_reject_noncanonical_need_and_account_namespaces() -> None:
+    """若消费者接受测试自造的 vnd_/acct_ ID，本测试应失败。"""
+    demand, products, engine = _Demand(), _Products(), _Engine()
+    app = _application(demand, products, engine)
+
+    with pytest.raises(ValidationError, match="need_id无效"):
+        await app.handle_need_catalog_facts_changed(
+            NeedCatalogFactsChanged(
+                tenant_id=TENANT,
+                occurred_at=NOW,
+                need_id=ValidatedNeedId("vnd_01K00000000000000000000000"),
+                cluster_id=None,
+                change_kind="quantity",
+            )
+        )
+    with pytest.raises(ValidationError, match="account_id无效"):
+        await app.handle_account_country_facts_changed(
+            AccountCountryFactsChanged(
+                tenant_id=TENANT,
+                occurred_at=NOW,
+                account_id=ProspectAccountId("acct_01K0000000000000000000000"),
+            ),
+            limit=17,
+        )
+
+    assert demand.fact_reads == []
+    assert demand.account_reads == []
+    assert engine.starts == []
+
+
+@pytest.mark.asyncio
 async def test_account_and_policy_events_use_explicit_bounded_cluster_reads() -> None:
     """若 account/policy 事件无界 fan-out 或信任事件携带列表，本测试应失败。"""
     demand, products, engine = _Demand(), _Products(), _Engine()
     app = _application(demand, products, engine)
-    account = ProspectAccountId("acct_01K0000000000000000000000")
+    account = ProspectAccountId("acc_01K00000000000000000000000")
 
     await app.handle_account_country_facts_changed(
         AccountCountryFactsChanged(

@@ -901,7 +901,7 @@ async def test_real_scheduler_recovers_committed_policy_pages_across_reconstruct
         tenant_id=tenant,
         occurred_at=NOW,
         cluster_id=NeedClusterId("ncl_recovery_missing"),
-        changed_need_id=ValidatedNeedId("vnd_recovery_missing"),
+        changed_need_id=ValidatedNeedId("need_recovery_missing"),
         member_count=1,
     )
     session = factory()
