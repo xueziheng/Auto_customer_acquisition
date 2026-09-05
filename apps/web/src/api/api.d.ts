@@ -1282,6 +1282,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/health/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Capabilities View */
+        get: operations["capabilities_view_health_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/inbox/conversations": {
         parameters: {
             query?: never;
@@ -6641,6 +6658,24 @@ export interface components {
             tool_id: string;
             /** Tool Version */
             tool_version: string;
+        };
+        /** RuntimeCapability */
+        RuntimeCapability: {
+            /**
+             * Name
+             * @enum {string}
+             */
+            name: "research" | "contacts" | "campaign" | "reply" | "sourcing" | "quotation" | "inbound_body" | "full_reply" | "agent" | "browser";
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "not_requested" | "composed" | "required_ports_missing" | "not_implemented" | "worker_required";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "disabled" | "enabled" | "configuration_error";
         };
         /**
          * ScoreExplanation
@@ -12014,6 +12049,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DemandSignalView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    capabilities_view_health_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeCapability"][];
                 };
             };
             /** @description 请求参数无效 */

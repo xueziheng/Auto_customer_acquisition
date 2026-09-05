@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from agent_runtime.model_client import StructuredJsonModelClient
 from connectors.gmail.client import SecretResolver
+from connectors.gmail.transport import GmailHttpTransport
 from connectors.object_store.config import S3ObjectStoreSettings
 from infra.db.schema import (
     DatabaseSchemaError,
@@ -103,6 +104,7 @@ def create_runtime_app_from_settings(
     object_store_settings: S3ObjectStoreSettings,
     model_client: StructuredJsonModelClient | None = None,
     manual_send: ManualSendComposition | None = None,
+    gmail_transport: GmailHttpTransport | None = None,
 ) -> FastAPI:
     """按显式配置与端口装配；借用注入模型，自有资源只在 lifespan 关闭。
 
@@ -119,6 +121,7 @@ def create_runtime_app_from_settings(
             object_store_settings=object_store_settings,
             model_client=model_client,
             manual_send=manual_send,
+            gmail_transport=gmail_transport,
         )
     except Exception as exc:  # noqa: BLE001 装配异常只记录类型并固定映射
         logger.error("API runtime 装配失败", extra={"error_type": type(exc).__name__})

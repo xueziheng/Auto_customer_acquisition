@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable, Generator, Mapping
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from socket import socket
 from typing import Protocol, cast
 
@@ -18,6 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from agent_runtime.qualification_agent.agent import ReplyClassifier
+from apps.composition_support.employee_readers import (
+    EmployeeServiceScope,
+    RequestScopedCatalogApprovalActorReader,
+    employee_service_scope,
+)
 from artifact_store.repository import ArtifactUnitOfWorkFactory
 from artifact_store.service_impl import GeneratedArtifactStoreImpl, RawArtifactStoreImpl
 from connectors.dns_auth.client import (
@@ -44,12 +50,15 @@ from domains.compliance.permissions import (
     ComplianceScope,
     Phase1ComplianceAuthorizer,
 )
+from domains.compliance.service import ComplianceService
 from domains.compliance.service_impl import ComplianceServiceImpl
 from domains.conversations.service import ConversationService
+from domains.conversations.service_impl import ConversationServiceImpl
 from domains.demand.service import DemandService
 from domains.directives.service_impl import DirectiveServiceImpl
 from domains.employees.permissions import Actor as EmployeeActor
-from domains.employees.permissions import EmployeeScope
+from domains.employees.permissions import EmployeeScope, Phase1EmployeeAuthorizer
+from domains.employees.permissions import StandardAuditLogger as EmployeeAuditLogger
 from domains.employees.service import EmployeeService
 from domains.opportunities.permissions import Actor as OpportunityActor
 from domains.opportunities.permissions import OpportunityScope
@@ -99,6 +108,7 @@ from domains.sending_identity.service_impl import SendingIdentityServiceImpl
 from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.compliance_uow import SqlAlchemyComplianceUnitOfWork
+from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
 from infra.db.directive_uow import SqlAlchemyDirectiveUnitOfWork
 from infra.db.email_feedback_uow import (
     AuditSink as FeedbackAuditSink,
@@ -154,6 +164,7 @@ from shared.schemas.identifiers import (
     UserId,
     new_id,
 )
+from shared.schemas.runtime_capabilities import RuntimeCapability
 from tool_gateway.checks.approval import ApprovalCheck
 from tool_gateway.checks.idempotency import IdempotencyCheck
 from tool_gateway.checks.permission import PermissionCheck
@@ -951,14 +962,48 @@ class _QuoteRuntimeActivation:
         await self.quotation_lifecycle.startup()
 
 
+@dataclass(frozen=True)
+class SchedulerCoreServices:
+    """第一阶段已存在的唯一公开域服务；不是全系统容器。"""
+
+    employee_scope: EmployeeServiceScope
+    approvals: ApprovalService
+    sending: SendingIdentityService
+    prospecting: ProspectingService
+    demand: DemandService
+    conversations: ConversationService
+    organization: OrganizationService
+    compliance: ComplianceService
+
+
+class SchedulerBootstrap(Protocol):
+    """消费本次连接池及已存在服务，按拓扑形成依赖。"""
+
+    def build_base(
+        self,
+        config: SchedulerWorkerConfig,
+        sessions: async_sessionmaker[AsyncSession],
+        core: SchedulerCoreServices,
+        *,
+        now: Callable[[], datetime],
+    ) -> SchedulerDomainDependencies: ...
+
+    def build_reply(
+        self,
+        core: SchedulerCoreServices,
+        outreach: OutreachService | None,
+    ) -> ReplyQualificationComposition | None: ...
+
+
 class SchedulerRuntimeFactory:
     """生产 composition root：只注入 typed 业务依赖，其余资源在此构造/释放。"""
 
     def __init__(
         self,
         environ: Mapping[str, str],
-        dependencies: SchedulerDomainDependencies,
+        dependencies: SchedulerDomainDependencies | None = None,
         *,
+        bootstrap: SchedulerBootstrap | None = None,
         resolver_factory: Callable[[], AsyncTxtResolver] = DnsPythonAsyncResolver,
         health_server_factory: Callable[
             [SchedulerHealthState, int], SchedulerHealthServer
@@ -968,12 +1013,18 @@ class SchedulerRuntimeFactory:
         ] = HunterApiHttpTransport,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
-        if not isinstance(environ, Mapping) or not isinstance(
-            dependencies, SchedulerDomainDependencies
+        if (
+            not isinstance(environ, Mapping)
+            or (dependencies is None) == (bootstrap is None)
+            or (
+                dependencies is not None
+                and not isinstance(dependencies, SchedulerDomainDependencies)
+            )
         ):
             raise ValidationError("scheduler runtime factory 依赖无效")
         self._environ = environ
         self._dependencies = dependencies
+        self._bootstrap = bootstrap
         self._resolver_factory = resolver_factory
         self._health_server_factory = health_server_factory
         if not callable(hunter_transport_factory):
@@ -986,6 +1037,7 @@ class SchedulerRuntimeFactory:
 
     @asynccontextmanager
     async def _resources(self) -> AsyncIterator[SchedulerRuntime]:
+        dependencies = self._dependencies
         config = SchedulerWorkerConfig.from_environ(self._environ)
         quote_settings = (
             quotation_from_json(self._environ["TRADEOS_QUOTATION_SETTINGS_JSON"])
@@ -1047,36 +1099,16 @@ class SchedulerRuntimeFactory:
                     ProviderReadinessState.RUNTIME_NOT_COMPOSED,
                     ProviderReadinessState.READY,
                 }
-                if hunter_validated and (
-                    self._dependencies.account_discovery is None
-                    or self._dependencies.account_discovery.hunter is None
+                if (
+                    hunter_validated
+                    and dependencies is not None
+                    and (
+                        dependencies.account_discovery is None
+                        or dependencies.account_discovery.hunter is None
+                    )
                 ):
                     raise ValidationError("scheduler Hunter 生产组合不完整")
 
-            jobs = PostgresNotificationJobStore(factory, now=self._now)
-            notification_handler = NotificationProjectionHandler(
-                tenant_id=config.tenant_id,
-                audience=self._dependencies.notification_audience,
-                jobs=jobs,
-                now=self._now,
-            )
-            scheduler_employee_actor = EmployeeActor(
-                "system:scheduler", EmployeeScope.SYSTEM, "system"
-            )
-            handoff_handlers = build_human_handoff_step_handlers(
-                opportunity_service=self._dependencies.opportunity_service,
-                employee_service=self._dependencies.employee_service,
-                notifier=NotificationJobHandoffNotifier(jobs, now=self._now),
-                opportunity_system_actor=OpportunityActor(
-                    "system:scheduler",
-                    OpportunityScope(level=OpportunityScopeLevel.SYSTEM),
-                    "system",
-                ),
-                employee_system_actor=scheduler_employee_actor,
-                t1=timedelta(seconds=config.handoff_t1_seconds),
-                t2=timedelta(seconds=config.handoff_t2_seconds),
-                now=self._now,
-            )
             secrets = EnvironmentSecretResolver(self._environ)
             fingerprint_key = secrets.resolve(config.fingerprint_key_ref).encode(
                 "utf-8"
@@ -1173,6 +1205,13 @@ class SchedulerRuntimeFactory:
                     artifact_reader=artifact_reader,
                     now=self._now,
                 )
+            employee_scope = partial(
+                employee_service_scope,
+                factory,
+                now=self._now,
+                authorizer=Phase1EmployeeAuthorizer(config.tenant_id),
+                audit=EmployeeAuditLogger(),
+            )
             change_approvals = ApprovalServiceImpl(
                 lambda requested_tenant: SqlAlchemyApprovalUnitOfWork(  # type: ignore[arg-type, return-value]
                     factory, requested_tenant, now=self._now
@@ -1181,6 +1220,12 @@ class SchedulerRuntimeFactory:
                 quote_access=None
                 if quote_domain is None
                 else quote_domain.approval_access,
+                catalog_actor_reader=RequestScopedCatalogApprovalActorReader(
+                    employee_scope,
+                    EmployeeActor(
+                        "system:catalog-approval", EmployeeScope.SYSTEM, "system"
+                    ),
+                ),
             )
             catalog_prospecting = ProspectingServiceImpl(
                 lambda requested_tenant: SqlAlchemyProspectingUnitOfWork(
@@ -1260,6 +1305,57 @@ class SchedulerRuntimeFactory:
                 StandardAuditLogger(),
                 now=self._now,
             )
+            core = SchedulerCoreServices(
+                employee_scope,
+                change_approvals,
+                sending,
+                catalog_prospecting,
+                catalog_products.demand,
+                ConversationServiceImpl(
+                    lambda tenant: SqlAlchemyConversationsUnitOfWork(  # type: ignore[arg-type, return-value]
+                        factory, tenant, now=self._now
+                    ),  # type: ignore[arg-type, return-value]
+                    now=self._now,
+                ),
+                playbook_organization,
+                country_policy,
+            )
+            if self._bootstrap is not None:
+                dependencies = self._bootstrap.build_base(
+                    config, factory, core, now=self._now
+                )
+            if dependencies is None:
+                raise ValidationError("scheduler 当前领域组合不可用")
+            if hunter_validated and (
+                dependencies.account_discovery is None
+                or dependencies.account_discovery.hunter is None
+            ):
+                raise ValidationError("scheduler Hunter 生产组合不完整")
+
+            jobs = PostgresNotificationJobStore(factory, now=self._now)
+            notification_handler = NotificationProjectionHandler(
+                tenant_id=config.tenant_id,
+                audience=dependencies.notification_audience,
+                jobs=jobs,
+                now=self._now,
+            )
+            scheduler_employee_actor = EmployeeActor(
+                "system:scheduler", EmployeeScope.SYSTEM, "system"
+            )
+            handoff_handlers = build_human_handoff_step_handlers(
+                opportunity_service=dependencies.opportunity_service,
+                employee_service=dependencies.employee_service,
+                notifier=NotificationJobHandoffNotifier(jobs, now=self._now),
+                opportunity_system_actor=OpportunityActor(
+                    "system:scheduler",
+                    OpportunityScope(level=OpportunityScopeLevel.SYSTEM),
+                    "system",
+                ),
+                employee_system_actor=scheduler_employee_actor,
+                t1=timedelta(seconds=config.handoff_t1_seconds),
+                t2=timedelta(seconds=config.handoff_t2_seconds),
+                now=self._now,
+            )
             connector = DnsAuthenticationConnector(
                 self._resolver_factory(), now=self._now
             )
@@ -1307,19 +1403,27 @@ class SchedulerRuntimeFactory:
             )
             campaign_handlers: dict[str, StepHandler] = {}
             campaign_outreach: OutreachService | None = None
-            if self._dependencies.campaign_messaging is not None:
+            if dependencies.campaign_messaging is not None:
                 campaign_handlers, campaign_outreach = self._build_campaign_messaging(
                     factory,
                     config,
-                    self._dependencies.campaign_messaging,
+                    dependencies.campaign_messaging,
                     sending,
                     fingerprints,
                     secrets,
                     tool_user,
                 )
+            if self._bootstrap is not None:
+                reply = self._bootstrap.build_reply(core, campaign_outreach)
+                if reply is not None and (
+                    reply.outreach is not campaign_outreach
+                    or reply.conversations is not core.conversations
+                ):
+                    raise ValidationError("scheduler 回复必须使用当前规范服务")
+                dependencies = replace(dependencies, reply_qualification=reply)
             reply_handlers: dict[str, StepHandler] = {}
-            if self._dependencies.reply_qualification is not None:
-                reply_composition = self._dependencies.reply_qualification
+            if dependencies.reply_qualification is not None:
+                reply_composition = dependencies.reply_qualification
                 reply_handlers = build_reply_qualification_handlers(
                     classifier=reply_composition.classifier,
                     content_reader=reply_composition.content_reader,
@@ -1332,10 +1436,10 @@ class SchedulerRuntimeFactory:
                 )
             account_handlers: dict[str, StepHandler] = {}
             runtime_activation: RuntimeActivation | None = None
-            if self._dependencies.account_discovery is not None:
+            if dependencies.account_discovery is not None:
                 if campaign_outreach is None:
                     raise ValidationError("account_discovery 必须配置 Campaign 发送链")
-                account = self._dependencies.account_discovery
+                account = dependencies.account_discovery
                 if account.hunter is not None:
                     if (
                         not config.hunter_contacts.enabled
@@ -1401,8 +1505,8 @@ class SchedulerRuntimeFactory:
                 )
             demand_handlers: dict[str, StepHandler] = {}
             account_queue: _AccountDiscoveryWorkflowQueue | None = None
-            if self._dependencies.demand_discovery is not None:
-                demand_discovery = self._dependencies.demand_discovery
+            if dependencies.demand_discovery is not None:
+                demand_discovery = dependencies.demand_discovery
                 web_tools = build_web_discovery_tools(
                     factory=factory,
                     tenant_id=config.tenant_id,
@@ -1413,7 +1517,7 @@ class SchedulerRuntimeFactory:
                     lease_duration=timedelta(seconds=config.tool_lease_seconds),
                     now=self._now,
                 )
-                if self._dependencies.account_discovery is not None:
+                if dependencies.account_discovery is not None:
                     account_queue = _AccountDiscoveryWorkflowQueue()
                 demand_handlers = build_demand_discovery_handlers(
                     task_reader=demand_discovery.task_reader,
@@ -1429,7 +1533,7 @@ class SchedulerRuntimeFactory:
             sourcing_policy_reader: DirectiveSourcingAdmissionPolicyReader | None = None
             sourcing_handlers: dict[str, StepHandler] = {}
             if config.sourcing is not None:
-                if self._dependencies.sourcing_case is None:
+                if dependencies.sourcing_case is None:
                     raise ValidationError("scheduler sourcing_case 生产依赖未配置")
                 sourcing_composition = build_sourcing_case_composition(
                     factory=factory,
@@ -1439,7 +1543,7 @@ class SchedulerRuntimeFactory:
                         factory=factory,
                         tenant_id=config.tenant_id,
                         settings=config.sourcing,
-                        composition=self._dependencies.sourcing_case,
+                        composition=dependencies.sourcing_case,
                         tool_user=tool_user,
                         fingerprints=fingerprints,
                         secret_resolver=secrets,
@@ -1447,11 +1551,12 @@ class SchedulerRuntimeFactory:
                         lease_duration=timedelta(seconds=config.tool_lease_seconds),
                         now=self._now,
                     ),
-                    opportunities=self._dependencies.opportunity_service,
+                    opportunities=dependencies.opportunity_service,
                     now=self._now,
+                    demand=core.demand,
                 )
                 directive_employees = SchedulerDirectiveEmployeeReader(
-                    self._dependencies.employee_service,
+                    dependencies.employee_service,
                     scheduler_employee_actor,
                     config.tenant_id,
                 )
@@ -1596,7 +1701,7 @@ class SchedulerRuntimeFactory:
                     campaign_events,
                 )
 
-            if self._dependencies.reply_qualification is not None:
+            if dependencies.reply_qualification is not None:
                 register_reply_qualification(workflow)
                 reply_events = ReplyQualificationEventHandlers(
                     engine=workflow,
@@ -1609,7 +1714,7 @@ class SchedulerRuntimeFactory:
                     reply_events,
                 )
 
-            if self._dependencies.account_discovery is not None:
+            if dependencies.account_discovery is not None:
                 register_account_discovery(workflow)
                 account_campaign_events = AccountDiscoveryCampaignEventHandlers(
                     engine=workflow,
@@ -1628,7 +1733,7 @@ class SchedulerRuntimeFactory:
                     account_campaign_events,
                 )
 
-            if self._dependencies.demand_discovery is not None:
+            if dependencies.demand_discovery is not None:
                 register_demand_discovery(workflow)
 
             if tuple(item.tool_id for item in tool_registry.list_manifests()) != (
@@ -1667,6 +1772,62 @@ class SchedulerRuntimeFactory:
                 sourcing_admission_driver=sourcing_admission_driver,
                 catalog_product_driver=catalog_runtime.driver,
                 lifecycle=health,
+                capabilities=(
+                    RuntimeCapability(
+                        name="research",
+                        status="enabled"
+                        if dependencies.demand_discovery
+                        else "disabled",
+                        reason="composed"
+                        if dependencies.demand_discovery
+                        else "not_requested",
+                    ),
+                    RuntimeCapability(
+                        name="contacts",
+                        status="enabled"
+                        if dependencies.account_discovery
+                        else "disabled",
+                        reason="composed"
+                        if dependencies.account_discovery
+                        else "not_requested",
+                    ),
+                    RuntimeCapability(
+                        name="campaign",
+                        status="enabled" if campaign_outreach else "disabled",
+                        reason="composed" if campaign_outreach else "not_requested",
+                    ),
+                    RuntimeCapability(
+                        name="reply",
+                        status="enabled"
+                        if dependencies.reply_qualification
+                        else "disabled",
+                        reason="composed"
+                        if dependencies.reply_qualification
+                        else "not_requested",
+                    ),
+                    RuntimeCapability(
+                        name="sourcing",
+                        status="enabled" if sourcing_composition else "disabled",
+                        reason="composed" if sourcing_composition else "not_requested",
+                    ),
+                    RuntimeCapability(
+                        name="quotation",
+                        status="enabled" if quotation else "disabled",
+                        reason="composed" if quotation else "not_requested",
+                    ),
+                    RuntimeCapability(
+                        name="inbound_body", status="disabled", reason="not_implemented"
+                    ),
+                    RuntimeCapability(
+                        name="full_reply", status="disabled", reason="not_implemented"
+                    ),
+                    RuntimeCapability(
+                        name="agent", status="disabled", reason="not_implemented"
+                    ),
+                    RuntimeCapability(
+                        name="browser", status="disabled", reason="not_implemented"
+                    ),
+                ),
             )
         except BaseException as error:
             primary = error

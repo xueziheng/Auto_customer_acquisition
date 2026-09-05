@@ -1198,3 +1198,12 @@ class NeedClusterPriorityFacts:
     cluster_id: str | None
     cluster_member_count: int
     facts_observed_at: datetime
+
+
+class OutreachHypothesisCategories(BaseModel):
+    """当前有证据活跃假设类别，仍是推断而非已验证需求。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    tenant_id: TenantId
+    account_id: ProspectAccountId
+    categories: tuple[str, ...]

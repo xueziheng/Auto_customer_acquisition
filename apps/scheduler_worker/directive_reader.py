@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from apps.composition_support.employee_readers import CurrentEmployeeUserReader
 from domains.directives.service import DirectiveService
 from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.schemas import EmployeeView
@@ -85,10 +86,15 @@ class SchedulerDirectiveEmployeeReader:
 
 
 class DirectiveDemandDiscoveryTaskReader:
-    def __init__(self, directives: DirectiveService) -> None:
+    def __init__(
+        self,
+        directives: DirectiveService,
+        users: CurrentEmployeeUserReader | None = None,
+    ) -> None:
         if not isinstance(directives, DirectiveService):
             raise ValidationError("需求探索指令读取器依赖无效")
         self._directives = directives
+        self._users = users
 
     async def load_confirmed(
         self,
@@ -96,10 +102,15 @@ class DirectiveDemandDiscoveryTaskReader:
         proposal_id: str,
         acting_user: UserId,
     ) -> DemandDiscoveryPlan:
+        if self._users is None:
+            raise ValidationError("需求探索员工映射依赖未配置")
+        employee = await self._users.get_for_user(tenant_id, acting_user)
+        if employee.role != "boss":
+            raise ValidationError("需求探索员工身份不可用")
         plan = await self._directives.get_confirmed_discovery_plan(
             tenant_id,
             proposal_id,
-            EmployeeId(str(acting_user)),
+            employee.employee_id,
         )
         return DemandDiscoveryPlan(
             objective=plan.objective,

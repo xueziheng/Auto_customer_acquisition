@@ -74,9 +74,7 @@ class ClassificationRepository(Protocol):
         """该 message 的分类记录（每 message 至多一条）。"""
         ...
 
-    async def add_correction(
-        self, correction: ClassificationCorrection
-    ) -> bool:
+    async def add_correction(self, correction: ClassificationCorrection) -> bool:
         """append 一条纠正记录；返回 True=新插入，False=DB 幂等冲突（同键已存在）。
 
         PostgreSQL ``INSERT ... ON CONFLICT DO NOTHING``，唯一键为
@@ -113,6 +111,7 @@ class ReplyWorkRepository(Protocol):
         *,
         limit: int,
     ) -> list[ReplyWorkRecord]: ...
+
 
 @runtime_checkable
 class ConversationsUnitOfWork(Protocol):
@@ -163,6 +162,14 @@ class MessageRepository(Protocol):
     async def list_for_conversation(
         self, tenant_id: TenantId, conversation_id: ConversationId
     ) -> list[Message]: ...
+
+    async def account_reply_summary(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+    ) -> tuple[bool, datetime | None]:
+        """返回未分类存在性及有效真人回复最大时间；单 SQL 快照，无消息原文。"""
+        ...
 
     async def has_inbound_since(
         self, tenant_id: TenantId, conversation_id: ConversationId, since: str

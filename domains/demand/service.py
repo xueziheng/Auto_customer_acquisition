@@ -61,6 +61,7 @@ from domains.demand.schemas import (
     NeedUnitConfirmationView,
     NeedUnitEvidenceQuery,
     NeedUnitScopeFacts,
+    OutreachHypothesisCategories,
     SignalCaptureRequest,
     ValidatedNeedView,
     VerifiedCustomerReplyEvidence,
@@ -120,8 +121,9 @@ from shared.schemas.quote_facts import (
 class NeedUnitScopeReader(Protocol):
     """只读锁内员工、Need/机会/account绑定，不作业务角色判断。"""
 
-    def open(self, tenant_id: TenantId, need_id: ValidatedNeedId,
-        actor_id: EmployeeId) -> AbstractAsyncContextManager[NeedUnitScopeFacts]:
+    def open(
+        self, tenant_id: TenantId, need_id: ValidatedNeedId, actor_id: EmployeeId
+    ) -> AbstractAsyncContextManager[NeedUnitScopeFacts]:
         """Employee→Opportunity SHARE保持至内层Need事务退出。"""
         ...
 
@@ -129,14 +131,25 @@ class NeedUnitScopeReader(Protocol):
 class NeedUnitAuthorizer(Protocol):
     """当前员工与机会授权；guard保护授权行直至内层Need事务提交。"""
 
-    async def check(self, tenant_id: TenantId, need_id: ValidatedNeedId,
-                    actor_id: EmployeeId, *, action: NeedUnitAction) -> NeedUnitAccess:
+    async def check(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+        actor_id: EmployeeId,
+        *,
+        action: NeedUnitAction,
+    ) -> NeedUnitAccess:
         """来源IO前即时核验，完整事实读取也须授权。"""
         ...
 
-    def guard(self, tenant_id: TenantId, need_id: ValidatedNeedId,
-              actor_id: EmployeeId, *, action: NeedUnitAction
-              ) -> AbstractAsyncContextManager[NeedUnitAccess]:
+    def guard(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+        actor_id: EmployeeId,
+        *,
+        action: NeedUnitAction,
+    ) -> AbstractAsyncContextManager[NeedUnitAccess]:
         """持授权保护后方可锁Need；不可只返回过时allowed。"""
         ...
 
@@ -144,12 +157,19 @@ class NeedUnitAuthorizer(Protocol):
 class NeedUnitEvidenceReader(Protocol):
     """上层通过Gateway核验客户消息，不以供应商口径推断客户单位。"""
 
-    async def read_verified(self, query: NeedUnitEvidenceQuery) -> VerifiedNeedUnitEvidence:
+    async def read_verified(
+        self, query: NeedUnitEvidenceQuery
+    ) -> VerifiedNeedUnitEvidence:
         """零锁读取原件，核验真实消息、hash、定位、摘录及数量单位关系。"""
         ...
 
-    async def authorize_reference(self, tenant_id: TenantId, need_id: ValidatedNeedId,
-                                  actor_id: EmployeeId, source: VerifiedNeedUnitEvidence) -> None:
+    async def authorize_reference(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+        actor_id: EmployeeId,
+        source: VerifiedNeedUnitEvidence,
+    ) -> None:
         """历史receipt输出前仅用元数据重验当前来源阅读权，不取原文。"""
         ...
 
@@ -157,20 +177,32 @@ class NeedUnitEvidenceReader(Protocol):
 class NeedUnitService(Protocol):
     """窄的人工单位事实入口，不批准价格、交期或其他商业承诺。"""
 
-    async def confirm(self, tenant_id: TenantId, need_id: ValidatedNeedId,
-                      command: NeedUnitConfirmationCommand, *, actor_id: EmployeeId,
-                      idempotency_key: str) -> NeedUnitConfirmationView:
+    async def confirm(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+        command: NeedUnitConfirmationCommand,
+        *,
+        actor_id: EmployeeId,
+        idempotency_key: str,
+    ) -> NeedUnitConfirmationView:
         """同键持久恢复；绑定/receipt/历史原子，不重新激活旧单位。"""
         ...
 
-    async def get_facts(self, tenant_id: TenantId, need_id: ValidatedNeedId,
-                        *, actor_id: EmployeeId) -> NeedQuoteFacts:
+    async def get_facts(
+        self, tenant_id: TenantId, need_id: ValidatedNeedId, *, actor_id: EmployeeId
+    ) -> NeedQuoteFacts:
         """授权后读取完整事实及当前绑定，不宣称单位一定有效。"""
         ...
 
-    async def get_confirmation(self, tenant_id: TenantId, need_id: ValidatedNeedId,
-                               confirmation_id: str, *, actor_id: EmployeeId
-                               ) -> NeedUnitConfirmationView:
+    async def get_confirmation(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+        confirmation_id: str,
+        *,
+        actor_id: EmployeeId,
+    ) -> NeedUnitConfirmationView:
         """重验当前需求和来源阅读权后读取不可变历史。"""
         ...
 
@@ -247,6 +279,7 @@ class DemandCatalogAccountFactsReader(Protocol):
         """返回同租户、同账户的精确 ISO-2 国家事实或显式未知。"""
         ...
 
+
 @runtime_checkable
 class DemandService(Protocol):
     """需求域服务。"""
@@ -281,6 +314,14 @@ class DemandService(Protocol):
           （拒绝覆盖 first reason）
         - 不发布事件
         """
+        ...
+
+    async def get_outreach_hypothesis_categories(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+    ) -> OutreachHypothesisCategories:
+        """读取最多200个当前有证据活跃假设类别；超限固定失败，拒绝静默截断。"""
         ...
 
     # --- 假设 -----------------------------------------------------------

@@ -272,9 +272,7 @@ def _build_hypothesis_insert(hypothesis: NeedHypothesis) -> Insert:
 class NeedHypothesisRepositoryImpl(_HypothesisRepository, NeedHypothesisRepository):
     async def add(self, hypothesis: NeedHypothesis) -> bool:
         self._require_tenant(hypothesis.tenant_id, "need_hypothesis_add")
-        result = await self._session.execute(
-            _build_hypothesis_insert(hypothesis)
-        )
+        result = await self._session.execute(_build_hypothesis_insert(hypothesis))
         return cast(CursorResult[Any], result).rowcount > 0
 
     async def get(
@@ -330,6 +328,29 @@ class NeedHypothesisRepositoryImpl(_HypothesisRepository, NeedHypothesisReposito
         ).scalar_one_or_none()
         return _row_to_hypothesis(row) if row is not None else None
 
+    async def list_active_categories(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        *,
+        limit: int,
+    ) -> list[str]:
+        self._require_tenant(tenant_id, "need_hypothesis_categories")
+        rows = await self._session.execute(
+            select(NeedHypothesisRow.category)
+            .where(
+                NeedHypothesisRow.tenant_id == str(tenant_id),
+                NeedHypothesisRow.account_id == str(account_id),
+                NeedHypothesisRow.status.in_(("inferred", "contacting")),
+                NeedHypothesisRow.signal_ids != [],
+                NeedHypothesisRow.reasoning["based_on"] != [],
+            )
+            .distinct()
+            .order_by(NeedHypothesisRow.category)
+            .limit(limit)
+        )
+        return list(rows.scalars())
+
     async def find_active_by_account_and_category(
         self,
         tenant_id: TenantId,
@@ -357,16 +378,22 @@ class NeedHypothesisRepositoryImpl(_HypothesisRepository, NeedHypothesisReposito
         self._require_tenant(tenant_id, "need_hypothesis_list_for_outreach")
         del countries  # 国家筛选依赖跨域 account 视图，不在本仓储切片内。
         rows = (
-            await self._session.execute(
-                select(NeedHypothesisRow)
-                .where(
-                    NeedHypothesisRow.tenant_id == str(self._tenant_id),
-                    NeedHypothesisRow.status.in_(("inferred", "contacting")),
+            (
+                await self._session.execute(
+                    select(NeedHypothesisRow)
+                    .where(
+                        NeedHypothesisRow.tenant_id == str(self._tenant_id),
+                        NeedHypothesisRow.status.in_(("inferred", "contacting")),
+                    )
+                    .order_by(
+                        NeedHypothesisRow.created_at, NeedHypothesisRow.hypothesis_id
+                    )
+                    .limit(limit)
                 )
-                .order_by(NeedHypothesisRow.created_at, NeedHypothesisRow.hypothesis_id)
-                .limit(limit)
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_row_to_hypothesis(row) for row in rows]
 
     async def list_for_radar(
@@ -383,13 +410,17 @@ class NeedHypothesisRepositoryImpl(_HypothesisRepository, NeedHypothesisReposito
         if status is not None:
             statement = statement.where(NeedHypothesisRow.status == status)
         rows = (
-            await self._session.execute(
-                statement.order_by(
-                    NeedHypothesisRow.created_at.desc(),
-                    NeedHypothesisRow.hypothesis_id,
-                ).limit(limit)
+            (
+                await self._session.execute(
+                    statement.order_by(
+                        NeedHypothesisRow.created_at.desc(),
+                        NeedHypothesisRow.hypothesis_id,
+                    ).limit(limit)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_row_to_hypothesis(row) for row in rows]
 
 
@@ -579,16 +610,20 @@ class ValidatedNeedRepositoryImpl(_HypothesisRepository, ValidatedNeedRepository
     ) -> list[ValidatedNeed]:
         self._require_tenant(tenant_id, "validated_need_list_sourcing_ready")
         rows = (
-            await self._session.execute(
-                select(ValidatedNeedRow)
-                .where(
-                    ValidatedNeedRow.tenant_id == str(self._tenant_id),
-                    ValidatedNeedRow.status == NeedStatus.SOURCING_READY.value,
+            (
+                await self._session.execute(
+                    select(ValidatedNeedRow)
+                    .where(
+                        ValidatedNeedRow.tenant_id == str(self._tenant_id),
+                        ValidatedNeedRow.status == NeedStatus.SOURCING_READY.value,
+                    )
+                    .order_by(ValidatedNeedRow.created_at, ValidatedNeedRow.need_id)
+                    .limit(limit)
                 )
-                .order_by(ValidatedNeedRow.created_at, ValidatedNeedRow.need_id)
-                .limit(limit)
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_row_to_need(row) for row in rows]
 
     async def list_by_account(
@@ -596,15 +631,19 @@ class ValidatedNeedRepositoryImpl(_HypothesisRepository, ValidatedNeedRepository
     ) -> list[ValidatedNeed]:
         self._require_tenant(tenant_id, "validated_need_list_by_account")
         rows = (
-            await self._session.execute(
-                select(ValidatedNeedRow)
-                .where(
-                    ValidatedNeedRow.tenant_id == str(self._tenant_id),
-                    ValidatedNeedRow.account_id == str(account_id),
+            (
+                await self._session.execute(
+                    select(ValidatedNeedRow)
+                    .where(
+                        ValidatedNeedRow.tenant_id == str(self._tenant_id),
+                        ValidatedNeedRow.account_id == str(account_id),
+                    )
+                    .order_by(ValidatedNeedRow.created_at, ValidatedNeedRow.need_id)
                 )
-                .order_by(ValidatedNeedRow.created_at, ValidatedNeedRow.need_id)
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_row_to_need(row) for row in rows]
 
     async def list_for_radar(
@@ -621,11 +660,15 @@ class ValidatedNeedRepositoryImpl(_HypothesisRepository, ValidatedNeedRepository
         if status is not None:
             statement = statement.where(ValidatedNeedRow.status == status)
         rows = (
-            await self._session.execute(
-                statement.order_by(
-                    ValidatedNeedRow.created_at.desc(),
-                    ValidatedNeedRow.need_id,
-                ).limit(limit)
+            (
+                await self._session.execute(
+                    statement.order_by(
+                        ValidatedNeedRow.created_at.desc(),
+                        ValidatedNeedRow.need_id,
+                    ).limit(limit)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_row_to_need(row) for row in rows]

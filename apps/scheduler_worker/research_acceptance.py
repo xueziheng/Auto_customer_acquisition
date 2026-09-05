@@ -337,7 +337,8 @@ async def run_live_acceptance(
     try:
         factory = async_sessionmaker(engine, expire_on_commit=False)
         reader, playbook, policy = build_acceptance_readers(factory, tenant)
-        plan = await reader.load_confirmed(tenant, proposal_id, UserId(actor_id))
+        acting_user = await reader.user_for_employee(tenant, EmployeeId(actor_id))
+        plan = await reader.load_confirmed(tenant, proposal_id, acting_user)
         playbook.bind_actor(EmployeeId(actor_id))
         # 在构造对象存储适配器及解析任何凭证前检查真实政策；Gateway每次仍重查。
         from domains.compliance.schemas import CountryPolicyAction
@@ -377,7 +378,7 @@ async def run_live_acceptance(
         return await run_source_acceptance(
             factory=factory,
             tenant_id=tenant,
-            actor_id=UserId(actor_id),
+            actor_id=acting_user,
             proposal_id=proposal_id,
             reader=reader,
             composition=composition,

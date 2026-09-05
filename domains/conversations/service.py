@@ -18,6 +18,7 @@ from domains.conversations.repository import (
     ConversationsUnitOfWork as _ConversationsUnitOfWork,
 )
 from domains.conversations.schemas import (
+    AccountReplyStatus,
     ConversationInboxDetail,
     ConversationInboxItem,
     ReplyWorkActionRequest,
@@ -44,6 +45,14 @@ from shared.schemas.identifiers import (
 @runtime_checkable
 class ConversationService(Protocol):
     """会话服务。"""
+
+    async def get_account_reply_status(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+    ) -> AccountReplyStatus:
+        """单次持久快照保守暂停整个企业；未分类不等于无回复。"""
+        ...
 
     async def ingest_inbound(
         self,

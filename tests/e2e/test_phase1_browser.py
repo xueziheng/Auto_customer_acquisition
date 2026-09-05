@@ -26,6 +26,7 @@ from apps.api.composition.runtime import (
     ManualSendComposition,
     build_phase1_dependencies,
 )
+from apps.composition_support.employee_readers import CurrentEmployeeUserReader
 from apps.scheduler_worker.account_discovery import (
     BossAccountDiscoveryActorResolver,
     DemandAccountDiscoveryTaskReader,
@@ -504,7 +505,8 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
     )
     captured_account_queue = _CapturedAccountQueue()
     demand_handlers = build_demand_discovery_handlers(
-        task_reader=DirectiveDemandDiscoveryTaskReader(dependencies.directives),
+        task_reader=DirectiveDemandDiscoveryTaskReader(dependencies.directives, CurrentEmployeeUserReader(
+            dependencies.employees, dependencies.employee_lookup_actor)),
         searcher=_ControlledDemandSearcher(),
         page_reader=_ControlledDemandPageReader(raw_store, observed_at=clock.now()),
         capability=DemandIntelligenceAgent(

@@ -138,6 +138,16 @@ class NeedHypothesisRepository(Protocol):
 
     async def update(self, hypothesis: NeedHypothesis) -> None: ...
 
+    async def list_active_categories(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        *,
+        limit: int,
+    ) -> list[str]:
+        """SQL 先限定企业/租户/活跃且有证据，再 distinct/order/limit。"""
+        ...
+
     async def find_active_by_account_and_category(
         self,
         tenant_id: TenantId,

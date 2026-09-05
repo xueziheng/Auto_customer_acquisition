@@ -51,6 +51,7 @@ from domains.demand.schemas import (
     NeedClusterView,
     NeedFieldView,
     NeedQuoteFacts,
+    OutreachHypothesisCategories,
     SignalCaptureRequest,
     ValidatedNeedView,
     VerifiedCustomerReplyEvidence,
@@ -285,6 +286,22 @@ class DemandServiceImpl:
         ):
             raise ValidationError("客户回复证据验证依赖无效")
         self._customer_evidence = customer_evidence
+
+    async def get_outreach_hypothesis_categories(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+    ) -> OutreachHypothesisCategories:
+        """读取最多200个当前有证据活跃假设类别；超限固定失败，拒绝静默截断。"""
+        async with self._uow_factory(tenant_id) as uow:
+            categories = await uow.hypotheses.list_active_categories(
+                tenant_id, account_id, limit=201
+            )
+        if len(categories) > 200:
+            raise ValidationError("当前需求假设类别超出读取上限")
+        return OutreachHypothesisCategories(
+            tenant_id=tenant_id, account_id=account_id, categories=tuple(categories)
+        )
 
     @staticmethod
     def _validate_now(value: datetime) -> datetime:

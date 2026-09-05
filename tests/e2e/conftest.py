@@ -590,7 +590,7 @@ async def _seed_employees_and_territories(
                     name=name,
                     role=role,
                     created_at=_SEED_TIME,
-                    user_id=None,
+                    user_id=str(new_id("usr")),
                     team_id=None,
                     manager_id=str(manager_id) if manager_id is not None else None,
                     languages=[],

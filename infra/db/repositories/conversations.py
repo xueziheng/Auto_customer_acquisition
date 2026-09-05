@@ -157,12 +157,12 @@ class ClassificationRepositoryImpl(_ConversationsRepository, ClassificationRepos
         ).scalar_one_or_none()
         return _row_to_classification(row) if row is not None else None
 
-    async def add_correction(
-        self, correction: ClassificationCorrection
-    ) -> bool:
+    async def add_correction(self, correction: ClassificationCorrection) -> bool:
         """tenant-bound append；UNIQUE(tenant,message,corrected_by,corrected_category)
         ON CONFLICT DO NOTHING → True=新插入，False=幂等冲突。"""
-        self._require_tenant(correction.tenant_id, "conversation_classification_correction_add")
+        self._require_tenant(
+            correction.tenant_id, "conversation_classification_correction_add"
+        )
         result = await self._session.execute(
             pg_insert(ConversationClassificationCorrectionRow)
             .values(
@@ -190,23 +190,29 @@ class ClassificationRepositoryImpl(_ConversationsRepository, ClassificationRepos
         message_id: MessageId,
     ) -> list[ClassificationCorrection]:
         """该 message 全部纠正，ORDER BY corrected_at ASC, correction_id ASC。"""
-        if not self._tenant_matches(tenant_id, "conversation_classification_correction_list"):
+        if not self._tenant_matches(
+            tenant_id, "conversation_classification_correction_list"
+        ):
             raise TenantIsolationViolation("跨租户数据隔离违规")
         rows = (
-            await self._session.execute(
-                select(ConversationClassificationCorrectionRow)
-                .where(
-                    ConversationClassificationCorrectionRow.tenant_id
-                    == str(self._tenant_id),
-                    ConversationClassificationCorrectionRow.message_id
-                    == str(message_id),
-                )
-                .order_by(
-                    ConversationClassificationCorrectionRow.corrected_at,
-                    ConversationClassificationCorrectionRow.correction_id,
+            (
+                await self._session.execute(
+                    select(ConversationClassificationCorrectionRow)
+                    .where(
+                        ConversationClassificationCorrectionRow.tenant_id
+                        == str(self._tenant_id),
+                        ConversationClassificationCorrectionRow.message_id
+                        == str(message_id),
+                    )
+                    .order_by(
+                        ConversationClassificationCorrectionRow.corrected_at,
+                        ConversationClassificationCorrectionRow.correction_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_row_to_correction(row) for row in rows]
 
 
@@ -278,19 +284,23 @@ class ReplyWorkRepositoryImpl(_ConversationsRepository, ReplyWorkRepository):
     ) -> list[ReplyWorkRecord]:
         self._require_tenant(tenant_id, "conversation_reply_work_list")
         rows = (
-            await self._session.execute(
-                select(ConversationReplyWorkRow)
-                .where(
-                    ConversationReplyWorkRow.tenant_id == str(tenant_id),
-                    ConversationReplyWorkRow.status == status.value,
+            (
+                await self._session.execute(
+                    select(ConversationReplyWorkRow)
+                    .where(
+                        ConversationReplyWorkRow.tenant_id == str(tenant_id),
+                        ConversationReplyWorkRow.status == status.value,
+                    )
+                    .order_by(
+                        ConversationReplyWorkRow.created_at,
+                        ConversationReplyWorkRow.action_id,
+                    )
+                    .limit(limit)
                 )
-                .order_by(
-                    ConversationReplyWorkRow.created_at,
-                    ConversationReplyWorkRow.action_id,
-                )
-                .limit(limit)
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_row_to_reply_work(row) for row in rows]
 
 
@@ -389,14 +399,18 @@ class ConversationRepositoryImpl(_ConversationsRepository, ConversationRepositor
     ) -> Conversation | None:
         self._require_tenant(tenant_id, "conversation.find_by_account_channel")
         row = (
-            await self._session.execute(
-                select(ConversationRow).where(
-                    ConversationRow.tenant_id == str(tenant_id),
-                    ConversationRow.account_id == str(account_id),
-                    ConversationRow.channel == channel,
+            (
+                await self._session.execute(
+                    select(ConversationRow).where(
+                        ConversationRow.tenant_id == str(tenant_id),
+                        ConversationRow.account_id == str(account_id),
+                        ConversationRow.channel == channel,
+                    )
                 )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if row is None:
             return None
         self._require_tenant(TenantId(row.tenant_id), "conversation.find")
@@ -408,20 +422,24 @@ class ConversationRepositoryImpl(_ConversationsRepository, ConversationRepositor
         """tenant-bound 最近活动列表；稳定次序便于分页前的 Phase 1 展示。"""
         self._require_tenant(tenant_id, "conversation.list_recent")
         rows = (
-            await self._session.execute(
-                select(ConversationRow)
-                .where(ConversationRow.tenant_id == str(tenant_id))
-                .order_by(
-                    func.greatest(
-                        ConversationRow.last_inbound_at,
-                        ConversationRow.last_outbound_at,
-                        ConversationRow.created_at,
-                    ).desc(),
-                    ConversationRow.conversation_id,
+            (
+                await self._session.execute(
+                    select(ConversationRow)
+                    .where(ConversationRow.tenant_id == str(tenant_id))
+                    .order_by(
+                        func.greatest(
+                            ConversationRow.last_inbound_at,
+                            ConversationRow.last_outbound_at,
+                            ConversationRow.created_at,
+                        ).desc(),
+                        ConversationRow.conversation_id,
+                    )
+                    .limit(limit)
                 )
-                .limit(limit)
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_row_to_conversation(row) for row in rows]
 
 
@@ -497,18 +515,12 @@ class MessageRepositoryImpl(_ConversationsRepository, MessageRepository):
                     else None
                 ),
             )
-            .on_conflict_do_nothing(
-                index_elements=["tenant_id", "external_message_id"]
-            )
+            .on_conflict_do_nothing(index_elements=["tenant_id", "external_message_id"])
         )
 
-    async def get(
-        self, tenant_id: TenantId, message_id: MessageId
-    ) -> Message | None:
+    async def get(self, tenant_id: TenantId, message_id: MessageId) -> Message | None:
         self._require_tenant(tenant_id, "message.get")
-        row = await self._session.get(
-            MessageRow, (str(tenant_id), str(message_id))
-        )
+        row = await self._session.get(MessageRow, (str(tenant_id), str(message_id)))
         if row is None:
             return None
         self._require_tenant(TenantId(row.tenant_id), "message.get")
@@ -523,13 +535,17 @@ class MessageRepositoryImpl(_ConversationsRepository, MessageRepository):
     ) -> Message | None:
         self._require_tenant(tenant_id, "message.find_by_external_id")
         row = (
-            await self._session.execute(
-                select(MessageRow).where(
-                    MessageRow.tenant_id == str(tenant_id),
-                    MessageRow.external_message_id == external_message_id,
+            (
+                await self._session.execute(
+                    select(MessageRow).where(
+                        MessageRow.tenant_id == str(tenant_id),
+                        MessageRow.external_message_id == external_message_id,
+                    )
                 )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if row is None:
             return None
         self._require_tenant(TenantId(row.tenant_id), "message.find")
@@ -540,31 +556,87 @@ class MessageRepositoryImpl(_ConversationsRepository, MessageRepository):
     ) -> list[Message]:
         self._require_tenant(tenant_id, "message.list_for_conversation")
         rows = (
-            await self._session.execute(
-                select(MessageRow)
-                .where(
-                    MessageRow.tenant_id == str(tenant_id),
-                    MessageRow.conversation_id == str(conversation_id),
+            (
+                await self._session.execute(
+                    select(MessageRow)
+                    .where(
+                        MessageRow.tenant_id == str(tenant_id),
+                        MessageRow.conversation_id == str(conversation_id),
+                    )
+                    .order_by(MessageRow.sent_at)
                 )
-                .order_by(MessageRow.sent_at)
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_row_to_message(row) for row in rows]
+
+    async def account_reply_summary(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+    ) -> tuple[bool, datetime | None]:
+        self._require_tenant(tenant_id, "message.account_reply_summary")
+        correction = (
+            select(ConversationClassificationCorrectionRow.corrected_category)
+            .where(
+                ConversationClassificationCorrectionRow.tenant_id == str(tenant_id),
+                ConversationClassificationCorrectionRow.message_id
+                == MessageRow.message_id,
+            )
+            .order_by(
+                ConversationClassificationCorrectionRow.corrected_at.desc(),
+                ConversationClassificationCorrectionRow.correction_id.desc(),
+            )
+            .limit(1)
+            .correlate(MessageRow)
+            .scalar_subquery()
+        )
+        category = func.coalesce(correction, ConversationClassificationRow.category)
+        statement = (
+            select(
+                func.bool_or(category.is_(None)),
+                func.max(MessageRow.sent_at).filter(category != "auto_reply"),
+            )
+            .select_from(MessageRow)
+            .join(
+                ConversationRow,
+                (ConversationRow.tenant_id == MessageRow.tenant_id)
+                & (ConversationRow.conversation_id == MessageRow.conversation_id),
+            )
+            .outerjoin(
+                ConversationClassificationRow,
+                (ConversationClassificationRow.tenant_id == MessageRow.tenant_id)
+                & (ConversationClassificationRow.message_id == MessageRow.message_id),
+            )
+            .where(
+                MessageRow.tenant_id == str(tenant_id),
+                ConversationRow.account_id == str(account_id),
+                ConversationRow.channel == "email",
+                MessageRow.direction == "inbound",
+            )
+        )
+        row = (await self._session.execute(statement)).one()
+        return bool(row[0]), row[1]
 
     async def has_inbound_since(
         self, tenant_id: TenantId, conversation_id: ConversationId, since: str
     ) -> bool:
         self._require_tenant(tenant_id, "message.has_inbound_since")
         row = (
-            await self._session.execute(
-                select(MessageRow.message_id)
-                .where(
-                    MessageRow.tenant_id == str(tenant_id),
-                    MessageRow.conversation_id == str(conversation_id),
-                    MessageRow.direction == "inbound",
-                    MessageRow.sent_at > since,
+            (
+                await self._session.execute(
+                    select(MessageRow.message_id)
+                    .where(
+                        MessageRow.tenant_id == str(tenant_id),
+                        MessageRow.conversation_id == str(conversation_id),
+                        MessageRow.direction == "inbound",
+                        MessageRow.sent_at > since,
+                    )
+                    .limit(1)
                 )
-                .limit(1)
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         return row is not None

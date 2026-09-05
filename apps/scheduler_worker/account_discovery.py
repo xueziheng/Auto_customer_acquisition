@@ -19,7 +19,6 @@ from shared.errors import (
     ValidationError,
 )
 from shared.schemas.identifiers import (
-    EmployeeId,
     NeedHypothesisId,
     ProspectAccountId,
     TenantId,
@@ -67,9 +66,7 @@ class DemandAccountDiscoveryTaskReader:
         acting_user: UserId,
     ) -> AccountDiscoveryTaskInput:
         del acting_user  # 身份已由 FindCompanyDetailsStep 在成本发生前重新校验。
-        view = await self._demand.get_hypothesis_for_discovery(
-            tenant_id, hypothesis_id
-        )
+        view = await self._demand.get_hypothesis_for_discovery(tenant_id, hypothesis_id)
         return AccountDiscoveryTaskInput(
             objective="依据已留痕的需求信号解析一个可消歧的目标企业",
             hypothesis_id=NeedHypothesisId(view.hypothesis_id),
@@ -89,7 +86,7 @@ class BossAccountDiscoveryActorResolver:
     """按持久员工记录推导 Phase 1 boss actor；拒绝 header/context 自报角色。"""
 
     def __init__(self, employees: EmployeeService) -> None:
-        if not callable(getattr(employees, "get_employee", None)):
+        if not callable(getattr(employees, "list_active", None)):
             raise ValidationError("账户发现员工身份依赖无效")
         self._employees = employees
         self._lookup_actor = EmployeeActor(
@@ -101,23 +98,22 @@ class BossAccountDiscoveryActorResolver:
     async def resolve(
         self, tenant_id: TenantId, acting_user: UserId
     ) -> AccountDiscoveryActors:
-        employee = await self._employees.get_employee(
-            tenant_id,
-            EmployeeId(str(acting_user)),
-            actor=self._lookup_actor,
+        employees = await self._employees.list_active(
+            tenant_id, actor=self._lookup_actor
         )
-        if (
-            employee.tenant_id != tenant_id
-            or str(employee.employee_id) != str(acting_user)
-            or not employee.is_active
-            or employee.role != "boss"
-        ):
+        matches = [
+            employee
+            for employee in employees
+            if employee.tenant_id == tenant_id
+            and employee.user_id == acting_user
+            and employee.is_active
+        ]
+        if len(matches) != 1 or matches[0].role != "boss":
             raise PermissionDenied("账户发现仅允许活跃老板发起")
+        employee = matches[0]
         actor_id = str(employee.employee_id)
         return AccountDiscoveryActors(
-            employee=EmployeeActor(
-                actor_id, EmployeeScope.TENANT, employee.role
-            ),
+            employee=EmployeeActor(actor_id, EmployeeScope.TENANT, employee.role),
             outreach=OutreachActor(
                 actor_id,
                 OutreachScope(level=OutreachScopeLevel.TENANT),

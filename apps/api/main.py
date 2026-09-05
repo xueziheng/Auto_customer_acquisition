@@ -24,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from starlette.types import Lifespan
 
+from shared.schemas.runtime_capabilities import CapabilityName, RuntimeCapability
 from workflows.email_feedback.unsubscribe import UnsubscribeService
 
 from .dependencies import (
@@ -47,7 +48,7 @@ from .routers.crm import OpportunityIntakeBody
 from .routers.crm import router as crm_router
 from .routers.customer_discovery import router as customer_discovery_router
 from .routers.demand_radar import router as demand_radar_router
-from .routers.health import ReadinessProbe, build_health_router
+from .routers.health import ReadinessProbe, build_capability_router, build_health_router
 from .routers.inbox import router as inbox_router
 from .routers.notifications import router as notifications_router
 from .routers.products import router as products_router
@@ -181,6 +182,28 @@ def create_app(
     app.include_router(runs_router, prefix="/runs")
     app.include_router(settings_router, prefix="/settings")
     app.include_router(unsubscribe_router)
+    names: tuple[CapabilityName, ...] = (
+        "research",
+        "contacts",
+        "campaign",
+        "reply",
+        "sourcing",
+        "quotation",
+        "inbound_body",
+        "full_reply",
+        "agent",
+        "browser",
+    )
+    capabilities = (
+        resolved_dependencies.runtime_capabilities
+        if isinstance(resolved_dependencies, ConfiguredApiDependencies)
+        and resolved_dependencies.runtime_capabilities
+        else tuple(
+            RuntimeCapability(name=name, status="disabled", reason="not_requested")
+            for name in names
+        )
+    )
+    app.include_router(build_capability_router(capabilities))
     if readiness_probe is not None:
         app.include_router(build_health_router(readiness_probe))
     _install_openapi_contract(app)

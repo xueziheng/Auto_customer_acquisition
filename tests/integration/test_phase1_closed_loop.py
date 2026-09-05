@@ -6,6 +6,7 @@ import hashlib
 import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from functools import partial
 
 import pytest
 from _pytest.logging import LogCaptureFixture
@@ -16,6 +17,10 @@ from agent_runtime.account_discovery.agent import AccountDiscoveryAgent
 from agent_runtime.demand_intelligence.agent import DemandIntelligenceAgent
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
 from agent_runtime.qualification_agent.agent import QualificationAgent
+from apps.composition_support.employee_readers import (
+    CurrentEmployeeUserReader,
+    employee_service_scope,
+)
 from apps.scheduler_worker.account_discovery import (
     BossAccountDiscoveryActorResolver,
     DemandAccountDiscoveryTaskReader,
@@ -527,6 +532,7 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
     tenant = TenantId(new_id("tn"))
     other_tenant = TenantId(new_id("tn"))
     boss = EmployeeId(new_id("emp"))
+    boss_user = UserId(new_id("usr"))
     owner = EmployeeId(new_id("emp"))
     campaign_id = CampaignId(new_id("cmp"))
     approval_id = ApprovalId(new_id("apr"))
@@ -553,6 +559,7 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
         await employees_repo.add(
             employee_models.Employee(
                 employee_id=boss,
+                user_id=boss_user,
                 tenant_id=tenant,
                 name="Boss",
                 role=employee_models.Role.BOSS,
@@ -706,7 +713,10 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
         demand_page_reader = _ControlledDemandPageReader(raw_store)
         account_queue = _AccountWorkflowQueue()
         demand_handlers = build_demand_discovery_handlers(
-            task_reader=DirectiveDemandDiscoveryTaskReader(directives),
+            task_reader=DirectiveDemandDiscoveryTaskReader(directives, CurrentEmployeeUserReader(
+                partial(employee_service_scope, factory, now=lambda: NOW,
+                        authorizer=Phase1EmployeeAuthorizer(tenant), audit=EmployeeAuditLogger()),
+                EmployeeActor("system:test", EmployeeScope.SYSTEM, "system"))),
             searcher=demand_searcher,
             page_reader=demand_page_reader,
             capability=DemandIntelligenceAgent(
@@ -731,7 +741,7 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
             proposal_id,
             {
                 "proposal_id": proposal_id,
-                "acting_user_id": str(UserId(str(boss))),
+                "acting_user_id": str(boss_user),
             },
             f"closed-loop-demand:{proposal_id}",
         )

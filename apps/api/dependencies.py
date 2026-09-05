@@ -79,6 +79,7 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
     WorkUploadId,
 )
+from shared.schemas.runtime_capabilities import RuntimeCapability
 from tool_gateway.handlers.email_send import (
     DeliveryMaterialProvider,
     UnsubscribeLinkProvider,
@@ -298,6 +299,7 @@ class ConfiguredApiDependencies:
     products: ProductService | None = None
     catalog_products: CatalogProposalService | None = None
     catalog_product_application: CatalogProductApplication | None = None
+    runtime_capabilities: tuple[RuntimeCapability, ...] = ()
     model_lifecycle: ApiOwnedResource | None = None
     object_store_lifecycle: ApiOwnedResource | None = None
     configured: bool = True

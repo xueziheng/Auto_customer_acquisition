@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
 
 from domains.conversations.models import (
     MAX_REPLY_FIELD_QUOTE_CODEPOINTS,
@@ -28,6 +31,7 @@ from shared.schemas.identifiers import (
     MessageId,
     OutboundMessageId,
     ProspectAccountId,
+    TenantId,
 )
 
 
@@ -152,3 +156,13 @@ __all__ = (
     "ReplyWorkQueue",
     "ReplyWorkStatus",
 )
+
+
+class AccountReplyStatus(BaseModel):
+    """当前账户入站快照；unknown 禁止解释为没有回复。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    tenant_id: TenantId
+    account_id: ProspectAccountId
+    state: Literal["unknown", "replied", "no_reply"]
+    replied_at: datetime | None = None

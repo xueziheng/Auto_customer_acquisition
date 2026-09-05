@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from shared.errors import TradeOSError, ValidationError
 from shared.schemas.identifiers import TenantId
+from shared.schemas.runtime_capabilities import RuntimeCapability
 from workflows.quote_approval.expiry import QuoteExpiryDriver
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,7 @@ class SchedulerRuntime:
     sourcing_admission_driver: SourcingAdmissionDriverProtocol | None = None
     catalog_product_driver: CatalogProductDriverProtocol | None = None
     lifecycle: RuntimeLifecycleObserver | None = None
+    capabilities: tuple[RuntimeCapability, ...] = ()
 
     def __post_init__(self) -> None:
         if not str(self.tenant_id).strip():

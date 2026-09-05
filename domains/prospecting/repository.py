@@ -81,6 +81,15 @@ class ContactRepository(Protocol):
         """联系方式与法律依据原子新增；指纹冲突返回 False。"""
         ...
 
+    async def get_point_for_account(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        contact_point_id: ContactPointId,
+    ) -> ContactPoint | None:
+        """SQL 同时过滤租户、企业、联系方式，返回一条当前合法关联。"""
+        ...
+
     async def get_contact_point(
         self, tenant_id: TenantId, contact_point_id: ContactPointId
     ) -> ContactPoint | None: ...

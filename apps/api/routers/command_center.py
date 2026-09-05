@@ -19,6 +19,7 @@ from shared.errors import (
     TransientError,
     ValidationError,
 )
+from shared.schemas.identifiers import EmployeeId
 
 from ..dependencies import (
     ConfiguredApiDependencies,
@@ -340,13 +341,21 @@ async def confirm_discovery_proposal(
     confirmed = await directives.get_proposal(identity.tenant_id, proposal_id)
     if confirmed.decided_by_id is None:
         raise InvalidStateTransition("需求探索提案缺少确认人")
+    async with dependencies.employees(identity.tenant_id) as employees:
+        confirmer = await employees.get_employee(
+            identity.tenant_id,
+            EmployeeId(confirmed.decided_by_id),
+            actor=dependencies.employee_lookup_actor,
+        )
+    if not confirmer.is_active or confirmer.role != "boss" or confirmer.user_id is None:
+        raise InvalidStateTransition("需求探索确认人缺少当前用户映射")
     run_id = await dependencies.workflow_engine.start(
         identity.tenant_id,
         "demand_discovery",
         proposal_id,
         {
             "proposal_id": proposal_id,
-            "acting_user_id": confirmed.decided_by_id,
+            "acting_user_id": str(confirmer.user_id),
         },
         f"demand-discovery:{proposal_id}",
     )

@@ -625,11 +625,13 @@ async def test_acceptance_reader_requires_actual_boss_active_confirmed_research(
             connection, expire_on_commit=False, join_transaction_mode="create_savepoint"
         )
         tenant, boss = TenantId(new_id("tn")), EmployeeId(new_id("emp"))
+        user = UserId(new_id("usr"))
         async with factory() as session, session.begin():
             session.add(
                 EmployeeRow(
                     tenant_id=tenant,
                     employee_id=boss,
+                    user_id=user,
                     name="Test Boss",
                     role="boss",
                     is_active=True,
@@ -639,6 +641,7 @@ async def test_acceptance_reader_requires_actual_boss_active_confirmed_research(
                 )
             )
         reader, _playbook, _policy = module.build_acceptance_readers(factory, tenant)
+        assert await reader.user_for_employee(tenant, boss) == user
         plan = research_plan()
         dto = DemandDiscoveryPlanInput(
             **{
@@ -652,11 +655,11 @@ async def test_acceptance_reader_requires_actual_boss_active_confirmed_research(
             tenant, "test", dto, "test", ["只研究"], "controlled"
         )
         with pytest.raises(ValidationError):
-            await reader.load_confirmed(tenant, proposal, UserId(boss))
+            await reader.load_confirmed(tenant, proposal, user)
         await reader.directives.confirm_proposal(tenant, proposal, boss)
-        assert await reader.load_confirmed(tenant, proposal, UserId(boss)) == plan
+        assert await reader.load_confirmed(tenant, proposal, user) == plan
         with pytest.raises(PermissionDenied):
-            await reader.load_confirmed(TenantId(new_id("tn")), proposal, UserId(boss))
+            await reader.load_confirmed(TenantId(new_id("tn")), proposal, user)
         with pytest.raises(PermissionDenied):
             await reader.load_confirmed(tenant, proposal, UserId(new_id("emp")))
         second = await reader.directives.submit_discovery_proposal(
@@ -664,5 +667,5 @@ async def test_acceptance_reader_requires_actual_boss_active_confirmed_research(
         )
         await reader.directives.confirm_proposal(tenant, second, boss)
         with pytest.raises(ValidationError):
-            await reader.load_confirmed(tenant, proposal, UserId(boss))
+            await reader.load_confirmed(tenant, proposal, user)
         await transaction.rollback()

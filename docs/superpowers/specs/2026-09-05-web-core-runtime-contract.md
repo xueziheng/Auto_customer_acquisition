@@ -50,3 +50,23 @@ Task 3b 才负责完整 core services/readers/reply actions 的拓扑装配、re
 stop flag、取消、observer 失败解锁、schema/registry 拒绝和真实 API 资源关闭。受控外部端口
 只代替模型/SDK，不替代数据库或真实工厂。禁止读取现有数据库配置、.env 或真实凭证，
 禁止真实 Provider/发送/供应商调用。提交前运行相关测试、ruff、mypy、边界检查和 diff check。
+
+## Task3b：真实事实读取与有序装配
+
+按 ADR 0025 补公开事实端口及精确四个共享 reader。资格读取必须每次读取当前域事实，
+审批来自同一 ApprovalService 的 campaign:{id}:v{version}，不得 fallback。发送身份只调用
+get/check_send_permission，不占额度。员工每次独立 scope，UserId 明确映射当前 active 员工。
+联系人必须 email 且 tenant/account/contact 一致；类别只取 inferred/contacting 的有证据假设，
+不得从行业或 Campaign 允许范围补造。撤销最后一条假设后类别为空，原资格门禁拒绝。
+回复用 account 级保守规则，同账户其它联系人也暂停；未知入站失败关闭且不冒充 no_reply。
+材料 reader 的可信上游是原 EmailSendHandler/Gateway：上游必须先取得并持续校验 canonical
+当前 preflight/attempt 绑定。reader 只核对这个 preflight 的 tenant/contact/account/email 与
+tenant-bound sender.get 当前材料，不是任意调用方的 Attempt 授权器，也不重建 Outreach。
+
+业务组从显式 typed 端口构造；disabled/完整 enabled/configuration_error 为安全状态，组合
+齐备不等于政策、审批、可达性或额度通过。研究、联系人、Campaign、既有窄回复、寻源、报价
+按已有契约接线；Task5/6 未实现能力不命名新接口或宣称完成。直接旧装配继续兼容。
+
+验证：真实 PostgreSQL 公共写入口建立事实，覆盖错租户/账户/联系人/身份、类别撤销、额度、
+审批版本拒绝、unknown/auto/历史真人/人工纠正、disabled 零构造、enabled 缺项、canonical
+单实例及 Task3a owned 资源与锁健康回归。外部 transport 可受控，业务域不得 fake。

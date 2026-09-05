@@ -1,8 +1,16 @@
 """验收入口的真实只读依赖；不创建政策、老板、提案或默认许可。"""
 
+from datetime import UTC, datetime
+from functools import partial
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from apps.composition_support.employee_readers import (
+    CurrentEmployeeUserReader,
+    EmployeeServiceScope,
+    employee_service_scope,
+)
 from domains.compliance.permissions import (
     ComplianceActor,
     ComplianceScope,
@@ -11,6 +19,12 @@ from domains.compliance.permissions import (
 from domains.compliance.service_impl import ComplianceServiceImpl
 from domains.directives.service import DirectiveService
 from domains.directives.service_impl import DirectiveServiceImpl
+from domains.employees.permissions import Actor as EmployeeActor
+from domains.employees.permissions import (
+    EmployeeScope,
+    Phase1EmployeeAuthorizer,
+    StandardAuditLogger,
+)
 from domains.organization.permissions import (
     OrganizationActor,
     OrganizationScope,
@@ -73,27 +87,58 @@ class AcceptanceTaskReader:
         tenant_id: TenantId,
         directives: DirectiveService,
         employees: AcceptanceEmployees,
+        scope: EmployeeServiceScope,
     ) -> None:
+        self._scope = scope
+        self._actor = EmployeeActor(
+            "system:research-source-acceptance", EmployeeScope.SYSTEM, "system"
+        )
+        self._users = CurrentEmployeeUserReader(scope, self._actor)
         self._tenant, self.directives, self._employees = (
             tenant_id,
             directives,
             employees,
         )
 
+    async def user_for_employee(
+        self, tenant_id: TenantId, employee_id: EmployeeId
+    ) -> UserId:
+        """CLI 输入仍为 EmployeeId；只接受持久、唯一且当前有效的老板用户映射。"""
+        if tenant_id != self._tenant:
+            raise PermissionDenied("来源验收仅限当前租户在职老板")
+        async with self._scope(tenant_id) as service:
+            employee = await service.get_employee(
+                tenant_id, employee_id, actor=self._actor
+            )
+        if (
+            not employee.is_active
+            or employee.role != "boss"
+            or employee.user_id is None
+        ):
+            raise PermissionDenied("来源验收仅限当前租户在职老板")
+        mapped = await self._users.get_for_user(tenant_id, employee.user_id)
+        if mapped.employee_id != employee_id:
+            raise PermissionDenied("来源验收员工映射无效")
+        return employee.user_id
+
     async def load_confirmed(
         self, tenant_id: TenantId, proposal_id: str, acting_user: UserId
     ) -> DemandDiscoveryPlan:
         """确认人仍在职且是老板，提案仍为当前active；失效提案不能继续花费。"""
-        if tenant_id != self._tenant or not await self._employees.is_active_boss(
-            tenant_id, EmployeeId(acting_user)
-        ):
+        if tenant_id != self._tenant:
+            raise PermissionDenied("来源验收仅限当前租户在职老板")
+        try:
+            employee = await self._users.get_for_user(tenant_id, acting_user)
+        except ValidationError as exc:
+            raise PermissionDenied("来源验收仅限当前租户在职老板") from exc
+        if employee.role != "boss":
             raise PermissionDenied("来源验收仅限当前租户在职老板")
         active = await self.directives.get_active(tenant_id)
         if active is None or active.source_proposal_id != proposal_id:
             raise ValidationError("来源验收提案不是当前生效指令")
-        plan = await DirectiveDemandDiscoveryTaskReader(self.directives).load_confirmed(
-            tenant_id, proposal_id, acting_user
-        )
+        plan = await DirectiveDemandDiscoveryTaskReader(
+            self.directives, self._users
+        ).load_confirmed(tenant_id, proposal_id, acting_user)
         if plan.execution_mode != "research_only":
             raise ValidationError("来源验收必须为只研究提案")
         return plan
@@ -146,6 +191,13 @@ def build_acceptance_readers(
 ]:
     """只装配已有域服务与tenant-bound UoW，真实缺配置由域服务拒绝。"""
     employees = AcceptanceEmployees(factory)
+    scope = partial(
+        employee_service_scope,
+        factory,
+        now=lambda: datetime.now(UTC),
+        authorizer=Phase1EmployeeAuthorizer(tenant),
+        audit=StandardAuditLogger(),
+    )
     directives = DirectiveServiceImpl(
         lambda bound: SqlAlchemyDirectiveUnitOfWork(factory, bound),  # type: ignore[arg-type, return-value]
         employees,
@@ -159,7 +211,7 @@ def build_acceptance_readers(
         Phase1ComplianceAuthorizer(tenant),
     )
     return (
-        AcceptanceTaskReader(tenant, directives, employees),
+        AcceptanceTaskReader(tenant, directives, employees, scope),
         AcceptancePlaybookReader(tenant, organization, employees),
         ComplianceCountryPolicyDecisionReader(
             compliance,

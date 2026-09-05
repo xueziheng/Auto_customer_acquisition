@@ -33,6 +33,7 @@ from domains.conversations.repository import (
     ConversationsUnitOfWork,
 )
 from domains.conversations.schemas import (
+    AccountReplyStatus,
     ClassificationCorrectionView,
     ConversationInboxDetail,
     ConversationInboxItem,
@@ -76,6 +77,23 @@ class ConversationServiceImpl:
             raise ValidationError("服务时钟必须为 UTC")
         return value
 
+    async def get_account_reply_status(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+    ) -> AccountReplyStatus:
+        """单次持久快照保守暂停整个企业；未分类不等于无回复。"""
+        async with self._uow_factory(tenant_id) as uow:
+            unknown, replied_at = await uow.messages.account_reply_summary(
+                tenant_id, account_id
+            )
+        return AccountReplyStatus(
+            tenant_id=tenant_id,
+            account_id=account_id,
+            state="unknown" if unknown else "replied" if replied_at else "no_reply",
+            replied_at=replied_at,
+        )
+
     async def ingest_inbound(
         self,
         tenant_id: TenantId,
@@ -98,20 +116,13 @@ class ConversationServiceImpl:
             raise ValidationError("会话租户无效")
         if not isinstance(account_id, str) or not account_id:
             raise ValidationError("会话账户无效")
-        if (
-            not isinstance(raw_artifact_ref, str)
-            or not raw_artifact_ref.strip()
-        ):
+        if not isinstance(raw_artifact_ref, str) or not raw_artifact_ref.strip():
             raise ValidationError("消息原文引用无效")
-        if (
-            not isinstance(external_message_id, str)
-            or not external_message_id.strip()
-        ):
+        if not isinstance(external_message_id, str) or not external_message_id.strip():
             raise ValidationError("消息 external Message-ID 无效")
         sent_at = self._validate_utc_input(sent_at, "sent_at")
         if outbound_message_id is not None and (
-            not isinstance(outbound_message_id, str)
-            or not outbound_message_id.strip()
+            not isinstance(outbound_message_id, str) or not outbound_message_id.strip()
         ):
             raise ValidationError("出站消息关联无效")
         now = self._validate_now(self._now())
@@ -313,9 +324,7 @@ class ConversationServiceImpl:
                         "同 message 不允许跨模型版本重评（未来由显式 reclassify API 承担）"
                     )
                 if existing.category is not category:
-                    raise ValidationError(
-                        "同 message+分类者分类冲突，拒绝覆盖"
-                    )
+                    raise ValidationError("同 message+分类者分类冲突，拒绝覆盖")
                 if existing.candidate_fields != candidate_fields:
                     raise ValidationError("同 message+分类者字段证据冲突，拒绝覆盖")
                 if existing.suppress_scope is not suppress_scope:
@@ -594,9 +603,7 @@ class ConversationServiceImpl:
         async with self._uow_factory(tenant_id) as uow:
             if await uow.conversations.get(tenant_id, conversation_id) is None:
                 raise ValidationError("会话不存在")
-            return await uow.messages.list_for_conversation(
-                tenant_id, conversation_id
-            )
+            return await uow.messages.list_for_conversation(tenant_id, conversation_id)
 
     async def list_inbox(
         self,
@@ -610,7 +617,11 @@ class ConversationServiceImpl:
             raise ValidationError("会话租户无效")
         if category is not None and not isinstance(category, ReplyCategory):
             raise ValidationError("分类类别无效")
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 200
+        ):
             raise ValidationError("Inbox 条数必须在 1–200")
         async with self._uow_factory(tenant_id) as uow:
             # 分类目前是 append-only 纠正后的域投影，不是 conversations 表字段；
@@ -629,7 +640,9 @@ class ConversationServiceImpl:
                     for message in messages
                     if message.direction is MessageDirection.INBOUND
                 ]
-                latest = inbound[-1] if inbound else (messages[-1] if messages else None)
+                latest = (
+                    inbound[-1] if inbound else (messages[-1] if messages else None)
+                )
                 message_view = (
                     await self._build_message_view(uow, tenant_id, latest)
                     if latest is not None
@@ -656,7 +669,9 @@ class ConversationServiceImpl:
                         channel=conversation.channel,
                         last_activity_at=max(activity_candidates),
                         latest_message_id=(
-                            message_view.message_id if message_view is not None else None
+                            message_view.message_id
+                            if message_view is not None
+                            else None
                         ),
                         latest_message_at=(
                             message_view.sent_at if message_view is not None else None

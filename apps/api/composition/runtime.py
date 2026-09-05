@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
@@ -18,6 +17,29 @@ from agent_runtime.model_client import StructuredJsonModelClient
 from agent_runtime.trade_manager import (
     StructuredTradeManagerModelPort,
     TradeManagerAgent,
+)
+from apps.composition_support.campaign_approval_reader import (
+    CurrentCampaignApprovalReader,
+)
+from apps.composition_support.delivery_material_reader import (
+    CurrentDeliveryMaterialReader,
+)
+from apps.composition_support.employee_readers import (
+    RequestScopedCatalogApprovalActorReader as RequestScopedCatalogApprovalActorReader,  # noqa: PLC0414 - 保持公开类型身份
+)
+from apps.composition_support.employee_readers import (
+    RequestScopedDirectiveEmployeeReader as RequestScopedDirectiveEmployeeReader,  # noqa: PLC0414 - 保持公开类型身份
+)
+from apps.composition_support.employee_readers import (
+    RequestScopedHandoffEmployeeReader as RequestScopedHandoffEmployeeReader,  # noqa: PLC0414 - 保持公开类型身份
+)
+from apps.composition_support.employee_readers import (
+    employee_service_scope as employee_service_scope,  # noqa: PLC0414 - 保持公开类型身份
+)
+from apps.composition_support.outreach_fact_readers import (
+    CurrentContactEligibilityReader,
+    CurrentReplyStatusReader,
+    CurrentSendingIdentityReader,
 )
 from artifact_store.repository import ArtifactUnitOfWorkFactory
 from artifact_store.service_impl import GeneratedArtifactStoreImpl, RawArtifactStoreImpl
@@ -37,7 +59,6 @@ from domains.approvals.service import (
     ApprovalService,
     ApprovalState,
     ApprovalType,
-    CatalogApprovalActorFact,
 )
 from domains.approvals.service_impl import ApprovalServiceImpl
 from domains.commitments.service_impl import CommitmentServiceImpl
@@ -53,19 +74,12 @@ from domains.employees.permissions import (
     Actor as EmployeeActor,
 )
 from domains.employees.permissions import (
-    AuditLogger as EmployeeAuditLogger,
-)
-from domains.employees.permissions import (
-    EmployeeAuthorizer,
     EmployeeScope,
     Phase1EmployeeAuthorizer,
 )
 from domains.employees.permissions import (
     StandardAuditLogger as EmployeeStandardAuditLogger,
 )
-from domains.employees.schemas import EmployeeView
-from domains.employees.service import EmployeeService
-from domains.employees.service_impl import EmployeeServiceImpl
 from domains.opportunities.permissions import (
     Actor as OpportunityActor,
 )
@@ -167,11 +181,6 @@ from infra.db.products_uow import SqlAlchemyProductsUnitOfWork
 from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
 from infra.db.provider_readiness_uow import SqlAlchemyProviderReadinessUnitOfWork
 from infra.db.quote_evidence_context import SqlAlchemyQuoteEvidenceContextReader
-from infra.db.repositories.employees import (
-    EmployeeRepositoryImpl,
-    OwnershipRepositoryImpl,
-    TerritoryRepositoryImpl,
-)
 from infra.db.repositories.in_app_notifications import PostgresInAppNotificationStore
 from infra.db.repositories.notifications import PostgresNotificationDedupStore
 from infra.db.run_audit import PostgresRunAuditRepository
@@ -219,6 +228,7 @@ from shared.schemas.identifiers import (
     UserId,
     new_id,
 )
+from shared.schemas.runtime_capabilities import CapabilityName, RuntimeCapability
 from tool_gateway.checks.approval import ApprovalCheck
 from tool_gateway.checks.idempotency import IdempotencyCheck
 from tool_gateway.checks.permission import PermissionCheck
@@ -319,119 +329,6 @@ from .quotations import (
 )
 from .quote_notifications import RuntimeQuoteApprovalNotifier
 from .work_uploads import WorkUploadApplicationServiceImpl
-
-
-@asynccontextmanager
-async def employee_service_scope(
-    factory: async_sessionmaker[AsyncSession],
-    tenant_id: TenantId,
-    *,
-    now: Callable[[], datetime],
-    authorizer: EmployeeAuthorizer,
-    audit: EmployeeAuditLogger,
-) -> AsyncIterator[EmployeeService]:
-    """为一次调用创建独立员工服务事务，异常回滚且总是关闭会话。"""
-    session = factory()
-    try:
-        employees = EmployeeRepositoryImpl(session, tenant_id)
-        yield EmployeeServiceImpl(
-            employees=employees,
-            territories=TerritoryRepositoryImpl(session, tenant_id),
-            ownership=OwnershipRepositoryImpl(session, tenant_id),
-            now=now,
-            manager_pool=lambda _: (),
-            count_active_accounts=employees.count_active_accounts,
-            authorizer=authorizer,
-            audit=audit,
-        )
-        await session.commit()
-    except BaseException:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
-
-
-class RequestScopedHandoffEmployeeReader:
-    """让 workflow 的每次员工读取使用独立 service scope。"""
-
-    def __init__(self, scope: EmployeeServiceScope) -> None:
-        self._scope = scope
-
-    async def get_employee(
-        self,
-        tenant_id: TenantId,
-        employee_id: EmployeeId,
-        *,
-        actor: EmployeeActor,
-    ) -> EmployeeView:
-        async with self._scope(tenant_id) as service:
-            return await service.get_employee(tenant_id, employee_id, actor=actor)
-
-
-class RequestScopedDirectiveEmployeeReader:
-    """用员工域公开服务为指令域提供老板校验与展示名。"""
-
-    def __init__(
-        self,
-        scope: EmployeeServiceScope,
-        actor: EmployeeActor,
-    ) -> None:
-        self._scope = scope
-        self._actor = actor
-
-    async def is_active_boss(
-        self, tenant_id: TenantId, employee_id: EmployeeId
-    ) -> bool:
-        async with self._scope(tenant_id) as service:
-            employees = await service.list_active(tenant_id, actor=self._actor)
-        return any(
-            employee.employee_id == employee_id and employee.role == "boss"
-            for employee in employees
-        )
-
-    async def names_for(
-        self, tenant_id: TenantId, employee_ids: tuple[EmployeeId, ...]
-    ) -> dict[EmployeeId, str]:
-        async with self._scope(tenant_id) as service:
-            employees = await service.list_active(tenant_id, actor=self._actor)
-        wanted = set(employee_ids)
-        return {
-            employee.employee_id: employee.name
-            for employee in employees
-            if employee.employee_id in wanted
-        }
-
-
-class RequestScopedCatalogApprovalActorReader:
-    """每次联结读取都从员工服务重取当前 Catalog 内部读资格。"""
-
-    _ROLES = frozenset({"boss", "product", "sourcing", "finance"})
-
-    def __init__(
-        self,
-        scope: EmployeeServiceScope,
-        actor: EmployeeActor,
-    ) -> None:
-        self._scope = scope
-        self._actor = actor
-
-    async def read_actor(
-        self, tenant_id: TenantId, employee_id: EmployeeId
-    ) -> CatalogApprovalActorFact:
-        async with self._scope(tenant_id) as service:
-            employee = await service.get_employee(
-                tenant_id, employee_id, actor=self._actor
-            )
-        return CatalogApprovalActorFact.model_validate(
-            {
-                "tenant_id": employee.tenant_id,
-                "employee_id": employee.employee_id,
-                "current_role": employee.role,
-                "active": employee.is_active,
-                "eligible": employee.is_active and employee.role in self._ROLES,
-            }
-        )
 
 
 class _DomainSeparatedContactValueHasher(ContactValueHasher):
@@ -946,6 +843,7 @@ def build_phase1_dependencies(
     *,
     now: Callable[[], datetime],
     manual_send: ManualSendComposition | None = None,
+    gmail_transport: GmailHttpTransport | None = None,
     secret_resolver: SecretResolver | None = None,
     object_store_settings: S3ObjectStoreSettings | None = None,
     model_client: StructuredJsonModelClient | None = None,
@@ -1122,6 +1020,58 @@ def build_phase1_dependencies(
         Phase1ComplianceAuthorizer(tenant),
         now=now,
     )
+    prospecting = ProspectingServiceImpl(
+        lambda requested_tenant: SqlAlchemyProspectingUnitOfWork(
+            factory, requested_tenant, now=now
+        ),
+        _DomainSeparatedContactValueHasher(fingerprint_provider),
+        now=now,
+    )
+    demand = cast(
+        DemandService,
+        DemandServiceImpl(
+            lambda requested_tenant: SqlAlchemyDemandUnitOfWork(  # type: ignore[arg-type, return-value]
+                factory,
+                requested_tenant,
+                now=now,
+            ),
+            now=now,
+            account_names=ProspectingDemandAccountNames(prospecting),
+            catalog_accounts=ProspectingDemandCatalogAccountFactsReader(prospecting),
+        ),
+    )
+    demand_radar = AuthorizedDemandRadarService(
+        demand,
+        employee_authorizer,
+    )
+    conversations = ConversationServiceImpl(
+        lambda requested_tenant: SqlAlchemyConversationsUnitOfWork(  # type: ignore[arg-type, return-value]
+            factory, requested_tenant, now=now
+        ),
+        now=now,
+    )
+    sending_identities = SendingIdentityServiceImpl(
+        lambda requested_tenant: SqlAlchemySendingIdentityUnitOfWork(  # type: ignore[arg-type, return-value]
+            factory, requested_tenant, now=now
+        ),
+        Phase1SendingIdentityAuthorizer(tenant),
+        SendingIdentityStandardAuditLogger(),
+        now=now,
+    )
+    if gmail_transport is not None:
+        if manual_send is not None or not isinstance(
+            gmail_transport, GmailHttpTransport
+        ):
+            raise TypeError("API 发送组配置冲突")
+        manual_send = ManualSendComposition(
+            CurrentContactEligibilityReader(tenant, prospecting, demand, now=now),
+            CurrentSendingIdentityReader(tenant, sending_identities, now=now),
+            CurrentCampaignApprovalReader(tenant, approvals, now=now),
+            CurrentReplyStatusReader(tenant, prospecting, conversations, now=now),
+            CurrentDeliveryMaterialReader(tenant, prospecting, sending_identities),
+            resolved_secret_resolver,
+            gmail_transport,
+        )
     unavailable_send_sources = _UnavailableManualSendSources()
     contact_eligibility = (
         manual_send.contact_eligibility
@@ -1156,14 +1106,6 @@ def build_phase1_dependencies(
         reply_status,  # type: ignore[arg-type]
         Phase1OutreachAuthorizer(tenant),
         OutreachStandardAuditLogger(),
-        now=now,
-    )
-    sending_identities = SendingIdentityServiceImpl(
-        lambda requested_tenant: SqlAlchemySendingIdentityUnitOfWork(  # type: ignore[arg-type, return-value]
-            factory, requested_tenant, now=now
-        ),
-        Phase1SendingIdentityAuthorizer(tenant),
-        SendingIdentityStandardAuditLogger(),
         now=now,
     )
     unsubscribe_keys: dict[str, bytes] = {}
@@ -1232,36 +1174,6 @@ def build_phase1_dependencies(
     )
     unsubscribe_links: UnsubscribeLinkProvider = _UnsubscribeLinkAdapter(
         unsubscribe_service
-    )
-    prospecting = ProspectingServiceImpl(
-        lambda requested_tenant: SqlAlchemyProspectingUnitOfWork(
-            factory, requested_tenant, now=now
-        ),
-        _DomainSeparatedContactValueHasher(fingerprint_provider),
-        now=now,
-    )
-    demand = cast(
-        DemandService,
-        DemandServiceImpl(
-            lambda requested_tenant: SqlAlchemyDemandUnitOfWork(  # type: ignore[arg-type, return-value]
-                factory,
-                requested_tenant,
-                now=now,
-            ),
-            now=now,
-            account_names=ProspectingDemandAccountNames(prospecting),
-            catalog_accounts=ProspectingDemandCatalogAccountFactsReader(prospecting),
-        ),
-    )
-    demand_radar = AuthorizedDemandRadarService(
-        demand,
-        employee_authorizer,
-    )
-    conversations = ConversationServiceImpl(
-        lambda requested_tenant: SqlAlchemyConversationsUnitOfWork(  # type: ignore[arg-type, return-value]
-            factory, requested_tenant, now=now
-        ),
-        now=now,
     )
     commitments = CommitmentServiceImpl(
         lambda requested_tenant: SqlAlchemyCommitmentUnitOfWork(  # type: ignore[arg-type]
@@ -1585,7 +1497,40 @@ def build_phase1_dependencies(
         lease_duration=settings.tool_lease,
         now=now,
     )
+    capability_names: tuple[CapabilityName, ...] = (
+        "research",
+        "contacts",
+        "campaign",
+        "reply",
+        "sourcing",
+        "quotation",
+        "inbound_body",
+        "full_reply",
+        "agent",
+        "browser",
+    )
+    capabilities = tuple(
+        RuntimeCapability(
+            name=name,
+            status="enabled"
+            if (
+                (name == "campaign" and manual_send is not None)
+                or (name == "quotation" and quote_domain is not None)
+            )
+            else "disabled",
+            reason="composed"
+            if (
+                (name == "campaign" and manual_send is not None)
+                or (name == "quotation" and quote_domain is not None)
+            )
+            else "not_implemented"
+            if name in {"inbound_body", "full_reply", "agent", "browser"}
+            else "worker_required",
+        )
+        for name in capability_names
+    )
     return ConfiguredApiDependencies(
+        runtime_capabilities=capabilities,
         opportunities=opportunities,
         outreach=outreach,
         sending_identities=sending_identities,
