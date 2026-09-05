@@ -13,16 +13,19 @@ import socket
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlunsplit
 
+import pytest_asyncio
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from infra.db.session import create_engine_from
 from infra.db.tables import (
     AuthenticationCheckRequestRow,
+    CatalogReconciliationCheckpointRow,
     InAppNotificationRow,
     NotificationDeliveryRow,
     NotificationJobRow,
@@ -65,6 +68,25 @@ _RAW_MARKERS = (
     "https://unsubscribe.example.test/",
     "slice4-dns-marker",
 )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _isolate_catalog_scheduler_checkpoints(
+    integration_engine: AsyncEngine,
+) -> AsyncIterator[None]:
+    """Slice 4 演示不验收 Catalog；清理调度循环留下的无关恢复游标。"""
+
+    async with integration_engine.begin() as connection:
+        await connection.execute(
+            CatalogReconciliationCheckpointRow.__table__.delete()
+        )
+    try:
+        yield
+    finally:
+        async with integration_engine.begin() as connection:
+            await connection.execute(
+                CatalogReconciliationCheckpointRow.__table__.delete()
+            )
 
 
 def _run_demo(
