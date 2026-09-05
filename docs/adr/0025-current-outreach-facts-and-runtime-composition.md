@@ -33,3 +33,8 @@ tenant-bound sender.get 逐项核对，不授权任意 Attempt，不反向调用
 
 运行能力 DTO 只声明本进程装配状态；enabled 不代表商业政策、审批或发送门禁已通过。
 API 与 scheduler 独立生命周期，模型及外部端口的 borrowed/owned 关闭规则沿用 Task3a。
+
+Fix1 收紧实际装配：原 API ProspectingDemandAccountNames 机械迁移至已允许的
+outreach_fact_readers.py，原 API 路径重导出同类；唯一 Demand 同时连接目录事实与账户发现
+必需的 name/country/domain 读取。DirectiveService 只由 scheduler runtime 构造一次，经
+core.directives 交给研究和寻源，避免各消费者各自建域服务。

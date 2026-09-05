@@ -70,3 +70,8 @@ tenant-bound sender.get 当前材料，不是任意调用方的 Attempt 授权�
 验证：真实 PostgreSQL 公共写入口建立事实，覆盖错租户/账户/联系人/身份、类别撤销、额度、
 审批版本拒绝、unknown/auto/历史真人/人工纠正、disabled 零构造、enabled 缺项、canonical
 单实例及 Task3a owned 资源与锁健康回归。外部 transport 可受控，业务域不得 fake。
+
+Fix1 明确消费者完整性：唯一 core Demand 同时保留 CatalogAccountFacts 与既有公开账户
+name/country/domain reader；实际 account task_reader.load 必须可从公开持久假设还原企业事实。
+SchedulerCoreServices 的 directives 是本进程唯一构造的 DirectiveService，research 与 sourcing
+共同消费；旧直接 dependencies 保留其原员工读取适配器，bootstrap 使用 canonical 单次 scope。

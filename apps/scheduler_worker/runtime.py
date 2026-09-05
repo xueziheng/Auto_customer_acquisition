@@ -22,6 +22,7 @@ from agent_runtime.qualification_agent.agent import ReplyClassifier
 from apps.composition_support.employee_readers import (
     EmployeeServiceScope,
     RequestScopedCatalogApprovalActorReader,
+    RequestScopedDirectiveEmployeeReader,
     employee_service_scope,
 )
 from artifact_store.repository import ArtifactUnitOfWorkFactory
@@ -55,6 +56,7 @@ from domains.compliance.service_impl import ComplianceServiceImpl
 from domains.conversations.service import ConversationService
 from domains.conversations.service_impl import ConversationServiceImpl
 from domains.demand.service import DemandService
+from domains.directives.service import DirectiveService
 from domains.directives.service_impl import DirectiveServiceImpl
 from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.permissions import EmployeeScope, Phase1EmployeeAuthorizer
@@ -974,6 +976,7 @@ class SchedulerCoreServices:
     conversations: ConversationService
     organization: OrganizationService
     compliance: ComplianceService
+    directives: DirectiveService
 
 
 class SchedulerBootstrap(Protocol):
@@ -1305,6 +1308,28 @@ class SchedulerRuntimeFactory:
                 StandardAuditLogger(),
                 now=self._now,
             )
+            scheduler_employee_actor = EmployeeActor(
+                "system:scheduler", EmployeeScope.SYSTEM, "system"
+            )
+            # 直接依赖入口保留原员工端口；bootstrap 使用本次 canonical scope。
+            directive_employees = (
+                SchedulerDirectiveEmployeeReader(
+                    dependencies.employee_service,
+                    scheduler_employee_actor,
+                    config.tenant_id,
+                )
+                if dependencies is not None and config.sourcing is not None
+                else RequestScopedDirectiveEmployeeReader(
+                    employee_scope, scheduler_employee_actor
+                )
+            )
+            directives = DirectiveServiceImpl(
+                lambda requested_tenant: SqlAlchemyDirectiveUnitOfWork(  # type: ignore[arg-type, return-value]
+                    factory, requested_tenant, now=self._now
+                ),
+                directive_employees,
+                now=self._now,
+            )
             core = SchedulerCoreServices(
                 employee_scope,
                 change_approvals,
@@ -1319,6 +1344,7 @@ class SchedulerRuntimeFactory:
                 ),
                 playbook_organization,
                 country_policy,
+                directives,
             )
             if self._bootstrap is not None:
                 dependencies = self._bootstrap.build_base(
@@ -1338,9 +1364,6 @@ class SchedulerRuntimeFactory:
                 audience=dependencies.notification_audience,
                 jobs=jobs,
                 now=self._now,
-            )
-            scheduler_employee_actor = EmployeeActor(
-                "system:scheduler", EmployeeScope.SYSTEM, "system"
             )
             handoff_handlers = build_human_handoff_step_handlers(
                 opportunity_service=dependencies.opportunity_service,
@@ -1555,20 +1578,8 @@ class SchedulerRuntimeFactory:
                     now=self._now,
                     demand=core.demand,
                 )
-                directive_employees = SchedulerDirectiveEmployeeReader(
-                    dependencies.employee_service,
-                    scheduler_employee_actor,
-                    config.tenant_id,
-                )
-                directives = DirectiveServiceImpl(
-                    lambda requested_tenant: SqlAlchemyDirectiveUnitOfWork(  # type: ignore[arg-type, return-value]
-                        factory, requested_tenant, now=self._now
-                    ),
-                    directive_employees,
-                    now=self._now,
-                )
                 sourcing_policy_reader = DirectiveSourcingAdmissionPolicyReader(
-                    directives
+                    core.directives
                 )
                 sourcing_handlers.update(sourcing_composition.handlers)
             quote_handlers: dict[str, StepHandler] = {}

@@ -28,7 +28,6 @@ from apps.composition_support.delivery_material_reader import (
 from apps.composition_support.employee_readers import (
     CurrentEmployeeUserReader,
     EmployeeServiceScope,
-    RequestScopedDirectiveEmployeeReader,
     RequestScopedHandoffEmployeeReader,
 )
 from apps.composition_support.outreach_fact_readers import (
@@ -42,7 +41,6 @@ from connectors.gmail.client import SecretResolver
 from connectors.gmail.transport import GmailHttpTransport
 from connectors.tavily.transport import TavilySearchTransport
 from connectors.web_search.transport import PublicPageTransport
-from domains.directives.service_impl import DirectiveServiceImpl
 from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.permissions import EmployeeScope
 from domains.employees.schemas import EmployeeView, OwnershipLockView
@@ -66,7 +64,6 @@ from domains.organization.permissions import (
 from domains.organization.service import OrganizationService
 from domains.outreach.service import OutreachService
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
-from infra.db.directive_uow import SqlAlchemyDirectiveUnitOfWork
 from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
 from shared.errors import ValidationError
 from shared.events.catalog import DomainEvent, HandoffRequested
@@ -353,13 +350,6 @@ class CanonicalSchedulerBootstrap:
                 "system:research-bootstrap", EmployeeScope.SYSTEM, "system"
             )
             users = CurrentEmployeeUserReader(employees, actor)
-            directives = DirectiveServiceImpl(
-                lambda requested: SqlAlchemyDirectiveUnitOfWork(  # type: ignore[arg-type]
-                    sessions, requested, now=now
-                ),  # type: ignore[arg-type]
-                RequestScopedDirectiveEmployeeReader(employees, actor),
-                now=now,
-            )
             artifacts = RawArtifactStoreImpl(
                 lambda requested: SqlAlchemyArtifactUnitOfWork(sessions, requested),  # type: ignore[arg-type]
                 research.object_transport,
@@ -380,7 +370,7 @@ class CanonicalSchedulerBootstrap:
                 exclusive_account_confirmed=research.exclusive_account_confirmed,
             )
             discovery = DemandDiscoveryComposition(
-                DirectiveDemandDiscoveryTaskReader(directives, users),
+                DirectiveDemandDiscoveryTaskReader(core.directives, users),
                 DemandIntelligenceAgent(
                     research.model,
                     StructuredDemandIntelligenceModelPort(

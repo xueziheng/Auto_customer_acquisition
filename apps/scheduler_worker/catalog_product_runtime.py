@@ -9,6 +9,7 @@ from typing import Protocol, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from apps.composition_support.outreach_fact_readers import ProspectingDemandAccountNames
 from domains.approvals.service import ApprovalService
 from domains.demand.service import DemandService
 from domains.demand.service_impl import DemandServiceImpl
@@ -242,6 +243,7 @@ def build_catalog_product_composition(
             ),
             now=now,
             catalog_accounts=ProspectingDemandCatalogAccountFactsReader(prospecting),
+            account_names=ProspectingDemandAccountNames(prospecting),
         ),
     )
     products = cast(

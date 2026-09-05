@@ -756,8 +756,13 @@ def test_requested_group_without_ports_is_configuration_error(group):
         )
 
 
-async def test_enabled_groups_share_canonical_services_and_call_no_external_ports(
-    db_url, monkeypatch
+@pytest.mark.parametrize(
+    "sourcing_enabled",
+    [False, True],
+    ids=["account_reader_load", "research_sourcing_single_directive"],
+)
+async def test_enabled_groups_load_actual_accounts_and_share_single_directive(
+    db_url, monkeypatch, sourcing_enabled
 ):
     from apps.api.runtime_config import Phase1RuntimeSettings
     from apps.scheduler_worker import runtime as worker
@@ -765,6 +770,7 @@ async def test_enabled_groups_share_canonical_services_and_call_no_external_port
         CanonicalSchedulerBootstrap,
         ContactRuntimePorts,
         ResearchRuntimePorts,
+        SourcingRuntimePorts,
     )
     from infra.secrets import EnvironmentSecretResolver
     from shared.schemas.identifiers import UserId
@@ -778,6 +784,26 @@ async def test_enabled_groups_share_canonical_services_and_call_no_external_port
     settings = Phase1RuntimeSettings.from_environ(_runtime_env(str(db_url)))
     tenant = TenantId(new_id("tn"))
     env = _factory_environ(str(db_url), tenant, hunter_enabled=False)
+    import json
+
+    class SourcingModel:
+        model_identifier = "controlled-v1"
+
+        async def extract_candidate(self, **kwargs):
+            raise AssertionError("组合期不得调用寻源模型")
+
+    if sourcing_enabled:
+        env["TRADEOS_SOURCING_SETTINGS_JSON"] = json.dumps(
+            {
+                "enabled": True,
+                "model_identifier": "controlled-v1",
+                "tavily_secret_ref": "CONTROLLED_TAVILY_REF",
+                "max_search_queries_per_plan": 4,
+                "max_pages_per_plan": 12,
+                "system_actor_id": "system:sourcing-test",
+            }
+        )
+        env["CONTROLLED_TAVILY_REF"] = "controlled-unused"
     external = ForbiddenExternalPorts()
     secrets = EnvironmentSecretResolver(env)
     captured = []
@@ -808,6 +834,11 @@ async def test_enabled_groups_share_canonical_services_and_call_no_external_port
             secrets,
             True,
         ),
+        sourcing=SourcingRuntimePorts(
+            UserId(new_id("usr")), external, external, external, 10000, SourcingModel()
+        )
+        if sourcing_enabled
+        else None,
         contacts_enabled=True,
         contacts=ContactRuntimePorts(
             external, "controlled-v1", ("DE",), external, external
@@ -825,6 +856,61 @@ async def test_enabled_groups_share_canonical_services_and_call_no_external_port
             states["campaign"] == states["research"] == states["contacts"] == "enabled"
         )
         assert states["inbound_body"] == states["full_reply"] == "disabled"
+        core, dependencies = captured[0]
+        assert runtime.catalog_product_driver._demand is core.demand
+        from apps.api.composition.demand_radar import (
+            ProspectingDemandAccountNames as ApiAccountNames,
+        )
+        from apps.composition_support.outreach_fact_readers import (
+            ProspectingDemandAccountNames,
+        )
+
+        assert ApiAccountNames is ProspectingDemandAccountNames
+        assert dependencies.demand_discovery.task_reader._directives is core.directives
+        if sourcing_enabled:
+            assert states["sourcing"] == "enabled"
+            assert (
+                runtime.sourcing_admission_driver._policy._directives
+                is dependencies.demand_discovery.task_reader._directives
+            )
+        account = await core.prospecting.resolve_account(
+            tenant,
+            AccountResolveRequest(
+                "Actual Acme",
+                "DE",
+                website_domain="actual-acme.test",
+                entity_type="manufacturer",
+            ),
+        )
+        signal = await core.demand.capture_signal(
+            tenant,
+            SignalCaptureRequest(
+                "product_line_expansion",
+                "Actual Acme",
+                "new facility",
+                NOW,
+                "employee_input",
+                "manual-bootstrap",
+                "human",
+            ),
+        )
+        hypothesis = await core.demand.create_hypothesis(
+            tenant,
+            account,
+            "hinges",
+            [str(signal)],
+            "facility may require hinges",
+            "model-v1",
+        )
+        loaded = await dependencies.account_discovery.task_reader.load(
+            tenant, hypothesis, UserId(new_id("usr"))
+        )
+        assert loaded.organization.account_id == account
+        assert loaded.organization.entity_name == "Actual Acme"
+        assert loaded.organization.country == "DE"
+        assert loaded.organization.website_domain == "actual-acme.test"
+        assert loaded.category == "hinges"
+        assert loaded.source_signal_refs == (str(signal),)
     assert len(captured) == 1
     core, dependencies = captured[0]
     assert (
