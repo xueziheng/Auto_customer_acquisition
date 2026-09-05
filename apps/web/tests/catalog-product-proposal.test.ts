@@ -436,6 +436,27 @@ describe("Catalog Product Proposal internal regions", () => {
     expect(`${proposalRegion?.textContent}${cultivationRegion?.textContent}`).not.toMatch(/自动批准|创建正式产品|生成报价|联系供应商|概率|probability/i);
   });
 
+  it("lets a long proposal identity wrap instead of setting the mobile card minimum width", async () => {
+    const pending = proposal("cpp_01M1QKM9TF7BVQNPYXQPG2CT56", "pending_review");
+    pending.proposal.owner_employee = "emp_01M1QKM75CPX0ZMY57QY93XSDJ";
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const path = new URL((input as Request).url).pathname;
+      if (path === "/products/catalog-proposals") return Response.json([pending], { status: 200 });
+      return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
+    });
+    const root = await mountProducts(fetch);
+    root.style.width = "390px";
+
+    await eventually(() => expect(root.textContent).toContain(pending.proposal.proposal_id));
+    const header = root.querySelector<HTMLElement>(".proposal-card > header");
+    const identifier = header?.querySelector<HTMLElement>("strong");
+    expect(header).not.toBeNull();
+    expect(identifier).not.toBeNull();
+    expect(getComputedStyle(header!).flexWrap).toBe("wrap");
+    expect(getComputedStyle(identifier!).minWidth).toBe("0px");
+    expect(getComputedStyle(identifier!).overflowWrap).toBe("anywhere");
+  });
+
   it("joins cultivation facts only by exact cluster, policy, and facts bindings", async () => {
     const evaluation = canonicalEvaluation();
     const cases = [{

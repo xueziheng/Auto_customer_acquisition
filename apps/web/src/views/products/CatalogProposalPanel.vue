@@ -294,7 +294,9 @@ onMounted(() => {
           :key="entry.proposal.proposal_id"
           class="proposal-card"
         >
-          <header><strong>{{ entry.proposal.proposal_id }}</strong><span class="status">{{ entry.proposal.state }}</span></header>
+          <header style="min-width: 0px; flex-wrap: wrap">
+            <strong style="min-width: 0px; overflow-wrap: anywhere">{{ entry.proposal.proposal_id }}</strong><span class="status">{{ entry.proposal.state }}</span>
+          </header>
           <dl>
             <div><dt>需求簇</dt><dd>{{ entry.proposal.cluster_id }}</dd></div>
             <div><dt>评估</dt><dd>{{ entry.proposal.evaluation_id }}</dd></div>
