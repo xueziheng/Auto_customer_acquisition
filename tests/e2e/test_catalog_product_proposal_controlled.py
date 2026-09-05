@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 import httpx
 import pytest
-from playwright.async_api import Page, Request, async_playwright, expect
+from playwright.async_api import Locator, Page, Request, async_playwright, expect
 from sqlalchemy import func, select, text, update
 
 from apps.scheduler_worker.main import _run_cycle, _same_lock_backend
@@ -615,6 +615,26 @@ async def _assert_page_safe(page: Page) -> None:
     )
 
 
+async def _assert_locator_not_clipped(locator: Locator) -> None:
+    metrics = await locator.evaluate(
+        """
+        (element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            left: rect.left,
+            right: rect.right,
+            viewportWidth: window.innerWidth,
+            scrollWidth: element.scrollWidth,
+            clientWidth: element.clientWidth,
+          };
+        }
+        """
+    )
+    assert metrics["left"] >= 0
+    assert metrics["right"] <= metrics["viewportWidth"]
+    assert metrics["scrollWidth"] <= metrics["clientWidth"]
+
+
 async def _run_controlled_acceptance(stack: E2EStack, temporary: Path) -> None:
     await _shutdown_scheduler(stack.scheduler_task, stack.scheduler_stop)
     facts = await _seed_controlled_catalog_facts(stack)
@@ -853,6 +873,11 @@ async def _run_controlled_acceptance(stack: E2EStack, temporary: Path) -> None:
             await page.set_viewport_size({"width": 390, "height": 844})
             await proposal_row.scroll_into_view_if_needed()
             await _assert_page_safe(page)
+            await _assert_locator_not_clipped(proposal_row)
+            await _assert_locator_not_clipped(proposal_row.locator(".status"))
+            await _assert_locator_not_clipped(
+                proposal_row.locator("dl > div").filter(has_text="负责人").locator("dd")
+            )
             await page.screenshot(
                 path=temporary / "06-active-policy-proposal-390.png",
                 full_page=True,
