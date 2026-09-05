@@ -22,6 +22,7 @@ dependencies = [
     "tldextract==5.3.1",
     "reportlab==5.0.1",
     "pypdf==6.16.2",
+    "PyYAML==6.0.3",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,7 @@ dev = [
     "playwright",
     "ruff",
     "mypy",
+    "types-PyYAML",
     "aiosqlite",  # 内存 SQLite 测试夹具驱动；使 make check / CI 不依赖 Docker（HANDBOOK 允许「内存/容器数据库」）
     "httpx>=0.28,<0.29",  # FastAPI/ASGI API 合同测试使用 AsyncClient + ASGITransport
 ]
