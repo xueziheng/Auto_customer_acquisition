@@ -90,8 +90,11 @@ Web每两秒读取监督器最近探测。只有 API 数据库就绪、scheduler
 API健康请求继续使用本次tenant/employee，未新增身份绕过。
 
 前台 **Ctrl-C / SIGTERM** 停止全部本次资源。scheduler完成当前cycle后退出；超时仅对已核对
-出生身份的owner进程组KILL，并将结果记为非零。退出0且最终 `status=stopped`、
+出生身份的owner进程KILL，并将结果记为非零。退出0且最终 `status=stopped`、
 `cleanup_errors=[]` 才表示清理已确认。停止会删除本次数据库、对象和受控邮箱。
+每个业务进程的安全状态还记录同组anchor的PID/出生时间；它在业务exec前握手建立，
+TERM期间保持组归属，真实业务成员清空后才退出。它不保留API监听FD或业务管道。
+leader即使在首次快照前退出，停止仍核对整组；未知归属或残留不会报告成功。
 
 需要保持同一份演练数据时，对 `status.json` 中的 supervisor PID 发送 **SIGHUP**。
 先核对 PID 出生时间仍一致；它只重启 API/scheduler/Vite，不迁移、不重置数据、不重置外部邮箱。

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import signal
+import socket
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,7 +25,11 @@ class OwnedProcess:
     name: str
     process: subprocess.Popen[bytes]
     born: float
+    anchor_pid: int
+    anchor_born: float
+    control: socket.socket = field(repr=False)
     children: dict[int, float] = field(default_factory=dict)
+    closed: bool = False
 
     @classmethod
     def start(
@@ -35,16 +41,49 @@ class OwnedProcess:
         environ: dict[str, str],
         pass_fds: tuple[int, ...] = (),
     ) -> OwnedProcess:
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            env=environ,
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            pass_fds=pass_fds,
-        )
-        return cls(name, process, psutil.Process(process.pid).create_time())
+        control, inherited = socket.socketpair()
+        process: subprocess.Popen[bytes] | None = None
+        try:
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(Path(__file__).with_name("process_anchor.py")),
+                    "bootstrap",
+                    str(inherited.fileno()),
+                    *command,
+                ],
+                cwd=cwd,
+                env=environ,
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                pass_fds=(*pass_fds, inherited.fileno()),
+            )
+            inherited.close()
+            control.settimeout(5)
+            anchor_pid = int(control.recv(32))
+            result = cls(
+                name,
+                process,
+                psutil.Process(process.pid).create_time(),
+                anchor_pid,
+                psutil.Process(anchor_pid).create_time(),
+                control,
+            )
+            if not result.verified() or not result._anchor_verified():
+                raise ControlledError("process_owner_unknown")
+            control.sendall(b"R")
+            control.settimeout(None)
+            return result
+        except BaseException:  # noqa: BLE001 握手失败通过私有通道触发锚点有界清理
+            inherited.close()
+            control.close()
+            if process is not None:
+                try:
+                    process.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    pass
+            raise ControlledError("process_handshake_failed") from None
 
     def verified(self) -> bool:
         try:
@@ -58,35 +97,87 @@ class OwnedProcess:
             return False
 
     def stop(self, timeout: int = 20) -> None:
-        """先TERM完成在途cycle；必要时只KILL仍有原出生身份的进程组。"""
-        if self.process.poll() is not None:
-            self._close_children(timeout)
+        """先TERM完成在途cycle；升级时保留锚点，只KILL已核验的业务进程。"""
+        if self.closed:
             return
-        self._record_children()
-        if not self.verified():
+        running = self.process.poll() is None
+        if not self._anchor_verified() or (running and not self.verified()):
             raise ControlledError("process_owner_unknown")
+        self._record_children()
         os.killpg(self.process.pid, signal.SIGTERM)
+        forced = False
         try:
             self.process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             if not self.verified():
                 raise ControlledError("process_owner_unknown") from None
-            os.killpg(self.process.pid, signal.SIGKILL)
+            self.process.kill()
             self.process.wait(timeout=5)
-            raise ControlledError("process_forced_stop") from None
-        self._close_children(timeout)
-        if self.process.returncode not in {0, -signal.SIGTERM, 128 + signal.SIGTERM}:
+            forced = True
+        forced = self._close_children(timeout) or forced
+        if self._group_members():
+            raise ControlledError("process_cleanup_unknown")
+        self.control.sendall(b"Q")
+        self.control.close()
+        deadline = time.monotonic() + 5
+        while self._anchor_verified():
+            if time.monotonic() >= deadline:
+                raise ControlledError("process_cleanup_unknown")
+            time.sleep(0.02)
+        self.closed = True
+        if forced:
+            raise ControlledError("process_forced_stop")
+        if running and self.process.returncode not in {
+            0,
+            -signal.SIGTERM,
+            128 + signal.SIGTERM,
+        }:
             raise ControlledError("process_cleanup_failed")
 
+    def _anchor_verified(self) -> bool:
+        try:
+            anchor = psutil.Process(self.anchor_pid)
+            return (
+                anchor.create_time() == self.anchor_born
+                and anchor.status() != psutil.STATUS_ZOMBIE
+                and os.getpgid(self.anchor_pid) == self.process.pid
+                and os.getsid(self.anchor_pid) == self.process.pid
+            )
+        except (ProcessLookupError, psutil.NoSuchProcess):
+            return False
+
+    def _group_members(self) -> list[Any]:
+        if not self._anchor_verified():
+            raise ControlledError("process_owner_unknown")
+        members = []
+        for candidate in psutil.process_iter():
+            try:
+                if (
+                    candidate.pid != self.anchor_pid
+                    and os.getpgid(candidate.pid) == self.process.pid
+                    and candidate.status() != psutil.STATUS_ZOMBIE
+                ):
+                    members.append(candidate)
+            except (ProcessLookupError, psutil.NoSuchProcess):
+                pass
+        if not self._anchor_verified():
+            raise ControlledError("process_owner_unknown")
+        return members
+
     def _record_children(self) -> None:
+        for member in self._group_members():
+            if member.pid != self.process.pid:
+                self.children[member.pid] = member.create_time()
         if self.process.poll() is None and self.verified():
             try:
                 for child in psutil.Process(self.process.pid).children(recursive=True):
-                    self.children[child.pid] = child.create_time()
+                    if child.pid != self.anchor_pid:
+                        self.children[child.pid] = child.create_time()
             except psutil.NoSuchProcess:
                 pass
 
-    def _close_children(self, timeout: int) -> None:
+    def _close_children(self, timeout: int) -> bool:
+        self._record_children()
         live: list[Any] = []
         for pid, born in self.children.items():
             try:
@@ -116,15 +207,21 @@ class OwnedProcess:
                 ):
                     raise ControlledError("process_owner_unknown")
                 child.kill()
-            raise ControlledError("process_forced_stop")
+            deadline = time.monotonic() + 5
+            while self._group_members() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            return True
+        return False
 
     def public(self) -> dict[str, object]:
-        self._record_children()
+        if not self.closed:
+            self._record_children()
         return {
             "name": self.name,
             "pid": self.process.pid,
             "born": self.born,
             "exit": self.process.poll(),
+            "anchor": {"pid": self.anchor_pid, "born": self.anchor_born},
             "children": [
                 {"pid": pid, "born": born} for pid, born in self.children.items()
             ],

@@ -264,6 +264,7 @@ class Supervisor:
             time.sleep(0.1)
         if process.process.returncode != 0:
             raise ControlledError(name + "_failed")
+        process.stop()
         self.processes.remove(process)
 
     def start_apps(self) -> None:

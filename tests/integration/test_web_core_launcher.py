@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/run_web_core_controlled.py"
 
@@ -243,7 +245,10 @@ print('rejected_before_network')
     assert result.stdout.strip() == "rejected_before_network"
 
 
-def test_process_birth_mismatch_never_signals_foreign_process() -> None:
+@pytest.mark.parametrize("identity_field", ["born", "anchor_born"])
+def test_process_birth_mismatch_never_signals_foreign_process(
+    identity_field: str,
+) -> None:
     import pytest
 
     from infra.controlled.config import ControlledError
@@ -255,14 +260,14 @@ def test_process_birth_mismatch_never_signals_foreign_process() -> None:
         cwd=ROOT,
         environ={"PATH": os.defpath},
     )
-    original = process.born
+    original = getattr(process, identity_field)
     try:
-        process.born += 1
+        setattr(process, identity_field, original + 1)
         with pytest.raises(ControlledError, match="process_owner_unknown"):
             process.stop()
         assert process.process.poll() is None
     finally:
-        process.born = original
+        setattr(process, identity_field, original)
         process.stop()
 
 
@@ -541,6 +546,209 @@ raise SystemExit(main())
     assert final["cleanup_errors"]
     assert "private-error-marker" not in result.stdout + result.stderr
     assert not (Path(final["directory"]) / "config.json").exists()
+
+
+def test_leader_exit_before_first_snapshot_cleans_unrecorded_child(
+    tmp_path: Path,
+) -> None:
+    import time
+
+    import psutil
+
+    from infra.controlled.resources import OwnedProcess
+
+    code = "import subprocess,sys; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); open(sys.argv[1],'w').write(str(p.pid))"
+    process = OwnedProcess.start(
+        "early-exit",
+        [sys.executable, "-c", code, str(tmp_path / "pid")],
+        cwd=ROOT,
+        environ={"PATH": os.defpath},
+    )
+    child = None
+    try:
+        assert process.process.wait(timeout=5) == 0
+        child = psutil.Process(int((tmp_path / "pid").read_text()))
+        birth = child.create_time()
+        assert not process.children
+        assert os.getpgid(child.pid) == process.process.pid
+        process.stop(timeout=2)
+
+        deadline = time.monotonic() + 2
+        while child.is_running() and child.status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < deadline, "unrecorded owner child survived stop"
+            time.sleep(0.01)
+    finally:
+        if child is not None and child.is_running() and child.create_time() == birth:
+            child.kill()
+        process.stop(timeout=2)
+
+
+def test_anchor_handshake_failure_prevents_exec_and_reclaims_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    import psutil
+
+    from infra.controlled import resources
+    from infra.controlled.config import ControlledError
+
+    started = []
+    original = subprocess.Popen
+    original_recv = resources.socket.socket.recv
+
+    def start(*args, **kwargs):
+        process = original(*args, **kwargs)
+        started.append(process)
+        return process
+
+    def reject(_socket, _size):
+        original_recv(_socket, _size)
+        raise TimeoutError()
+
+    monkeypatch.setattr(resources.subprocess, "Popen", start)
+    monkeypatch.setattr(resources.socket.socket, "recv", reject)
+    marker = tmp_path / "must-not-exec"
+    with pytest.raises(ControlledError, match="process_handshake_failed"):
+        resources.OwnedProcess.start(
+            "handshake-failure",
+            [
+                sys.executable,
+                "-c",
+                "import pathlib,sys; pathlib.Path(sys.argv[1]).touch()",
+                str(marker),
+            ],
+            cwd=ROOT,
+            environ={"PATH": os.defpath},
+        )
+    assert not marker.exists()
+    assert started[0].poll() is not None
+    deadline = time.monotonic() + 5
+    while True:
+        live = []
+        for candidate in psutil.process_iter():
+            try:
+                if (
+                    os.getpgid(candidate.pid) == started[0].pid
+                    and candidate.status() != psutil.STATUS_ZOMBIE
+                ):
+                    live.append(candidate.pid)
+            except (ProcessLookupError, psutil.NoSuchProcess):
+                pass
+        if not live:
+            break
+        assert time.monotonic() < deadline, "handshake failure leaked owner group"
+        time.sleep(0.02)
+
+
+def test_anchor_does_not_retain_business_listener_or_pipe(tmp_path: Path) -> None:
+    import select
+    import time
+
+    import psutil
+
+    from infra.controlled.resources import OwnedProcess
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    port = listener.getsockname()[1]
+    read_fd, write_fd = os.pipe()
+    process = OwnedProcess.start(
+        "fd-ownership",
+        [sys.executable, "-c", "pass"],
+        cwd=ROOT,
+        environ={"PATH": os.defpath, "CONTROLLED_SYNTHETIC_MARKER": "not-a-secret"},
+        pass_fds=(listener.fileno(), write_fd),
+    )
+    listener.close()
+    os.close(write_fd)
+    try:
+        assert process.process.wait(timeout=5) == 0
+        anchor = psutil.Process(process.anchor_pid)
+        assert anchor.is_running()
+        with socket.socket() as replacement:
+            replacement.bind(("127.0.0.1", port))
+        assert select.select([read_fd], [], [], 2)[0]
+        assert os.read(read_fd, 1) == b""
+        process.stop(timeout=2)
+        deadline = time.monotonic() + 2
+        while anchor.is_running() and anchor.status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < deadline, "owner anchor survived stop"
+            time.sleep(0.02)
+    finally:
+        os.close(read_fd)
+        process.stop(timeout=2)
+
+
+def test_short_lived_bootstrap_releases_anchor_before_owner_forgets_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import psutil
+
+    from infra.controlled.resources import OwnedProcess
+    from scripts.controlled_web_supervisor import Supervisor
+
+    captured = []
+    original = OwnedProcess.start
+
+    def start(*args, **kwargs):
+        owned = original(*args, **kwargs)
+        captured.append(owned)
+        return owned
+
+    monkeypatch.setattr(OwnedProcess, "start", start)
+    supervisor = Supervisor(ROOT, tmp_path, [])
+    try:
+        supervisor.run_once("short", [sys.executable, "-c", "pass"], supervisor.environ)
+        assert not supervisor.processes
+        anchor = (
+            psutil.Process(captured[0].anchor_pid)
+            if psutil.pid_exists(captured[0].anchor_pid)
+            else None
+        )
+        assert anchor is None or anchor.status() == psutil.STATUS_ZOMBIE
+    finally:
+        for owned in captured:
+            owned.stop(timeout=2)
+
+
+def test_anchor_survives_term_until_forced_child_cleanup(tmp_path: Path) -> None:
+    import time
+
+    import psutil
+
+    from infra.controlled.config import ControlledError
+    from infra.controlled.resources import OwnedProcess
+
+    child_code = "import signal,pathlib,sys,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); pathlib.Path(sys.argv[1]).touch(); time.sleep(60)"
+    parent_code = "import subprocess,sys,pathlib,time; p=subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]]);\nwhile not pathlib.Path(sys.argv[2]).exists(): time.sleep(.01)\npathlib.Path(sys.argv[3]).write_text(str(p.pid))"
+    process = OwnedProcess.start(
+        "forced-child",
+        [
+            sys.executable,
+            "-c",
+            parent_code,
+            child_code,
+            str(tmp_path / "ready"),
+            str(tmp_path / "pid"),
+        ],
+        cwd=ROOT,
+        environ={"PATH": os.defpath},
+    )
+    try:
+        assert process.process.wait(timeout=5) == 0
+        child = psutil.Process(int((tmp_path / "pid").read_text()))
+        anchor = psutil.Process(process.anchor_pid)
+        with pytest.raises(ControlledError, match="process_forced_stop"):
+            process.stop(timeout=1)
+        deadline = time.monotonic() + 2
+        for member in (child, anchor):
+            while member.is_running() and member.status() != psutil.STATUS_ZOMBIE:
+                assert time.monotonic() < deadline, "forced cleanup left owner alive"
+                time.sleep(0.02)
+    finally:
+        process.stop(timeout=1)
 
 
 def test_dead_process_leader_does_not_orphan_recorded_children(tmp_path: Path) -> None:

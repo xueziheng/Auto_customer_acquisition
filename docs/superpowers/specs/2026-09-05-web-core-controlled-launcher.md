@@ -27,8 +27,15 @@ DNS只为具名受控域返回合成 TXT，其余拒绝。Python进程socket审�
 Docker API 使用固定本机 socket；新 PG/MinIO 用 owner label+完整ID，端口发布核验127.0.0.1。
 不 pull、不复用容器/数据；迁移只能发生在本次创建且核验身份的PG中，app只检查当前head。
 API listener由父预占并传递FD，scheduler/Web strict bind失败，绝不杀端口占用者。
-每个子进程独立session，owner记录PID和出生时间；信号前核验二者与进程组。
-TERM只设置worker停止标志，完成当前cycle；超时才对核验后的owner组KILL。
+每个业务进程独立session；启动包装先建立同组anchor，父监督器核验anchor PID/出生时间、
+PGID与SID并完成私有通道握手后才exec业务命令，业务PID与退出码不变。
+anchor只继承生命周期端点，不继承业务监听FD、管道写端或业务环境配置。
+TERM期间anchor保持存活，清理依赖其不可复用的组成员身份，按组发现首次快照前已孤儿化的孩子。
+已登记但逃离原组的孩子不盲发信号，归属未知为非零。确认业务leader和组内真实存活成员清空后
+才释放anchor并核验其退出；一次性迁移/身份初始化也必须完成这一步后才能忘记进程。
+TERM只设置worker停止标志，完成当前cycle；超时对核验后的具体进程升级KILL并报告非零。
+握手失败关闭私有通道，尚未exec的命令不运行；锚点在通道失联时对自身原组TERM后有界KILL，
+包装退出或未知回收均报告固定非零。不能把anchor存在本身当业务子孙已经清空的证据。
 所有清理逐层尝试：进程→容器→私有配置与场景；任何未知清理非零，主错误优先保留。
 失败日志只保留固定类别，不保存raw stdout/stderr/异常/config；状态诊断文件保留。
 支持同owner的应用重启（监督器命令，保留PG/MinIO/场景），完整停止删除本owner数据。
