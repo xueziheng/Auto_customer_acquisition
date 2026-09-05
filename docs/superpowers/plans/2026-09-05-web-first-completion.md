@@ -124,11 +124,13 @@ python3 scripts/check_boundaries.py
 
 **Interfaces:** 实现现有 `ContextBuilder.build(tenant_id, acting_user, task_objective, entity_refs, skill_tool_requirements, token_budget) -> BuiltContext`；适配现有 worker 的 `build(task: AgentTask) -> object`，不新建第三套 Context 类型。
 
-- [ ] 在本批子规格中定义身份映射、只读事实加载和工具授权的窄 Protocol；先固定类型，读数据只能经公开服务，不让 agent_runtime 导入 repository。
-- [ ] 用两个租户、两个员工的受控事实写测试：sales 只见自身授权数据，工具为权限交集；禁用项即使被技能声明仍不启用。
-- [ ] 写预算与输入测试：必需规则不会截断、超预算优先丢背景并记录截断、负数/布尔预算拒绝、疑似凭证在模型调用前拒绝。
-- [ ] 实现 builder 和 worker adapter；AgentTask 的 UserId 明确映射为受信员工，不能仅强制类型转换。
-- [ ] 证明 ChangeSet 仍经 guardrails/审批分流，并做 worker 失败、取消与资源清理回归；提交。
+- [x] 在本批子规格中定义身份映射、只读事实加载和工具授权的窄 Protocol；先固定类型，读数据只能经公开服务，不让 agent_runtime 导入 repository。
+- [x] 用两个租户、两个员工的受控事实写测试：sales 只见自身授权数据，工具为权限交集；禁用项即使被技能声明仍不启用。
+- [x] 写预算与输入测试：必需规则不会截断、超预算优先丢背景并记录截断、负数/布尔预算拒绝、疑似凭证在模型调用前拒绝。
+- [x] 实现 builder 和 worker adapter；AgentTask 的 UserId 明确映射为受信员工，不能仅强制类型转换。
+- [x] 证明 ChangeSet 仍经 guardrails/审批分流，并做 worker 失败、取消与资源清理回归；提交。
+
+本项按受控组件口径验收：高风险 ChangeSet 交给既有 gate 端口，尚未验证真实审批落库；通用 Worker disabled，生产 policy/descriptor/模型消费者与真实审批集成均未启用。
 
 **Exit gate:** 一个受控 AgentTask 能完成技能选择、上下文构建与受约束输出；无外部调用，无越权事实，无模型概率/金额落库。
 

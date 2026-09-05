@@ -79,7 +79,10 @@ class AgentRunner(Protocol):
 
 
 class ContextBuilder(Protocol):
-    """按任务身份裁剪上下文；不得把凭证放入结果。"""
+    """按任务身份裁剪上下文；显式装配 WorkerContextAdapter 后返回 BuiltContext。
+
+    未提供获批任务、身份与策略 provider 时保持进程 disabled，不自动创建默认身份。
+    """
 
     async def build(self, task: AgentTask) -> object: ...
 

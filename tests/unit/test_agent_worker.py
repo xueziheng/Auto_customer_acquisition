@@ -43,9 +43,7 @@ class Jobs:
     async def complete(self, *, job_id: str, change_set_id: ChangeSetId) -> None:
         self.completed.append((job_id, str(change_set_id)))
 
-    async def fail(
-        self, *, job_id: str, category: str, retryable: bool
-    ) -> None:
+    async def fail(self, *, job_id: str, category: str, retryable: bool) -> None:
         self.failed.append((job_id, category, retryable))
 
 
@@ -126,9 +124,7 @@ async def test_worker_replaces_unsafe_changes_with_structured_rejection() -> Non
     assert result.jobs_completed == 1
     assert len(gate.accepted) == 1
     guarded = gate.accepted[0]
-    assert guarded.change_set_id == ChangeSetId(
-        "chg_01K39P9M5D6K4A91YEQ80EJZ0X"
-    )
+    assert guarded.change_set_id == ChangeSetId("chg_01K39P9M5D6K4A91YEQ80EJZ0X")
     assert guarded.changes == []
     assert guarded.summary == "模型输出被 Phase 1 护栏拦截"
     assert {item["rail"] for item in guarded.guardrail_violations} == {
@@ -161,7 +157,9 @@ async def test_worker_fails_closed_before_readiness_when_schema_is_stale() -> No
     )
 
     with pytest.raises(WorkerReadinessError, match="schema_not_current"):
-        await run_agent_worker(runtime, ready_event=ready, install_signal_handlers=False)
+        await run_agent_worker(
+            runtime, ready_event=ready, install_signal_handlers=False
+        )
 
     assert not ready.is_set()
 
@@ -205,9 +203,128 @@ async def test_sigterm_boundary_finishes_current_job_and_stops_before_next() -> 
 
     assert result.jobs_completed == 1
     assert jobs.claim_limits == [2]
-    assert jobs.completed == [
-        ("agent-job-one", "chg_01K39P9M5D6K4A91YEQ80EJZ0X")
-    ]
+    assert jobs.completed == [("agent-job-one", "chg_01K39P9M5D6K4A91YEQ80EJZ0X")]
     assert [item.job_id for item in jobs.queued] == []
     assert len(agent.calls) == 1
     assert gate.accepted[0].summary == "安全摘要"
+
+
+@pytest.mark.asyncio
+async def test_context_failure_is_permanent_redacted_and_never_runs_agent_or_gate(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from shared.errors import ValidationError
+
+    class FailingContexts:
+        async def build(self, task: AgentTask) -> object:
+            raise ValidationError("password=fixture_should_not_be_logged")
+
+    async def stop_when_empty(seconds: float, stop: asyncio.Event) -> None:
+        stop.set()
+
+    jobs = Jobs(queued=[job("context-failure")])
+    agent = Agent()
+    gate = Gate()
+    ready = asyncio.Event()
+    result = await run_agent_worker(
+        AgentWorkerRuntime(
+            jobs,
+            {"demand_intelligence": agent},
+            FailingContexts(),
+            gate,
+            AgentWorkerConfig(1, 1),
+        ),
+        wait=stop_when_empty,
+        ready_event=ready,
+        install_signal_handlers=False,
+    )
+    assert result.jobs_failed == 1
+    assert jobs.failed == [("agent-job-context-failure", "permanent", False)]
+    assert not agent.calls and not gate.accepted and not jobs.completed
+    assert not ready.is_set()
+    assert "fixture_should_not_be_logged" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_context_cancel_propagates_and_cleans_readiness_signals_and_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import asynccontextmanager
+
+    import apps.agent_worker.main as module
+
+    started = asyncio.Event()
+    ready = asyncio.Event()
+    closed: list[str] = []
+
+    class CancellingContexts:
+        async def build(self, task: AgentTask) -> object:
+            started.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        module, "_install_stop_signals", lambda _: lambda: closed.append("signals")
+    )
+    jobs = Jobs(queued=[job("cancel")])
+    agent = Agent()
+    gate = Gate()
+    runtime = AgentWorkerRuntime(
+        jobs,
+        {"demand_intelligence": agent},
+        CancellingContexts(),
+        gate,
+        AgentWorkerConfig(1, 1),
+    )
+
+    @asynccontextmanager
+    async def resources() -> Any:
+        try:
+            yield runtime
+        finally:
+            closed.append("runtime")
+
+    async def run() -> None:
+        async with resources() as configured:
+            await run_agent_worker(configured, ready_event=ready)
+
+    running = asyncio.create_task(run())
+    await started.wait()
+    assert ready.is_set()
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert closed == ["signals", "runtime"]
+    assert not ready.is_set()
+    assert (
+        not agent.calls and not gate.accepted and not jobs.completed and not jobs.failed
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ["tenant", "run"])
+async def test_worker_rejects_change_set_identity_before_gate(mismatch: str) -> None:
+    class WrongIdentityAgent(Agent):
+        async def run(self, task: AgentTask, context: object) -> ChangeSet:
+            result = await super().run(task, context)
+            if mismatch == "tenant":
+                result.tenant_id = TenantId("other_tenant")
+            else:
+                result.run_id = RunId("other_run")
+            return result
+
+    stop = asyncio.Event()
+    jobs = Jobs(queued=[job("wrong-identity")])
+    gate = Gate()
+    result = await run_agent_worker(
+        AgentWorkerRuntime(
+            jobs,
+            {"demand_intelligence": WrongIdentityAgent(stop)},
+            Contexts(),
+            gate,
+            AgentWorkerConfig(1, 1),
+        ),
+        stop_event=stop,
+        install_signal_handlers=False,
+    )
+    assert result.jobs_failed == 1
+    assert not jobs.completed and not gate.accepted
