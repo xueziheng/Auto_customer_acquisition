@@ -68,7 +68,7 @@ const actionNotice = ref<string | null>(null);
 const retryable = ref(false);
 
 const maximumInteger = 2_147_483_647;
-const minimumDistinctAccounts = ref<number | string | null>(3);
+const minimumDistinctAccounts = ref<number | string | null>(null);
 const minimumRecurringAccounts = ref<number | string | null>(null);
 const minimumDistinctCountries = ref<number | string | null>(null);
 const minimumQuantityUnitAccounts = ref<number | string | null>(null);
@@ -88,7 +88,7 @@ function resetPanel(): void {
   actionNotice.value = null;
   retryable.value = false;
   retainedIdentityKey = null;
-  minimumDistinctAccounts.value = 3;
+  minimumDistinctAccounts.value = null;
   minimumRecurringAccounts.value = null;
   minimumDistinctCountries.value = null;
   minimumQuantityUnitAccounts.value = null;
@@ -421,6 +421,7 @@ onMounted(() => {
             type="number"
             min="2"
             :max="maximumInteger"
+            required
           ></label>
           <label>复购客户数下限（可选）<input
             v-model.number="minimumRecurringAccounts"

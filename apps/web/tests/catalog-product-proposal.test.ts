@@ -257,7 +257,7 @@ function approvalView(approvalId: string, title: string, state = "applied") {
 }
 
 describe("Catalog Product Proposal internal regions", () => {
-  it("shows no-policy fail-closed state and submits only the controlled three-account content", async () => {
+  it("keeps the required account threshold empty until the operator explicitly enters it", async () => {
     const posts: Request[] = [];
     const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
       const request = input as Request;
@@ -275,9 +275,17 @@ describe("Catalog Product Proposal internal regions", () => {
       expect(root.textContent).toContain("当前没有可展示的目录提案");
       expect(root.textContent).toContain("当前没有排队中的培养 Case");
     });
-    expect((root.querySelector('[name="minimum_distinct_accounts"]') as HTMLInputElement).value).toBe("3");
+    const minimumAccounts = root.querySelector('[name="minimum_distinct_accounts"]') as HTMLInputElement;
+    expect(minimumAccounts.value).toBe("");
+    expect(minimumAccounts.required).toBe(true);
     expect((root.querySelector('[name="require_unified_unit"]') as HTMLInputElement).checked).toBe(false);
-    (root.querySelector('[data-action="submit-catalog-policy"]') as HTMLButtonElement).click();
+    submitPolicyForm(root);
+    await nextTick();
+    expect(posts).toHaveLength(0);
+    expect(root.textContent).toContain("策略门槛不符合受控范围或字段关系");
+
+    setField(root, "minimum_distinct_accounts", "3");
+    submitPolicyForm(root);
 
     await eventually(() => expect(posts).toHaveLength(1));
     expect(await posts[0]!.json()).toEqual({
@@ -314,6 +322,7 @@ describe("Catalog Product Proposal internal regions", () => {
     const root = await mountProducts(fetch);
     await eventually(() => expect(root.textContent).toContain("未配置即关闭"));
 
+    setField(root, "minimum_distinct_accounts", "3");
     (root.querySelector('[data-action="submit-catalog-policy"]') as HTMLButtonElement).click();
     await eventually(() => expect(root.textContent).toContain("提交结果未知"));
     (root.querySelector('[data-action="retry-catalog-policy"]') as HTMLButtonElement).click();
@@ -340,6 +349,7 @@ describe("Catalog Product Proposal internal regions", () => {
     const root = await mountProducts(fetch, identity.provider);
     await eventually(() => expect(root.textContent).toContain("未配置即关闭"));
 
+    setField(root, "minimum_distinct_accounts", "3");
     (root.querySelector('[data-action="submit-catalog-policy"]') as HTMLButtonElement).click();
     await eventually(() => expect(root.textContent).toContain("策略服务暂不可用"));
     const originalKey = posts[0]!.headers.get("Idempotency-Key");
@@ -737,6 +747,7 @@ describe("Catalog Product Proposal internal regions", () => {
     });
     const root = await mountProducts(fetch);
     await eventually(() => expect(root.querySelector(".policy-form")).not.toBeNull());
+    setField(root, "minimum_distinct_accounts", "3");
     submitPolicyForm(root);
     await eventually(() => expect(root.textContent).toContain("ccs_trigger_new"));
     initial.get("/products/catalog-evaluations")?.resolve(Response.json([{ ...canonicalEvaluation(), evaluation_id: "cev_trigger_old" }]));
@@ -763,6 +774,7 @@ describe("Catalog Product Proposal internal regions", () => {
     });
     const root = await mountProducts(fetch, identity.provider);
     await eventually(() => expect(root.querySelector(".policy-form")).not.toBeNull());
+    setField(root, "minimum_distinct_accounts", "3");
     submitPolicyForm(root);
     await eventually(() => expect(postRequests).toHaveLength(1));
     identity.switchTo("b");
@@ -790,6 +802,7 @@ describe("Catalog Product Proposal internal regions", () => {
     });
     const root = await mountProducts(fetch, identity.provider);
     await eventually(() => expect(root.textContent).toContain("未配置即关闭"));
+    setField(root, "minimum_distinct_accounts", "3");
     submitPolicyForm(root);
     await eventually(() => expect(root.textContent).toContain("提交结果未知"));
     const aKey = posts[0]!.headers.get("Idempotency-Key");
@@ -798,6 +811,8 @@ describe("Catalog Product Proposal internal regions", () => {
     expect(root.textContent).not.toContain("提交结果未知");
     expect(root.querySelector('[data-action="retry-catalog-policy"]')).toBeNull();
     await eventually(() => expect(root.querySelector(".policy-form")).not.toBeNull());
+    expect(root.querySelector<HTMLInputElement>('[name="minimum_distinct_accounts"]')?.value).toBe("");
+    setField(root, "minimum_distinct_accounts", "3");
     submitPolicyForm(root);
     await eventually(() => expect(posts).toHaveLength(2));
     expect(posts[1]!.headers.get("X-Tenant-Id")).toBe("tenant-policy-cross-identity-b");
@@ -835,7 +850,7 @@ describe("Catalog Product Proposal internal regions", () => {
 
     identity.switchTo("b");
     await eventually(() => {
-      expect(root.querySelector<HTMLInputElement>('[name="minimum_distinct_accounts"]')?.value).toBe("3");
+      expect(root.querySelector<HTMLInputElement>('[name="minimum_distinct_accounts"]')?.value).toBe("");
       expect(root.querySelector('[data-action="retry-catalog-policy"]')).toBeNull();
     });
     identity.switchTo("a");
@@ -1008,6 +1023,7 @@ describe("Catalog Product Proposal internal regions", () => {
     for (const suffix of ["a", "b", "c", "d", "e", "f", "g", "h", "i"]) {
       if (suffix !== "a") identity.switchTo(suffix);
       await eventually(() => expect(root.querySelector(".policy-form")).not.toBeNull());
+      setField(root, "minimum_distinct_accounts", "3");
       submitPolicyForm(root);
       await eventually(() => expect(posts).toHaveLength(keys.size + 1));
       keys.set(suffix, posts.at(-1)!.headers.get("Idempotency-Key"));
@@ -1022,6 +1038,8 @@ describe("Catalog Product Proposal internal regions", () => {
 
     identity.switchTo("a");
     await eventually(() => expect(root.querySelector(".policy-form")).not.toBeNull());
+    expect(root.querySelector<HTMLInputElement>('[name="minimum_distinct_accounts"]')?.value).toBe("");
+    setField(root, "minimum_distinct_accounts", "3");
     submitPolicyForm(root);
     await eventually(() => expect(posts).toHaveLength(11));
     expect(posts.at(-1)!.headers.get("Idempotency-Key")).not.toBe(keys.get("a"));
