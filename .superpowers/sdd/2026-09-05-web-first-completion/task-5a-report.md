@@ -115,3 +115,61 @@ Raw旧未知提交补偿缺陷没有修复；本批如实检测“metadata存在
 真实Gmail/Google SDK、OpenAI、Tavily、客户收发与生产启用：**not_run**。仅核实官方只读文档：
 Gmail get的固定URL/format=RAW参见[users.messages.get](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/get)；
 history/pageToken与过期404参见[users.history.list](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.history/list)和[同步指南](https://developers.google.com/workspace/gmail/api/guides/sync)。Provider合成fixture不等于真实邮箱来源验证。
+
+## Fix1：拒绝非文本codec与完整Date语法（review I1/I2）
+
+审查基点：`0da81d16ba31daa43add8a2e6aa51373c15f077e`。
+修复源码：`904a29475b5359680a9eb0fdfb911779044e4994`；本节另作文档提交。
+只修改 `connectors/gmail/inbound_mime.py`、两个直接覆盖测试文件及正式5a子规格；没有修改
+controller ledger/plan/5b brief、旧feedback/HTTP传输、共享DTO、Raw/Gateway规则或其他任务。
+
+### 修复与兼容策略
+
+I1：`_Budget.text`在任何decoder查询/构造前，先把charset与显式文本字符集/别名映射比较。
+只将映射内受信的标准库文本codec名交给`codecs.getincrementaldecoder`；不将任意邮件charset
+交给codec registry。未知charset、zlib/bz2等压缩、base64/hex/Unicode escape等转换固定
+`malformed`，零decoder查询；没有以“返回bytes后捕获类型错误”代替准入判断。
+现有逐8192bytes增量解码和UTF-8累计4MiB预算仍执行，HTML原始/文本两视图guard语义不变。
+
+正式子规格列出支持范围：ASCII；UTF-8/16/32及显式LE/BE；ISO-8859-1至11、13至16；
+Windows-1250至1258；KOI8-R/U；GB2312/GBK/GB18030、Big5/HKSCS、Shift-JIS/CP932、
+EUC-JP/ISO-2022-JP、EUC-KR/CP949/ISO-2022-KR和明确列出的常用别名。未声明charset仍ASCII；
+名字大小写不敏感、下划线归为连字符，只在有限映射内匹配。UTF-7及其余未列出编码固定隔离，
+这是显式兼容范围限制；不能用任意codec fallback绕过预算。
+
+I2：替换末尾`_ZONE.search`为完整字段`_DATE.fullmatch`，允许可选英文weekday、日/month、
+1900–9999四位year、HH:MM[:SS]与恰好一个数字或列出的英文时区。随后才调用
+`parsedate_to_datetime`做日期/偏移语义校验及UTC转换。尾部额外token/第二时区不可能通过匹配；
+无timezone、-0000、重复Date header、非法日期仍固定`invalid_sent_at`且`sent_at=None`。
+自审另发现标准库会把四位`0000/0001/0099`按旧年份规则解释为2000/2001/1999，已以同一完整
+语法限定年份，避免字面日期被重解释；没有用尾部黑名单修补。
+
+### 真实RED与针对性GREEN
+
+全部pytest前缀仍为`env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest`。
+
+| 精确命令尾部 | 实际结果与含义 |
+|---|---|
+| `tests/unit/test_email_inbound.py -k 'compression_charset or single_timezone_grammar' -q --tb=short`，修复前 | exit1；5 failed /46 deselected in0.18s。zlib/bz2两个用例观察到真实标准库decoder被查询；`+0000 garbage GMT`、`+0000 -1200`、`GMT GMT`三个用例原为candidate |
+| `tests/unit/test_email_inbound.py -q --tb=short`，两项修复及兼容矩阵后 | exit0；94 passed in0.29s |
+| `tests/unit/test_email_inbound.py -k zero_padded_legacy_year -q --tb=short`，自审年份约束前 | exit1；3 failed /94 deselected in0.16s，实际观察到0000/0001/0099被改作2000/2001/1999 |
+| `tests/unit/test_email_inbound.py -q --tb=short`，最终 | exit0；97 passed in0.28s |
+| `tests/integration/test_email_inbound_gateway.py -k 'codec_and_date_rejections or real_archive_matrix_replay_and_sensitive_ledger or html_tags' -q --tb=short` | exit0；6 passed /18 deselected in7.31s。新增4个压缩charset/歧义Date输入，经真实ControlledGmailTransport→Connector→Gateway→PG/MinIO保存原件后固定隔离；逐个真实bounded读回原bytes、sent_at=None、槽为空并保留正确next cursor。另覆盖原归档矩阵与HTML拆分marker |
+
+集成组先于最后三个年份自审用例，年份收紧后重跑最终97项单元；没有把这些分轮数字相加声称
+一次103项总跑。两个压缩用例的未压缩输入只有1024 bytes，压缩后小样本直接使用真实zlib/bz2；
+observer只观察decoder查询并委托原实现，最终断言**未查询**。没有大内存压缩bomb测试。
+另8个非文本/未知charset用例验证零decoder查询；28种常用文本编码/别名检查原文准确解码，
+7种合法Date（数字偏移、GMT/UT/EST、无weekday、无秒、大小写、Tab）保持兼容。原无timezone、
+重复Date、-0000、UTF-8解码预算、纯Raw/Provider同解析语义等用例随完整单元97项通过。
+没有运行旧216组、全Web、真实Gmail/模型/客户动作。
+
+### 门禁、清理与自审
+
+- `.venv/bin/python -m ruff check connectors/gmail/inbound_mime.py tests/unit/test_email_inbound.py tests/integration/test_email_inbound_gateway.py`：exit0，All checks passed。
+- `.venv/bin/python -m mypy connectors/gmail/inbound_mime.py`：exit0，1 source file无问题。
+- `.venv/bin/python scripts/check_boundaries.py`：exit0，7项通过。
+- `.venv/bin/python scripts/scan_sensitive.py connectors/gmail/inbound_mime.py tests/unit/test_email_inbound.py tests/integration/test_email_inbound_gateway.py docs/superpowers/specs/2026-09-05-email-inbound-5a.md`：exit0；源码暂存后`scan_sensitive.py --staged`也exit0，未改scanner/旧基线。
+- 源码提交前`git diff --cached --check`：exit0。git仍经Python subprocess捕获stderr，不动共享.git噪声或全局身份。
+- 真实集成继续复用Task4同一owner资源组件。fixture finally核验清理成功，关闭client/engine/监听并删除本次Provider SQLite；独立核验本次最新owner的容器残留0、私有config残留0。纯单元没有新外部资源，没有操作其他owner。
+- 自审核对charset只映射固定文本decoder、映射发生于解码前、预算没有弱化、Date全字段匹配且无第二时区/旧年份重解释；本批修复不改变5b/Task6消费签名与“解析不等于已过guard”的约束。
