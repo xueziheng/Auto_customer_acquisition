@@ -65,3 +65,7 @@ ADR0021的有限恢复只补metadata关联，不保证对象bytes存在，后续
   长度与 SHA-256 重新校验，不能信任对象存储返回值。
 - `scripts/demo_artifact_store.py` 是离线验收 composition，不是 production runtime factory；
   它只能通过注入的 settings、secret resolver、UoW 与 Store 公开接口运行。
+
+Task5a通过Gateway内infra适配器复用Raw EMAIL_RAW去重，并在put后实际bounded get核tenant/kind/hash/size/bytes。
+Raw旧补偿不改变；未知提交后metadata可能存在而bytes丢失，入站必须整体失败，不能假报已归档。
+业务PG事务回滚不删除已确认不可变原件；没有新增清扫器或公开删除接口（ADR0026）。

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
@@ -14,13 +15,18 @@ from pathlib import Path
 from typing import Literal, cast
 from uuid import uuid4
 
+from connectors.gmail.inbound_transport import GmailInboundRawResult
+from connectors.gmail.transport import GmailHttpStatusError
+
 from .config import ControlledError
 
 
 @dataclass(frozen=True)
 class ControlledProviderCall:
     call_id: str
-    operation: Literal["send", "search"]
+    operation: Literal[
+        "send", "search", "profile", "inbound_list", "inbound_history", "inbound_get"
+    ]
     recorded_at: datetime
 
 
@@ -88,6 +94,160 @@ class ControlledGmailTransport:
         del token
         return await asyncio.to_thread(self._operation, None, message_id, header)
 
+    def _inbound_operation(self, operation: str, values: tuple[object, ...]) -> object:
+        with closing(sqlite3.connect(self._path)) as db, db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS provider_calls (tenant_id TEXT NOT NULL, call_id TEXT PRIMARY KEY, operation TEXT NOT NULL, recorded_at TEXT NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS provider_inbound (ordinal INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL, ref TEXT NOT NULL, body BLOB NOT NULL, labels TEXT NOT NULL, internal_date TEXT NOT NULL, UNIQUE(tenant_id, ref))"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS provider_history_floor (tenant_id TEXT PRIMARY KEY, floor INTEGER NOT NULL)"
+            )
+            if operation not in {"receive", "history_floor"}:
+                db.execute(
+                    "INSERT INTO provider_calls VALUES (?, ?, ?, ?)",
+                    (
+                        self._tenant,
+                        uuid4().hex,
+                        operation,
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+                db.commit()
+            if operation == "receive":
+                raw, labels, stamp = values
+                assert isinstance(raw, bytes)
+                ref = "controlled-inbound-" + hashlib.sha256(raw).hexdigest()[:24]
+                db.execute(
+                    "INSERT OR IGNORE INTO provider_inbound (tenant_id, ref, body, labels, internal_date) VALUES (?, ?, ?, ?, ?)",
+                    (self._tenant, ref, raw, labels, stamp),
+                )
+                return ref
+            if operation == "history_floor":
+                db.execute(
+                    "INSERT INTO provider_history_floor VALUES (?, ?) ON CONFLICT(tenant_id) DO UPDATE SET floor=excluded.floor WHERE tenant_id=?",
+                    (self._tenant, values[0], self._tenant),
+                )
+                return None
+            maximum = db.execute(
+                "SELECT COALESCE(MAX(ordinal), 0) FROM provider_inbound WHERE tenant_id=?",
+                (self._tenant,),
+            ).fetchone()[0]
+            if operation == "profile":
+                return str(maximum + 1)
+            if operation == "inbound_get":
+                row = db.execute(
+                    "SELECT length(body), labels, internal_date FROM provider_inbound WHERE tenant_id=? AND ref=?",
+                    (self._tenant, values[0]),
+                ).fetchone()
+                if row is None:
+                    return GmailInboundRawResult(status="message_gone")
+                limit = values[1]
+                assert isinstance(limit, int)
+                if row[0] > limit:
+                    return GmailInboundRawResult(status="too_large")
+                content = db.execute(
+                    "SELECT substr(body, 1, ?) FROM provider_inbound WHERE tenant_id=? AND ref=?",
+                    (limit + 1, self._tenant, values[0]),
+                ).fetchone()[0]
+                return GmailInboundRawResult(
+                    status="raw",
+                    raw_mime=content,
+                    labels=tuple(json.loads(row[1])),
+                    internal_date=datetime.fromisoformat(row[2]),
+                )
+            boundary, page_token = values
+            offset = int(str(page_token)) if page_token is not None else 0
+            if operation == "inbound_list":
+                rows = db.execute(
+                    "SELECT ref FROM provider_inbound WHERE tenant_id=? AND internal_date>? ORDER BY ordinal LIMIT 101 OFFSET ?",
+                    (
+                        self._tenant,
+                        datetime.fromtimestamp(int(str(boundary)), UTC).isoformat(),
+                        offset,
+                    ),
+                ).fetchall()
+            else:
+                floor = db.execute(
+                    "SELECT floor FROM provider_history_floor WHERE tenant_id=?",
+                    (self._tenant,),
+                ).fetchone()
+                if floor and int(str(boundary)) < floor[0]:
+                    raise GmailHttpStatusError(404)
+                rows = db.execute(
+                    "SELECT ref FROM provider_inbound WHERE tenant_id=? AND ordinal>=? ORDER BY ordinal LIMIT 101 OFFSET ?",
+                    (self._tenant, int(str(boundary)), offset),
+                ).fetchall()
+            refs = tuple(row[0] for row in rows[:100])
+            next_token = str(offset + 100) if len(rows) > 100 else None
+            return (
+                (refs, next_token, str(maximum + 1))
+                if operation == "inbound_history"
+                else (refs, next_token)
+            )
+
+    async def receive_inbound(
+        self,
+        raw_mime: bytes,
+        *,
+        labels: tuple[str, ...] = ("INBOX",),
+        internal_date: datetime,
+    ) -> str:
+        """只写本owner外部Provider场景，绝不写Message/Need等业务结果。"""
+        result = await asyncio.to_thread(
+            self._inbound_operation,
+            "receive",
+            (raw_mime, json.dumps(labels), internal_date.isoformat()),
+        )
+        return cast(str, result)
+
+    async def expire_inbound_history(self, before: int) -> None:
+        """持久记录Provider历史过期场景，重建实例仍可复现404。"""
+        await asyncio.to_thread(self._inbound_operation, "history_floor", (before,))
+
+    async def get_profile_history_id(self, *, token: str) -> str:
+        del token
+        return cast(
+            str, await asyncio.to_thread(self._inbound_operation, "profile", ())
+        )
+
+    async def list_feedback_messages(
+        self, *, token: str, after_epoch: int, page_token: str | None
+    ) -> tuple[tuple[str, ...], str | None]:
+        del token
+        return cast(
+            tuple[tuple[str, ...], str | None],
+            await asyncio.to_thread(
+                self._inbound_operation, "inbound_list", (after_epoch, page_token)
+            ),
+        )
+
+    async def list_feedback_history(
+        self, *, token: str, start_history_id: str, page_token: str | None
+    ) -> tuple[tuple[str, ...], str | None, str]:
+        del token
+        return cast(
+            tuple[tuple[str, ...], str | None, str],
+            await asyncio.to_thread(
+                self._inbound_operation,
+                "inbound_history",
+                (start_history_id, page_token),
+            ),
+        )
+
+    async def get_inbound_message(
+        self, *, token: str, message_ref: str, maximum_bytes: int
+    ) -> GmailInboundRawResult:
+        del token
+        return cast(
+            GmailInboundRawResult,
+            await asyncio.to_thread(
+                self._inbound_operation, "inbound_get", (message_ref, maximum_bytes)
+            ),
+        )
+
     def _read_calls(self) -> tuple[ControlledProviderCall, ...]:
         if not self._path.exists():
             return ()
@@ -96,12 +256,33 @@ class ControlledGmailTransport:
                 "SELECT call_id, operation, recorded_at FROM provider_calls WHERE tenant_id=? ORDER BY rowid",
                 (self._tenant,),
             ).fetchall()
-        if any(row[1] not in {"send", "search"} for row in rows):
+        if any(
+            row[1]
+            not in {
+                "send",
+                "search",
+                "profile",
+                "inbound_list",
+                "inbound_history",
+                "inbound_get",
+            }
+            for row in rows
+        ):
             raise ControlledError("provider_scene_invalid")
         return tuple(
             ControlledProviderCall(
                 row[0],
-                cast(Literal["send", "search"], row[1]),
+                cast(
+                    Literal[
+                        "send",
+                        "search",
+                        "profile",
+                        "inbound_list",
+                        "inbound_history",
+                        "inbound_get",
+                    ],
+                    row[1],
+                ),
                 datetime.fromisoformat(row[2]),
             )
             for row in rows

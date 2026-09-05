@@ -184,3 +184,10 @@ Playbook、真实国家政策 reader/persistence/readiness，以及账户发现�
 但仓库真实 Hunter validation/smoke 为 `not_run`，没有生产部署事实；Phase 1 真实 Campaign、
 证据链、发件信誉与人工接管 SLA 运营验收也为 `not_run`。成本钱包仍是 Phase 3 挂载点；不在
 本阶段实现自动对账扫描器、对账 UI、回复正文 worker、自动重发或多 Provider 路由。
+
+## Task5a入站插件
+
+email.inbound.fetch独立LOW/FREE/NONE manifest，只tenant→permission；EXECUTING后懒配置Gmail。
+Gateway内Raw.put后bounded实际读回验证，完整候选guard后隔离；ledger只ipg一次性handle。
+独立task-owned槽拒绝child领取/清理，只有SUCCEEDED且route/cursor绑定一致可交付，失败/取消清槽。
+此批没有Message入库、正文worker、需求分类或模型读取许可（ADR0026）。
