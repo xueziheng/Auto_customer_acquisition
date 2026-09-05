@@ -144,7 +144,9 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 ### Task 3：必要运行工厂
 
-本任务拆为 3a 运行生命周期与 3b 真实业务装配。3a 已完成并通过独立复审：提交 `7c640494`、修复 `89d74bd2`，子规格 `docs/superpowers/specs/2026-09-05-web-core-runtime-contract.md`；相关测试 151 passed，最后修复的锁与运行时回归 93 passed，静态和结构检查通过。已实现模型注入、owned 客户端清理、持锁后就绪及取消窗口释放；3b 的业务事实读取与完整装配仍待完成，因此下列整体勾选保持未完成。
+本任务拆为 3a 运行生命周期与 3b 真实业务装配，均已完成并通过独立复审。3a 提交 `7c640494`、修复 `89d74bd2`，最后修复的锁与运行时回归 93 passed。3b 实现 `22e2fd34`、修复 `85a48f94`，交付文档 HEAD `da41c45d`；已接当前联系人、需求类别、回复、审批和发送身份事实，使用真实 UserId 绑定及同进程唯一服务。初始事实/身份组 50 passed、运行/发送组 161 passed、浏览器组 1 passed；修复涉及的独立聚焦组 75 passed、旧直接入口 2 passed、最后新增断言组 2 passed。各组按其源码和实际命令分别记录，不累加为全量数量。
+
+子规格为 `docs/superpowers/specs/2026-09-05-web-core-runtime-contract.md`，公开事实与共享边界见 ADR0025。两项审查问题（Demand 缺账户事实依赖、重复指令服务）均已复现、修复并通过定向复审；静态和结构检查通过。本项完成的是运行工厂与现有流程装配，Task4 多进程启动、Task5 正文入口和 Task6 完整回复仍待执行，通用 Agent/Browser Worker 保持 disabled。
 
 **Files:**
 - 复用：`apps/api/runtime.py`、`apps/api/composition/runtime.py`、`apps/scheduler_worker/runtime.py`、`apps/scheduler_worker/main.py`。
@@ -154,11 +156,11 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 **Interfaces:** 保留 `create_runtime_app() -> FastAPI`、`main(runtime_factory=...)` 和 `SchedulerDomainDependencies`。配置由各进程入口解析，组合工厂只消费 typed settings 和端口。
 
-- [ ] 定义必须配置、可选 disabled 和配置错误三种状态；研究、联系人、发信、回复、寻源、报价分别投影可用性。
-- [ ] 写进程组合测试：缺字段/未知迁移/未注册步骤不能 ready；缺可选功能不影响不依赖它的只读页面。
-- [ ] 接入已有工厂、真实 repositories 与现有 scheduler 锁；模型经已有 StructuredJsonModelClient 注入。不得从 apps.api 导入 scheduler 或反向导入。
-- [ ] 验证启动失败和取消时按所属关系关闭资源；锁未取得/丢失均不推进业务。
-- [ ] 聚焦运行工厂与历史集成回归，提交。
+- [x] 定义必须配置、可选 disabled 和配置错误三种状态；研究、联系人、发信、回复、寻源、报价分别投影可用性。
+- [x] 写进程组合测试：缺字段/未知迁移/未注册步骤不能 ready；缺可选功能不影响不依赖它的只读页面。
+- [x] 接入已有工厂、真实 repositories 与现有 scheduler 锁；模型经已有 StructuredJsonModelClient 注入。不得从 apps.api 导入 scheduler 或反向导入。
+- [x] 验证启动失败和取消时按所属关系关闭资源；锁未取得/丢失均不推进业务。
+- [x] 聚焦运行工厂与历史集成回归，提交。
 
 ### Task 4：受控启动入口与停止说明
 
@@ -232,13 +234,17 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 **Files:**
 - 更新：`apps/web/src/views/command-center/CommandCenter.vue`、`inbox/SmartInbox.vue`、`demand-radar/ValidatedNeedDetail.vue`、`crm/HandoffQueue.vue`、`crm/HandoffPacketView.vue`、`apps/web/src/router.ts`。
 - 更新：`apps/web/src/api/client.ts`、`apps/web/tests/api-client-identity.test.ts`、`apps/web/tests/smart-inbox.test.ts`。
+- 补冷启动配置：`apps/api/routers/sending_identities.py`、已有 `apps/web/src/views/SendingIdentityCenter.vue` 及 Settings 入口与生成类型；必要的发件身份公开管理读取和对应真实数据库回归。
 - 复用：`tests/e2e/test_phase1_browser.py`；新增受控核心场景纳入 Task 12。
 
-**Interfaces:** 只消费 Task 7 生成的 API DTO；身份切换通过已有 identity generation 和订阅机制清空旧请求/数据。
+**Interfaces:** 复用 Task 7 生成的 API DTO；发件身份配置沿用域中 `register`、认证检查和 `start_warmup`，新增窄 API 也从 OpenAPI 生成类型。身份切换通过已有 identity generation 和订阅机制清空旧请求/数据。
+
+冷启动预检发现：现有发件身份 API 只有列表、详情和认证检查，可用列表仅包含认证通过的可发送身份。要让干净环境能从 Web 完成配置，本批补老板人工确认的登记、预热入口与受限管理读取；不预插认证或可发送结果、不跳过原预热曲线。Task 4 注入受控 DNS Resolver，认证仍由原 Gateway 和工作流执行。
 
 - [ ] 确认每一项主要按钮具有真实 API 动作、明确成功结果和可访问深链；未实现动作不展示成可用按钮。
 - [ ] 写 deferred 请求测试：身份或路由变化后旧请求不能覆盖新页面；权限撤销即时清理受限内容。
 - [ ] 接通提案确认、会话证据、需求详情和接受接管；角色许可由后端决定。
+- [ ] 从网页登记受控发件身份、发起真实认证工作流并人工启动预热；刷新后可管理尚不可发送的身份，未知结果先核对，保留 Campaign 可用列表的原语义。
 - [ ] 验证桌面与 390px 下的长 ID、证据摘要、主要按钮和确认对话框，运行组件测试后提交。
 
 ### Task 9：错误、暂停与恢复体验
