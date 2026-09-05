@@ -548,12 +548,13 @@ async def test_model_unit_candidate_cannot_enter_need_changeset() -> None:
 
 
 async def test_model_recurring_requirement_candidate_cannot_enter_need_changeset() -> None:
-    """ReplyFieldEvidence 只携带字符串；即使有逐字 quote 也不得猜测布尔复购事实。"""
-    quote = "We order these hinges every month."
+    """逐字复购候选被单独丢弃，同批合法字段仍必须保留。"""
+    recurring_quote = "We order these hinges every month."
+    quantity_quote = "500 pieces"
     message = {
         "message_id": "msg_recurring_requirement_boundary",
         "subject": "Recurring order",
-        "body": quote,
+        "body": f"{recurring_quote} We need {quantity_quote}.",
     }
     agent = _agent(
         _FakePort(
@@ -565,8 +566,13 @@ async def test_model_recurring_requirement_candidate_cannot_enter_need_changeset
                             {
                                 "field": "recurring_requirement",
                                 "value": "true",
-                                "quote": quote,
-                            }
+                                "quote": recurring_quote,
+                            },
+                            {
+                                "field": "quantity",
+                                "value": "500",
+                                "quote": quantity_quote,
+                            },
                         ],
                     }
                 )
@@ -575,17 +581,29 @@ async def test_model_recurring_requirement_candidate_cannot_enter_need_changeset
     )
 
     result = await agent.classify(message=message)
-    assert result.candidate_fields == ()
+    assert [
+        (candidate.field, candidate.value, candidate.quote)
+        for candidate in result.candidate_fields
+    ] == [("quantity", "500", quantity_quote)]
 
     changeset = await agent.run(_task(message), None)
-    assert all(
-        item.get("field") != "recurring_requirement"
+    fields_changes = [
+        change
         for change in changeset.changes
-        for item in change.get("payload", {}).get("fields", [])
-    )
+        if change.get("operation") == "update_need_fields"
+    ]
+    assert len(fields_changes) == 1
+    assert fields_changes[0]["payload"]["fields"] == [
+        {
+            "field": "quantity",
+            "value": "500",
+            "quote": quantity_quote,
+        }
+    ]
     assert all(
-        change.get("operation") != "update_need_fields"
-        for change in changeset.changes
+        item["field"] != "recurring_requirement"
+        for change in fields_changes
+        for item in change["payload"]["fields"]
     )
 
 
