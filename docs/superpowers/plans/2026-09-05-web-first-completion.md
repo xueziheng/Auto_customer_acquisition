@@ -59,11 +59,11 @@
 
 **Interfaces:** 消费 `create_runtime_app()`、`SchedulerRuntimeFactory` 和现有角色/API 契约；产出“页面动作 → API → 工作流步骤 → 域服务 → 外部能力 → 开启条件”清单。
 
-- [ ] 核对分支、提交、tracked/untracked 改动和最新 migration head，只记录安全元数据。
-- [ ] 为指令、发现、Campaign、Inbox、Need、接管、寻源、成本报价、审批、Run、Settings 建立能力清单，每项标为已有可组合、需补组合、需新实现或本轮暂缓，并附源码和验收依据。
-- [ ] 为每项任务指定唯一执行者：API 即时调用、scheduler 持久步骤、Agent Worker 或 Browser Worker。没有持久任务来源的 Worker 保持 disabled，不新造队列填空。
-- [ ] 明确本机测试身份只能使用隔离数据与 loopback；多人共享使用须真实认证，不放宽当前非 dev 拒绝。
-- [ ] 在隔离工作树检查运行时版本及结构边界，记录任何现存失败；未形成干净可解释基线不开始业务改动。
+- [x] 核对分支、提交、tracked/untracked 改动和最新 migration head，只记录安全元数据。
+- [x] 为指令、发现、Campaign、Inbox、Need、接管、寻源、成本报价、审批、Run、Settings 建立能力清单，每项标为已有可组合、需补组合、需新实现或本轮暂缓，并附源码和验收依据。
+- [x] 为每项任务指定唯一执行者：API 即时调用、scheduler 持久步骤、Agent Worker 或 Browser Worker。没有持久任务来源的 Worker 保持 disabled，不新造队列填空。
+- [x] 明确本机测试身份只能使用隔离数据与 loopback；多人共享使用须真实认证，不放宽当前非 dev 拒绝。
+- [x] 在隔离工作树检查运行时版本及结构边界，记录任何现存失败；未形成干净可解释基线不开始业务改动。
 
 ```bash
 git rev-parse HEAD
