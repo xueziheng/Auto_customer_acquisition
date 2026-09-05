@@ -501,7 +501,7 @@ async def _scheduler_cycle(
     audience: _DemoAudience,
     dns_port: int,
 ) -> None:
-    from apps.scheduler_worker.main import _run_cycle
+    from apps.scheduler_worker.main import WorkerStartStatus, run_scheduler_worker
     from apps.scheduler_worker.runtime import (
         SchedulerDomainDependencies,
         SchedulerRuntimeFactory,
@@ -519,7 +519,24 @@ async def _scheduler_cycle(
         ),
         resolver_factory=lambda: _LocalDnsResolver(dns_port),
     )() as runtime:
-        await _run_cycle(runtime, 1)
+        stop = asyncio.Event()
+
+        async def stop_after_first_cycle(
+            _interval: float, stop_event: asyncio.Event
+        ) -> None:
+            stop_event.set()
+
+        result = await run_scheduler_worker(
+            runtime,
+            stop_event=stop,
+            wait=stop_after_first_cycle,
+            install_signal_handlers=False,
+        )
+        if (
+            result.status is not WorkerStartStatus.STARTED
+            or result.cycles_completed != 1
+        ):
+            raise RuntimeError("受控 scheduler 单周期未完成")
 
 
 def _scheduler_env(
