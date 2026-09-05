@@ -117,6 +117,8 @@ python3 scripts/check_boundaries.py
 
 ### Task 2：权限约束的上下文与 Worker 适配
 
+**子规格：** `docs/superpowers/specs/2026-09-05-context-builder-contract.md`。实现提交 `6eb0e14a`；最终聚焦测试 101 passed，ruff/mypy/结构检查通过，独立规格与质量审查通过。保留一项非阻断覆盖建议：新增适配器内部挂起点的取消用例；当前代码未发现吞掉取消的问题，原 Worker 清理已有覆盖。
+
 **Files:**
 - 更新：`agent_runtime/context_builder/builder.py`、`apps/agent_worker/main.py` 的窄装配位置。
 - 新增：`agent_runtime/context_builder/service.py`、`apps/agent_worker/context_adapter.py`。
