@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +156,8 @@ def test_registry_uses_semver_precedence_and_stable_build_tiebreak(
 ) -> None:
     root = tmp_path / "canonical"
     versions = [
+        "1.0.0-01a",
+        "1.0.0-1alpha",
         "1.0.0-alpha",
         "1.0.0-alpha.1",
         "1.0.0-alpha.beta",
@@ -165,12 +169,14 @@ def test_registry_uses_semver_precedence_and_stable_build_tiebreak(
         "1.0.0+abc",
         "1.0.0+xyz",
     ]
+    router = _router_type()()
+    observed: list[str] = []
     for version in versions:
         _write_manifest(root, _manifest(version=version))
-    router = _router_type()()
+        router.load_registry(str(root))
+        observed.append(router.get("demand.infer_buyer_need").version)
 
-    assert router.load_registry(str(root)) == len(versions)
-    assert router.get("demand.infer_buyer_need").version == "1.0.0+xyz"
+    assert observed == versions
     assert router.get("demand.infer_buyer_need", "1.0.0+abc").version == ("1.0.0+abc")
 
 
@@ -327,6 +333,8 @@ def test_registry_rejects_each_missing_required_field(
         ("version", "1.0"),
         ("version", "01.0.0"),
         ("version", "1.0.0-alpha.01"),
+        ("version", "1٢.0.0"),
+        ("version", "1.0.0-1٢"),
         ("version", "v1.0.0"),
         ("domain", "sales"),
         ("description", 3),
@@ -374,7 +382,7 @@ def test_registry_rejects_unknown_fields(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "prompt_ref",
-    ["../prompt.md", "/tmp/prompt.md", "nested/prompt.md", "missing.md"],
+    ["../prompt.md", "/tmp/prompt.md", "missing.md"],
 )
 def test_registry_rejects_prompt_outside_manifest_directory_or_not_regular(
     tmp_path: Path, prompt_ref: str
@@ -385,6 +393,22 @@ def test_registry_rejects_prompt_outside_manifest_directory_or_not_regular(
     _write_manifest(canonical, manifest)
 
     _assert_invalid_load(canonical)
+
+
+def test_registry_accepts_nested_prompt_inside_manifest_directory(
+    tmp_path: Path,
+) -> None:
+    canonical = tmp_path / "canonical"
+    manifest = _manifest()
+    manifest["prompt_ref"] = "prompts/system.md"
+    path = _write_manifest(canonical, manifest)
+    nested_prompt = path.parent / "prompts" / "system.md"
+    nested_prompt.parent.mkdir()
+    nested_prompt.write_text("nested prompt", encoding="utf-8")
+    router = _router_type()()
+
+    assert router.load_registry(str(canonical)) == 1
+    assert router.get("demand.infer_buyer_need").prompt_ref == "prompts/system.md"
 
 
 def test_registry_rejects_prompt_symlink_outside_manifest_directory(
@@ -469,6 +493,46 @@ def test_registry_rejects_unsafe_or_ambiguous_yaml(tmp_path: Path, kind: str) ->
     _assert_invalid_load(canonical)
 
 
+def test_registry_rejects_acyclic_alias_dag_with_bounded_work(tmp_path: Path) -> None:
+    canonical = tmp_path / "canonical"
+    path = _write_manifest(canonical, _manifest())
+    levels = ["dag_0: &dag_0 [leaf, leaf]"]
+    levels.extend(
+        f"dag_{level}: &dag_{level} [*dag_{level - 1}, *dag_{level - 1}]"
+        for level in range(1, 28)
+    )
+    path.write_text("\n".join(levels), encoding="utf-8")
+    script = """
+import sys
+from agent_runtime.skill_router.service import FileSkillRouter
+from shared.errors import ValidationError
+
+try:
+    FileSkillRouter().load_registry(sys.argv[1])
+except ValidationError as error:
+    raise SystemExit(0 if str(error) == "技能注册表无效" else 2)
+raise SystemExit(3)
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(canonical)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        pytest.fail("acyclic alias DAG 校验超时")
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+    assert process.returncode == 0, (stdout, stderr)
+
+
 def test_registry_rejects_manifest_larger_than_read_limit(tmp_path: Path) -> None:
     canonical = tmp_path / "canonical"
     path = _write_manifest(canonical, _manifest())
@@ -477,14 +541,30 @@ def test_registry_rejects_manifest_larger_than_read_limit(tmp_path: Path) -> Non
     _assert_invalid_load(canonical)
 
 
-def test_registry_rejects_empty_registry_and_ignores_appledouble_files(
-    tmp_path: Path,
-) -> None:
+def test_registry_rejects_empty_registry(tmp_path: Path) -> None:
     canonical = tmp_path / "canonical"
     canonical.mkdir(parents=True)
-    (canonical / "._manifest.yaml").write_text("not: yaml: at: all", encoding="utf-8")
 
     _assert_invalid_load(canonical)
+
+
+def test_registry_ignores_malformed_appledouble_entries(tmp_path: Path) -> None:
+    canonical = tmp_path / "canonical"
+    path = _write_manifest(canonical, _manifest())
+    (canonical / "._manifest.yaml").write_text(
+        "!!python/object/apply:builtins.eval [unsafe]", encoding="utf-8"
+    )
+    ignored_root = canonical / "._malformed"
+    ignored_root.mkdir()
+    (ignored_root / "manifest.yaml").write_text("invalid: [", encoding="utf-8")
+    (path.parent / "._manifest.yaml").write_text("invalid: [", encoding="utf-8")
+    ignored_nested = path.parent / "._nested"
+    ignored_nested.mkdir()
+    (ignored_nested / "manifest.yaml").write_text("invalid: [", encoding="utf-8")
+    router = _router_type()()
+
+    assert router.load_registry(str(canonical)) == 1
+    assert router.get("demand.infer_buyer_need").version == "1.0.0"
 
 
 def test_version_subdirectory_must_match_manifest_version(tmp_path: Path) -> None:

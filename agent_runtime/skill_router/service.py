@@ -29,12 +29,13 @@ _MANIFEST_NAME = "manifest.yaml"
 _MANIFEST_LIMIT = 262_144
 _SKILL_ID = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 _TOOL_ID = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
+_ASCII_NUMERIC = re.compile(r"^[0-9]+$")
 _SEMVER = re.compile(
-    r"^(0|[1-9]\d*)\."
-    r"(0|[1-9]\d*)\."
-    r"(0|[1-9]\d*)"
-    r"(?:-((?:0|[1-9]\d*|[A-Za-z-][0-9A-Za-z-]*)"
-    r"(?:\.(?:0|[1-9]\d*|[A-Za-z-][0-9A-Za-z-]*))*))?"
+    r"^(0|[1-9][0-9]*)\."
+    r"(0|[1-9][0-9]*)\."
+    r"(0|[1-9][0-9]*)"
+    r"(?:-((?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?"
     r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
 )
 _DOMAINS = frozenset(
@@ -138,8 +139,8 @@ def _compare_prerelease(
     for left_part, right_part in zip(left, right, strict=False):
         if left_part == right_part:
             continue
-        left_numeric = left_part.isdigit()
-        right_numeric = right_part.isdigit()
+        left_numeric = _ASCII_NUMERIC.fullmatch(left_part) is not None
+        right_numeric = _ASCII_NUMERIC.fullmatch(right_part) is not None
         if left_numeric and right_numeric:
             left_number = (len(left_part), left_part)
             right_number = (len(right_part), right_part)
@@ -173,13 +174,20 @@ def _compare_versions(left: str, right: str) -> int:
     return (left > right) - (left < right)
 
 
-def _ensure_acyclic(value: object, active: set[int] | None = None) -> None:
+def _ensure_acyclic(
+    value: object,
+    active: set[int] | None = None,
+    completed: set[int] | None = None,
+) -> None:
     if not isinstance(value, (dict, list)):
         return
     active_ids = active if active is not None else set()
+    completed_ids = completed if completed is not None else set()
     value_id = id(value)
     if value_id in active_ids:
         raise _RegistryInvalid
+    if value_id in completed_ids:
+        return
     active_ids.add(value_id)
     children: Sequence[object]
     if isinstance(value, dict):
@@ -187,8 +195,9 @@ def _ensure_acyclic(value: object, active: set[int] | None = None) -> None:
     else:
         children = value
     for child in children:
-        _ensure_acyclic(child, active_ids)
+        _ensure_acyclic(child, active_ids, completed_ids)
     active_ids.remove(value_id)
+    completed_ids.add(value_id)
 
 
 def _is_within(path: Path, parent: Path) -> bool:
@@ -239,12 +248,13 @@ def _manifest_paths(canonical: Path) -> list[tuple[Path, str, str | None]]:
             version_dir = _resolve_inside(raw_child, canonical)
             version_manifest = version_dir / _MANIFEST_NAME
             if not version_manifest.exists():
-                raise _RegistryInvalid
-            if any(
-                child.is_dir() and not child.name.startswith("._")
-                for child in version_dir.iterdir()
-            ):
-                raise _RegistryInvalid
+                continue
+            for child in version_dir.iterdir():
+                if not child.is_dir() or child.name.startswith("._"):
+                    continue
+                nested_dir = _resolve_inside(child, canonical)
+                if (nested_dir / _MANIFEST_NAME).exists():
+                    raise _RegistryInvalid
             candidates.append(
                 (
                     _resolve_inside(version_manifest, canonical),
@@ -299,17 +309,14 @@ def _validate_prompt_ref(value: object, manifest_dir: Path) -> str:
     if "\\" in prompt_ref:
         raise _RegistryInvalid
     relative = PurePosixPath(prompt_ref)
-    if (
-        relative.is_absolute()
-        or len(relative.parts) != 1
-        or relative.parts[0] in {".", ".."}
-    ):
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
         raise _RegistryInvalid
     unresolved_prompt = manifest_dir / prompt_ref
     if unresolved_prompt.is_symlink():
         raise _RegistryInvalid
     prompt = unresolved_prompt.resolve(strict=True)
-    if prompt.parent != manifest_dir.resolve(strict=True) or not prompt.is_file():
+    resolved_manifest_dir = manifest_dir.resolve(strict=True)
+    if not _is_within(prompt, resolved_manifest_dir) or not prompt.is_file():
         raise _RegistryInvalid
     return prompt_ref
 
