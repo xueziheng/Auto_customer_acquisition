@@ -39,6 +39,8 @@ Campaign/账户发现接线、Company Playbook、国家政策和 Hunter Provider
 
 ## 本地开发
 
+本机受控 Web 可用 `.venv/bin/python scripts/run_web_core_controlled.py` 启动独立 API、scheduler、Vite 和新建 PG/MinIO。它不读取 `.env` 或既有业务库，初始业务待配置；角色演练、依赖安装、停止与未实现能力见 [受控 Web 操作说明](docs/operations/web-core-local.md)。这不代表完整回复链或多人部署已完成。
+
 启动依赖服务（PostgreSQL + pgvector、Redis、MinIO）：
 
 ```bash

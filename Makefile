@@ -27,3 +27,8 @@ check\:skeleton:
 clean:
 	find . -type d -name __pycache__ -not -path './.git/*' -not -path './.worktrees/*' -prune -exec rm -rf {} +
 	rm -rf .pytest_cache .ruff_cache .mypy_cache
+
+.PHONY: web-controlled
+PYTHON ?= python3
+web-controlled:
+	$(PYTHON) scripts/run_web_core_controlled.py

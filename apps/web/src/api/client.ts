@@ -83,6 +83,35 @@ export function clearAuthenticatedIdentity(): void {
   publishIdentity(null);
 }
 
+export interface ControlledWebConfig {
+  owner: string;
+  tenantId: string;
+  identities: readonly { employeeId: string; label: string }[];
+}
+
+export function controlledWebConfig(): ControlledWebConfig | null {
+  const raw = import.meta.env.VITE_CONTROLLED_CONFIG;
+  if (!import.meta.env.DEV || import.meta.env.PROD || !raw) return null;
+  try {
+    const value = JSON.parse(raw);
+    if (!/^[a-f0-9]{32}$/.test(value.owner) || !Array.isArray(value.identities) || value.identities.length < 1 || value.identities.length > 10) throw new Error();
+    exactIdentity(value.tenantId, "tenant_identity");
+    const seen = new Set<string>();
+    for (const identity of value.identities) {
+      exactIdentity(identity.employeeId, "employee_identity");
+      if (typeof identity.label !== "string" || !identity.label || identity.label.length > 100 || seen.has(identity.employeeId)) throw new Error();
+      seen.add(identity.employeeId);
+    }
+    return Object.freeze({ owner: value.owner, tenantId: value.tenantId, identities: Object.freeze(value.identities.map((i: {employeeId: string; label: string}) => Object.freeze({employeeId: i.employeeId, label: i.label}))) });
+  } catch { throw new WebIdentityError("controlled_configuration_invalid"); }
+}
+
+export function configureControlledIdentity(employeeId: string): void {
+  const config = controlledWebConfig();
+  if (!config || !config.identities.some((i) => i.employeeId === employeeId)) throw new WebIdentityError("controlled_identity_rejected");
+  publishIdentity(Object.freeze({ employeeId, mode: "fixed-dev", tenantId: config.tenantId }));
+}
+
 const runtimeIdentityProvider: WebIdentityProvider = {
   generation: () => identityGeneration,
   subscribe(listener) {

@@ -1,8 +1,15 @@
 <script setup lang="ts">
 /* global HTMLDetailsElement */
-import { ref } from "vue";
+import { onUnmounted, ref } from "vue";
+import { apiClient, controlledWebConfig } from "./api/client";
 import { RouterLink, RouterView } from "vue-router";
+import ControlledModeBar from "./components/ControlledModeBar.vue";
 import NotificationBadge from "./components/NotificationBadge.vue";
+
+const isControlled = controlledWebConfig() !== null;
+const identityGeneration = ref(isControlled ? apiClient.identitySnapshot().generation : 0);
+const unsubscribeIdentity = isControlled ? apiClient.subscribeIdentity(() => { identityGeneration.value = apiClient.identitySnapshot().generation; }) : () => {};
+onUnmounted(unsubscribeIdentity);
 
 const appName: string = "TradeOS";
 const navMore = ref<HTMLDetailsElement | null>(null);
@@ -61,7 +68,8 @@ function closeMore(): void {
       </details>
       <NotificationBadge />
     </header>
-    <RouterView />
+    <ControlledModeBar />
+    <RouterView :key="identityGeneration" />
   </main>
 </template>
 
@@ -105,6 +113,9 @@ body,
   height: 100%;
   overflow: hidden;
 }
+main[aria-label="TradeOS"] { display:flex; flex-direction:column; height:100%; }
+main[aria-label="TradeOS"] > .shell { flex:1; min-height:0; width:100%; height:auto; }
+main[aria-label="TradeOS"] > .topbar { flex-shrink:0; }
 body {
   font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
   background: var(--canvas);
