@@ -325,6 +325,7 @@ describe("Catalog Product Proposal internal regions", () => {
   });
 
   it("reuses the exact original key and body after a retryable 503", async () => {
+    const identity = identityHarness("policy-503-restore");
     const posts: Request[] = [];
     const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
       const request = input as Request;
@@ -336,16 +337,26 @@ describe("Catalog Product Proposal internal regions", () => {
       }
       return catalogPathResponse(path) ?? Response.json({}, { status: 500 });
     });
-    const root = await mountProducts(fetch);
+    const root = await mountProducts(fetch, identity.provider);
     await eventually(() => expect(root.textContent).toContain("未配置即关闭"));
 
     (root.querySelector('[data-action="submit-catalog-policy"]') as HTMLButtonElement).click();
     await eventually(() => expect(root.textContent).toContain("策略服务暂不可用"));
+    const originalKey = posts[0]!.headers.get("Idempotency-Key");
+    const originalBody = await posts[0]!.text();
+    identity.switchTo("b");
+    await eventually(() => expect(root.querySelector('[data-action="retry-catalog-policy"]')).toBeNull());
+    identity.switchTo("a");
+    await eventually(() => {
+      expect(root.textContent).toContain("策略服务暂不可用，请按原请求重试");
+      expect(root.textContent).toContain("尚未核清");
+      expect(root.querySelector('[data-action="retry-catalog-policy"]')).not.toBeNull();
+    });
     (root.querySelector('[data-action="retry-catalog-policy"]') as HTMLButtonElement).click();
     await eventually(() => expect(posts).toHaveLength(2));
 
-    expect(posts[1]!.headers.get("Idempotency-Key")).toBe(posts[0]!.headers.get("Idempotency-Key"));
-    expect(await posts[1]!.text()).toBe(await posts[0]!.text());
+    expect(posts[1]!.headers.get("Idempotency-Key")).toBe(originalKey);
+    expect(await posts[1]!.text()).toBe(originalBody);
   });
 
   it("renders active rules, bounded history states, and linked approval state", async () => {
@@ -813,6 +824,7 @@ describe("Catalog Product Proposal internal regions", () => {
       expect(root.querySelector<HTMLInputElement>('[name="minimum_distinct_countries"]')?.value).toBe("5");
       expect(root.querySelector<HTMLInputElement>('[name="minimum_quantity_unit_accounts"]')?.value).toBe("3");
       expect(root.querySelector<HTMLInputElement>('[name="require_unified_unit"]')?.checked).toBe(true);
+      expect(root.textContent).toContain("尚未核清");
       expect(root.querySelector('[data-action="retry-catalog-policy"]')).not.toBeNull();
     });
     (root.querySelector('[data-action="retry-catalog-policy"]') as HTMLButtonElement).click();
@@ -942,6 +954,13 @@ describe("Catalog Product Proposal internal regions", () => {
     const originalKey = posts[0]!.headers.get("Idempotency-Key");
     const originalBody = await posts[0]!.text();
     await eventually(() => expect(root.textContent).toContain(errorMessage));
+    expect(root.querySelector('[data-action="retry-catalog-policy"]')).toBeNull();
+
+    identity.switchTo("b");
+    await eventually(() => expect(root.textContent).not.toContain(errorMessage));
+    identity.switchTo("a");
+    await eventually(() => expect(root.textContent).toContain(errorMessage));
+    expect(root.textContent).not.toMatch(/尚未核清|按原请求重试|重试将沿用/);
     expect(root.querySelector('[data-action="retry-catalog-policy"]')).toBeNull();
 
     submitPolicyForm(root);

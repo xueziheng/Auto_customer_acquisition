@@ -1,10 +1,15 @@
 <script lang="ts">
 import type { components as ApiComponents } from "../../api/api";
 
+type RetainedPolicyOutcome =
+  | { kind: "determinate_failure"; status: number }
+  | { kind: "retryable"; status: 503 }
+  | { kind: "uncertain" };
+
 type RetainedPolicyRequest = {
   body: ApiComponents["schemas"]["CatalogProposalPolicyContent"];
   key: string;
-  retryable: boolean;
+  outcome: RetainedPolicyOutcome;
   serializedBody: string;
 };
 
@@ -260,8 +265,17 @@ function restoreRetainedPolicyIntent(): void {
     restoringRetainedIntent = false;
   }
   retainedIdentityKey = identityKey;
-  retryable.value = request.retryable;
-  actionNotice.value = "检测到同一身份尚未核清的原请求；重试将沿用原请求内容";
+  if (request.outcome.kind === "determinate_failure") {
+    retryable.value = false;
+    actionError.value = safeSubmitError(request.outcome.status);
+    actionNotice.value = null;
+  } else {
+    retryable.value = true;
+    actionError.value = request.outcome.kind === "retryable"
+      ? safeSubmitError(request.outcome.status)
+      : "提交结果未知，保留原请求；请按原请求重试";
+    actionNotice.value = "检测到同一身份尚未核清的原请求；重试将沿用原请求内容";
+  }
 }
 
 async function submitPolicy(): Promise<void> {
@@ -281,7 +295,7 @@ async function submitPolicy(): Promise<void> {
     request = {
       body: { ...body },
       key: globalThis.crypto.randomUUID(),
-      retryable: false,
+      outcome: { kind: "uncertain" },
       serializedBody,
     };
     retainRequest(client, identityKey, request);
@@ -291,7 +305,7 @@ async function submitPolicy(): Promise<void> {
   actionError.value = null;
   actionNotice.value = null;
   retryable.value = false;
-  request.retryable = true;
+  request.outcome = { kind: "uncertain" };
   try {
     const result = await client.POST("/products/catalog-policies", {
       params: { header: { "Idempotency-Key": request.key } },
@@ -307,8 +321,13 @@ async function submitPolicy(): Promise<void> {
       await loadPolicies();
       return;
     }
-    retryable.value = result.response.status === 503;
-    request.retryable = retryable.value;
+    if (result.response.status === 503) {
+      retryable.value = true;
+      request.outcome = { kind: "retryable", status: 503 };
+    } else {
+      retryable.value = false;
+      request.outcome = { kind: "determinate_failure", status: result.response.status };
+    }
     actionError.value = safeSubmitError(result.response.status);
   } catch {
     if (operation.valid() && exactIdentityKey() === identityKey) {
