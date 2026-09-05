@@ -676,8 +676,49 @@ snapshot，不启动 Workflow；恢复 scheduler 前再次核对 active Directiv
 
 受控验收的真实命令、`8-member / 3-member / unclustered` 排序、batch 2、runtime 重建、人工重放、
 外部调用零计数和 Browser 证据见
-`docs/acceptance/2026-09-02-phase2-need-cluster-sourcing-admission.md`。Catalog Product Proposal、联系人多源
-瀑布、70/30 allocator、自动 backpressure、真实 direct supplier quote 与商业来源仍未完成。
+`docs/acceptance/2026-09-02-phase2-need-cluster-sourcing-admission.md`。联系人多源瀑布、70/30 allocator、自动
+backpressure、真实 direct supplier quote 与商业来源仍未完成。
+
+## 十三、Phase2 Catalog Product Proposal
+
+本子项目已完成工程实现并跑通受控 PostgreSQL/API/scheduler/Browser 功能链，但最终视觉与全仓
+完成门禁尚未闭合；它只把通过
+显式策略的 Need Cluster 变成内部 Catalog Product Proposal，人工批准后最多创建一个
+`queued` 培养 Case。这不是正式 Product、供应确认、客户报价、生产启用或市场验证，也不代表
+整个 Phase2 完成。
+
+### 受控运行
+
+1. 先核对已迁移的 PostgreSQL、API 和 scheduler 来自同一构建，并确认当前没有未经批准的生产
+   Catalog 策略。无活动策略是正常关闭态，scheduler 不得创建 evaluation、proposal 或 Case。
+2. product/sourcing 人员只提交完整显式门槛；系统不提供国家、品类、客户数、复购或数量的
+   业务默认。由不同的 boss 打开精确 Approval 深链，核对策略内容、基线版本和影响后再决定。
+3. scheduler 只在单副本 advisory lock 下恢复待处理策略/提案、重读 Demand canonical 事实并启动
+   durable workflow。确定性规则展示六种固定结果；未配硬门槛不等于事实已知，缺失复购、数量或单位
+   仍显示“未知”，但按当前显式策略可不阻断。
+4. boss 对提案的批准只入培养队列。操作后同时核对 proposal、Approval 与 Case 的精确绑定，以及
+   Product、Supplier、Contact、Search、Send、Quote 和 Tool Gateway 外部调用均未增加。
+
+### 停止
+
+- 计划停止：不再提交新策略；需改变现行门槛时必须提交新版本并重走独立审批，不得直接改
+  active 行。
+- 紧急停止：先停 scheduler worker，再核对 pending policy/proposal、running workflow、pending/dead Outbox 和
+  queued Case。不删行、不改 hash、不补写审批状态、不用 downgrade 伪造恢复。
+- 停止 scheduler 不撤销已生效策略或已排队 Case。若需改变这些业务事实，必须另行设计可审计命令和
+  审批；本子项目没有紧急“删库开关”。
+
+### 重启与恢复
+
+1. 重建 runtime 后从 PostgreSQL 重读 checkpoint、活动策略、待提交 proposal 和 workflow；以 tenant +
+   subject + facts hash 的幂等键恢复，不能用新 actor/key 制造第二份业务事实。
+2. Approval 投递、决定或 Case 创建结果不确定时，先读 canonical proposal/Approval/Case，再以原事件或原
+   workflow 恢复。同一决定重投和 scheduler 重启只能保留一份 evaluation、proposal、Approval 和 Case。
+3. 应用提案决定前重读当前策略与 Demand 事实。facts hash 已改的旧快照必须转 `stale`，不得因
+   已点“批准”而创建第二个 Case。
+4. `CatalogCultivationQueued` 目前没有本子项目内的下游消费者；培养后续必须另行规格、授权和装配，
+   不得把 no-handler dead 当成已执行培养。受控结果、命令、截图和完整残余风险见
+   `docs/acceptance/2026-09-04-phase2-catalog-product-proposal.md`。
 
 ## 附：常用命令
 

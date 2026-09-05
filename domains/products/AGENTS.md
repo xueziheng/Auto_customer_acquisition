@@ -61,3 +61,7 @@ V2 投影的 Product 固定为 `source_only`，保留 canonical public evidence 
 - Catalog Product Proposal 只是内部培养建议。批准后的唯一效果是创建一个 `queued` 培养 Case；不得创建或升级 Product、修改候选池状态、启动寻源、联系供应商、询价、报价或发送。
 - 策略和提案的审批决定只能由 workflow 以可信 Products 输入应用；HTTP 不得接受客户端自报 tenant、actor、facts hash、Provenance、审批人或状态。
 - 安全视图不得包含创建幂等键、请求 hash、原始 Provenance、客户原话、供应商联系人、价格或 workflow context。
+- 非硬门槛事实缺失仍显式为 `unknown`，只是不阻断整体通过；不得为了让提案通过而把未知伪写为 `not_required`、0 或已确认。
+- 培养审批所引用的 conversation/web/upload Evidence 必须是可路由定位符；测试数据也不得绕过该契约。
+- 同一 facts hash 的事件重放、审批重投和 runtime 重启必须收敛到同一 evaluation、proposal、Approval 和 Case；批准前必须重读当前 Demand 事实，hash 已变只能转 `stale`。
+- `CatalogCultivationQueued` 是 metadata-only 事实，不得在本域偷偷补外部动作；下游消费者未独立设计和授权前，培养队列就是终点。
