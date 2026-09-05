@@ -616,6 +616,7 @@ async def _assert_page_safe(page: Page) -> None:
 
 
 async def _assert_locator_not_clipped(locator: Locator) -> None:
+    css_subpixel_tolerance = 0.5
     metrics = await locator.evaluate(
         """
         (element) => {
@@ -630,8 +631,8 @@ async def _assert_locator_not_clipped(locator: Locator) -> None:
         }
         """
     )
-    assert metrics["left"] >= 0
-    assert metrics["right"] <= metrics["viewportWidth"]
+    assert metrics["left"] >= -css_subpixel_tolerance
+    assert metrics["right"] <= metrics["viewportWidth"] + css_subpixel_tolerance
     assert metrics["scrollWidth"] <= metrics["clientWidth"]
 
 
