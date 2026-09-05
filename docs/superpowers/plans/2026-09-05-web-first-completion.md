@@ -164,16 +164,20 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 ### Task 4：受控启动入口与停止说明
 
+已完成并通过独立复审。初始源码 `d9a6b03a`，修复源码 `f1632658`，交付文档 HEAD `ed1d8160`。入口启动真实独立 API、scheduler、Vite 和自有 PG/MinIO，只初始化持久员工身份；中文合成提案及 Playbook/国家政策的独立审批、调度激活经过真实 HTTP 验证。桌面和 390px 截图已查看，全新声明依赖 Python 环境实际启动与停止通过。
+
+审查发现的“leader 在首次快照前退出会遗漏子进程”已复现并修复，使用执行前握手登记的进程组 anchor，保留业务 PID、端口和退出语义。修复后的完整 launcher 回归 22 passed；随后追加的强停用例单跑 1 passed，不计为一次 23 项总跑。初始 Web 337 passed、类型与构建通过；修复未改 Web。结构及增量扫描通过，完整敏感扫描四处旧测试形态命中、172 条基线 lint warnings 保留至 Task12 裁定。自有容器、业务进程、anchor、私有配置清理已核验；没有启用真实 Provider、桌面或共享部署。
+
 **Files:**
 - 新增：`scripts/run_web_core_controlled.py`、`docs/operations/web-core-local.md`、`tests/integration/test_web_core_launcher.py`。
 - 更新：`Makefile`、`README.md`；复用已有隔离数据库、受控 transport 和测试生命周期支持。
 
-**Interfaces:** 拟新增安全入口 `python3 scripts/run_web_core_controlled.py`。只启动拥有明确资源归属的本机受控环境；默认不解析真实 Provider 凭证、不访问公网、不接管已有服务。
+**Interfaces:** 已实现安全入口 `python3 scripts/run_web_core_controlled.py`。只启动拥有明确资源归属的本机受控环境；默认不解析真实 Provider 凭证、不访问公网、不接管已有服务。TERM 完整停止；HUP 保留同 owner 数据和持久受控邮箱，重启应用。进程健康不代表业务前置条件通过，未装配研究执行等能力仍明确 disabled。
 
-- [ ] 先写启动/失败测试：端口占用不会杀现有进程，依赖缺失给固定错误，初始化失败清理自有资源，重复启动不会复用另一任务的数据。
-- [ ] 实现 loopback API/Web、独立测试数据与安全角色选择；禁止生产数据库回退或通过临时 API 伪造审批/业务结果。
-- [ ] 提供停止信号和完成结果；只清理持有且可核实的资源，未知清理结果返回非零并留诊断。
-- [ ] 用真实子进程验证启动、SIGTERM、worker 异常退出和再次启动；文档记录操作步骤，提交。
+- [x] 先写启动/失败测试：端口占用不会杀现有进程，依赖缺失给固定错误，初始化失败清理自有资源，重复启动不会复用另一任务的数据。
+- [x] 实现 loopback API/Web、独立测试数据与安全角色选择；禁止生产数据库回退或通过临时 API 伪造审批/业务结果。
+- [x] 提供停止信号和完成结果；只清理持有且可核实的资源，未知清理结果返回非零并留诊断。
+- [x] 用真实子进程验证启动、SIGTERM、worker 异常退出和再次启动；文档记录操作步骤，提交。
 
 **Exit gate:** 不改源码、不手工直插业务行，可以按说明启动 Web；受控模式标识、能力缺失原因和进程健康真实可见。
 
