@@ -144,6 +144,8 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 ### Task 3：必要运行工厂
 
+本任务拆为 3a 运行生命周期与 3b 真实业务装配。3a 已完成并通过独立复审：提交 `7c640494`、修复 `89d74bd2`，子规格 `docs/superpowers/specs/2026-09-05-web-core-runtime-contract.md`；相关测试 151 passed，最后修复的锁与运行时回归 93 passed，静态和结构检查通过。已实现模型注入、owned 客户端清理、持锁后就绪及取消窗口释放；3b 的业务事实读取与完整装配仍待完成，因此下列整体勾选保持未完成。
+
 **Files:**
 - 复用：`apps/api/runtime.py`、`apps/api/composition/runtime.py`、`apps/scheduler_worker/runtime.py`、`apps/scheduler_worker/main.py`。
 - 新增候选：`apps/scheduler_worker/bootstrap.py`、`apps/agent_worker/bootstrap.py`；只有 Task 0 确认需要的进程才新增。
