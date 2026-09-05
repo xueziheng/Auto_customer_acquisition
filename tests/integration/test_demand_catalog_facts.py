@@ -21,6 +21,9 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from shared.schemas.provenance import FactualField, Provenance, SourceType
+from tests.integration.test_need_units import (
+    unit_engine as unit_engine,  # noqa: PLC0414 -- 每例隔离真实 PostgreSQL
+)
 
 _models = importlib.import_module("domains.demand.models")
 NeedCluster = _models.NeedCluster
@@ -92,18 +95,18 @@ class _Accounts:
 
 
 async def test_catalog_facts_and_enumeration_are_tenant_bound_and_query_bounded(
-    integration_engine: AsyncEngine,
+    unit_engine: AsyncEngine,
 ) -> None:
     """Dropping tenant filters or restoring member N+1 queries leaks or scales poorly."""
     tenant = TenantId(new_id("tn"))
     other_tenant = TenantId(new_id("tn"))
     cluster_id = NeedClusterId(new_id("ncl"))
-    first_id = ValidatedNeedId(new_id("vnd"))
-    second_id = ValidatedNeedId(new_id("vnd"))
-    unclustered_id = ValidatedNeedId(new_id("vnd"))
+    first_id = ValidatedNeedId(new_id("need"))
+    second_id = ValidatedNeedId(new_id("need"))
+    unclustered_id = ValidatedNeedId(new_id("need"))
     account_id = ProspectAccountId(new_id("acc"))
     other_account_id = ProspectAccountId(new_id("acc"))
-    factory = async_sessionmaker(integration_engine, expire_on_commit=False)
+    factory = async_sessionmaker(unit_engine, expire_on_commit=False)
     first = _need(tenant, first_id, account_id, 10)
     second = _need(tenant, second_id, other_account_id, 20)
     unclustered = _need(tenant, unclustered_id, account_id, 30)
@@ -145,11 +148,11 @@ async def test_catalog_facts_and_enumeration_are_tenant_bound_and_query_bounded(
         if "need_clusters" in statement and statement.lstrip().upper().startswith("SELECT"):
             statements.append(statement)
 
-    event.listen(integration_engine.sync_engine, "before_cursor_execute", _record_statement)
+    event.listen(unit_engine.sync_engine, "before_cursor_execute", _record_statement)
     try:
         facts = await service.get_cluster_catalog_facts(tenant, cluster_id)
     finally:
-        event.remove(integration_engine.sync_engine, "before_cursor_execute", _record_statement)
+        event.remove(unit_engine.sync_engine, "before_cursor_execute", _record_statement)
 
     assert facts.member_need_ids == tuple(sorted((first_id, second_id)))
     assert facts.safe_total_quantity is None

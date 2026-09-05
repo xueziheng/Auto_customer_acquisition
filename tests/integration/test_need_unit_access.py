@@ -10,7 +10,12 @@ from sqlalchemy.exc import DBAPIError
 from domains.demand import service
 from domains.opportunities.permissions import Phase1OpportunityAuthorizer
 from infra.db.quote_evidence_context import SqlAlchemyQuoteEvidenceContextReader
-from infra.db.tables import EmployeeRow, OpportunityRow, ValidatedNeedRow
+from infra.db.tables import (
+    EmployeeRow,
+    NeedUnitConfirmationRow,
+    OpportunityRow,
+    ValidatedNeedRow,
+)
 from tests.integration.test_quote_context_locks import (
     context_case as context_case,  # noqa: PLC0414 - 保持公开类型或测试fixture身份
 )
@@ -137,9 +142,12 @@ async def test_real_unit_service_commits_under_authorization_and_reads_sources_w
     class ObservedUow(SqlAlchemyNeedUnitUnitOfWork):
         async def __aexit__(self, exc_type, exc, tb):
             # 只在真实receipt INSERT发生的事务观察锁；不代替真实commit。
-            if self._session.new:
-                pytest.fail("原仓储应在返回前flush真实receipt")
+            receipt_pending = any(
+                isinstance(row, NeedUnitConfirmationRow) for row in self._session.new
+            )
             await super().__aexit__(exc_type, exc, tb)
+            if receipt_pending:
+                pytest.fail("原仓储应在返回前flush真实receipt")
             if await c.unit.confirmation_count():
                 await _assert_authorization_rows_locked(c, True)
                 observations.append("committed_under_guard")

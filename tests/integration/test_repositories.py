@@ -865,6 +865,7 @@ def test_orm_metadata_parity_with_head() -> None:
             "destination", "required_by", "target_price", "current_supply_issue",
             "certification_required", "confirmed_by", "cluster_id",
             "unit", "unit_quantity_fact_hash", "unit_confirmation_id",
+            "recurring_requirement",
         },
         "prospect_accounts": {
             "tenant_id", "account_id", "name", "country", "website_domain",
@@ -1061,13 +1062,16 @@ def test_orm_metadata_parity_with_head() -> None:
         "uq_need_hypotheses_active_account_category": (
             "tenant_id", "account_id", "category",
         ),
-        "ix_need_clusters_tenant_category": (
-            "tenant_id", "category", "created_at", "cluster_id",
-        ),
-        "uq_need_cluster_members_need": ("tenant_id", "need_id"),
-        "ix_validated_need_field_history_need": (
-            "tenant_id", "need_id", "changed_at",
-        ),
+            "ix_need_clusters_tenant_category": (
+                "tenant_id", "category", "created_at", "cluster_id",
+            ),
+            "uq_need_cluster_members_need": ("tenant_id", "need_id"),
+            "uq_catalog_policy_active": ("tenant_id",),
+            "uq_catalog_policy_approval": ("tenant_id", "approval_id"),
+            "uq_catalog_product_proposal_approval": ("tenant_id", "approval_id"),
+            "ix_validated_need_field_history_need": (
+                "tenant_id", "need_id", "changed_at",
+            ),
         "uq_prospect_accounts_domain": ("tenant_id", "website_domain"),
         "ix_prospect_accounts_name": ("tenant_id", "country", "name"),
         "ix_prospect_contacts_account": (
