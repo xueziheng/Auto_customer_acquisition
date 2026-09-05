@@ -681,8 +681,8 @@ backpressure、真实 direct supplier quote 与商业来源仍未完成。
 
 ## 十三、Phase2 Catalog Product Proposal
 
-本子项目已完成工程实现并跑通受控 PostgreSQL/API/scheduler/Browser 功能链，但最终视觉与全仓
-完成门禁尚未闭合；它只把通过
+本子项目已完成工程实现、受控 PostgreSQL/API/scheduler/Browser 功能链、390px 元素级视觉验收与
+全仓门禁；它只把通过
 显式策略的 Need Cluster 变成内部 Catalog Product Proposal，人工批准后最多创建一个
 `queued` 培养 Case。这不是正式 Product、供应确认、客户报价、生产启用或市场验证，也不代表
 整个 Phase2 完成。
