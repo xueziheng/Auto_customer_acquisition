@@ -16,9 +16,7 @@ from connectors.object_store.config import S3ObjectStoreSettings
 from shared.errors import TransientError, ValidationError
 
 _ULID = r"[0-7][0-9A-HJKMNP-TV-Z]{25}"
-_OBJECT_KEY = re.compile(
-    rf"(?:raw|generated)/tn_{_ULID}/art_{_ULID}"
-)
+_OBJECT_KEY = re.compile(rf"(?:raw|generated)/tn_{_ULID}/art_{_ULID}")
 
 
 @runtime_checkable
@@ -73,11 +71,22 @@ class S3ObjectBlobTransport:
         finally:
             del access_key, secret_key
         self._bucket = settings.bucket
+        self._closed = False
+        self._close_lock = asyncio.Lock()
 
     def __repr__(self) -> str:
         return "S3ObjectBlobTransport()"
 
+    async def aclose(self) -> None:
+        """在线程中关闭自有 SDK，失败保留引用，完成后重复关闭无副作用。"""
+        async with self._close_lock:
+            if not self._closed:
+                await self._call(self._client.close)
+                self._closed = True
+
     async def _call[T](self, operation: Callable[[], T]) -> T:
+        if self._closed:
+            raise TransientError("Artifact 对象存储已关闭")
         try:
             return await _shielded_thread(operation)
         except asyncio.CancelledError:

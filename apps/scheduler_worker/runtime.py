@@ -378,10 +378,30 @@ class _NoSignalUvicornServer(uvicorn.Server):
 @dataclass
 class SchedulerHealthState:
     _ready: set[str] = field(default_factory=set, repr=False)
+    _running: bool = field(default=False, init=False, repr=False)
+    _stop_event: asyncio.Event | None = field(default=None, init=False, repr=False)
 
     @property
     def is_ready(self) -> bool:
-        return self._ready == _HEALTH_CHECKPOINTS
+        return (
+            self._ready == _HEALTH_CHECKPOINTS
+            and self._running
+            and self._stop_event is not None
+            and not self._stop_event.is_set()
+        )
+
+    def starting(self, stop_event: asyncio.Event) -> None:
+        """绑定原 worker 的停止标志；装配完成不代表已经持锁。"""
+        self._stop_event = stop_event
+        self._running = False
+
+    def running(self) -> None:
+        """仅由同 backend 锁确认与 activation 完成后的原 worker 调用。"""
+        self._running = True
+
+    def stopped(self) -> None:
+        """退出及失败时撤销就绪，不影响 live 与在途事务。"""
+        self._running = False
 
     def mark_ready(self, checkpoint: str) -> None:
         if checkpoint not in _HEALTH_CHECKPOINTS:
@@ -421,13 +441,15 @@ def _health_app(state: SchedulerHealthState) -> FastAPI:
 
 
 class SchedulerHealthServer:
-    def __init__(self, state: SchedulerHealthState, port: int) -> None:
+    def __init__(
+        self, state: SchedulerHealthState, port: int, *, host: str = "0.0.0.0"
+    ) -> None:
         if type(port) is not int or not 1 <= port <= 65535:
             raise ValidationError("scheduler health port 无效")
         self._server = _NoSignalUvicornServer(
             uvicorn.Config(
                 _health_app(state),
-                host="0.0.0.0",
+                host=host,
                 port=port,
                 access_log=False,
                 log_config=None,
@@ -1644,11 +1666,13 @@ class SchedulerRuntimeFactory:
                 ),
                 sourcing_admission_driver=sourcing_admission_driver,
                 catalog_product_driver=catalog_runtime.driver,
+                lifecycle=health,
             )
         except BaseException as error:
             primary = error
             raise
         finally:
+            health.stopped()
             cleanup_error: BaseException | None = None
             if quotation is not None:
                 try:

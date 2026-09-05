@@ -12,6 +12,8 @@ from fastapi import FastAPI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from agent_runtime.model_client import StructuredJsonModelClient
+from connectors.gmail.client import SecretResolver
 from connectors.object_store.config import S3ObjectStoreSettings
 from infra.db.schema import (
     DatabaseSchemaError,
@@ -22,7 +24,7 @@ from infra.db.schema import (
 from infra.db.session import create_engine_from
 from infra.secrets import EnvironmentSecretResolver
 
-from .composition.runtime import build_phase1_dependencies
+from .composition.runtime import ManualSendComposition, build_phase1_dependencies
 from .main import create_app
 from .middleware import ApiSettings
 from .runtime_config import (
@@ -38,6 +40,13 @@ class RuntimeStartupError(RuntimeError):
 
     def __init__(self) -> None:
         super().__init__("API runtime 启动检查失败")
+
+
+class RuntimeCleanupError(RuntimeError):
+    """资源释放结果未知时让监督器收到固定非成功退出。"""
+
+    def __init__(self) -> None:
+        super().__init__("API runtime 资源释放失败")
 
 
 class DatabaseReadinessProbe:
@@ -77,21 +86,42 @@ def create_runtime_app() -> FastAPI:
         )
         raise
     try:
+        object_store_settings = S3ObjectStoreSettings.from_environ(os.environ)
+    except Exception:  # noqa: BLE001 配置边界不得泄漏对象存储参数
+        raise RuntimeStartupError() from None
+    return create_runtime_app_from_settings(
+        settings,
+        secret_resolver=EnvironmentSecretResolver(os.environ),
+        object_store_settings=object_store_settings,
+    )
+
+
+def create_runtime_app_from_settings(
+    settings: Phase1RuntimeSettings,
+    *,
+    secret_resolver: SecretResolver,
+    object_store_settings: S3ObjectStoreSettings,
+    model_client: StructuredJsonModelClient | None = None,
+    manual_send: ManualSendComposition | None = None,
+) -> FastAPI:
+    """按显式配置与端口装配；借用注入模型，自有资源只在 lifespan 关闭。
+
+    构造严格无连接或 SDK/解析器启动；失败时没有已打开资源需要新事件循环。
+    """
+    try:
         engine = create_engine_from(settings.database_url.get_secret_value())
         factory = async_sessionmaker(bind=engine, expire_on_commit=False)
-        object_store_settings = S3ObjectStoreSettings.from_environ(os.environ)
         dependencies = build_phase1_dependencies(
             settings,
             factory,
             now=lambda: datetime.now(UTC),
-            secret_resolver=EnvironmentSecretResolver(os.environ),
+            secret_resolver=secret_resolver,
             object_store_settings=object_store_settings,
+            model_client=model_client,
+            manual_send=manual_send,
         )
     except Exception as exc:  # noqa: BLE001 装配异常只记录类型并固定映射
-        logger.error(
-            "API runtime 装配失败",
-            extra={"error_type": type(exc).__name__},
-        )
+        logger.error("API runtime 装配失败", extra={"error_type": type(exc).__name__})
         raise RuntimeStartupError() from None
     probe = DatabaseReadinessProbe(engine)
 
@@ -108,28 +138,39 @@ def create_runtime_app() -> FastAPI:
             primary = exc
             raise
         finally:
-            cleanup_cancellation: BaseException | None = None
-            if dependencies.quotation is not None:
+            cleanup_error: BaseException | None = None
+            resources = (
+                dependencies.quotation.lifecycle
+                if dependencies.quotation is not None
+                else None,
+                dependencies.model_lifecycle,
+                dependencies.object_store_lifecycle,
+            )
+            for resource in resources:
+                if resource is None:
+                    continue
                 try:
-                    await dependencies.quotation.lifecycle.aclose()
-                except BaseException as exc:  # noqa: BLE001 - 取消也不能阻断后续资源释放
-                    if not isinstance(exc, Exception):
-                        cleanup_cancellation = exc
+                    await resource.aclose()
+                except BaseException as exc:  # noqa: BLE001 取消也不能阻断后续清理
+                    if cleanup_error is None or not isinstance(exc, Exception):
+                        cleanup_error = exc
                     logger.error(
-                        "API runtime 报价资源释放失败",
+                        "API runtime 资源释放失败",
                         extra={"error_type": type(exc).__name__},
                     )
             try:
                 await engine.dispose()
-            except BaseException as exc:  # noqa: BLE001 清理失败不得覆盖启动/退出异常
-                if cleanup_cancellation is None and not isinstance(exc, Exception):
-                    cleanup_cancellation = exc
+            except BaseException as exc:  # noqa: BLE001 清理失败不得覆盖主异常
+                if cleanup_error is None or not isinstance(exc, Exception):
+                    cleanup_error = exc
                 logger.error(
                     "API runtime 数据库资源释放失败",
                     extra={"error_type": type(exc).__name__},
                 )
-            if primary is None and cleanup_cancellation is not None:
-                raise cleanup_cancellation
+            if primary is None and cleanup_error is not None:
+                if not isinstance(cleanup_error, Exception):
+                    raise cleanup_error
+                raise RuntimeCleanupError() from None
 
     app = create_app(
         settings=ApiSettings(

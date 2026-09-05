@@ -63,6 +63,21 @@ class CatalogProductDriverProtocol(Protocol):
     async def scan_once(self) -> object: ...
 
 
+class RuntimeLifecycleObserver(Protocol):
+    """只观察原 worker 的锁后运行与停止，不获取锁、不启动任务。"""
+
+    def starting(self, stop_event: asyncio.Event) -> None: ...
+    def running(self) -> None: ...
+    def stopped(self) -> None: ...
+
+
+class SchedulerLifecycleError(RuntimeError):
+    """Observer 故障的固定安全错误。"""
+
+    def __init__(self) -> None:
+        super().__init__("scheduler 生命周期观察失败")
+
+
 class RuntimeActivation(Protocol):
     """仅由已持有并确认 dedicated scheduler 锁的副本执行的启动事实。"""
 
@@ -113,6 +128,7 @@ class SchedulerRuntime:
     quote_expiry_driver: QuoteExpiryDriver | None = None
     sourcing_admission_driver: SourcingAdmissionDriverProtocol | None = None
     catalog_product_driver: CatalogProductDriverProtocol | None = None
+    lifecycle: RuntimeLifecycleObserver | None = None
 
     def __post_init__(self) -> None:
         if not str(self.tenant_id).strip():
@@ -357,12 +373,87 @@ async def _same_lock_backend(connection: AsyncConnection, expected_pid: int) -> 
     return int(current_pid) == expected_pid
 
 
+async def _discard_lock_connection(connection: AsyncConnection) -> None:
+    """锁结果未知时丢弃原物理连接，禁止回池或重连后冒称解锁。
+
+    detach 先剥离连接池归属；即使驱动失效处理失败，退出 close 仍丢弃该连接。
+    已失效连接不重新取得 backend，清理错误只记录固定消息。
+    """
+    sync_connection = connection.sync_connection
+    if sync_connection is not None and not connection.invalidated:
+        try:
+            sync_connection.detach()
+        except BaseException:  # noqa: BLE001 - 后续仍需尝试失效原连接
+            logger.error("scheduler 锁连接脱离连接池失败")
+    try:
+        await connection.invalidate()
+    except BaseException:  # noqa: BLE001 - 不覆盖主异常，close 继续处理已脱离连接
+        logger.error("scheduler 锁连接释放失败")
+
+
 async def run_scheduler_worker(
     runtime: SchedulerRuntime,
     *,
     stop_event: asyncio.Event | None = None,
     wait: WaitForNextCycle | None = None,
     install_signal_handlers: bool = True,
+) -> WorkerRunResult:
+    """把真实锁生命周期投影给 observer；观察失败不阻断解锁，错误固定脱敏。"""
+    stop = stop_event if stop_event is not None else asyncio.Event()
+    primary: BaseException | None = None
+    stop_observed = False
+    cleanup_error: BaseException | None = None
+
+    def running() -> None:
+        if runtime.lifecycle is not None:
+            try:
+                runtime.lifecycle.running()
+            except Exception:  # noqa: BLE001 - 不泄漏 observer 原文
+                raise SchedulerLifecycleError() from None
+
+    def stopping() -> None:
+        nonlocal stop_observed, cleanup_error
+        if not stop_observed and runtime.lifecycle is not None:
+            stop_observed = True
+            try:
+                runtime.lifecycle.stopped()
+            except BaseException as error:  # noqa: BLE001 - 后续必须解锁
+                cleanup_error = error
+                logger.error("scheduler 生命周期观察失败")
+
+    try:
+        if runtime.lifecycle is not None:
+            try:
+                runtime.lifecycle.starting(stop)
+            except Exception:  # noqa: BLE001 - 不泄漏 observer 原文
+                raise SchedulerLifecycleError() from None
+        return await _run_scheduler_worker(
+            runtime,
+            stop_event=stop,
+            wait=wait,
+            install_signal_handlers=install_signal_handlers,
+            on_running=running,
+            on_stopping=stopping,
+        )
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        stopping()
+        if primary is None and cleanup_error is not None:
+            if not isinstance(cleanup_error, Exception):
+                raise cleanup_error
+            raise SchedulerLifecycleError() from None
+
+
+async def _run_scheduler_worker(
+    runtime: SchedulerRuntime,
+    *,
+    stop_event: asyncio.Event,
+    wait: WaitForNextCycle | None,
+    install_signal_handlers: bool,
+    on_running: Callable[[], None],
+    on_stopping: Callable[[], None],
 ) -> WorkerRunResult:
     """取得 dedicated advisory lock 后运行循环；所有退出路径对称解锁。
 
@@ -376,16 +467,21 @@ async def run_scheduler_worker(
     lock_key = runtime.config.lock_key
 
     async with runtime.lock_engine.connect() as connection:
-        lock_row = (
-            await connection.execute(
-                text(
-                    "SELECT pg_try_advisory_lock(:lock_key) AS acquired, "
-                    "pg_backend_pid() AS backend_pid"
-                ),
-                {"lock_key": lock_key},
-            )
-        ).one()
-        await connection.commit()
+        try:
+            lock_row = (
+                await connection.execute(
+                    text(
+                        "SELECT pg_try_advisory_lock(:lock_key) AS acquired, "
+                        "pg_backend_pid() AS backend_pid"
+                    ),
+                    {"lock_key": lock_key},
+                )
+            ).one()
+            await connection.commit()
+        except BaseException:
+            on_stopping()
+            await _discard_lock_connection(connection)
+            raise
         if lock_row.acquired is not True:
             logger.warning(
                 "scheduler worker 未获得单副本锁",
@@ -394,18 +490,20 @@ async def run_scheduler_worker(
             return WorkerRunResult(WorkerStartStatus.NOT_STARTED, 0)
         lock_backend_pid = int(lock_row.backend_pid)
 
-        cleanup_signals = (
-            _install_stop_signals(stop) if install_signal_handlers else lambda: None
-        )
+        cleanup_signals: Callable[[], None] = lambda: None
         cycles = 0
         lock_owned = True
         activation_pending = runtime.activation is not None
+        running_pending = True
+        primary: BaseException | None = None
 
         async def confirm_lock() -> None:
             if not await _same_lock_backend(connection, lock_backend_pid):
                 raise _SchedulerLockLost()
 
         try:
+            if install_signal_handlers:
+                cleanup_signals = _install_stop_signals(stop)
             while not stop.is_set():
                 if not await _same_lock_backend(connection, lock_backend_pid):
                     lock_owned = False
@@ -421,6 +519,11 @@ async def run_scheduler_worker(
                     await runtime.activation.activate()
                     activation_pending = False
                     await confirm_lock()
+                if stop.is_set():
+                    break
+                if running_pending:
+                    on_running()
+                    running_pending = False
                 await _run_cycle(runtime, cycles + 1, confirm_lock=confirm_lock)
                 cycles += 1
                 if stop.is_set():
@@ -434,7 +537,11 @@ async def run_scheduler_worker(
                 extra={"tenant_id": str(runtime.tenant_id)},
             )
             return WorkerRunResult(WorkerStartStatus.LOCK_LOST, cycles)
+        except BaseException as error:
+            primary = error
+            raise
         finally:
+            on_stopping()
             cleanup_signals()
             if lock_owned:
                 try:
@@ -445,7 +552,10 @@ async def run_scheduler_worker(
                         )
                     ).scalar_one()
                     await connection.commit()
-                except Exception:  # noqa: BLE001 - close 仍须作为解锁兜底
+                except BaseException as error:
+                    await _discard_lock_connection(connection)
+                    if primary is None and not isinstance(error, Exception):
+                        raise
                     logger.error(
                         "scheduler worker 单副本锁释放失败",
                         extra={"tenant_id": str(runtime.tenant_id)},
@@ -456,6 +566,8 @@ async def run_scheduler_worker(
                             "scheduler worker 单副本锁释放未确认",
                             extra={"tenant_id": str(runtime.tenant_id)},
                         )
+            else:
+                await _discard_lock_connection(connection)
 
 
 async def _run_from_factory(runtime_factory: RuntimeFactory) -> int:

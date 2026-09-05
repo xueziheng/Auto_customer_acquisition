@@ -2252,6 +2252,7 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
         assert (
             runtime.workflow._handlers["sending_identity_auth.check"]._selector == "s1"
         )
-        assert servers[0].state.is_ready is True
+        assert servers[0].state.is_ready is False
+        assert runtime.lifecycle is servers[0].state
     assert servers[0].closed.is_set()
     assert disposed == 1

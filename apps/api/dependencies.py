@@ -241,6 +241,12 @@ class WorkUploadApplicationService(Protocol):
     ) -> WorkExtractionView: ...
 
 
+class ApiOwnedResource(Protocol):
+    """进程自有资源的关闭端口；直接装配调用者负责退出时调用。"""
+
+    async def aclose(self) -> None: ...
+
+
 @dataclass(frozen=True)
 class ConfiguredApiDependencies:
     """完整且已配置的 API runtime 依赖。
@@ -292,6 +298,8 @@ class ConfiguredApiDependencies:
     products: ProductService | None = None
     catalog_products: CatalogProposalService | None = None
     catalog_product_application: CatalogProductApplication | None = None
+    model_lifecycle: ApiOwnedResource | None = None
+    object_store_lifecycle: ApiOwnedResource | None = None
     configured: bool = True
 
     def __post_init__(self) -> None:

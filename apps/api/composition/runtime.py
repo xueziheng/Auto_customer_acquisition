@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
+from agent_runtime.model_client import StructuredJsonModelClient
 from agent_runtime.trade_manager import (
     StructuredTradeManagerModelPort,
     TradeManagerAgent,
@@ -947,8 +948,13 @@ def build_phase1_dependencies(
     manual_send: ManualSendComposition | None = None,
     secret_resolver: SecretResolver | None = None,
     object_store_settings: S3ObjectStoreSettings | None = None,
+    model_client: StructuredJsonModelClient | None = None,
 ) -> ConfiguredApiDependencies:
-    """装配真实 Postgres、领域服务、workflow、outbox 与通知出口。"""
+    """同步装配，零数据库连接、Provider SDK 初始化与解析器进程启动。
+
+    注入模型由调用者拥有；默认模型和旧对象传输由返回的 lifecycle 暴露。
+    直接调用者须关闭这两项及可选 quotation，再关闭自己拥有的 engine。
+    """
     tenant = TenantId(settings.tenant_id)
     opportunity_authorizer = Phase1OpportunityAuthorizer(tenant)
     employee_authorizer = Phase1EmployeeAuthorizer(tenant)
@@ -996,6 +1002,7 @@ def build_phase1_dependencies(
     generated_documents = None
     generated_metadata = None
     work_uploads = None
+    object_transport = None
     if object_store_settings is not None:
         object_transport = DeferredS3ObjectBlobTransport(
             object_store_settings, resolved_secret_resolver
@@ -1276,14 +1283,17 @@ def build_phase1_dependencies(
         directive_employees,
         now=now,
     )
-    model_client = OpenAIJsonModelClient(
-        settings.openai_api_key_ref,
-        resolved_secret_resolver,
+    owned_model = (
+        OpenAIJsonModelClient(settings.openai_api_key_ref, resolved_secret_resolver)
+        if model_client is None
+        else None
     )
+    resolved_model = model_client if model_client is not None else owned_model
+    assert resolved_model is not None
     trade_manager = TradeManagerAgent(
         settings.trade_manager_model,
         StructuredTradeManagerModelPort(
-            model_client,
+            resolved_model,
             settings.trade_manager_model,
         ),
         None,
@@ -1613,6 +1623,8 @@ def build_phase1_dependencies(
         research_execution=PostgresDiscoveryExecutionReader(factory),
         research_evidence=PostgresResearchEvidenceReader(factory),
         quotation=quotation,
+        model_lifecycle=owned_model,
+        object_store_lifecycle=object_transport,
         sourcing=sourcing,
         sourcing_application=sourcing_application,
         sourcing_admission_application=sourcing_admission_application,

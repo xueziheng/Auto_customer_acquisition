@@ -53,6 +53,7 @@ class OpenAIJsonModelClient:
         self._client_factory = client_factory or self._default_client
         self._client: AsyncOpenAI | None = None
         self._client_lock = asyncio.Lock()
+        self._closed = False
 
     @staticmethod
     def _default_client(api_key: str, timeout_seconds: float) -> AsyncOpenAI:
@@ -62,16 +63,29 @@ class OpenAIJsonModelClient:
             max_retries=0,
         )
 
+    async def aclose(self) -> None:
+        """仅关闭已创建 SDK；失败保留引用供所有者重试，关闭后不再发起调用。"""
+        async with self._client_lock:
+            self._closed = True
+            if self._client is not None:
+                try:
+                    await self._client.close()
+                except Exception:  # noqa: BLE001 - SDK 清理错误固定脱敏
+                    raise TransientError("模型资源释放失败") from None
+                self._client = None
+
     async def _get_client(self) -> AsyncOpenAI:
+        if self._closed:
+            raise ValidationError("模型客户端已关闭")
         if self._client is None:
             async with self._client_lock:
+                if self._closed:
+                    raise ValidationError("模型客户端已关闭")
                 if self._client is None:
                     api_key = self._resolver.resolve(self._secret_ref)
                     if not isinstance(api_key, str) or len(api_key) < 20:
                         raise ValidationError("模型凭证配置无效")
-                    self._client = self._client_factory(
-                        api_key, self._timeout_seconds
-                    )
+                    self._client = self._client_factory(api_key, self._timeout_seconds)
         return self._client
 
     async def complete_json(
@@ -95,9 +109,7 @@ class OpenAIJsonModelClient:
         ):
             raise ValidationError("模型调用参数无效")
         try:
-            request_body = json.dumps(
-                dict(payload), ensure_ascii=False, sort_keys=True
-            )
+            request_body = json.dumps(dict(payload), ensure_ascii=False, sort_keys=True)
         except (TypeError, ValueError):
             raise ValidationError("模型输入不可序列化") from None
         client = await self._get_client()
