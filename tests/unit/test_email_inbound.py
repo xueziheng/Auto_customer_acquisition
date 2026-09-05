@@ -352,3 +352,143 @@ def test_authorized_raw_content_matches_provider_wrapper_without_fake_facts():
     assert "cookie" not in repr(standalone) + standalone.model_dump_json()
     assert not hasattr(standalone, "internal_date")
     assert not hasattr(standalone, "external_message_id")
+
+
+@pytest.mark.parametrize("charset", ["zlib_codec", "bz2_codec"])
+def test_compression_charset_rejected_before_decoder_lookup(charset, monkeypatch):
+    import bz2
+    import codecs
+    import zlib
+
+    from connectors.gmail.inbound_mime import parse_inbound_content
+
+    original = codecs.getincrementaldecoder
+    requested = []
+
+    def observe(name):
+        requested.append(name)
+        return original(name)
+
+    compressed = (zlib.compress if charset == "zlib_codec" else bz2.compress)(
+        b"x" * 1024
+    )
+    raw = (
+        mime(headers=f"Content-Type: text/plain; charset={charset}", body="")
+        + compressed
+    )
+    monkeypatch.setattr(codecs, "getincrementaldecoder", observe)
+    result = parse_inbound_content(raw)
+    assert result.disposition is D.MALFORMED
+    assert requested == [], "untrusted compression charset reached decoder lookup"
+
+
+@pytest.mark.parametrize("suffix", ["+0000 garbage GMT", "+0000 -1200", "GMT GMT"])
+def test_date_requires_complete_single_timezone_grammar(suffix):
+    result = parse(mime(date=f"Sat, 05 Sep 2026 09:00:00 {suffix}"))
+    assert result.disposition is D.INVALID_SENT_AT
+    assert result.sent_at is None
+
+
+@pytest.mark.parametrize(
+    "charset",
+    [
+        "zlib",
+        "bz2",
+        "base64_codec",
+        "hex_codec",
+        "unicode_escape",
+        "raw_unicode_escape",
+        "rot_13",
+        "unknown-codec",
+    ],
+)
+def test_unsupported_charset_rejected_without_codec_resolution(charset, monkeypatch):
+    import codecs
+
+    from connectors.gmail.inbound_mime import parse_inbound_content
+
+    requested = []
+
+    def observe(name):
+        requested.append(name)
+        raise AssertionError("unsupported charset resolved")
+
+    monkeypatch.setattr(codecs, "getincrementaldecoder", observe)
+    assert (
+        parse_inbound_content(
+            mime(headers=f"Content-Type: text/plain; charset={charset}")
+        ).disposition
+        is D.MALFORMED
+    )
+    assert requested == []
+
+
+@pytest.mark.parametrize(
+    ("charset", "codec", "text"),
+    [
+        ("US-ASCII", "ascii", "Reply"),
+        ("UTF_8", "utf-8", "回复 café"),
+        ("utf-8-sig", "utf-8-sig", "回复"),
+        ("UTF-16", "utf-16", "回复"),
+        ("utf-16le", "utf-16-le", "回复"),
+        ("utf-16be", "utf-16-be", "回复"),
+        ("utf-32", "utf-32", "回复"),
+        ("utf-32-le", "utf-32-le", "回复"),
+        ("utf-32-be", "utf-32-be", "回复"),
+        ("iso-8859-1", "iso-8859-1", "café"),
+        ("latin1", "iso-8859-1", "café"),
+        ("ISO8859-15", "iso-8859-15", "€"),
+        ("windows-1252", "cp1252", "€ café"),
+        ("cp1251", "cp1251", "Ответ"),
+        ("GB2312", "gb2312", "回复"),
+        ("gbk", "gbk", "回复"),
+        ("gb18030", "gb18030", "回复"),
+        ("Big5", "big5", "回覆"),
+        ("big5-hkscs", "big5hkscs", "回覆"),
+        ("Shift_JIS", "shift_jis", "返信"),
+        ("cp932", "cp932", "返信"),
+        ("EUC-JP", "euc_jp", "返信"),
+        ("ISO-2022-JP", "iso2022_jp", "返信"),
+        ("EUC-KR", "euc_kr", "답장"),
+        ("CP949", "cp949", "답장"),
+        ("ISO-2022-KR", "iso2022_kr", "답장"),
+        ("KOI8-R", "koi8-r", "Ответ"),
+        ("KOI8-U", "koi8-u", "Відповідь"),
+    ],
+)
+def test_supported_text_charset_compatibility(charset, codec, text):
+    from connectors.gmail.inbound_mime import parse_inbound_content
+
+    raw = mime(
+        headers=f"Content-Type: text/plain; charset={charset}", body=""
+    ) + text.encode(codec)
+    content = parse_inbound_content(raw)
+    assert content.disposition is D.CANDIDATE
+    assert content.body == content.guard_body == text
+    wrapped = parse(raw)
+    assert wrapped.disposition is D.CANDIDATE and wrapped.body == text
+
+
+@pytest.mark.parametrize(
+    ("date", "hour"),
+    [
+        ("Sat, 05 Sep 2026 09:00:00 +0800", 1),
+        ("5 Sep 2026 09:00 +0000", 9),
+        ("Sat, 05 Sep 2026 09:00:00 GMT", 9),
+        ("Sat, 05 Sep 2026 09:00:00 UT", 9),
+        ("Sat, 05 Sep 2026 09:00:00 EST", 14),
+        ("sat, 05 sep 2026 09:00:00 gmt", 9),
+        ("Sat,\t05 Sep 2026 09:00:00 +0000", 9),
+    ],
+)
+def test_single_timezone_date_compatibility(date, hour):
+    result = parse(mime(date=date))
+    assert result.disposition is D.CANDIDATE
+    assert result.sent_at == DATE.replace(hour=hour)
+
+
+@pytest.mark.parametrize("year", ["0000", "0001", "0099"])
+def test_date_grammar_cannot_reinterpret_zero_padded_legacy_year(year):
+    result = parse(mime(date=f"05 Sep {year} 09:00:00 +0000"))
+    assert result.disposition is D.INVALID_SENT_AT
+    assert result.sent_at is None

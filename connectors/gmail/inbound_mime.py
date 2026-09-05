@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import codecs
 import hashlib
 import quopri
 import re
@@ -28,7 +29,72 @@ from shared.schemas.email_inbound import (
 
 _ATOM = r"[A-Za-z0-9!#$%&' *+/=?^_`{|}~-]+".replace(" ", "")
 _ID = re.compile(rf"<{_ATOM}(?:\.{_ATOM})*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*>")
-_ZONE = re.compile(r"(?:[+-][0-9]{4}|UT|GMT|[ECMP][SD]T)$")
+_DATE = re.compile(
+    r"(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),[ \t]+)?"
+    r"(?:0?[1-9]|[12][0-9]|3[01])[ \t]+"
+    r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[ \t]+"
+    r"(?:19[0-9]{2}|[2-9][0-9]{3})[ \t]+(?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9])?[ \t]+"
+    r"(?:[+-](?:[01][0-9]|2[0-3])[0-5][0-9]|UT|GMT|[ECMP][SD]T)",
+    re.IGNORECASE | re.ASCII,
+)
+# 只把受信的标准库文本codec名传给decoder；不查询邮件任意指定的codec注册项。
+_TEXT_CHARSETS = {
+    "ascii": "ascii",
+    "us-ascii": "ascii",
+    "utf-8": "utf-8",
+    "utf8": "utf-8",
+    "utf-8-sig": "utf-8-sig",
+    "cp65001": "utf-8",
+    "utf-16": "utf-16",
+    "utf16": "utf-16",
+    "utf-16le": "utf-16-le",
+    "utf-16-le": "utf-16-le",
+    "utf-16be": "utf-16-be",
+    "utf-16-be": "utf-16-be",
+    "utf-32": "utf-32",
+    "utf32": "utf-32",
+    "utf-32le": "utf-32-le",
+    "utf-32-le": "utf-32-le",
+    "utf-32be": "utf-32-be",
+    "utf-32-be": "utf-32-be",
+    "latin1": "iso-8859-1",
+    "latin-1": "iso-8859-1",
+    "gb2312": "gb2312",
+    "gb-2312": "gb2312",
+    "gb-2312-80": "gb2312",
+    "euc-cn": "gb2312",
+    "gbk": "gbk",
+    "cp936": "gbk",
+    "gb18030": "gb18030",
+    "big5": "big5",
+    "big5-hkscs": "big5hkscs",
+    "big5hkscs": "big5hkscs",
+    "shift-jis": "shift_jis",
+    "shiftjis": "shift_jis",
+    "sjis": "shift_jis",
+    "cp932": "cp932",
+    "euc-jp": "euc_jp",
+    "eucjp": "euc_jp",
+    "iso-2022-jp": "iso2022_jp",
+    "iso2022-jp": "iso2022_jp",
+    "euc-kr": "euc_kr",
+    "euckr": "euc_kr",
+    "cp949": "cp949",
+    "iso-2022-kr": "iso2022_kr",
+    "iso2022-kr": "iso2022_kr",
+    "koi8-r": "koi8-r",
+    "koi8-u": "koi8-u",
+    **{
+        f"iso{separator}8859-{number}": f"iso-8859-{number}"
+        for separator in ("", "-")
+        for number in (*range(1, 12), *range(13, 17))
+    },
+    **{
+        f"{prefix}{number}": f"cp{number}"
+        for prefix in ("cp", "windows-")
+        for number in range(1250, 1259)
+    },
+}
 _REPLY = re.compile(r"<(?:[a-z0-9-]{1,32}\.)?[0-9a-f]{64}@messages\.tradeos\.invalid>")
 
 
@@ -71,6 +137,12 @@ class _Budget:
         return headers, raw[match.end() :]
 
     def text(self, headers: Message, body: bytes) -> str:
+        requested_charset = (
+            (headers.get_content_charset() or "ascii").replace("_", "-").lower()
+        )
+        charset = _TEXT_CHARSETS.get(requested_charset)
+        if charset is None:
+            raise _ParseLimit(D.MALFORMED)
         encoding = str(headers.get("Content-Transfer-Encoding", "7bit")).casefold()
         result = bytearray()
         if encoding == "base64":
@@ -90,10 +162,7 @@ class _Budget:
             )
         else:
             raise _ParseLimit(D.MALFORMED)
-        charset = headers.get_content_charset() or "ascii"
-        # UTF-8大小最多4倍原bytes，逐块增量解码并限最终候选总bytes。
-        import codecs
-
+        # 支持的文本codec每个有界chunk只有常数倍扩张；仍逐块核UTF-8总预算。
         decoder = codecs.getincrementaldecoder(charset)(errors="strict")
         pieces: list[str] = []
         for start in range(0, len(result), 8192):
@@ -268,7 +337,7 @@ def parse_inbound_message(
                 date is None
                 or "\r" in date
                 or "\n" in date
-                or _ZONE.search(date) is None
+                or _DATE.fullmatch(date) is None
             ):
                 raise ValueError()
             sent_at = parsedate_to_datetime(date)

@@ -41,3 +41,20 @@ Gateway内通过注入infra archiver执行Raw.put(EMAIL_RAW)再bounded get，核
 5b receipt fingerprint必须显式规范化投影route所有绑定/版本、provider摘要、固定disposition/parser_version、
 原值Message-ID/In-Reply-To、UTC时间、Raw ID/hash/size；不得对已排除敏感字段的model_dump直接求hash。
 这些输入只在受信事务计算摘要，不进入日志/业务普通字段/模型。initial起点重启时沿耐久初值，不能用新时间重建。
+
+## Fix1：文本字符集与Date完整语法
+
+MIME charset在decoder查询或构造前先匹配固定文本字符集映射，未知值和二进制/压缩变换统一
+`malformed`，不执行这些codec，也不作为临时网络失败重试。没有charset时仍为ASCII；名称大小写不敏感、
+下划线视作连字符，但只接受`inbound_mime._TEXT_CHARSETS`明确列出的别名，不查询邮件自选codec注册项。
+支持范围为ASCII/US-ASCII；UTF-8（含BOM）、UTF-16/32（含显式LE/BE）；ISO-8859-1至11及13至16；
+Windows-1250至1258；KOI8-R/U；GB2312、GBK、GB18030、Big5/HKSCS、Shift-JIS/CP932、EUC-JP、
+ISO-2022-JP、EUC-KR/CP949、ISO-2022-KR。常用UTF8/Latin1/CP936等别名在映射中显式登记。
+不接受zlib/bz2、base64/hex codec、Unicode escape等转换；UTF-7及未列出的历史编码也固定隔离。
+受支持codec仍逐8192bytes增量严格解码，保持UTF-8累计4MiB预算，不因白名单取消读取预算。
+
+Date先对整个字段执行允许语法的fullmatch，再做日期/时区语义转换：可选三字母英文weekday与逗号，
+1–2位日、三字母英文month、1900–9999四位year，24小时HH:MM与可选:SS，恰好一个numeric ±HHMM或
+UT/GMT/EST/EDT/CST/CDT/MST/MDT/PST/PDT时区；字段之间只允许空格/Tab，不接受CR/LF、注释、
+额外token或第二个时区；不让0000/0001/0099被标准库旧年份规则重解释为2000/2001/1999。英文词大小写不敏感；日期语义非法、缺时区、-0000和重复Date头仍为
+`invalid_sent_at`且sent_at=None。此规则不从任何其他Provider时间补值。

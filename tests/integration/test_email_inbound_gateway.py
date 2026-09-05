@@ -702,3 +702,36 @@ async def test_gateway_wrapper_preserves_bounded_provider_retry_after(
     assert error.value.category is ToolErrorCategory.RATE_LIMITED
     assert error.value.retry_after_seconds == 3600
     assert runtime["slot"].is_empty
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case", ["zlib_codec", "bz2_codec", "date_extra", "date_conflicting"]
+)
+async def test_codec_and_date_rejections_archive_then_isolate(runtime, case):
+    import bz2
+    import zlib
+
+    if case in {"zlib_codec", "bz2_codec"}:
+        compress = zlib.compress if case == "zlib_codec" else bz2.compress
+        raw = mime(
+            headers=f"Content-Type: text/plain; charset={case}", body=""
+        ) + compress(b"x" * 1024)
+        expected = InboundDisposition.MALFORMED
+    else:
+        suffix = "+0000 garbage GMT" if case == "date_extra" else "+0000 -1200"
+        raw = mime(date=f"Sat, 05 Sep 2026 09:00:00 {suffix}")
+        expected = InboundDisposition.INVALID_SENT_AT
+    await runtime["provider"].receive_inbound(raw, internal_date=DATE)
+    anchor = await fetch(runtime, runtime["start"])
+    page = await fetch(runtime, anchor.next_cursor)
+    assert len(page.items) == 1
+    item = page.items[0]
+    assert item.disposition is expected and item.sent_at is None
+    assert item.raw is not None
+    _, actual = await runtime["store"].get_bounded(
+        runtime["route"].tenant_id, item.raw.artifact_id, maximum_bytes=MIME_BYTES
+    )
+    assert actual == raw
+    assert decode_cursor(page.next_cursor, runtime["route"]).phase == "history"
+    assert runtime["slot"].is_empty
