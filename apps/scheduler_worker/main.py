@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Protocol, cast
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -373,22 +373,59 @@ async def _same_lock_backend(connection: AsyncConnection, expected_pid: int) -> 
     return int(current_pid) == expected_pid
 
 
-async def _discard_lock_connection(connection: AsyncConnection) -> None:
-    """锁结果未知时丢弃原物理连接，禁止回池或重连后冒称解锁。
+class _SchedulerLockDriver(Protocol):
+    """本进程 asyncpg 原物理连接的关闭端口，禁止重新查找 backend。"""
 
-    detach 先剥离连接池归属；即使驱动失效处理失败，退出 close 仍丢弃该连接。
-    已失效连接不重新取得 backend，清理错误只记录固定消息。
+    async def close(self, *, timeout: float) -> None: ...
+    def terminate(self) -> None: ...
+    def is_closed(self) -> bool: ...
+
+
+class SchedulerLockCleanupError(RuntimeError):
+    """原物理锁连接释放无法确认时的固定失败。"""
+
+    def __init__(self) -> None:
+        super().__init__("scheduler 原锁连接释放未确认")
+
+
+async def _discard_lock_connection(
+    connection: AsyncConnection,
+    driver: _SchedulerLockDriver,
+    *,
+    primary: BaseException | None = None,
+) -> None:
+    """先确定关闭保留的原 driver，再失效包装器；不 detach、不重新取得连接。
+
+    原 handle 在锁查询前取得并一直保留。关闭失败或取消时 terminate 同一 driver；
+    即使包装器 invalidate 丢掉引用，仍按原 handle 核实结果，未知不能成功退出。
     """
-    sync_connection = connection.sync_connection
-    if sync_connection is not None and not connection.invalidated:
+    cancellation: BaseException | None = None
+    if not driver.is_closed():
         try:
-            sync_connection.detach()
-        except BaseException:  # noqa: BLE001 - 后续仍需尝试失效原连接
-            logger.error("scheduler 锁连接脱离连接池失败")
+            await driver.close(timeout=2)
+        except BaseException as error:  # noqa: BLE001 - 后续终止原 driver
+            if not isinstance(error, Exception):
+                cancellation = error
+            logger.error("scheduler 原锁连接关闭失败")
+    if not driver.is_closed():
+        try:
+            driver.terminate()
+        except BaseException as error:  # noqa: BLE001 - 保留原 handle 核验结果
+            if not isinstance(error, Exception):
+                cancellation = error
+            logger.error("scheduler 原锁连接终止失败")
     try:
         await connection.invalidate()
-    except BaseException:  # noqa: BLE001 - 不覆盖主异常，close 继续处理已脱离连接
-        logger.error("scheduler 锁连接释放失败")
+    except BaseException as error:  # noqa: BLE001 - 包装器错误不覆盖主异常
+        if not isinstance(error, Exception):
+            cancellation = error
+        logger.error("scheduler 锁连接失效处理失败")
+    if not driver.is_closed():
+        logger.error("scheduler 原锁连接释放未确认")
+        if primary is None:
+            raise SchedulerLockCleanupError() from None
+    elif primary is None and cancellation is not None:
+        raise cancellation
 
 
 async def run_scheduler_worker(
@@ -467,6 +504,8 @@ async def _run_scheduler_worker(
     lock_key = runtime.config.lock_key
 
     async with runtime.lock_engine.connect() as connection:
+        raw_connection = await connection.get_raw_connection()
+        original_driver = cast(_SchedulerLockDriver, raw_connection.driver_connection)
         try:
             lock_row = (
                 await connection.execute(
@@ -478,9 +517,9 @@ async def _run_scheduler_worker(
                 )
             ).one()
             await connection.commit()
-        except BaseException:
+        except BaseException as error:
             on_stopping()
-            await _discard_lock_connection(connection)
+            await _discard_lock_connection(connection, original_driver, primary=error)
             raise
         if lock_row.acquired is not True:
             logger.warning(
@@ -553,7 +592,17 @@ async def _run_scheduler_worker(
                     ).scalar_one()
                     await connection.commit()
                 except BaseException as error:
-                    await _discard_lock_connection(connection)
+                    await _discard_lock_connection(
+                        connection,
+                        original_driver,
+                        primary=(
+                            primary
+                            if primary is not None
+                            else error
+                            if not isinstance(error, Exception)
+                            else None
+                        ),
+                    )
                     if primary is None and not isinstance(error, Exception):
                         raise
                     logger.error(
@@ -562,12 +611,17 @@ async def _run_scheduler_worker(
                     )
                 else:
                     if released is not True:
+                        await _discard_lock_connection(
+                            connection, original_driver, primary=primary
+                        )
                         logger.error(
                             "scheduler worker 单副本锁释放未确认",
                             extra={"tenant_id": str(runtime.tenant_id)},
                         )
             else:
-                await _discard_lock_connection(connection)
+                await _discard_lock_connection(
+                    connection, original_driver, primary=primary
+                )
 
 
 async def _run_from_factory(runtime_factory: RuntimeFactory) -> int:

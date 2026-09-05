@@ -679,3 +679,180 @@ async def test_unlock_cancellation_discards_original_connection_and_preserves_pr
     monkeypatch.setattr(AsyncConnection, "execute", execute)
     assert await _ready(state) == 503
     await _unlocked(integration_engine)
+
+
+@pytest.mark.parametrize(
+    "window", ["acquire_result", "unlock_cancel", "unlock_false", "unlock_error"]
+)
+async def test_unknown_lock_cleanup_closes_retained_original_driver(
+    integration_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    window: str,
+) -> None:
+    from sqlalchemy.ext.asyncio import AsyncConnection
+
+    state, cycle, stop = _health(), _Cycle(), asyncio.Event()
+    stop.set()
+    drivers = []
+    execute = AsyncConnection.execute
+
+    class FalseUnlock:
+        def scalar_one(self) -> bool:
+            return False
+
+    async def uncertain(connection, statement, *args, **kwargs):
+        sql = str(statement)
+        if "pg_advisory_unlock" in sql:
+            if window == "unlock_cancel":
+                raise asyncio.CancelledError()
+            if window == "unlock_false":
+                return FalseUnlock()
+            if window == "unlock_error":
+                raise RuntimeError("private-unlock-error")
+        result = await execute(connection, statement, *args, **kwargs)
+        if "pg_try_advisory_lock" in sql:
+            raw = await connection.get_raw_connection()
+            drivers.append(raw.driver_connection)
+            if window == "acquire_result":
+                raise asyncio.CancelledError()
+        return result
+
+    monkeypatch.setattr(AsyncConnection, "execute", uncertain)
+    try:
+        if window in {"unlock_false", "unlock_error"}:
+            result = await run_scheduler_worker(
+                _runtime(integration_engine, state, cycle),
+                stop_event=stop,
+                install_signal_handlers=False,
+            )
+            assert result.status is WorkerStartStatus.STARTED
+        else:
+            with pytest.raises(asyncio.CancelledError):
+                await run_scheduler_worker(
+                    _runtime(integration_engine, state, cycle),
+                    stop_event=stop,
+                    install_signal_handlers=False,
+                )
+        monkeypatch.setattr(AsyncConnection, "execute", execute)
+        assert len(drivers) == 1
+        assert drivers[0].is_closed(), "原 driver 强引用仍存活时必须已确定关闭"
+        assert await _ready(state) == 503
+        await _unlocked(integration_engine)
+    finally:
+        for driver in drivers:
+            driver.terminate()
+
+
+@pytest.mark.parametrize("close_failure", ["error", "cancel"])
+async def test_original_driver_close_failure_terminates_same_retained_driver(
+    integration_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    close_failure: str,
+) -> None:
+    from asyncpg import Connection as Driver
+
+    from apps.scheduler_worker.main import _discard_lock_connection
+
+    close, terminate = Driver.close, Driver.terminate
+    original = None
+    terminated = []
+
+    async def failed_close(driver, *, timeout=None):
+        if driver is original and not driver.is_closed():
+            if close_failure == "cancel":
+                raise asyncio.CancelledError()
+            raise RuntimeError("private-driver-close-error")
+        await close(driver, timeout=timeout)
+
+    def tracked_terminate(driver):
+        terminated.append(driver)
+        terminate(driver)
+
+    monkeypatch.setattr(Driver, "close", failed_close)
+    monkeypatch.setattr(Driver, "terminate", tracked_terminate)
+    async with integration_engine.connect() as connection:
+        original = (await connection.get_raw_connection()).driver_connection
+        await connection.execute(text("SELECT pg_advisory_lock(39053001)"))
+        await connection.commit()
+        try:
+            if close_failure == "cancel":
+                with pytest.raises(asyncio.CancelledError):
+                    await _discard_lock_connection(connection, original)
+            else:
+                await _discard_lock_connection(connection, original)
+            assert original.is_closed()
+            assert terminated == [original]
+            await _unlocked(integration_engine)
+        finally:
+            terminate(original)
+
+
+@pytest.mark.parametrize("has_primary", [False, True])
+async def test_unknown_original_driver_cleanup_cannot_return_success_or_replace_primary(
+    integration_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    has_primary: bool,
+) -> None:
+    from asyncpg import Connection as Driver
+    from sqlalchemy.ext.asyncio import AsyncConnection
+
+    from apps.scheduler_worker.main import SchedulerLockCleanupError
+
+    original = None
+    primary = RuntimeError("activation-primary")
+    close, terminate, execute = Driver.close, Driver.terminate, AsyncConnection.execute
+    state, cycle, stop = _health(), _Cycle(), asyncio.Event()
+
+    class Activation:
+        async def activate(self) -> None:
+            if has_primary:
+                raise primary
+            stop.set()
+
+    class FalseUnlock:
+        def scalar_one(self) -> bool:
+            return False
+
+    async def uncertain(connection, statement, *args, **kwargs):
+        nonlocal original
+        if "pg_advisory_unlock" in str(statement):
+            return FalseUnlock()
+        result = await execute(connection, statement, *args, **kwargs)
+        if "pg_try_advisory_lock" in str(statement):
+            original = (await connection.get_raw_connection()).driver_connection
+        return result
+
+    async def failed_close(driver, *, timeout=None):
+        if driver is original:
+            raise RuntimeError("private-close-failure")
+        await close(driver, timeout=timeout)
+
+    def failed_terminate(driver):
+        if driver is original:
+            raise RuntimeError("private-terminate-failure")
+        terminate(driver)
+
+    async def failed_invalidate(connection, *args, **kwargs):
+        raise RuntimeError("private-invalidate-failure")
+
+    monkeypatch.setattr(AsyncConnection, "execute", uncertain)
+    monkeypatch.setattr(AsyncConnection, "invalidate", failed_invalidate)
+    monkeypatch.setattr(Driver, "close", failed_close)
+    monkeypatch.setattr(Driver, "terminate", failed_terminate)
+    try:
+        runtime = replace(
+            _runtime(integration_engine, state, cycle), activation=Activation()
+        )
+        with pytest.raises(BaseException) as caught:
+            await run_scheduler_worker(
+                runtime, stop_event=stop, install_signal_handlers=False
+            )
+        if has_primary:
+            assert caught.value is primary
+        else:
+            assert isinstance(caught.value, SchedulerLockCleanupError)
+            assert "private-" not in str(caught.value)
+        assert not state.is_ready
+    finally:
+        if original is not None:
+            terminate(original)

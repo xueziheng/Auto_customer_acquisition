@@ -26,8 +26,12 @@ lifecycle，并自行释放传入 session factory 所属 engine。API 工厂统�
 健康状态由原 worker 的窄 lifecycle observer 更新。配置/schema/数据库/registry 仅代表装配
 完成；只有原专用 backend 取得单例锁、完成 activation 并确认仍为同一 backend 后，首周期
 前才 running-ready。取得 session advisory lock 后首次 commit 取消、获取查询结果未知、
-失锁或解锁未确认时，先让原连接脱离池，再 invalidate 原物理连接；禁止将可能持锁的连接
-回池，禁止自动重连后在不同 backend 上假装解锁。解锁清理取消不得覆盖既有主异常。
+失锁或解锁未确认（包括 unlock 返回 false）时，使用锁查询前保留的原 driver 强引用，
+先以有界 close 关闭，关闭失败或取消时 terminate 同一 driver，再 invalidate 包装器。
+禁止 detach 后 invalidate 丢失物理关闭路径；禁止重新取得连接或在不同 backend 上假装解锁。
+最终必须按原 driver 确认已关闭：未确认且无主异常时固定失败，有主异常保留原对象；
+普通 unlock SQL 错误在原连接已确定关闭后可视为清理恢复。没有主异常时，清理取消在完成
+物理关闭后仍向上传播；已有主异常时保留它，不能被清理取消覆盖。
 原有 driver 顺序和所有锁确认点保持。observer 失败须固定脱敏，不能
 阻止解锁或 factory 资源释放；不得增加锁轮询器或第二锁服务。
 
