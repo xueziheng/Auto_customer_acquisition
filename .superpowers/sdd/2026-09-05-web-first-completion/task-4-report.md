@@ -164,3 +164,69 @@ Provider、部署、merge/push；没有修改控制器总体plan/ledger。
 Agent和Browser保持disabled。Campaign真实发送core已装配，但新环境尚无合法sender；
 正常Campaign提案→独立审批→激活仍必须等待真实前置配置。本批未声称真实发信、研究执行、
 Validated Need、Opportunity或商业成功，也没有用预制业务数据绕过这些前置条件。
+
+## Fix1：首次快照前退出的leader清理（review I1）
+
+审查基点：`b818263e283c496385d0d55629b3cd05359937ee`。
+修复源码：`f1632658bfe8f2a4377c171aaba171ddc512179a`。本节另作文档提交。
+只修I1及直接关联的短进程/握手/FD生命周期；没有修改controller ledger、其他brief、业务域或Web。
+
+原问题实际复现：leader生成孩子后立即退出，从未调用public；原stop成功返回，孩子仍在原组存活。
+仅加快children快照无法消除这个窗口。新增 `infra/controlled/process_anchor.py` 作为小型exec包装：
+
+1. 原Popen创建新session后，包装先创建同组anchor；anchor只继承私有控制端点和ready写端，
+   环境仅PATH及dotenv禁用值，不继承业务监听FD、其他管道写端或业务配置。
+2. anchor发送PID，父监督器核对PID出生时间、PGID/SID及原leader身份后通过私有通道确认。
+   anchor再放行ready管道，包装才exec原命令。业务PID、原退出码、API显式传入FD保持原语义。
+3. `OwnedProcess`保留anchor PID/出生时间/控制端点；原leader退出并被reap后，仍依据存活anchor
+   发现和核验整组成员，不依赖父子树或首次public快照。安全status增加`anchor:{pid,born}`。
+4. TERM期间anchor忽略TERM，持续保留组归属；原scheduler仍完成当前cycle。升级时只KILL核验过的
+   业务leader/孩子，保留anchor到真实组成员清空；随后请求anchor退出并有界核验。
+   不能核对归属、仍有存活成员或升级强停均返回非零。已登记但逃离原组的孩子仍按原保护拒绝发信号。
+5. 握手失败关闭私有控制通道，尚未exec的业务命令不运行。anchor在通道失联后对自身原组TERM，
+   最多两秒后KILL；start有界等待包装退出并抛固定`process_handshake_failed`，不输出raw异常。
+   实际测试在anchor已发送PID但父方尚未确认时注入接收失败，核验包装退出且整组无存活残留。
+6. 一次性迁移/身份初始化原来成功后直接从列表移除；新锚点使这条路径必须先`process.stop()`。
+   这个直接伴生问题另做RED→GREEN，只在监督器消费处增加这一行，不改变迁移或身份行为。
+
+### Fix1测试证据
+
+所有下列pytest使用完整命令前缀：
+
+```sh
+env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest tests/integration/test_web_core_launcher.py
+```
+
+| 命令尾部 | 真实结果 |
+|---|---|
+| `-k leader_exit_before_first_snapshot -q --tb=short`，修复前 | exit1；1 failed / 17 deselected in 2.20s，断言`unrecorded owner child survived stop`；测试finally清理孩子 |
+| `-k 'leader_exit_before_first_snapshot or dead_process_leader or process_birth_mismatch' -q --tb=short`，修复后 | exit0；3 passed / 15 deselected in 0.37s |
+| `-k short_lived_bootstrap -q --tb=short`，补run_once清理前 | exit1；1 failed / 20 deselected in 0.44s，短进程结束后anchor仍running；finally清理 |
+| `-k 'short_lived_bootstrap or anchor or leader or process_birth_mismatch' -q --tb=short`，补清理后 | exit0；6 passed / 15 deselected in 0.78s |
+| `-q --tb=short`，完整launcher回归 | exit0；22 passed in 67.26s，包括HUP、TERM当前cycle、worker崩溃、各阶段失败、正常审批和原外来资源保护 |
+| `-k anchor_survives -q --tb=short`，随后追加的升级清理用例 | exit0；1 passed / 22 deselected in 1.26s，孩子忽略TERM，stop报process_forced_stop，同时核验孩子及anchor均不存活 |
+
+最终覆盖23个launcher用例：完整22项回归通过后仅追加最后1项并单跑；没有把两次结果伪称一次23项总跑。
+接入两个附加测试时发生过一次测试代码插入位置错误导致collection SyntaxError（exit2），修正后执行；
+此错误不是产品RED证据。生产改动的RED仅为上表两个明确生命周期断言。
+
+新增具名用例：无public立即退出、活anchor握手失败、anchor不保留监听FD/管道写端、短bootstrap释放、
+TERM升级清理；原出生不匹配保护增加anchor_born参数。监听FD用例在业务退出且anchor尚活时重新bind
+同一端口，并读取原业务管道EOF，最后核验anchor退出。
+
+### Fix1静态验证、资源核验与提交
+
+- `.venv/bin/python -m ruff check infra/controlled/resources.py infra/controlled/process_anchor.py scripts/controlled_web_supervisor.py tests/integration/test_web_core_launcher.py`：exit0，All checks passed。
+- `.venv/bin/python -m mypy infra/controlled/resources.py infra/controlled/process_anchor.py scripts/controlled_web_supervisor.py`：exit0，3 source files无问题。
+- `.venv/bin/python scripts/check_boundaries.py`：exit0，7项结构自检通过。
+- `.venv/bin/python scripts/scan_sensitive.py infra/controlled/resources.py infra/controlled/process_anchor.py scripts/controlled_web_supervisor.py tests/integration/test_web_core_launcher.py docs/operations/web-core-local.md docs/superpowers/specs/2026-09-05-web-core-controlled-launcher.md`：exit0。
+- 源码提交前`git diff --cached --check`与`scan_sensitive.py --staged`：均exit0。
+- git仍通过Python subprocess捕获stderr，仅输出安全stdout/退出码，没有改git身份或处理共享.git噪声。
+
+最终真实资源核验：owner label容器残留0；本轮及此前受控目录私有config残留0；遍历安全status记录
+的supervisor/业务/children/**anchor**并核对出生身份，存活owner进程残留0。无status的无快照/握手
+用例在测试内直接核验原组和孩子/anchor无存活残留。没有pkill、prune或删除外来资源。
+
+自审：握手先于exec、锚点在TERM期间存活、业务FD不泄漏给锚点、短进程锚点释放、异常主因保留、
+身份未知非零、没有盲按可复用PID发信号。操作说明与子规格同步该机制。没有新增依赖（锚点只用标准库），
+没有Web修改，因此未重跑337项Web套件、旧扫描或全站lint；此前Task12边界和旧告警结论不变。
