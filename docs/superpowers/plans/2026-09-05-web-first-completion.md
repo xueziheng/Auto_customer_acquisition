@@ -210,6 +210,8 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 ### Task 6：回复组合、下一问和接管
 
+**子规格与验收：** docs/superpowers/specs/2026-09-06-reply-completion-6.md；初始源码6d06a7b、Fix1源码2e0afa43，最终文档HEAD b3b1c988。独立规格与质量复审通过；初始364项主组合及119项权限/服务分组、Fix1同源码193项作用组分别记录，不累加。Outlook历史后缀误入当前表达已修；HTML void元素保守误拒与Git环境噪声保留Task12/最终核对。真实邮件/模型效果/多渠道未运行。
+
 **Files:**
 - 复用/更新：`apps/scheduler_worker/runtime.py`、`reply_actions.py`、`reply_events.py`、`adapters/reply_customer_evidence.py`、`adapters/reply_business_facts.py`、`adapters/reply_opportunity_intake.py`。
 - 复用：`agent_runtime/qualification_agent/openai_port.py`、`workflows/reply_qualification/flow.py`、`steps.py`。
@@ -217,13 +219,13 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 **Interfaces:** 装配现有 `ReplyQualificationComposition`，输入事件为 `InboundMessageStored`，分类结果仍由 conversations 发布 `ReplyReceived`；不改变事件时序。
 
-- [ ] 先盘点现有动作端口和下一问逻辑，只为尚未装配的路径写失败测试。
-- [ ] 注入受控 StructuredJsonModelClient，经真实证据 verifier 和域服务推进；禁止直接生成已验证事实或接管行。
-- [ ] 验证退订停止、自动回复不误停、字段逐项来源、缺少采购信息只产生下一问/待补全、达到合法门槛才接管。
-- [ ] 追问只创建已有合规流程允许的草稿/步骤；任何价格、交期等承诺仍逐次审批，经 Gateway 发送。
-- [ ] worker 重启、事件重投、取消后保持幂等；模型/prompt 发生改动时跑对应评估并明确受控与真实模型结果；提交。
+- [x] 先盘点现有动作端口和下一问逻辑，只为尚未装配的路径写失败测试。
+- [x] 注入受控 StructuredJsonModelClient，经真实证据 verifier 和域服务推进；禁止直接生成已验证事实或接管行。
+- [x] 验证退订停止、自动回复不误停、字段逐项来源、缺少采购信息只产生下一问/待补全、达到合法门槛才接管。
+- [x] 追问形成原pending工作项及只读英文建议，不宣称草稿已存或已发送；任何价格、交期等承诺仍逐次审批，经 Gateway 发送。
+- [x] worker 重启、事件重投、取消后保持幂等；运行原业务eval并明确受控与真实模型结果；提交。
 
-**Exit gate:** 测试邮件通过 Task 5 的真实入口进入，不直插 Message/Need/Opportunity。浏览器可追溯从原文到已验证需求及人工接管的全过程。
+**Exit gate:** 测试邮件通过 Task 5 的真实入口进入，不直插 Message/Need/Opportunity；真实后端及受权boss API证明分类、需求、下一问、接管和站内投递。完整浏览器原件追溯依赖Task7的message-scoped授权和Task8页面，Task12集中验收；不提前用技术review下载替代员工原件入口。
 
 ## 6. W4：员工权限与 Web 操作
 
