@@ -340,7 +340,9 @@ async def test_draft_and_confirmation_do_not_read_quota_or_wake_workflow() -> No
 async def test_current_quota_and_uncertain_recovery_are_safe_application_projections() -> (
     None
 ):
-    application, sourcing, quota, _ = _application()
+    application, sourcing, quota, _ = _application(
+        engine=_Engine(_run("public_search"))
+    )
 
     current = await application.get_current_quota_read_view(TENANT, CASE_ID, actor=BOSS)
     uncertain = await application.list_uncertain_execution_read_views(
@@ -364,6 +366,7 @@ async def test_current_quota_and_uncertain_recovery_are_safe_application_project
         "created_at": NOW,
         "reconciliation": None,
         "can_current_user_reconcile": True,
+        "recovery_action": "record_reconciliation",
     }
     assert sourcing.calls == ["read_case", "list_uncertain", "read_execution"]
     assert quota.calls == ["snapshot", "get"]

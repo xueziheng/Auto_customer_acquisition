@@ -31,6 +31,7 @@ def _scope(level: object, **kwargs: object) -> object:
 
 _ALL_ACTION_NAMES = {
     "IDENTITY_REGISTER",
+    "INBOUND_BIND",
     "AUTH_CHECK_BEGIN",
     "AUTH_RESULT_RECORD",
     "WARMUP_START",
@@ -49,6 +50,7 @@ _ALL_ACTION_NAMES = {
 _EXPECTED_ALLOW_NAMES = {
     ("boss", "TENANT"): {
         "IDENTITY_REGISTER",
+        "INBOUND_BIND",
         "AUTH_CHECK_BEGIN",
         "WARMUP_START",
         "IDENTITY_READ",

@@ -44,7 +44,7 @@ from apps.scheduler_worker.directive_reader import DirectiveDemandDiscoveryTaskR
 from apps.scheduler_worker.reply_actions import ComposedReplyActionPorts
 from artifact_store.service_impl import RawArtifactStoreImpl
 from artifact_store.store import RawArtifactKind
-from artifact_store.transport import BlobObjectNotFoundError
+from artifact_store.transport import BlobObjectNotFoundError, BlobReadLimitExceeded
 from connectors.contact_enrichment.client import (
     ContactCandidate,
     ContactEmailKind,
@@ -277,6 +277,12 @@ class _MemoryBlobTransport:
             return self.objects[object_key]
         except KeyError:
             raise BlobObjectNotFoundError() from None
+
+    async def get_bounded(self, object_key: str, *, maximum_bytes: int) -> bytes:
+        content = await self.get(object_key)
+        if len(content) > maximum_bytes:
+            raise BlobReadLimitExceeded()
+        return content
 
     async def delete(self, object_key: str) -> None:
         self.objects.pop(object_key, None)
@@ -546,6 +552,7 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
             1_000_000,
             lambda: NOW,
             new_id,
+            bounded_transport=blob_transport,
         )
         prospecting = ProspectingServiceImpl(
             lambda bound: SqlAlchemyProspectingUnitOfWork(
@@ -1036,7 +1043,8 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
         )
         await _poll_until_idle(reply_engine, tenant)
         assert repeated_run_id == reply_run_id
-        assert reply_model.calls == 1
+        checked_run = await reply_engine.get_run(tenant, reply_run_id)
+        assert reply_model.calls == 1, (checked_run.status, checked_run.last_error)
 
         async with factory() as session:
             reply_run = await session.get(WorkflowRunRow, reply_run_id)

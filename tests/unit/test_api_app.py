@@ -62,6 +62,18 @@ _SALES_READ_GATE = Depends(
     )
 )
 _EXPECTED_API_PATHS = {
+    "/crm/sending-identities/management",
+    "/crm/sending-identities/{identity_id}/warmup",
+    "/email-inbound/binding",
+    "/email-inbound/retry",
+    "/email-inbound/reviews",
+    "/email-inbound/reviews/{review_id}/raw",
+    "/email-inbound/status",
+    "/health/capabilities",
+    "/inbox/conversations/{conversation_id}/messages/{message_id}/next-questions",
+    "/inbox/messages/{message_id}/evidence",
+    "/runs/observability",
+
     "/approvals/pending",
     "/approvals/{approval_id}",
     "/approvals/{approval_id}/decide",
@@ -636,6 +648,7 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
             if (path, method) in {
                 ("/settings/country-policies/proposals", "post"),
                 ("/products/catalog-policies", "post"),
+                ("/sourcing-cases/{case_id}/reconcile-uncertain-request", "post"),
             }:
                 assert operation["responses"]["422"]["content"]["application/json"][
                     "schema"

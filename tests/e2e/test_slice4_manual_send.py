@@ -927,8 +927,21 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
         browser = await playwright.chromium.launch(headless=True)
         console_errors: list[str] = []
         page_errors: list[str] = []
+        http_failures = []
 
         def capture(page) -> None:
+            import re
+            from urllib.parse import urlsplit
+
+            def response_status(response):
+                if response.status >= 400:
+                    path = re.sub(r"/(?:emp|usr|tn|opp|cost|quo|sid|att|cmp|hand|con|msg|run|apr|enr|ntf)_[A-Za-z0-9_-]+", "/:id", urlsplit(response.url).path)
+                    http_failures.append({"route": path, "status": response.status})
+                    target = _REPO_ROOT / "output/acceptance/task12/slice4-http-status.json"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(json.dumps(http_failures, indent=2))
+
+            page.on("response", response_status)
             # 分开记录：application console error 与 page 未捕获异常
             page.on(
                 "console",
@@ -1037,6 +1050,8 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
                 f"{web_origin}/crm/sending-identities", wait_until="networkidle"
             )
             await expect(page.get_by_text("cold.example.com", exact=True)).to_be_visible()
+            await expect(page.get_by_text("入站绑定状态暂不可读取", exact=True)).to_be_visible()
+            await expect(page.get_by_text("入站绑定已记录；处理状态待核对", exact=True)).to_have_count(0)
             await assert_no_overflow(page)
             # 种子认证全过；worker 经真实 DNS 查询后 UI 显示其结果
             await expect(page.get_by_text("SPF 通过")).to_be_visible()
@@ -1239,14 +1254,16 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
 
     # console 证据分开报告：
     # - page 未捕获异常必须为 0；
-    # - application console error 仅允许恰一条固定行：步骤 3 故意 409
-    #   （身份熔断后 prepare 被拒）触发的浏览器资源加载日志；
-    #   精确 allowlist，不与其他错误混过滤。
+    # - 此发送fixture未装配入站，两次状态读取明确503且页面不可读；
+    #   另有步骤3熔断后的prepare409，逐路由绑定，不允许其他503。
     expected_409 = (
         "Failed to load resource: the server responded with a status of 409 (Conflict)"
     )
     assert page_errors == [], f"page 未捕获异常必须为 0：{page_errors}"
-    assert console_errors == [expected_409], (
-        "application console error 应仅为步骤 3 预期的 409 资源加载行："
-        f"{console_errors}"
-    )
+    expected_503 = "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
+    assert http_failures == [
+        {"route": "/email-inbound/status", "status": 503},
+        {"route": "/email-inbound/status", "status": 503},
+        {"route": "/crm/enrollments/:id/attempts/prepare", "status": 409},
+    ]
+    assert console_errors == [expected_503, expected_503, expected_409]

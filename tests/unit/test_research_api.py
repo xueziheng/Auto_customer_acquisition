@@ -252,12 +252,16 @@ async def test_api_confirmation_gate_is_enforced_before_start(configured, expect
             self.runs.append(args)
             return "run_01K39P9M5D6K4A91YEQ80EJZ0X"
 
+    from tests.research_ui_preview import preview_employees
+
     directives, engine = Directives(), Engine()
     app = create_app(
         settings=ApiSettings(tenant_id=TENANT, dev_mode=True, retry_after_seconds=17)
     )
     app.dependency_overrides[get_request_identity] = lambda: _identity("boss")
     app.dependency_overrides[get_api_dependencies] = lambda: SimpleNamespace(
+        employees=preview_employees,
+        employee_lookup_actor=_identity("boss").employee_actor,
         directives=directives,
         trade_manager=None,
         workflow_engine=engine,

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Mapping
+from contextlib import closing
+from pathlib import Path
+from uuid import uuid4
 
 from connectors.tavily.transport import TavilyHttpResponse
 from connectors.web_search.transport import PublicPageResponse
@@ -22,8 +26,33 @@ PAGES = {
 }
 
 
+class ControlledResearchCalls:
+    """同owner私有邮件库只记逐次操作名，不保存输入、凭证或模型正文。"""
+
+    def __init__(self, path: Path, *, tenant_id: str) -> None:
+        self._path, self._tenant = path, tenant_id
+
+    def record(self, operation: str) -> None:
+        if operation not in {"research.usage", "research.search", "research.page", "research.model"}:
+            raise ControlledError("controlled_research_operation_required")
+        with closing(sqlite3.connect(self._path)) as db, db:
+            db.execute("CREATE TABLE IF NOT EXISTS controlled_research_calls (tenant_id TEXT NOT NULL, call_id TEXT PRIMARY KEY, operation TEXT NOT NULL)")
+            db.execute("INSERT INTO controlled_research_calls VALUES (?, ?, ?)", (self._tenant, uuid4().hex, operation))
+
+    def list_calls(self) -> tuple[str, ...]:
+        if not self._path.exists():
+            return ()
+        with closing(sqlite3.connect(self._path)) as db:
+            if not db.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='controlled_research_calls'").fetchone()[0]:
+                return ()
+            return tuple(row[0] for row in db.execute("SELECT operation FROM controlled_research_calls WHERE tenant_id=? ORDER BY rowid", (self._tenant,)))
+
+
 class ControlledResearchPages:
     """仅返回精确合成URL；无DNS/HTTP fallback。"""
+
+    def __init__(self, calls: ControlledResearchCalls | None = None) -> None:
+        self._calls = calls
 
     async def validate_url(self, url: str) -> str:
         if url not in {item[0] for item in PAGES.values()}:
@@ -31,6 +60,8 @@ class ControlledResearchPages:
         return url
 
     async def fetch(self, url: str) -> PublicPageResponse:
+        if self._calls is not None:
+            self._calls.record("research.page")
         await self.validate_url(url)
         body = next(text for address, text in PAGES.values() if address == url)
         return PublicPageResponse(
@@ -41,8 +72,13 @@ class ControlledResearchPages:
 class ControlledResearchSearch:
     """合成免费三查询账户；真实预算由原PostgreSQL quota保守累计。"""
 
+    def __init__(self, calls: ControlledResearchCalls | None = None) -> None:
+        self._calls = calls
+
     async def usage(self, *, api_key: str) -> TavilyHttpResponse:
         del api_key
+        if self._calls is not None:
+            self._calls.record("research.usage")
         return TavilyHttpResponse(
             200,
             {
@@ -60,6 +96,8 @@ class ControlledResearchSearch:
         self, query: str, country: str, limit: int, *, api_key: str
     ) -> TavilyHttpResponse:
         del api_key
+        if self._calls is not None:
+            self._calls.record("research.search")
         lane = next(
             (lane for lane in PAGES if query == "Kenya furniture hardware " + lane),
             None,
@@ -80,6 +118,9 @@ class ControlledResearchSearch:
 class ControlledResearchModel:
     """只响应原能力裁剪后的具名合成页面，所有业务证据仍经原Agent验证。"""
 
+    def __init__(self, calls: ControlledResearchCalls | None = None) -> None:
+        self._calls = calls
+
     async def complete_json(
         self,
         *,
@@ -89,6 +130,8 @@ class ControlledResearchModel:
         max_output_tokens: int,
     ) -> str:
         del system_prompt
+        if self._calls is not None:
+            self._calls.record("research.model")
         expected = {
             "pages": tuple({"text": body} for _, body in PAGES.values()),
             "target_countries": ("KE",),

@@ -33,6 +33,8 @@ class RelayPool:
         self.processes = set()
         self.connections = set()
         self.deadlines = {}
+        self.saturated = 0
+        self.completed = 0
         self.closed = False
 
     def request(self, payload, deadline):
@@ -195,6 +197,12 @@ def http_bridge(runner):
         def process_request(self, connection, address):
             # 容量在解析首字节/创建处理线程之前占用；半开请求也占一席。
             if not pool.gate.acquire(blocking=False):
+                with pool.lock:
+                    pool.saturated += 1
+                    print(f"t10_relay_saturated={pool.saturated}", flush=True)
+                    print(f"t10_relay_active={len(pool.connections)}", flush=True)
+                    print(f"t10_relay_exec_active={len(pool.processes)}", flush=True)
+                    print(f"t10_relay_completed={pool.completed}", flush=True)
                 try:
                     connection.setblocking(False)
                     connection.send(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
@@ -216,6 +224,7 @@ def http_bridge(runner):
             with pool.lock:
                 pool.connections.discard(connection)
                 pool.deadlines.pop(connection, None)
+                pool.completed += 1
             pool.gate.release()
 
         def process_request_thread(self, connection, address):

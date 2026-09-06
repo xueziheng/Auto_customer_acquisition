@@ -271,6 +271,7 @@ async def exercise_browser(stack, artifacts):
                 await expect(cost_link).to_have_attribute("href", "/costing-quotes?opportunity_id=" + m["opportunity"] + "&cost_sheet_id=" + second["cost_sheet_id"])
                 await cost_link.click()
                 await expect(boss.locator(".item-panel")).to_contain_text(second["cost_sheet_id"])
+                print("t10_relay_reload_cost=1", flush=True)
                 await boss.reload()
                 await expect(boss.locator(".item-panel")).to_contain_text(second["cost_sheet_id"])
                 await boss.locator(".item-panel").scroll_into_view_if_needed()

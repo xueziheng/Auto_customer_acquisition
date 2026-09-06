@@ -57,3 +57,7 @@ A3从独立人工输入企业与待验证假设及独立Campaign批准开始，�
 A5数据库瞬态使用exact-owner pause/unpause并bounded取消原start，保持同端点。独立stop/start已实证随机公开端口可能改变，原配置不自动更新；不能将其解释为连接池故障，亦不属于应用HUP恢复契约。本批不改端口分配。
 
 HTML void 集合依据 [WHATWG HTML syntax：Void elements](https://html.spec.whatwg.org/multipage/syntax.html#void-elements)：area、base、br、col、embed、hr、img、input、link、meta、source、track、wbr。它们没有结束标签，尾斜杠不改变语义。本次只补原保守引用栈的集合，不扩写通用HTML容错器。
+
+## 全量后补充：研究未授权入口与逐次调用证据
+
+确认200只表示启动回执，不能当作策略授权。原owner未激活Playbook/国家政策时，真实Workflow/Gateway须拒绝研究，Signal/Hypothesis/Campaign/send不增加；同owner独立审批后原链才产生结果。受控研究usage/search/page/model逐次操作名记录于原mail.sqlite独立tenant表，未知输入调用也记数，不保存payload或凭证；随原owner停止统一清理。Reply模型计数单独命名，不将其称为全链总模型调用。

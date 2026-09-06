@@ -354,6 +354,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
         1_000_000,
         clock.now,
         new_id,
+        bounded_transport=blob_transport,
     )
     prospecting = ProspectingServiceImpl(
         lambda bound: SqlAlchemyProspectingUnitOfWork(

@@ -44,7 +44,7 @@ def test_clean_latest_migration_roundtrip(owned_infrastructure):
         )
 
 
-async def test_owned_api_scheduler_disabled_binding_restart(
+async def test_owned_api_scheduler_enabled_binding_restart(
     owned_infrastructure,
     monkeypatch,
 ):
@@ -90,8 +90,8 @@ async def test_owned_api_scheduler_disabled_binding_restart(
             ).json()
             assert next(c for c in capabilities if c["name"] == "inbound_body") == {
                 "name": "inbound_body",
-                "status": "disabled",
-                "reason": "required_ports_missing",
+                "status": "enabled",
+                "reason": "composed",
             }
             response = await client.get("/email-inbound/status")
             assert (
@@ -116,15 +116,16 @@ async def test_owned_api_scheduler_disabled_binding_restart(
             assert response.status_code == 200 and response.json()["identity_id"] == sid
             raw = mime(message_id="<driver-review@example.test>")
             await provider.receive_inbound(raw, internal_date=datetime.now(UTC))
-            # 无完整reply消费者时，原singleton明确禁用自动抓取，不能制造死信。
-            await asyncio.sleep(2.2)
-            assert not any(
-                call.operation.startswith(("profile", "inbound_"))
-                for call in await provider.list_calls()
-            )
-            response = await client.get("/email-inbound/reviews")
-            reviews = response.json()
-            assert response.status_code == 200 and reviews == []
+            # 当前原入口有完整reply消费者；无法匹配出站上下文的邮件必须进入待核对。
+            deadline = asyncio.get_running_loop().time() + 15
+            while asyncio.get_running_loop().time() < deadline:
+                response = await client.get("/email-inbound/reviews")
+                reviews = response.json()
+                if response.status_code == 200 and len(reviews) == 1:
+                    break
+                await asyncio.sleep(0.1)
+            assert response.status_code == 200 and len(reviews) == 1
+            assert any(call.operation.startswith("inbound_") for call in await provider.list_calls())
             async with factory() as session:
                 assert (
                     await session.scalar(
@@ -133,7 +134,7 @@ async def test_owned_api_scheduler_disabled_binding_restart(
                         ),
                         {"t": tenant},
                     )
-                    == 0
+                    == 1
                 )
                 assert (
                     await session.scalar(
@@ -142,7 +143,7 @@ async def test_owned_api_scheduler_disabled_binding_restart(
                         ),
                         {"t": tenant},
                     )
-                    == 1
+                    >= 2
                 )
                 assert (
                     await session.scalar(
@@ -188,7 +189,7 @@ async def test_owned_api_scheduler_disabled_binding_restart(
             after = (await client.get("/email-inbound/status")).json()
             assert (
                 after["identity_id"] == sid
-                and after["version"] == before["version"] == 1
+                and after["version"] >= before["version"] >= 2
             )
             assert (await client.get("/email-inbound/reviews")).json() == reviews
             async with factory() as session:

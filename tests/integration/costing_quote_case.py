@@ -363,11 +363,33 @@ async def runtime_case(engine, monkeypatch, *, cors_origins=()):
             assert runtime.activation.quotation_lifecycle._parser is not deps.quotation.evidence.parser
             case.worker = runtime
             stop = asyncio.Event()
-            task = asyncio.create_task(run_scheduler_worker(runtime, stop_event=stop, install_signal_handlers=False))
+            first_cycle = asyncio.Event()
+
+            async def observed_wait(interval, stop_event):
+                # 原公开 wait 在真实循环计数递增后调用，沿用原 interval/stop 语义。
+                first_cycle.set()
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                except TimeoutError:
+                    pass
+
+            task = asyncio.create_task(run_scheduler_worker(
+                runtime, stop_event=stop, install_signal_handlers=False, wait=observed_wait,
+            ))
             case.worker_task = task
+            readiness = asyncio.create_task(first_cycle.wait())
             try:
+                # 外层 launcher 原有启动 deadline 仍是总上界；提前退出须立即暴露。
+                done, _ = await asyncio.wait(
+                    {readiness, task}, return_when=asyncio.FIRST_COMPLETED,
+                )
+                if task in done:
+                    await task
+                    raise AssertionError("scheduler exited before fixture readiness")
                 yield case
             finally:
+                readiness.cancel()
+                await asyncio.gather(readiness, return_exceptions=True)
                 stop.set()
                 result = await asyncio.wait_for(task, timeout=10)
                 assert result.status is WorkerStartStatus.STARTED

@@ -19,6 +19,7 @@ from infra.controlled.network import install_network_boundary
 from infra.controlled.providers import ControlledDnsResolver, ControlledGmailTransport
 from infra.controlled.reply_model import ControlledReplyModelClient
 from infra.controlled.research import (
+    ControlledResearchCalls,
     ControlledResearchModel,
     ControlledResearchPages,
     ControlledResearchSearch,
@@ -47,6 +48,7 @@ def main() -> int:
             S3ObjectStoreSettings.from_environ(config.runtime_environment()),
             config,
         )
+        research_calls = ControlledResearchCalls(path.parent / "mail.sqlite", tenant_id=config.tenant_id)
         bootstrap = CanonicalSchedulerBootstrap(
             ScoringPolicy(
                 "controlled-v1",
@@ -56,11 +58,11 @@ def main() -> int:
             HandoffPolicy(sla_seconds=3600, backlog_threshold=10),
             research_enabled=True,
             research=ResearchRuntimePorts(
-                model_client=ControlledResearchModel(),
+                model_client=ControlledResearchModel(research_calls),
                 model="controlled-research-v1",
                 user_id=UserId(config.identities[0].user_id),
-                search_transport=ControlledResearchSearch(),
-                page_transport=ControlledResearchPages(),
+                search_transport=ControlledResearchSearch(research_calls),
+                page_transport=ControlledResearchPages(research_calls),
                 object_transport=objects,
                 maximum_artifact_bytes=10485760,
                 secret_ref="CONTROLLED_RESEARCH",

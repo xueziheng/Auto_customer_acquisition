@@ -240,6 +240,10 @@ async def _start(
         policy_workflow_context(tenant, snapshot),
         catalog_policy_change_idempotency_key(tenant, policy_id),
     )
+    created = await workflow.get_run(tenant, run_id)
+    assert created is not None
+    # Run创建时间沿PG时钟；后续固定时钟必须从该持久事实起算。
+    clock.value = created.created_at
     return (
         tenant,
         proposer,
@@ -271,11 +275,13 @@ async def test_real_workflow_is_visible_in_central_queue_then_applies_and_projec
 ) -> None:
     """中央队列、事件 outbox 与既有通知投影必须形成同一真实路径。"""
     clock = _Clock()
-    tenant, _, boss, products, approvals, workflow, _, policy_id = await _start(
+    tenant, _, boss, products, approvals, workflow, run_id, policy_id = await _start(
         unit_engine, clock=clock
     )
 
-    assert await workflow.poll_due(tenant, 10) == 3
+    processed = await workflow.poll_due(tenant, 10)
+    state = await workflow.get_run(tenant, run_id)
+    assert processed == 3, (state.status, state.current_step, state.last_error)
     pending = await _pending(approvals, tenant, boss)
     assert pending.state == "pending"
     assert (

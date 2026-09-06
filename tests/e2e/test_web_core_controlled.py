@@ -221,6 +221,31 @@ async def test_original_launcher_browser_research_and_independent_reply_chain(
                 page.get_by_text("尚未配置 Company Playbook", exact=True)
             ).to_be_visible()
             await screenshot(page, directory, "settings-empty-1440", pages)
+            from infra.controlled.research import ControlledResearchCalls
+
+            research_calls = ControlledResearchCalls(private / "mail.sqlite", tenant_id=config.tenant_id)
+            unconfigured = await client.post(
+                "/commands/discovery-proposals", json={"message": CONTROLLED_RESEARCH_MESSAGE}
+            )
+            assert unconfigured.status_code == 200
+            queued = await client.post("/commands/discovery-proposals/" + unconfigured.json()["proposal_id"] + "/confirm")
+            assert queued.status_code == 200
+            rejected_run = await eventually(
+                lambda: client.get("/runs/" + queued.json()["run_id"]),
+                lambda r: r.status_code == 200 and r.json()["summary"]["status"] == "failed",
+            )
+            assert (await client.get("/settings/playbook")).json()["configured"] is False
+            assert (await client.get("/settings/country-policies")).json()["active_policies"] == []
+            for route in ("/demand/signals", "/demand/hypotheses", "/crm/campaigns"):
+                assert (await client.get(route)).json() == []
+            assert not any(call in {"research.search", "research.page", "research.model"} for call in research_calls.list_calls())
+            assert not any(call.operation == "send" for call in await provider.list_calls())
+            (directory / "research-unconfigured.json").write_text(json.dumps({
+                "run_id": queued.json()["run_id"], "status": rejected_run.json()["summary"]["status"],
+                "calls": research_calls.list_calls(), "signals": 0, "hypotheses": 0,
+                "campaigns": 0, "send_calls": 0,
+            }, indent=2))
+
             for name, value in [
                 ("company_type", "trading_company"),
                 ("minimum_deal_amount", "1000"),
@@ -413,6 +438,7 @@ async def test_original_launcher_browser_research_and_independent_reply_chain(
                 "research_ready": research_ready,
                 "research_signals": 3 if research_ready else 0,
                 "research_hypotheses": 3 if research_ready else 0,
+                "research_external_calls": research_calls.list_calls(),
                 "send_calls": 1,
                 "contact_calls": list(contact_provider.list_calls()),
                 "contact_run_id": str(runtime["contact_run_id"]),

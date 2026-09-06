@@ -65,3 +65,41 @@ async def test_research_search_page_and_model_have_exact_allowlists():
             payload={**payload, "pages": ({"text": "unregistered"},)},
             max_output_tokens=3000,
         )
+
+
+async def test_controlled_research_counts_each_external_call_without_payload(tmp_path):
+    from infra.controlled.research import (
+        ControlledResearchCalls,
+        ControlledResearchSearch,
+    )
+
+    calls = ControlledResearchCalls(tmp_path / "mail.sqlite", tenant_id="tn_controlled")
+    search = ControlledResearchSearch(calls)
+    assert calls.list_calls() == ()
+    for _ in range(2):
+        await search.search("Kenya furniture hardware importer", "KE", 1, api_key="placeholder")
+    assert calls.list_calls() == ("research.search", "research.search")
+    from infra.controlled.providers import ControlledGmailTransport
+    gmail = ControlledGmailTransport(tmp_path / "mail.sqlite", tenant_id="tn_controlled")
+    assert await gmail.list_calls() == ()
+    await gmail.send(token="placeholder", raw_message=b"Message-ID: <ledger@example.test>\r\nX-TradeOS-Idempotency-V1: controlled-ledger\r\n\r\nSynthetic message")
+    assert tuple(call.operation for call in await gmail.list_calls()) == ("send",)
+    other = ControlledResearchCalls(tmp_path / "mail.sqlite", tenant_id="tn_other")
+    assert other.list_calls() == ()
+
+
+@pytest.mark.parametrize("corruption", ["wrong_columns", "invalid_database"])
+async def test_gmail_call_ledger_does_not_hide_corrupt_existing_schema(tmp_path, corruption):
+    import sqlite3
+    from contextlib import closing
+
+    from infra.controlled.providers import ControlledGmailTransport
+
+    path = tmp_path / "mail.sqlite"
+    if corruption == "wrong_columns":
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute("CREATE TABLE provider_calls (wrong_column TEXT)")
+    else:
+        path.write_bytes(b"invalid synthetic database")
+    with pytest.raises(sqlite3.DatabaseError):
+        await ControlledGmailTransport(path, tenant_id="tn_controlled").list_calls()

@@ -252,6 +252,10 @@ class ControlledGmailTransport:
         if not self._path.exists():
             return ()
         with closing(sqlite3.connect(self._path)) as db:
+            if not db.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='provider_calls'"
+            ).fetchone()[0]:
+                return ()
             rows = db.execute(
                 "SELECT call_id, operation, recorded_at FROM provider_calls WHERE tenant_id=? ORDER BY rowid",
                 (self._tenant,),

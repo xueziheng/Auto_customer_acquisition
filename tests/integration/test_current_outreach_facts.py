@@ -27,6 +27,9 @@ from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
 from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import ProspectAccountId, TenantId, new_id
+from tests.integration.test_need_units import (
+    unit_engine as unit_engine,  # noqa: PLC0414 -- 不可变提案使用既有独立库生命周期
+)
 
 NOW = datetime(2026, 9, 5, tzinfo=UTC)
 
@@ -133,8 +136,19 @@ async def test_reply_unknown_auto_history_and_current_correction(integration_eng
         tenant, message, ReplyCategory.AUTO_REPLY, "model-v1"
     )
     assert (await service.get_account_reply_status(tenant, account)).state == "no_reply"
+    from sqlalchemy import insert
+
+    from domains.conversations.service import InboxActor, InboxScope
+    from infra.db.tables import EmployeeRow
+    from shared.schemas.identifiers import EmployeeId
+
+    async with sessions.begin() as session:
+        await session.execute(insert(EmployeeRow).values(
+            tenant_id=tenant, employee_id="employee-1", name="合成纠正人", role="boss"
+        ))
     await service.correct_classification(
-        tenant, message, ReplyCategory.REJECTION, "employee-1"
+        tenant, message, ReplyCategory.REJECTION, "employee-1",
+        actor=InboxActor(tenant, EmployeeId("employee-1"), "boss", InboxScope.TENANT),
     )
     assert (await service.get_account_reply_status(tenant, account)).state == "replied"
     later = await service.ingest_inbound(
@@ -933,9 +947,7 @@ async def test_enabled_groups_load_actual_accounts_and_share_single_directive(
     assert dependencies.campaign_messaging.delivery_materials._sending is core.sending
 
 
-async def test_http_account_run_keeps_user_id_for_actual_worker_mapping(
-    integration_engine, db_url
-):
+async def test_http_account_run_keeps_user_id_for_actual_worker_mapping(unit_engine):
     import importlib
 
     import httpx
@@ -959,9 +971,9 @@ async def test_http_account_run_keeps_user_id_for_actual_worker_mapping(
         EmployeeId(new_id("emp")),
         UserId(new_id("usr")),
     )
-    env = _runtime_env(str(db_url))
+    env = _runtime_env(unit_engine.url.render_as_string(False))
     env["TRADEOS_TENANT_ID"] = str(tenant)
-    sessions = async_sessionmaker(integration_engine, expire_on_commit=False)
+    sessions = async_sessionmaker(unit_engine, expire_on_commit=False)
     models = importlib.import_module("domains.employees.models")
     async with sessions() as session:
         await EmployeeRepositoryImpl(session, tenant).add(

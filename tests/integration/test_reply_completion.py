@@ -541,7 +541,7 @@ async def test_unreliable_quotes_fail_before_classification_or_need(
                 )
             status = await session.scalar(
                 text(
-                    "SELECT status FROM workflow_runs WHERE tenant_id=:t AND workflow_type='reply_qualification'"
+                    "SELECT status FROM workflow_runs WHERE tenant_id=:t AND workflow_type='reply_qualification' ORDER BY created_at, run_id"
                 ),
                 {"t": tenant},
             )
@@ -787,7 +787,7 @@ async def test_cancel_real_inbound_run_then_restart_keeps_cursor_and_no_classifi
             assert (
                 await session.scalar(
                     text(
-                        "SELECT status FROM workflow_runs WHERE tenant_id=:t AND workflow_type='reply_qualification'"
+                        "SELECT status FROM workflow_runs WHERE tenant_id=:t AND workflow_type='reply_qualification' ORDER BY created_at, run_id"
                     ),
                     {"t": tenant},
                 )
@@ -975,7 +975,7 @@ async def test_missing_need_is_completed_by_later_reply_across_runtime_restart(
             assert (
                 await session.execute(
                     text(
-                        "SELECT status FROM workflow_runs WHERE tenant_id=:t AND workflow_type='reply_qualification'"
+                        "SELECT status FROM workflow_runs WHERE tenant_id=:t AND workflow_type='reply_qualification' ORDER BY created_at, run_id"
                     ),
                     {"t": tenant},
                 )

@@ -392,7 +392,19 @@ def test_real_http_configuration_approval_and_worker_crash(tmp_path: Path) -> No
                 + proposal.json()["proposal_id"]
                 + "/confirm"
             )
-            assert blocked.status_code >= 400
+            assert blocked.status_code == 200
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                rejected = client.get("/runs/" + blocked.json()["run_id"])
+                if rejected.status_code == 200 and rejected.json()["summary"]["status"] == "failed":
+                    break
+                time.sleep(0.1)
+            assert rejected.json()["summary"]["status"] == "failed"
+            for route in ("/demand/signals", "/demand/hypotheses", "/crm/campaigns"):
+                assert client.get(route).json() == []
+            from infra.controlled.research import ControlledResearchCalls
+            calls = ControlledResearchCalls(paths[0].parent / "mail.sqlite", tenant_id=state["tenant_id"])
+            assert not any(call in {"research.search", "research.page", "research.model"} for call in calls.list_calls())
             book = client.post(
                 "/settings/playbook/proposals",
                 headers={"Idempotency-Key": "controlled-book-v1"},
