@@ -132,3 +132,52 @@ workflows/reply_qualification/inbound.py
 workflows/reply_qualification/inbound_contracts.py
 workflows/reply_qualification/inbound_management.py
 ```
+
+## Fix1：I1提交阶段取消与关闭错误叠加（2026-09-06）
+
+**范围：只处理Important I1，状态ADDRESSED，等待同reviewer仅修复范围复审。** 起点 `f432415da070d4de254c9930aa1469bc9e713260`；Fix1源码HEAD `f3e2a942a91730c3c339dd82ecb7598744c6337a`。Minor M1没有修改，按控制器裁定由Task8消费前修正下载schema；本修未改API、Web类型、正式规格、controller ledger、其他brief或整体plan。
+
+I1的根因是`__aexit__`只保留入参是否有异常的布尔值。业务块正常返回后，提交或审计刷新阶段出现的新`CancelledError`没有成为primary；若close再失败，取消就被`InboundCommitUnknown`覆盖，已耐久时processor甚至返回replayed。
+
+本修将primary改为实际首个异常对象。提交/审计刷新阶段捕获到新BaseException时先保存，再原样raise；finally仍清空审计缓冲并关闭session，关闭故障不能替换已有primary，只记录固定安全日志。只有没有primary时的关闭失败保持原提交未知处理。进入`__aexit__`前已存在的业务/取消异常、提交未知核实与独立运行日志语义均保持。
+
+### RED：四个组合故障先于修复执行
+
+```bash
+env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest tests/unit/test_email_inbound_page.py tests/integration/test_email_inbound_page.py -k 'new_cancellation or cancel_before_commit_close or cancel_after_commit_close' -q --tb=short
+```
+
+退出码1：`4 failed, 25 deselected in 14.78s`。
+
+- 单元测试调用真实UoW的`__aexit__`：commit取消+close错误、audit flush取消+close错误均错误地抛`InboundCommitUnknown`。修复后还断言向上传播的是原来同一个取消对象、确实调用close并清空审计缓冲。
+- 真实PG提交前取消+真实close结束后再抛错误：错误地转换为`InboundCommitUnknown`。
+- 真实PG原`super().commit()`已耐久后取消+真实close结束后再抛错误：`DID NOT RAISE CancelledError`，确认被processor新事务核实后吞成正常重放。
+
+### GREEN：修复后的相关事务组
+
+```bash
+env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest tests/unit/test_email_inbound_page.py tests/integration/test_email_inbound_page.py -k 'new_cancellation or uncertain_commit or postcommit_log or real_pg_wait or second_receipt or buffered_domain' -q --tb=short
+```
+
+退出码0：`12 passed, 17 deselected in 11.87s`。随后仅ruff整理新增测试换行，未改变执行语义。
+
+作用集：两个新最小取消组合；原事务故障组扩为六种（提交前/后普通错误、单独close故障、单独commit取消、提交前取消叠加close错误、已真实提交后取消叠加close错误）；原提交后日志失败、真实PG锁等待取消、页第二条receipt故障、域audit buffer第二项故障。
+
+两项真实PG新增组合都先断言`CancelledError`传播。提交前场景独立读取cursor仍为原值、Message/outbox/receipt/review计数全0，再以正常外层UoW重做一次；提交后场景独立读取next cursor/version与Message/outbox/receipt已存在，正常processor同页恢复返回replayed。两者再次重放后都严格为`(1,1,1,0)`，没有重复副作用。没有种结果态或使用旧共享DB。
+
+### 静态、自审与清理
+
+精确改动文件只有 `infra/db/email_inbound_uow.py`、`tests/unit/test_email_inbound_page.py`、`tests/integration/test_email_inbound_page.py`，以及本报告追加。
+
+```bash
+.venv/bin/python -m ruff check infra/db/email_inbound_uow.py tests/unit/test_email_inbound_page.py tests/integration/test_email_inbound_page.py
+.venv/bin/python -m mypy infra/db/email_inbound_uow.py
+.venv/bin/python scripts/check_boundaries.py
+.venv/bin/python scripts/scan_sensitive.py infra/db/email_inbound_uow.py tests/unit/test_email_inbound_page.py tests/integration/test_email_inbound_page.py
+```
+
+各命令退出码0；ruff `All checks passed!`，mypy `Success: no issues found in 1 source file`，结构自检七项全部通过，增量扫描无新命中。git操作使用Python subprocess捕获stderr；`git diff --check`与暂存后`git diff --cached --check`均exit0。报告追加后另行扫描本报告并检查暂存差异，均exit0。
+
+自审确认：普通body primary仍由原async-with传播；commit普通异常仍进入既有提交未知路径；commit/flush新取消在finally之前已成为primary；新取消和close故障同时出现时不再返回replayed。没有改原Outreach/Conversations接口或全局异常策略。
+
+RED与GREEN均复用5a/5b的owned fixture、Task4 Supervisor/OwnedContainers/OwnedProcess；真实PG、MinIO、公开发送业务流程、Gateway与原领域服务不替换。故障seam只在真实AsyncSession提交前/真实提交后抛取消，close先调用真实super().close再抛固定错误。finally和fixture按原流程释放资源，cleanup_errors为空且私有config已删除；单元测试另断言close被执行和审计缓冲已清空。没有再次执行46全套、Web/schema、真实Provider、push、merge或部署，没有新增子代理。
