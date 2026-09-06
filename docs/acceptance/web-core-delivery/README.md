@@ -21,8 +21,10 @@ Task13与最终全分支审查在本快照截止时尚待完成，最终裁定�
 - [Mac精确proof](../../../output/acceptance/task12/8d234c0956fb498e9f171342c3b72f51/proof.json)、
   [Mac清理](../../../output/acceptance/task12/8d234c0956fb498e9f171342c3b72f51/cleanup.json)、
   [Linux owner审计](../../../output/acceptance/task12/backend-final-linux-owner-audit.json)。
-- [静止owned备份恢复](backup-restore.json)：仅源PG/原件→另一空owned目标，元数据/SHA256一致，
-  同owner和非空目标拒绝、源不变、精确清理。不是用户业务backup/restore接口，命令及限制见[操作说明](../../operations/web-core-local.md)。
+- [静止owned备份恢复](backup-restore.json)（Task13 I1/M1修复后新owner复验）：仅源PG/原件→另一空owned目标，元数据/SHA256一致，
+  同owner和非空目标拒绝、源不变、精确清理。原[审查前正常路径证据](backup-restore-pre-review.json)保留，
+  它没有覆盖当时的关闭/证据写失败路径；本次无DB故障覆盖见[fix1门禁](task-13-fix1-gates.json)。
+  不是用户业务backup/restore接口，命令及限制见[操作说明](../../operations/web-core-local.md)。
 - [Task9详细spec](task-9-spec.md)正式保留；本批规格见[Task13详细spec](../../superpowers/specs/2026-09-06-web-core-delivery.md)，
   桌面无实现，只有[现有接口及未来责任](../../architecture/12-client-capability-boundaries.md)。
 
@@ -90,7 +92,6 @@ Cookie、SQLite、dump或完整原始敏感日志。旧报告中/tmp路径是历
 | [task-11-review.md](task-11-review.md) | `410e2d8efad329aa664f922fcc0aa21312bda571c23a0fa045f77f92145ee149` |
 | [task-12-report.md](task-12-report.md) | `34606968991ab37a70a256d000a07bd5c1fcaf1ab6dbbc3d6ea2621ca51579f8` |
 | [task-12-review.md](task-12-review.md) | `f27b992b27303481f03db5e7c947fcab0412fa88fa5609cfd87e356de7aa9457` |
-
 | [task-3a-report.md](task-3a-report.md) | `f7fe9c33a14f211d0910a3b9f0a026e6c957805497744b3b7e09cb2213094c50` |
 | [task-3a-review.md](task-3a-review.md) | `c8f80361754a7deba7bfa560893586706d1514b74977984ea917e571b2d1a558` |
 | [task-3b-report.md](task-3b-report.md) | `c0ca378159ce34827474ea581a79d9059442f5cedc1ddf85169ed0c021bf13fd` |

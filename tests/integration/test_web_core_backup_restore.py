@@ -9,6 +9,8 @@ import logging
 import secrets
 import tarfile
 import time
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +36,43 @@ from shared.schemas.identifiers import TenantId, new_id
 
 ROOT = Path(__file__).resolve().parents[2]
 EVIDENCE = ROOT / "docs/acceptance/web-core-delivery/backup-restore.json"
+
+
+def _close_safely(
+    operation: Callable[[], object], reason: str, errors: list[str]
+) -> None:
+    try:
+        operation()
+    except Exception:  # noqa: BLE001 关闭失败只保留固定类别，其余回调继续
+        errors.append(reason)
+
+
+async def _aclose_safely(
+    operation: Callable[[], Awaitable[object]], reason: str, errors: list[str]
+) -> None:
+    try:
+        await operation()
+    except Exception:  # noqa: BLE001 关闭失败只保留固定类别，其余回调继续
+        errors.append(reason)
+
+
+@contextmanager
+def _resources(errors: list[str]) -> Iterator[ExitStack]:
+    """逐项注册关闭；主失败不被关闭失败覆盖，单独清理失败不得报通过。"""
+    before = len(errors)
+    with ExitStack() as closing:
+        yield closing
+    if len(errors) != before:
+        raise ControlledError("backup_resource_cleanup_failed")
+
+
+@asynccontextmanager
+async def _async_resources(errors: list[str]) -> AsyncIterator[AsyncExitStack]:
+    before = len(errors)
+    async with AsyncExitStack() as closing:
+        yield closing
+    if len(errors) != before:
+        raise ControlledError("backup_resource_cleanup_failed")
 
 
 def _verify(supervisor: Supervisor) -> ControlledConfig:
@@ -100,7 +139,9 @@ def _client(config: ControlledConfig):
     )
 
 
-def _empty_target(target: Supervisor, source_config: ControlledConfig) -> None:
+def _empty_target(
+    target: Supervisor, source_config: ControlledConfig, cleanup_errors: list[str]
+) -> None:
     """仅建另一新owned空PG/MinIO，不迁移/初始化员工，不启动应用。"""
     target.containers = OwnedContainers(target.owner)
     passphrase, access, secret = (
@@ -168,8 +209,11 @@ def _empty_target(target: Supervisor, source_config: ControlledConfig) -> None:
     )
     config.write(target.directory / "config.json")
     target.config = ControlledConfig.read(target.directory / "config.json")
-    client = _client(_verify(target))
-    try:
+    with _resources(cleanup_errors) as closing:
+        client = _client(_verify(target))
+        closing.callback(
+            _close_safely, client.close, "target_client_close_failed", cleanup_errors
+        )
         deadline = time.monotonic() + 30
         while True:
             _verify(target)
@@ -180,16 +224,23 @@ def _empty_target(target: Supervisor, source_config: ControlledConfig) -> None:
                 if time.monotonic() >= deadline:
                     raise ControlledError("backup_object_not_ready") from None
                 time.sleep(0.1)
-    finally:
-        client.close()
 
 
-async def _artifact(supervisor: Supervisor, artifact_id=None):
+async def _artifact(
+    supervisor: Supervisor, artifact_id=None, cleanup_errors: list[str] | None = None
+):
     config = _verify(supervisor)
-    engine = create_engine_from(config.database_url.get_secret_value())
-    settings = S3ObjectStoreSettings.from_environ(config.runtime_environment())
-    transport = S3ObjectBlobTransport(settings, config)
-    try:
+    errors = [] if cleanup_errors is None else cleanup_errors
+    async with _async_resources(errors) as closing:
+        engine = create_engine_from(config.database_url.get_secret_value())
+        closing.push_async_callback(
+            _aclose_safely, engine.dispose, "engine_dispose_failed", errors
+        )
+        settings = S3ObjectStoreSettings.from_environ(config.runtime_environment())
+        transport = S3ObjectBlobTransport(settings, config)
+        closing.push_async_callback(
+            _aclose_safely, transport.aclose, "transport_close_failed", errors
+        )
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         store = RawArtifactStoreImpl(
             lambda tenant: SqlAlchemyArtifactUnitOfWork(sessions, tenant),
@@ -227,12 +278,11 @@ async def _artifact(supervisor: Supervisor, artifact_id=None):
             "row_count": count,
             "schema_head": revision,
         }
-    finally:
-        await transport.aclose()
-        await engine.dispose()
 
 
-def _restore(source: Supervisor, target: Supervisor) -> None:
+def _restore(
+    source: Supervisor, target: Supervisor, cleanup_errors: list[str] | None = None
+) -> None:
     _require_empty_target(source, target)
     dump = _pg(
         source,
@@ -274,8 +324,16 @@ def _restore(source: Supervisor, target: Supervisor) -> None:
     finally:
         _pg(target, ["rm", "-f", "/tmp/task13-owned.dump"])
     source_config, target_config = _verify(source), _verify(target)
-    first, second = _client(source_config), _client(target_config)
-    try:
+    errors = [] if cleanup_errors is None else cleanup_errors
+    with _resources(errors) as closing:
+        first = _client(source_config)
+        closing.callback(
+            _close_safely, first.close, "source_client_close_failed", errors
+        )
+        second = _client(target_config)
+        closing.callback(
+            _close_safely, second.close, "target_client_close_failed", errors
+        )
         _verify(target)
         if second.list_objects_v2(Bucket=target_config.bucket).get("KeyCount") != 0:
             raise ControlledError("backup_object_target_not_empty")
@@ -294,9 +352,6 @@ def _restore(source: Supervisor, target: Supervisor) -> None:
             raise ControlledError("backup_fixture_too_large")
         _verify(target)
         second.put_object(Bucket=target_config.bucket, Key=key, Body=content)
-    finally:
-        first.close()
-        second.close()
 
 
 async def test_owned_static_pg_and_original_restore_to_distinct_empty_target(
@@ -305,94 +360,116 @@ async def test_owned_static_pg_and_original_restore_to_distinct_empty_target(
     """实际dump/restore与Store读取一致；同owner、非空目标拒绝，最后精确清理。"""
     prior_logging = logging.root.manager.disable
     logging.disable(logging.CRITICAL)
-    supervisors = []
-    result = {
-        "date": "2026-09-06",
-        "status": "failed",
-        "scope": "static_owned_pg_and_raw_object_only",
-    }
-    stage = "create_source"
     try:
-        source = Supervisor(ROOT, tmp_path, [reserve(0) for _ in range(3)])
-        supervisors.append(source)
-        source.start_infrastructure()
-        source_config = _verify(source)
-        stage = "source_artifact"
-        original = await _artifact(source)
+        supervisors = []
+        resource_errors: list[str] = []
+        primary_failed = False
+        result = {
+            "date": "2026-09-06",
+            "status": "failed",
+            "scope": "static_owned_pg_and_raw_object_only",
+            "resource_cleanup_errors": resource_errors,
+        }
+        stage = "create_source"
         try:
-            _require_empty_target(source, source)
-        except ControlledError as exc:
-            if exc.reason != "backup_target_not_distinct":
-                raise
-        else:
-            raise ControlledError("backup_same_owner_not_rejected")
-        stage = "create_target"
-        target = Supervisor(ROOT, tmp_path, [reserve(0) for _ in range(3)])
-        supervisors.append(target)
-        _empty_target(target, source_config)
-        stage = "restore"
-        _restore(source, target)
-        stage = "verify_metadata_and_original"
-        restored = await _artifact(target, original["metadata"]["artifact_id"])
-        source_after = await _artifact(source, original["metadata"]["artifact_id"])
-        if source_after != original:
-            raise ControlledError("backup_source_changed")
-        if (
-            original != restored
-            or original["row_count"] != 1
-            or original["schema_head"] != "0059"
-        ):
-            raise ControlledError("backup_integrity_mismatch")
-        try:
-            _require_empty_target(source, target)
-        except ControlledError as exc:
-            if exc.reason != "backup_target_not_empty":
-                raise
-        else:
-            raise ControlledError("backup_nonempty_not_rejected")
-        result.update(
-            status="passed",
-            source_owner=source.owner,
-            target_owner=target.owner,
-            source=original,
-            target=restored,
-            same_owner_rejected=True,
-            nonempty_target_rejected=True,
-            application_writers=0,
-            dump_retained=False,
-            source_unchanged=True,
-        )
-    except Exception:  # noqa: BLE001 原始SDK/SQL异常、配置、dump不进入pytest输出
-        raise AssertionError("backup_restore_failed:" + stage) from None
-    finally:
-        cleanup = []
-        for supervisor in reversed(supervisors):
-            ids = list(supervisor.containers.ids) if supervisor.containers else []
-            supervisor.close()
-            cleanup.append(
-                {
-                    "owner": supervisor.owner,
-                    "container_ids": ids,
-                    "errors": supervisor.cleanup_errors,
-                    "private_config_removed": not (
-                        supervisor.directory / "config.json"
-                    ).exists(),
-                    "processes": [
-                        {"name": item.name, "pid": item.process.pid, "born": item.born}
-                        for item in supervisor.processes
-                    ],
-                    "listener_fds": [
-                        listener.fileno() for listener in supervisor.listeners
-                    ],
-                }
+            source = Supervisor(ROOT, tmp_path, [reserve(0) for _ in range(3)])
+            supervisors.append(source)
+            source.start_infrastructure()
+            source_config = _verify(source)
+            stage = "source_artifact"
+            original = await _artifact(source, cleanup_errors=resource_errors)
+            try:
+                _require_empty_target(source, source)
+            except ControlledError as exc:
+                if exc.reason != "backup_target_not_distinct":
+                    raise
+            else:
+                raise ControlledError("backup_same_owner_not_rejected")
+            stage = "create_target"
+            target = Supervisor(ROOT, tmp_path, [reserve(0) for _ in range(3)])
+            supervisors.append(target)
+            _empty_target(target, source_config, resource_errors)
+            stage = "restore"
+            _restore(source, target, resource_errors)
+            stage = "verify_metadata_and_original"
+            restored = await _artifact(
+                target, original["metadata"]["artifact_id"], resource_errors
             )
-        result["cleanup"] = cleanup
-        if any(
-            item["errors"] or not item["private_config_removed"] for item in cleanup
-        ):
-            result["status"] = "cleanup_unknown"
-        EVIDENCE.parent.mkdir(parents=True, exist_ok=True)
-        EVIDENCE.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+            source_after = await _artifact(
+                source, original["metadata"]["artifact_id"], resource_errors
+            )
+            if source_after != original:
+                raise ControlledError("backup_source_changed")
+            if (
+                original != restored
+                or original["row_count"] != 1
+                or original["schema_head"] != "0059"
+            ):
+                raise ControlledError("backup_integrity_mismatch")
+            try:
+                _require_empty_target(source, target)
+            except ControlledError as exc:
+                if exc.reason != "backup_target_not_empty":
+                    raise
+            else:
+                raise ControlledError("backup_nonempty_not_rejected")
+            result.update(
+                status="passed",
+                source_owner=source.owner,
+                target_owner=target.owner,
+                source=original,
+                target=restored,
+                same_owner_rejected=True,
+                nonempty_target_rejected=True,
+                application_writers=0,
+                dump_retained=False,
+                source_unchanged=True,
+            )
+        except Exception:  # noqa: BLE001 原始SDK/SQL异常、配置、dump不进入pytest输出
+            primary_failed = True
+            raise AssertionError("backup_restore_failed:" + stage) from None
+        finally:
+            cleanup = []
+            for supervisor in reversed(supervisors):
+                ids = list(supervisor.containers.ids) if supervisor.containers else []
+                supervisor.close()
+                cleanup.append(
+                    {
+                        "owner": supervisor.owner,
+                        "container_ids": ids,
+                        "errors": supervisor.cleanup_errors,
+                        "private_config_removed": not (
+                            supervisor.directory / "config.json"
+                        ).exists(),
+                        "processes": [
+                            {
+                                "name": item.name,
+                                "pid": item.process.pid,
+                                "born": item.born,
+                            }
+                            for item in supervisor.processes
+                        ],
+                        "listener_fds": [
+                            listener.fileno() for listener in supervisor.listeners
+                        ],
+                    }
+                )
+            result["cleanup"] = cleanup
+            if any(
+                item["errors"] or not item["private_config_removed"] for item in cleanup
+            ):
+                result["status"] = "cleanup_unknown"
+            try:
+                EVIDENCE.parent.mkdir(parents=True, exist_ok=True)
+                EVIDENCE.write_text(
+                    json.dumps(result, indent=2, ensure_ascii=False) + "\n"
+                )
+            except Exception:  # noqa: BLE001 证据写失败固定化，不能覆盖已有主失败
+                if not primary_failed:
+                    raise ControlledError("backup_evidence_write_failed") from None
+        assert result["status"] == "passed"
+        assert all(
+            item["listener_fds"] == [-1, -1, -1, -1] for item in result["cleanup"]
+        )
+    finally:
         logging.disable(prior_logging)
-    assert result["status"] == "passed"
-    assert all(item["listener_fds"] == [-1, -1, -1, -1] for item in result["cleanup"])

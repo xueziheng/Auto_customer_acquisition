@@ -52,3 +52,16 @@ Mac无完整quotation/自动寻源准入；独立Linux不同owner/Need完成报�
 
 检查：新增恢复聚焦测试、文档链接/状态一致、结构边界、敏感扫描、改动文件ruff/diff-check；
 不重复Task12未变全量。source与report明确提交，禁止git add .、push、merge、部署或真实外发。
+
+## Task13限定修复 round 1（I1/M1/M2）
+
+基线`fe6f7dc2622391c9359866dd90fafbf3573ebdb5`。只修本批验收helper的异常收口与正式索引表格。
+engine/transport/S3 client每创建一项即登记独立关闭，前一关闭失败或后续构造失败时其余关闭仍被尝试。
+原主失败保留；清理失败只记录固定类别，无主失败时用固定ControlledError拒绝通过，不输出SDK/SQL异常。
+证据写入不能控制全局logging恢复；最外层finally恢复原disable等级。证据写失败不覆盖已有主失败，
+无主失败时固定失败。正常恢复报告增加资源清理类别；旧正常证据按历史保存，不扩称当时已覆盖失败路径。
+
+先增加无DB替身回归，证明transport关闭失败仍dispose、第二client构造失败或第一client关闭失败
+仍释放其余已建资源、证据写失败仍恢复logging；RED必须来自这些实际漏清理行为。
+修复后仅正常owned恢复新owner复验一次和相关静态/敏感/格式检查，不重跑Task12全量或旧archive。
+M2删除历史表格断裂空行，不改历史报告内容/hash；本轮source/report分别提交供同reviewer限定复审。
