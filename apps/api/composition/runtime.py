@@ -34,9 +34,7 @@ from apps.composition_support.employee_readers import (
 from apps.composition_support.employee_readers import (
     RequestScopedDirectiveEmployeeReader as RequestScopedDirectiveEmployeeReader,  # noqa: PLC0414 - 保持公开类型身份
 )
-from apps.composition_support.employee_readers import (
-    RequestScopedHandoffEmployeeReader as RequestScopedHandoffEmployeeReader,  # noqa: PLC0414 - 保持公开类型身份
-)
+from apps.composition_support.employee_readers import RequestScopedHandoffEmployeeReader
 from apps.composition_support.employee_readers import (
     employee_service_scope as employee_service_scope,  # noqa: PLC0414 - 保持公开类型身份
 )
@@ -301,6 +299,7 @@ from workflows.quote_approval.flow import (
 )
 from workflows.quote_approval.run_reader import WorkflowQuoteRunReader
 from workflows.quote_approval.runtime_readers import CurrentQuotationActorReader
+from workflows.reply_qualification.questions import ReplySuggestionApplication
 from workflows.sourcing_case.application import (
     DirectiveSourcingAdmissionPolicyReader,
     SourcingAdmissionApplication,
@@ -1590,6 +1589,14 @@ def build_phase1_dependencies(
         organization=organization,
         compliance=compliance,
         conversations=conversations,
+        reply_suggestions=ReplySuggestionApplication(
+            tenant,
+            RequestScopedHandoffEmployeeReader(employees),
+            employee_system_actor,
+            conversations,
+            outreach,
+            demand,
+        ),
         commitments=commitments,
         costing=costing,
         work_uploads=work_uploads,

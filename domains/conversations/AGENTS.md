@@ -55,3 +55,6 @@
 ## Phase 1 范围
 
 会话/消息模型、14 类枚举与动作映射、下一问接口、分类结果留痕（含模型版本——分类质量要能按版本评估）。不做：多语言实时翻译存储、语音消息。
+
+ADR0027新增独立next_questions/qualify纯action权限，仅可信当前active boss；不借用technical-review
+读取权限。缺项来自真实Message精确关联的Demand，不收客户端自报完整度。Task7再纳入owner矩阵。

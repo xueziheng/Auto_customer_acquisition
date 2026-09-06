@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from domains.conversations.models import (
     MAX_REPLY_FIELD_QUOTE_CODEPOINTS,
@@ -166,3 +166,16 @@ class AccountReplyStatus(BaseModel):
     account_id: ProspectAccountId
     state: Literal["unknown", "replied", "no_reply"]
     replied_at: datetime | None = None
+
+
+class ReplyNextQuestionsView(BaseModel):
+    """受权只读建议；真实引用和队列状态不被英文措辞替代。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    conversation_id: str
+    source_message_id: str
+    need_id: str | None
+    state: Literal["suggested", "need_unavailable", "no_missing_fields"]
+    completeness: int | None = Field(ge=0, le=5)
+    topics: tuple[str, ...] = Field(max_length=2)
+    suggestions: tuple[str, ...] = Field(max_length=2)

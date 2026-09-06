@@ -77,6 +77,8 @@ class InboundContent(InboundDTO):
     subject: str | None = Field(default=None, repr=False, exclude=True)
     body: str = Field(default="", repr=False, exclude=True)
     guard_body: str = Field(default="", repr=False, exclude=True)
+    evidence_segments: tuple[str, ...] = Field(default=(), repr=False, exclude=True)
+    evidence_available: bool = True
 
 
 class ProviderInboundItem(InboundItem):

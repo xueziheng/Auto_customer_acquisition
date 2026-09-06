@@ -101,6 +101,7 @@ from workflows.employee_work_intake.schemas import (
 )
 from workflows.engine.audit import RunAuditService
 from workflows.engine.runner import WorkflowEngine
+from workflows.reply_qualification.questions import ReplySuggestionApplication
 from workflows.sourcing_case.application import (
     SourcingAdmissionApplication,
     SourcingCaseApplication,
@@ -286,6 +287,7 @@ class ConfiguredApiDependencies:
     organization: OrganizationService | None = None
     compliance: ComplianceService | None = None
     conversations: ConversationService | None = None
+    reply_suggestions: ReplySuggestionApplication | None = None
     commitments: CommitmentService | None = None
     costing: CostingService | None = None
     work_uploads: WorkUploadApplicationService | None = None

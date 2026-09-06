@@ -115,7 +115,7 @@ def test_stack_ready_restart_and_term_owned_cleanup(tmp_path: Path) -> None:
                 pytest.fail(f"launcher failed before ready: {process.communicate()[0]}")
             time.sleep(0.1)
         assert state["status"] == "ready"
-        assert len({item["pid"] for item in state["processes"]}) == 3
+        assert len({item["pid"] for item in state["processes"]}) == 4
         with urllib.request.urlopen(
             urllib.request.Request(
                 state["api_url"] + "/health/capabilities",
@@ -126,6 +126,23 @@ def test_stack_ready_restart_and_term_owned_cleanup(tmp_path: Path) -> None:
             )
         ) as response:
             assert response.status == 200
+        with urllib.request.urlopen(
+            state["notification_url"] + "/health/capabilities"
+        ) as response:
+            capability = json.load(response)
+            assert capability == {
+                "mode": "controlled_in_app",
+                "in_app": "enabled",
+                "email": "disabled",
+            }
+        with urllib.request.urlopen(
+            state["scheduler_url"] + "/health/capabilities"
+        ) as response:
+            capabilities = json.load(response)
+            assert any(
+                c["name"] == "inbound_body" and c["status"] == "enabled"
+                for c in capabilities
+            )
         with urllib.request.urlopen(state["web_url"]) as response:
             assert response.status == 200
         from playwright.sync_api import sync_playwright

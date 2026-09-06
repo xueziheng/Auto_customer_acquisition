@@ -83,6 +83,7 @@ from .account_discovery import (
 from .config import SchedulerWorkerConfig
 from .directive_reader import DirectiveDemandDiscoveryTaskReader
 from .notification_projection import NotificationAudienceMember
+from .reply_binding import ReplyRuntimeResources
 from .runtime import (
     AccountDiscoveryComposition,
     CampaignMessagingComposition,
@@ -123,12 +124,15 @@ class CurrentNotificationAudience:
             raise ValidationError("当前通知受众不可用")
         account = None
         if isinstance(event, HandoffRequested) and event.opportunity_id is not None:
-            opportunity = await self._opportunities.get(
+            opportunity = await self._opportunities.get_notification_audience_target(
                 tenant_id,
                 event.opportunity_id,
                 actor=OpportunityActor(
                     "system:notification-audience",
-                    OpportunityScope(level=ScopeLevel.SYSTEM),
+                    OpportunityScope(
+                        level=ScopeLevel.SYSTEM,
+                        notification_opportunity_id=event.opportunity_id,
+                    ),
                     "system",
                 ),
             )
@@ -138,7 +142,16 @@ class CurrentNotificationAudience:
             ownership = (
                 None
                 if account is None
-                else await service.get_ownership(tenant_id, account, actor=self._actor)
+                else await service.get_notification_owner(
+                    tenant_id,
+                    account,
+                    actor=EmployeeActor(
+                        "system:notification-audience",
+                        EmployeeScope.SYSTEM,
+                        "system",
+                        notification_account_id=account,
+                    ),
+                )
             )
         ids = {
             e.employee_id
@@ -148,7 +161,7 @@ class CurrentNotificationAudience:
             and e.role in {"boss", "manager"}
         }
         if ownership is not None:
-            ids.add(ownership.owner)
+            ids.add(ownership)
         active = {
             e.employee_id for e in employees if e.tenant_id == tenant_id and e.is_active
         }
@@ -247,7 +260,8 @@ class CanonicalSchedulerBootstrap:
     secret_resolver: SecretResolver | None = None
     reply_factory: (
         Callable[
-            [SchedulerCoreServices, OutreachService], ReplyQualificationComposition
+            [SchedulerCoreServices, OutreachService, ReplyRuntimeResources],
+            ReplyQualificationComposition,
         ]
         | None
     ) = None
@@ -421,13 +435,17 @@ class CanonicalSchedulerBootstrap:
         )
 
     def build_reply(
-        self, core: SchedulerCoreServices, outreach: OutreachService | None
+        self,
+        core: SchedulerCoreServices,
+        outreach: OutreachService | None,
+        *,
+        resources: ReplyRuntimeResources | None = None,
     ) -> ReplyQualificationComposition | None:
         if self.reply_factory is None:
             return None
-        if outreach is None:
+        if outreach is None or resources is None:
             raise ValidationError("scheduler 回复依赖未完整配置")
-        return self.reply_factory(core, outreach)
+        return self.reply_factory(core, outreach, resources)
 
 
 class ScopedDiscoveryEmployees(RequestScopedHandoffEmployeeReader):

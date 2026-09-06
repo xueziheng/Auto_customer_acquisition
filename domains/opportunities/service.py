@@ -21,6 +21,7 @@ from domains.opportunities.schemas import (
     HandoffPacketView,
     HandoffQueueItemView,
     HandoffQueueStats,
+    NotificationAudienceTarget,
     OpportunityCreateRequest,
     OpportunityView,
     ValidatedNeedEvidence,
@@ -220,6 +221,16 @@ class OpportunityService(Protocol):
         ...
 
     # --- 查询 -----------------------------------------------------------
+
+    async def get_notification_audience_target(
+        self,
+        tenant_id: TenantId,
+        opportunity_id: OpportunityId,
+        *,
+        actor: Actor,
+    ) -> NotificationAudienceTarget:
+        """仅精确SYSTEM通知scope读取当前账户关联，无机会详情权限。"""
+        ...
 
     async def get(
         self,

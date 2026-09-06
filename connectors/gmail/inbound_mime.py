@@ -180,25 +180,87 @@ class _Budget:
         return "".join(pieces) + tail
 
 
+def _current_plain_segments(value: str) -> tuple[str, ...]:
+    """只排除明确引用行/历史分隔，保留连续片段，不宣称识别所有邮件客户端。"""
+    segments: list[str] = []
+    current: list[str] = []
+    for line in value.splitlines(keepends=True):
+        if re.match(
+            r"(?i)^\s*(?:On .+ wrote:|-{2,}\s*(?:Original|Forwarded) Message|Begin forwarded message:)",
+            line,
+        ):
+            break
+        if line.lstrip().startswith(">"):
+            if current:
+                segments.append("".join(current))
+                if len(segments) > 200:
+                    return tuple(segments)
+                current = []
+        else:
+            current.append(line)
+    if current:
+        segments.append("".join(current))
+    return tuple(segment for segment in segments if segment.strip())
+
+
 class _HTMLText(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.values: list[str] = []
         self.hidden = 0
+        self.quote_stack: list[str] = []
+        self.current: list[str] = []
+        self.segments: list[str] = []
+
+    def _boundary(self) -> None:
+        if self.current:
+            if len(self.segments) <= 200:
+                self.segments.append("".join(self.current))
+            self.current = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        quoted = (
+            tag == "blockquote"
+            or bool(
+                {"gmail_quote", "yahoo_quoted"}
+                & set((attributes.get("class") or "").split())
+            )
+            or attributes.get("id") == "divRplyFwdMsg"
+        )
+        if quoted or self.quote_stack:
+            self._boundary()
+            if tag not in {"br", "hr", "img", "input", "meta", "link", "wbr"}:
+                self.quote_stack.append(tag)
         if tag in {"script", "style"}:
+            self._boundary()
             self.hidden += 1
         if tag in {"p", "br", "div"} and not self.hidden:
             self.values.append("\n")
+            if not self.quote_stack:
+                self.current.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in {"script", "style"} and self.hidden:
             self.hidden -= 1
+        if self.quote_stack and tag == self.quote_stack[-1]:
+            self.quote_stack.pop()
 
     def handle_data(self, data: str) -> None:
         if not self.hidden:
             self.values.append(data)
+            if not self.quote_stack:
+                self.current.append(data)
+
+    def current_segments(self) -> tuple[str, ...]:
+        self._boundary()
+        if self.quote_stack:
+            return ()
+        return tuple(
+            part
+            for segment in self.segments
+            for part in _current_plain_segments(segment)
+        )
 
 
 def _walk(
@@ -208,6 +270,8 @@ def _walk(
     depth: int,
     text: list[str],
     guard_text: list[str],
+    evidence_segments: list[str],
+    evidence_available: list[bool],
     allow_text: bool = True,
 ) -> None:
     content_type = headers.get_content_type()
@@ -229,7 +293,17 @@ def _walk(
             if previous_end is not None:
                 raw_part = body[previous_end : match.start()]
                 child, payload = budget.header(raw_part, depth + 1)
-                _walk(child, payload, budget, depth + 1, text, guard_text, allow_text)
+                _walk(
+                    child,
+                    payload,
+                    budget,
+                    depth + 1,
+                    text,
+                    guard_text,
+                    evidence_segments,
+                    evidence_available,
+                    allow_text,
+                )
             if match.group(1):
                 closed = True
                 break
@@ -247,8 +321,14 @@ def _walk(
             parser.close()
             # 完整HTML文本也经guard，不能先去掉含marker的标签/脚本再放行。
             text.append("".join(parser.values))
+            if len(evidence_segments) <= 200:
+                evidence_segments.extend(parser.current_segments())
+            if parser.quote_stack:
+                evidence_available[0] = False
         else:
             text.append(value)
+            if len(evidence_segments) <= 200:
+                evidence_segments.extend(_current_plain_segments(value))
     # message/rfc822和附件不解码、不递归，不算客户原话。
 
 
@@ -272,13 +352,28 @@ def parse_inbound_content(raw_mime: bytes) -> InboundContent:
             return InboundContent(disposition=D.SKIPPED_DELIVERY_REPORT)
         text: list[str] = []
         guard_text: list[str] = []
-        _walk(headers, payload, budget, 1, text, guard_text)
+        evidence_segments: list[str] = []
+        evidence_available = [True]
+        _walk(
+            headers,
+            payload,
+            budget,
+            1,
+            text,
+            guard_text,
+            evidence_segments,
+            evidence_available,
+        )
         body = "\n".join(text)
         return InboundContent(
             disposition=D.CANDIDATE if body.strip() else D.NO_BODY,
             subject=str(headers.get("Subject", "")),
             body=body,
             guard_body="\n".join(guard_text),
+            evidence_segments=tuple(evidence_segments)
+            if len(evidence_segments) <= 200
+            else (),
+            evidence_available=evidence_available[0] and len(evidence_segments) <= 200,
         )
     except _ParseLimit as error:
         return InboundContent(disposition=error.disposition)

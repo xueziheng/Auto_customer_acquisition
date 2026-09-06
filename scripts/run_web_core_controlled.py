@@ -46,7 +46,7 @@ def main() -> int:
             for name in ("docker", "psutil", "uvicorn", "asyncpg", "boto3", "alembic")
         ):
             raise RuntimeError("dependency_missing")
-        from controlled_web_supervisor import run
+        from scripts.controlled_web_supervisor import run
 
         return run(ROOT, args.directory, sockets)
     except Exception as exc:  # noqa: BLE001 安全进程边界不得回显异常

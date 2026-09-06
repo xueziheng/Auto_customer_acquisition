@@ -14,11 +14,13 @@ from domains.opportunities.service_impl import HandoffPolicy
 from infra.controlled.config import ControlledConfig
 from infra.controlled.network import install_network_boundary
 from infra.controlled.providers import ControlledDnsResolver, ControlledGmailTransport
-from shared.schemas.identifiers import TenantId
+from infra.controlled.reply_model import ControlledReplyModelClient
+from shared.schemas.identifiers import EmployeeId, TenantId
 from shared.schemas.money import CurrencyCode, Money
 
 from .bootstrap import CanonicalSchedulerBootstrap
 from .main import main as run_worker
+from .reply_composition import CurrentEmployeeReplyFactory
 from .runtime import SchedulerHealthServer, SchedulerRuntimeFactory
 
 
@@ -43,6 +45,14 @@ def main() -> int:
                 path.parent / "mail.sqlite", tenant_id=config.tenant_id
             ),
             secret_resolver=config,
+            reply_factory=CurrentEmployeeReplyFactory(
+                TenantId(config.tenant_id),
+                EmployeeId(config.identities[0].employee_id),
+                ControlledReplyModelClient(
+                    path.parent / "reply-model.sqlite", tenant_id=config.tenant_id
+                ),
+                "controlled-reply-v1",
+            ),
         )
         factory = SchedulerRuntimeFactory(
             config.runtime_environment(),

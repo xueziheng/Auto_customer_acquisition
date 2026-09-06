@@ -5,6 +5,7 @@
 授权审计（仅 actor/action/tenant/scope/rule）。返回类型一律是
 ``schemas.py`` 的公共 View，**不暴露内部 models**。
 """
+
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
@@ -75,6 +76,16 @@ class EmployeeService(Protocol):
         ``ValidationError``。换锁与追加历史由仓储**一次原子**完成，
         绝不允许出现「只换锁、历史没写」。
         """
+        ...
+
+    async def get_notification_owner(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        *,
+        actor: Actor,
+    ) -> EmployeeId | None:
+        """精确SYSTEM通知账户scope只读当前owner，无锁详情权限。"""
         ...
 
     async def get_ownership(

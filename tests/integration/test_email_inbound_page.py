@@ -349,7 +349,7 @@ async def test_unknown_page_is_atomic_replay_safe_and_has_real_raw(page_runtime)
         )[1] == mime(message_id="<unknown-one@example.test>")
 
 
-async def prepare_sent(runtime):
+async def prepare_sent(runtime, *, reply_source=False):
     """真实公开登记/认证/验证/审批/发送；不插Attempt结果态。"""
     from httpx import ASGITransport, AsyncClient
 
@@ -383,6 +383,7 @@ async def prepare_sent(runtime):
     from domains.sending_identity.service import AuthenticationResult
     from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
     from shared.schemas.identifiers import EmployeeId, IdempotencyKey
+    from shared.schemas.provenance import Provenance, SourceType
 
     deps, route = runtime["deps"], runtime["route"]
     sequence = runtime.get("prepared_count", 0)
@@ -427,7 +428,24 @@ async def prepare_sent(runtime):
     account = await deps.prospecting.resolve_account(
         tenant,
         AccountResolveRequest(
-            f"Controlled buyer {sequence}", "DE", entity_type="manufacturer"
+            f"Controlled buyer {sequence}",
+            "DE",
+            entity_type="manufacturer",
+            field_provenance=(
+                {
+                    name: Provenance(
+                        source_type=SourceType.EMPLOYEE_INPUT,
+                        source_id=boss_id,
+                        extracted_by=boss_id,
+                        extracted_at=NOW,
+                        confirmed_by=boss_id,
+                        confirmed_at=NOW,
+                    )
+                    for name in ("name", "country")
+                }
+                if reply_source
+                else {}
+            ),
         ),
     )
     contact = await deps.prospecting.create_contact(
@@ -471,7 +489,7 @@ async def prepare_sent(runtime):
             "human",
         ),
     )
-    await demand.create_hypothesis(
+    hypothesis_id = await demand.create_hypothesis(
         tenant,
         account,
         "hinges",
@@ -487,7 +505,14 @@ async def prepare_sent(runtime):
             ("manufacturer",),
             ("hinges",),
             (sid,),
-            (SequenceStepRequest(1, StepIntent.DISCOVERY, 0),),
+            (
+                (
+                    SequenceStepRequest(1, StepIntent.DISCOVERY, 0),
+                    SequenceStepRequest(2, StepIntent.FOLLOW_UP, 7),
+                )
+                if reply_source
+                else (SequenceStepRequest(1, StepIntent.DISCOVERY, 0),)
+            ),
             5,
             5,
             (),
@@ -513,7 +538,10 @@ async def prepare_sent(runtime):
         tenant,
         campaign.campaign_id,
         EnrollmentCreateRequest(
-            account, point, IdempotencyKey(f"controlled-inbound-send-{sequence}")
+            account,
+            point,
+            IdempotencyKey(f"controlled-inbound-send-{sequence}"),
+            source_hypothesis_id=hypothesis_id if reply_source else None,
         ),
         actor=boss,
     )
@@ -555,6 +583,10 @@ async def prepare_sent(runtime):
         ).one()
     assert result.state == "sent"
     runtime["outbound"] = result.deterministic_message_id
+    if reply_source:
+        runtime["source_hypothesis_id"] = hypothesis_id
+        runtime["source_enrollment_id"] = enrollment.enrollment_id
+        runtime["source_account_id"] = account
     return result
 
 

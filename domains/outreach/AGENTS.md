@@ -153,3 +153,5 @@ Campaign 边界模型与版本化、序列状态机、抑制名单、每日限�
 与 terminal completion。
 
 不做：积分限额（Phase 3 挂载点，字段位置留好）、多渠道序列（只有邮件）、A/B 测试。
+
+回复建议使用独立公开只读resolve_reply_source与REPLY_SOURCE_READ（当前boss-only），复用原SENT、双关联键及Enrollment一致性校验，显式授权真实campaign/account/enrollment。原反馈SYSTEM+单一identity权限不变。上层必须先完成真实消息Conversations授权，再匹配target.account；不开放任意Message-ID的独立HTTP入口。Task7扩当前员工owner矩阵时沿该只读action，不能伪造boss或放宽反馈口。

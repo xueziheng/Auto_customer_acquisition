@@ -1,0 +1,62 @@
+# Task6：完整回复组合、下一问与受控站内通知
+
+实施基点21b0b770fee078575c437d57a5f1b01bc8f5c689。控制器已裁定以下窄装配；不重写Task5或Catalog，不扩Phase1发送权限。ADR0027记录具名例外。
+
+## 资源与构造顺序
+
+原SchedulerRuntimeFactory创建唯一session factory、原canonical Demand及Conversations，再经原bootstrap.build_base形成唯一Opportunity，原Campaign构造Outreach，原Inbound构造Raw。ReplyRuntimeResources显式携带本进程sessions、bounded raw及原Opportunity等本批必需窄服务；build_reply使用keyword resources，缺Raw不启用完整组合。InboundComposition公开bounded_raw_store与technical-review wrapper分离，reply借用不关闭，原inbound.aclose及runtime finally仍唯一负责objects/engine。
+
+Demand构造时注入实现公开CustomerReplyEvidenceVerifier的单次绑定委托；原Outreach完成后绑定TenantBoundCustomerReplyEvidenceVerifier。未绑定固定拒绝、再次绑定拒绝、各runtime独立。禁止新建Demand、读取服务私有属性或第二engine。所有绑定在ready和消费前完成。实际修改callers为SchedulerRuntimeFactory、CanonicalSchedulerBootstrap及其聚焦测试；未配置reply旧调用仍返回None。
+
+## 内容与动作
+
+ArtifactMessageContentReader只接受BoundedRawArtifactStore，按真实tenant/message/raw_ref核完整metadata与bytes，不回退get。复用5a parse_inbound_content，完整subject+guard_body和subject+实际body分别先过CredentialMarkerGuard，再预算判定；超限固定拒绝待人工，不截断。模型投影用固定占位替换邮箱、URL/locator，原可靠body供最终逐字证据核验，subject仅保留内存/Raw；投影显式标记且缺原件拒绝，原字段repr隐藏且绝不传model/context。最终证据必须同时符合模型输入与可靠原文精确子串且无投影占位，分类写入前拒绝拼接伪造；附件与转发不作为客户原话。QualificationAgent原逐字source_quote校验保留，模型只有subject/body、无权限和凭证。完整ComposedReplyActionPorts经真实evidence、Demand、Outreach、Opportunity、当前员工及Playbook推进，未知发送状态保持原保守语义。
+
+受控reply_factory使用StructuredReplyModelPort和受控StructuredJsonModelClient，其他域、PG、Gateway、Outbox、engine、证据verifier均真实。5b耐久绑定和cursor沿原位置继续，原InboundMessageStored消费者装配后同一driver自然启用，不能只改health。
+
+## 下一问与权限
+
+只读GET next-questions使用可信当前actor，先经Conversations公开独立action检查active boss，再核真实conversation→指定message→canonical SENT/enrollment→hypothesis→Need，不按account猜最新Need。缺精确映射明确不可用，不接受客户端missing_fields/completeness/owner。用真实Demand缺项与完整度调用suggest_next_questions，DTO包含source_message_id、need_id、最多两主题和确定性英文可审阅措辞。没有Need时明确尚无已验证需求，不伪造完整度。队列状态仍pending，不标draft/sent/completed，不自动承诺价格/交期。
+
+本批仅当前boss受权后端读取；Task7纳入owner矩阵，Task8接浏览器原件与建议展示。technical review不是Message权限旁路。
+
+## 受控通知
+
+专用本机controlled_in_app入口只注册站内渠道；复用原job claim、模板、dedup、router、InApp持久store，NORMAL/URGENT值、模板、受众保持。job complete只说明本次显式受控通道实际送达；health明确in_app enabled、email disabled，不冒称多渠道完成。生产默认仍要求email并保持原精确双渠道路由，无普通环境开关绕过。原Supervisor管理新增进程/port/network/stop/restart，同owner资源，不跨apps import。
+
+## 验证与范围
+
+真实5b入口覆盖退订、自动回复、拒绝、缺采购字段、合法高意向、重复/重启/取消/非法quote；禁止seed SENT/Message/Need/Opportunity/审批结果。仅外部Provider与模型受控。沿owned Supervisor PG/MinIO/SQLite及prepare_sent公开helper，pytest显式取消TEST_DATABASE_URL并禁dotenv。先RED再GREEN，最终本批相关组、业务eval、适用ruff/mypy/boundaries/增量扫描/diffcheck；API改变独立exporter→generator exit检查及TypeScript校验。不跑真实Provider/客户发送、push/merge/deploy。
+
+### 当前表达证据片段
+
+5a纯解析新增仅内存且序列化排除的evidence_segments，完整body/guard_body保持不变先guard。
+明确排除plain的>引用行及On…wrote/Original Message/Forwarded分隔后历史，HTML的blockquote、
+gmail_quote/yahoo_quoted及divRplyFwdMsg。每个片段连续、不跨删除区拼接；最终quote必须完全落在
+同一当前片段且在完整原文精确出现。生产主题固定占位；原主题不进入模型，也不作为本次采购字段证据。片段超过200或
+引用结构未闭合固定待人工，不将空缺当新事实。仅支持这些明确格式，不宣称所有邮件客户端历史均已识别。
+
+### 当前表达分类与缺项接续裁定
+
+完整主题和正文（包括HTML原始视图）仍先guard，再检查预算。生产classifier主题固定`(current reply)`，正文仅为当前连续片段的locator安全投影，片段间固定`[current expression boundary]`不能作证据；完整原件仅本次内存和Raw保留。无当前可归属表达拒绝分类；仅主题表达的信息需人工核对。最终字段quote必须在单一当前片段及完整原文精确出现，不能引用生成标记或跨引用删除区拼句。
+
+原provides_specification动作在缺项Need晋升后固定进入handoff，无商机时抛ValidationError。仅精确真实Need存在、确定性missing_for_sourcing非空且无Opportunity时，转原CREATE_FOLLOW_UP pending，使用reply:create_follow_up:message幂等键；无Need/无确定性缺项仍拒绝。回复Run完成不代表发送、草稿或接管完成。
+
+通知health退出先等待serve收敛（5秒软等待），超时再取消并回收任务及owned资源，保留主异常/取消语义；不宣称最终清理硬上限为5秒。同端口实际重启为验收。
+
+后续回复已有Need时，重复product_category必须与原值严格相等；同值保留原Provenance且不传原mutable更新口，不同值安全失败供人工核对（不声称已排接管）。其余字段走原更新/历史/机会门槛；所有候选先经当前原文quote门。
+
+下一问还要求Need至少一条现存字段source_ref精确属于选中Message；同账户/同Enrollment但无此字段证据返回need_unavailable，不猜最近Need。API拒绝额外query参数。
+
+## 后续Task7/8稳定接口
+
+- 路由：GET `/inbox/conversations/{conversation_id}/messages/{message_id}/next-questions`，无query/body；`ReplyNextQuestionsView`为生成OpenAPI类型。
+- DTO：conversation_id/source_message_id、need_id或None、state（suggested/need_unavailable/no_missing_fields）、真实completeness或None、topics/suggestions各至多2项。英文措辞只为可审阅建议，未创建发送草稿。
+- 当前可信员工先经Conversations `require_reply_internal_access(..., action="next_questions")`；Outreach `resolve_reply_source` 的独立REPLY_SOURCE_READ（当前boss-only）复用SENT双键一致性校验并授权真实account/enrollment。接着原Enrollment.source_hypothesis_id→Hypothesis.validated_need_id→Need，并核至少一个现存字段source_ref属于本Message。无精确证据不猜测。
+- Task7将上述action与Enrollment/Demand读纳入当前owner矩阵；本批不借technical-review Raw授权、不提前提供浏览器Message原件接口。
+- Supervisor状态提供notification_url；`/health/ready`与`/health/capabilities`在同owner第四个loopback端口。能力返回mode=controlled_in_app、in_app=enabled（ready时）、email=disabled；该端口由原Supervisor健康、stop/restart管理。
+- 受控模型SQLite仅按投影subject/body指纹配置外部JSON响应；每次调用持久记指纹，未配置响应拒绝。不能提供真实Provider模型准确率结论。
+
+QualificationAgent仍过滤非法候选，但同时由实际parser确定性返回rejected_candidates布尔信号（模型JSON不得自报）；新ClassifyStep在任何持久分类/动作前拒绝。不保存被拒原quote/原因原文。普通签名/URL可投影，生成占位与片段分隔符不得作为source_quote。
+
+通知取消窗口补充：只有runtime已确认监听才先等待正常serve收敛；启动前取消立即回收。实际uvicorn已bind但ready信号尚未返回时，serve异常/取消由health wrapper显式shutdown其owned监听与lifespan，保留主异常。health连接退出等待为5秒软预算；不宣称总清理硬上限。真实窗口测试核同端口可重绑且无新增残留任务。

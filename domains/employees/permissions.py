@@ -12,21 +12,24 @@
 
 不 import 其他 domains/*；只依赖 shared.*。
 """
+
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
 from shared.errors import PermissionDenied
-from shared.schemas.identifiers import TenantId
+from shared.schemas.identifiers import ProspectAccountId, TenantId
 
 
 class EmployeeAction(str, Enum):
     """员工域操作（typed）。新增操作必须在此登记，否则一律默认拒绝。"""
 
     OWNERSHIP_READ = "ownership:read"
+    NOTIFICATION_OWNER_READ = "ownership:notification_owner_read"
     OWNERSHIP_LOCK = "ownership:lock"
     OWNERSHIP_TRANSFER = "ownership:transfer"
     TERRITORY_APPLY = "territory:apply"
@@ -52,6 +55,7 @@ class Actor:
     actor_id: str
     scope: EmployeeScope
     role: str | None = None
+    notification_account_id: ProspectAccountId | None = None
 
 
 @runtime_checkable
@@ -113,7 +117,11 @@ class StandardAuditLogger:
 
 
 _EMPLOYEE_SYSTEM_ACTIONS = frozenset(
-    {EmployeeAction.EMPLOYEE_READ, EmployeeAction.EMPLOYEE_LIST}
+    {
+        EmployeeAction.EMPLOYEE_READ,
+        EmployeeAction.EMPLOYEE_LIST,
+        EmployeeAction.NOTIFICATION_OWNER_READ,
+    }
 )
 _EMPLOYEE_BOSS_ACTIONS = frozenset(
     {
@@ -141,9 +149,7 @@ class Phase1EmployeeAuthorizer:
         scope: EmployeeScope,
         tenant_id: TenantId,
     ) -> str:
-        allowed: dict[
-            tuple[str | None, EmployeeScope], frozenset[EmployeeAction]
-        ] = {
+        allowed: dict[tuple[str | None, EmployeeScope], frozenset[EmployeeAction]] = {
             ("system", EmployeeScope.SYSTEM): _EMPLOYEE_SYSTEM_ACTIONS,
             ("boss", EmployeeScope.TENANT): _EMPLOYEE_BOSS_ACTIONS,
         }
@@ -157,6 +163,14 @@ class Phase1EmployeeAuthorizer:
             or action not in allowed.get((actor.role, scope), frozenset())
         ):
             raise PermissionDenied("Phase 1 员工授权拒绝")
+        if action is EmployeeAction.NOTIFICATION_OWNER_READ and (
+            not isinstance(actor.notification_account_id, str)
+            or re.fullmatch(
+                r"acc_[0-7][0-9A-HJKMNP-TV-Z]{25}", actor.notification_account_id
+            )
+            is None
+        ):
+            raise PermissionDenied("通知受众必须限定单一账户")
         return f"phase1:{actor.role}:{scope.value}:{action.value}"
 
 

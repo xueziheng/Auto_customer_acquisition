@@ -190,3 +190,8 @@ class ConversationService(Protocol):
     ) -> ConversationInboxDetail:
         """读取会话消息、模型原判、人工纠正与 artifact 公共引用。"""
         ...
+
+
+from .source_access import (
+    require_reply_internal_access as require_reply_internal_access,  # noqa: PLC0414 公开窄action
+)

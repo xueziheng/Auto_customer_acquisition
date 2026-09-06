@@ -171,9 +171,7 @@ class OutreachServiceImpl:
             self._deny(actor, action, tenant_id)
             raise PermissionDenied("Phase 1 触达授权拒绝")
         try:
-            rule = self._authorizer.preauthorize(
-                actor, action, actor.scope, tenant_id
-            )
+            rule = self._authorizer.preauthorize(actor, action, actor.scope, tenant_id)
         except PermissionDenied:
             self._deny(actor, action, tenant_id)
             raise
@@ -307,9 +305,7 @@ class OutreachServiceImpl:
         )
         if version is None:
             raise ValidationError("Campaign 当前版本不存在")
-        usage = await uow.quotas.get_usage(
-            tenant_id, campaign.campaign_id, on_day
-        )
+        usage = await uow.quotas.get_usage(tenant_id, campaign.campaign_id, on_day)
         boundary = version.boundary
         return CampaignView(
             tenant_id=tenant_id,
@@ -369,9 +365,7 @@ class OutreachServiceImpl:
         actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
         boundary = self._boundary(request)
         campaign_id = CampaignId(new_id("cmp"))
-        rule = self._require(
-            actor, action, tenant_id, campaign_id
-        )
+        rule = self._require(actor, action, tenant_id, campaign_id)
         await self._validate_senders(tenant_id, boundary, actor, action)
         now = self._validate_now(self._now())
         campaign = Campaign(
@@ -383,7 +377,13 @@ class OutreachServiceImpl:
             now,
         )
         version = CampaignVersion(
-            tenant_id, campaign_id, 1, request.name, boundary, EmployeeId(actor.actor_id), now
+            tenant_id,
+            campaign_id,
+            1,
+            request.name,
+            boundary,
+            EmployeeId(actor.actor_id),
+            now,
         )
         async with self._uow_factory(tenant_id) as uow:
             await uow.campaigns.add(campaign, version)
@@ -434,7 +434,16 @@ class OutreachServiceImpl:
                 await uow.campaigns.update(campaign)
             elif campaign.state is not CampaignState.PENDING_APPROVAL:
                 raise InvalidStateTransition("Campaign 当前状态不能提交审批")
-            await uow.actions.append(self._action(tenant_id, actor, campaign_id, f"campaign:{campaign_id}:v{campaign.current_version}:submit", action, now))
+            await uow.actions.append(
+                self._action(
+                    tenant_id,
+                    actor,
+                    campaign_id,
+                    f"campaign:{campaign_id}:v{campaign.current_version}:submit",
+                    action,
+                    now,
+                )
+            )
             view = await self._view(uow, tenant_id, campaign, now.date())
         self._allow(actor, action, tenant_id, rule)
         return view
@@ -460,7 +469,15 @@ class OutreachServiceImpl:
             if campaign.state in {CampaignState.COMPLETED, CampaignState.CANCELLED}:
                 raise InvalidStateTransition("终态 Campaign 不能修订")
             next_version = campaign.current_version + 1
-            version = CampaignVersion(tenant_id, campaign_id, next_version, request.name, boundary, EmployeeId(actor.actor_id), now)
+            version = CampaignVersion(
+                tenant_id,
+                campaign_id,
+                next_version,
+                request.name,
+                boundary,
+                EmployeeId(actor.actor_id),
+                now,
+            )
             await uow.campaigns.append_version(version)
             if campaign.state is not CampaignState.PENDING_APPROVAL:
                 campaign.transition_to(CampaignState.PENDING_APPROVAL)
@@ -470,7 +487,16 @@ class OutreachServiceImpl:
             campaign.approved_at = None
             campaign.paused_reason = None
             await uow.campaigns.update(campaign)
-            await uow.actions.append(self._action(tenant_id, actor, campaign_id, f"campaign:{campaign_id}:v{next_version}:revise", action, now))
+            await uow.actions.append(
+                self._action(
+                    tenant_id,
+                    actor,
+                    campaign_id,
+                    f"campaign:{campaign_id}:v{next_version}:revise",
+                    action,
+                    now,
+                )
+            )
             await uow.bus.publish(
                 CampaignStateChanged(
                     tenant_id=tenant_id,
@@ -495,7 +521,9 @@ class OutreachServiceImpl:
                 uow, tenant_id, campaign_id, actor, action
             )
             rule = self._require(actor, action, tenant_id, campaign_id=campaign_id)
-            approval = await self._approvals.get_campaign_approval(tenant_id, campaign_id, campaign.current_version)
+            approval = await self._approvals.get_campaign_approval(
+                tenant_id, campaign_id, campaign.current_version
+            )
             if approval is not None and not isinstance(
                 approval, CampaignApprovalSnapshot
             ):
@@ -513,7 +541,10 @@ class OutreachServiceImpl:
             if campaign.state is CampaignState.ACTIVE:
                 if campaign.approval_id != approval.approval_id:
                     raise IdempotencyConflictError("Campaign activation 审批冲突")
-            elif campaign.state in {CampaignState.PENDING_APPROVAL, CampaignState.PAUSED}:
+            elif campaign.state in {
+                CampaignState.PENDING_APPROVAL,
+                CampaignState.PAUSED,
+            }:
                 campaign.transition_to(CampaignState.ACTIVE)
                 campaign.approval_id = str(approval.approval_id)
                 campaign.approved_by = approval.approved_by
@@ -523,7 +554,16 @@ class OutreachServiceImpl:
                 activated = True
             else:
                 raise InvalidStateTransition("Campaign 当前状态不能激活")
-            await uow.actions.append(self._action(tenant_id, actor, campaign_id, f"campaign:{campaign_id}:v{campaign.current_version}:activate:{approval.approval_id}", action, now))
+            await uow.actions.append(
+                self._action(
+                    tenant_id,
+                    actor,
+                    campaign_id,
+                    f"campaign:{campaign_id}:v{campaign.current_version}:activate:{approval.approval_id}",
+                    action,
+                    now,
+                )
+            )
             if activated:
                 await uow.bus.publish(
                     CampaignStateChanged(
@@ -576,7 +616,16 @@ class OutreachServiceImpl:
                 campaign.transition_to(CampaignState.PAUSED)
                 campaign.paused_reason = reason
                 await uow.campaigns.update(campaign)
-            await uow.actions.append(self._action(tenant_id, actor, campaign_id, f"campaign:{campaign_id}:v{campaign.current_version}:pause", action, now))
+            await uow.actions.append(
+                self._action(
+                    tenant_id,
+                    actor,
+                    campaign_id,
+                    f"campaign:{campaign_id}:v{campaign.current_version}:pause",
+                    action,
+                    now,
+                )
+            )
             view = await self._view(uow, tenant_id, campaign, now.date())
         self._allow(actor, action, tenant_id, rule)
         return view
@@ -596,7 +645,16 @@ class OutreachServiceImpl:
             if cancelled:
                 campaign.transition_to(CampaignState.CANCELLED)
                 await uow.campaigns.update(campaign)
-            await uow.actions.append(self._action(tenant_id, actor, campaign_id, f"campaign:{campaign_id}:v{campaign.current_version}:cancel", action, now))
+            await uow.actions.append(
+                self._action(
+                    tenant_id,
+                    actor,
+                    campaign_id,
+                    f"campaign:{campaign_id}:v{campaign.current_version}:cancel",
+                    action,
+                    now,
+                )
+            )
             if cancelled:
                 await uow.bus.publish(
                     CampaignStateChanged(
@@ -643,7 +701,11 @@ class OutreachServiceImpl:
         if not isinstance(scope, OutreachScope) or scope is not actor.scope:
             self._deny(actor, action, tenant_id)
             raise PermissionDenied("Phase 1 触达授权拒绝")
-        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or not 1 <= limit <= 200
+        ):
             raise ValidationError("limit 无效")
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
@@ -653,7 +715,11 @@ class OutreachServiceImpl:
             for campaign in campaigns:
                 if campaign.tenant_id != tenant_id:
                     self._tenant_violation(actor, action, tenant_id)
-                rules.append(self._require(actor, action, tenant_id, campaign_id=campaign.campaign_id))
+                rules.append(
+                    self._require(
+                        actor, action, tenant_id, campaign_id=campaign.campaign_id
+                    )
+                )
                 views.append(await self._view(uow, tenant_id, campaign, now.date()))
         rule = rules[0] if rules else pre_rule
         self._allow(actor, action, tenant_id, rule)
@@ -746,8 +812,7 @@ class OutreachServiceImpl:
                 self._tenant_violation(actor, action, tenant_id)
             if (
                 winner.attempt_id != attempt_id
-                or winner.deterministic_message_id
-                != binding.deterministic_message_id
+                or winner.deterministic_message_id != binding.deterministic_message_id
                 or winner.idempotency_header != binding.idempotency_header
             ):
                 raise MessageAttemptConflictError(
@@ -775,7 +840,33 @@ class OutreachServiceImpl:
         *,
         actor: Actor,
     ) -> DeliveryFeedbackTarget | None:
-        action = OutreachAction.DELIVERY_FEEDBACK_RESOLVE
+        return await self._resolve_delivery_source(
+            tenant_id,
+            lookup,
+            actor=actor,
+            action=OutreachAction.DELIVERY_FEEDBACK_RESOLVE,
+        )
+
+    async def resolve_reply_source(
+        self,
+        tenant_id: TenantId,
+        lookup: DeliveryCorrelationLookup,
+        *,
+        actor: Actor,
+    ) -> DeliveryFeedbackTarget | None:
+        """授权当前员工只读真实SENT关联，不授予技术投递反馈权限。"""
+        return await self._resolve_delivery_source(
+            tenant_id, lookup, actor=actor, action=OutreachAction.REPLY_SOURCE_READ
+        )
+
+    async def _resolve_delivery_source(
+        self,
+        tenant_id: TenantId,
+        lookup: DeliveryCorrelationLookup,
+        *,
+        actor: Actor,
+        action: OutreachAction,
+    ) -> DeliveryFeedbackTarget | None:
         actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
         if not isinstance(lookup, DeliveryCorrelationLookup):
             raise ValidationError("delivery correlation lookup 无效")
@@ -811,8 +902,7 @@ class OutreachServiceImpl:
                     target = None
                     rule = None
                 elif any(
-                    value.attempt_id != attempts[0].attempt_id
-                    for value in attempts[1:]
+                    value.attempt_id != attempts[0].attempt_id for value in attempts[1:]
                 ):
                     raise MessageAttemptConflictError(
                         "delivery correlation 指向不同 Message Attempt"
@@ -827,8 +917,7 @@ class OutreachServiceImpl:
                         != lookup.deterministic_message_id
                     ) or (
                         lookup.idempotency_header is not None
-                        and attempt.idempotency_header
-                        != lookup.idempotency_header
+                        and attempt.idempotency_header != lookup.idempotency_header
                     ):
                         raise ValidationError("delivery correlation 查询结果损坏")
                     if attempt.state is not MessageAttemptState.SENT:
@@ -843,8 +932,7 @@ class OutreachServiceImpl:
                     if (
                         enrollment.enrollment_id != attempt.enrollment_id
                         or enrollment.campaign_id != attempt.campaign_id
-                        or enrollment.sending_identity_id
-                        != attempt.sending_identity_id
+                        or enrollment.sending_identity_id != attempt.sending_identity_id
                     ):
                         raise ValidationError("delivery feedback 资源绑定损坏")
                     rule = self._require(
@@ -852,6 +940,9 @@ class OutreachServiceImpl:
                         action,
                         tenant_id,
                         sending_identity_id=attempt.sending_identity_id,
+                        campaign_id=enrollment.campaign_id,
+                        account_id=enrollment.account_id,
+                        enrollment_id=enrollment.enrollment_id,
                     )
                     target = DeliveryFeedbackTarget(
                         tenant_id=tenant_id,
@@ -890,9 +981,7 @@ class OutreachServiceImpl:
         now = self._validate_now(self._now())
         if occurred > now + timedelta(minutes=5):
             raise ValidationError("delivery feedback occurred_at 超出允许时间")
-        suppression_target = SuppressionTarget(
-            contact_point_id=target.contact_point_id
-        )
+        suppression_target = SuppressionTarget(contact_point_id=target.contact_point_id)
         request = SuppressionRequest(
             target=suppression_target,
             reason=SuppressionReason.HARD_BOUNCE,
@@ -911,9 +1000,7 @@ class OutreachServiceImpl:
             created_at=now,
         )
         async with self._uow_factory(tenant_id) as uow:
-            attempt = await uow.attempts.get_for_update(
-                tenant_id, target.attempt_id
-            )
+            attempt = await uow.attempts.get_for_update(tenant_id, target.attempt_id)
             enrollment = await uow.enrollments.get_for_update(
                 tenant_id, target.enrollment_id
             )
@@ -941,16 +1028,12 @@ class OutreachServiceImpl:
             )
             appended = await uow.suppressions.append_if_absent(entry)
             if appended.status is AppendStatus.CONFLICT or appended.winner is None:
-                raise IdempotencyConflictError(
-                    "hard bounce feedback 已绑定不同内容"
-                )
+                raise IdempotencyConflictError("hard bounce feedback 已绑定不同内容")
             winner = appended.winner
             if winner.tenant_id != tenant_id:
                 self._tenant_violation(actor, action, tenant_id)
             if not self._same_suppression_payload(winner, request, tenant_id):
-                raise IdempotencyConflictError(
-                    "hard bounce feedback 已绑定不同内容"
-                )
+                raise IdempotencyConflictError("hard bounce feedback 已绑定不同内容")
             if appended.status is AppendStatus.EXISTING:
                 result = SuppressionResult(
                     False,
@@ -961,9 +1044,7 @@ class OutreachServiceImpl:
                 enrollments = await uow.enrollments.lock_matching_active(
                     tenant_id, suppression_target
                 )
-                ordered = sorted(
-                    enrollments, key=lambda value: value.enrollment_id
-                )
+                ordered = sorted(enrollments, key=lambda value: value.enrollment_id)
                 for matched in ordered:
                     if matched.tenant_id != tenant_id:
                         self._tenant_violation(actor, action, tenant_id)
@@ -1040,9 +1121,7 @@ class OutreachServiceImpl:
         now = self._validate_now(self._now())
         if occurred > now + timedelta(minutes=5):
             raise ValidationError("delivery feedback occurred_at 超出允许时间")
-        suppression_target = SuppressionTarget(
-            contact_point_id=target.contact_point_id
-        )
+        suppression_target = SuppressionTarget(contact_point_id=target.contact_point_id)
         request = SuppressionRequest(
             target=suppression_target,
             reason=SuppressionReason.COMPLAINT,
@@ -1061,9 +1140,7 @@ class OutreachServiceImpl:
             created_at=now,
         )
         async with self._uow_factory(tenant_id) as uow:
-            attempt = await uow.attempts.get_for_update(
-                tenant_id, target.attempt_id
-            )
+            attempt = await uow.attempts.get_for_update(tenant_id, target.attempt_id)
             enrollment = await uow.enrollments.get_for_update(
                 tenant_id, target.enrollment_id
             )
@@ -1091,16 +1168,12 @@ class OutreachServiceImpl:
             )
             appended = await uow.suppressions.append_if_absent(entry)
             if appended.status is AppendStatus.CONFLICT or appended.winner is None:
-                raise IdempotencyConflictError(
-                    "complaint feedback 已绑定不同内容"
-                )
+                raise IdempotencyConflictError("complaint feedback 已绑定不同内容")
             winner = appended.winner
             if winner.tenant_id != tenant_id:
                 self._tenant_violation(actor, action, tenant_id)
             if not self._same_suppression_payload(winner, request, tenant_id):
-                raise IdempotencyConflictError(
-                    "complaint feedback 已绑定不同内容"
-                )
+                raise IdempotencyConflictError("complaint feedback 已绑定不同内容")
             if appended.status is AppendStatus.EXISTING:
                 result = SuppressionResult(
                     False,
@@ -1111,9 +1184,7 @@ class OutreachServiceImpl:
                 enrollments = await uow.enrollments.lock_matching_active(
                     tenant_id, suppression_target
                 )
-                ordered = sorted(
-                    enrollments, key=lambda value: value.enrollment_id
-                )
+                ordered = sorted(enrollments, key=lambda value: value.enrollment_id)
                 for matched in ordered:
                     if matched.tenant_id != tenant_id:
                         self._tenant_violation(actor, action, tenant_id)
@@ -1177,9 +1248,7 @@ class OutreachServiceImpl:
                 tenant_id, contact_point_id, account_id
             )
         except (TransientError, OSError, RuntimeError):
-            raise OutreachProviderUnavailableError(
-                "联系人资格暂不可用"
-            ) from None
+            raise OutreachProviderUnavailableError("联系人资格暂不可用") from None
         if not isinstance(snapshot, ContactEligibilitySnapshot):
             raise ContactNotEligibleError("联系人当前资格不满足 Campaign 边界")
         return snapshot
@@ -1210,9 +1279,7 @@ class OutreachServiceImpl:
                 boundary.allowed_categories
             )
         ):
-            raise ContactNotEligibleError(
-                "联系人当前资格不满足 Campaign 边界"
-            )
+            raise ContactNotEligibleError("联系人当前资格不满足 Campaign 边界")
 
     async def _sender_snapshot(
         self,
@@ -1226,9 +1293,7 @@ class OutreachServiceImpl:
                 tenant_id, identity_id
             )
         except (TransientError, OSError, RuntimeError):
-            raise OutreachProviderUnavailableError(
-                "发件身份资格暂不可用"
-            ) from None
+            raise OutreachProviderUnavailableError("发件身份资格暂不可用") from None
         if not isinstance(snapshot, SendingIdentityEligibilitySnapshot):
             raise SendingIdentityUnavailableError("发件身份当前不可用")
         if snapshot.tenant_id != tenant_id:
@@ -1319,8 +1384,7 @@ class OutreachServiceImpl:
                     existing.campaign_id == campaign_id
                     and existing.account_id == request.account_id
                     and existing.contact_point_id == request.contact_point_id
-                    and existing.source_hypothesis_id
-                    == request.source_hypothesis_id
+                    and existing.source_hypothesis_id == request.source_hypothesis_id
                     and (
                         request.campaign_version is None
                         or existing.campaign_version == request.campaign_version
@@ -1328,17 +1392,13 @@ class OutreachServiceImpl:
                 ):
                     view = self._enrollment_view(existing)
                 else:
-                    raise IdempotencyConflictError(
-                        "Enrollment 幂等键已绑定不同内容"
-                    )
+                    raise IdempotencyConflictError("Enrollment 幂等键已绑定不同内容")
             else:
                 active = await uow.enrollments.find_active_for_account(
                     tenant_id, request.account_id
                 )
                 if active is not None:
-                    raise AccountAlreadyEnrolledError(
-                        "该企业已有活跃 Enrollment"
-                    )
+                    raise AccountAlreadyEnrolledError("该企业已有活跃 Enrollment")
                 if await self._has_suppression(
                     uow,
                     tenant_id,
@@ -1392,13 +1452,9 @@ class OutreachServiceImpl:
                 await uow.campaigns.update(campaign)
                 inserted = await uow.enrollments.insert_if_absent(enrollment)
                 if inserted.status is EnrollmentInsertStatus.IDEMPOTENCY_CONFLICT:
-                    raise IdempotencyConflictError(
-                        "Enrollment 幂等键已绑定不同内容"
-                    )
+                    raise IdempotencyConflictError("Enrollment 幂等键已绑定不同内容")
                 if inserted.status is EnrollmentInsertStatus.ACCOUNT_CONFLICT:
-                    raise AccountAlreadyEnrolledError(
-                        "该企业已有活跃 Enrollment"
-                    )
+                    raise AccountAlreadyEnrolledError("该企业已有活跃 Enrollment")
                 if inserted.winner is None:
                     raise ValidationError("Enrollment 原子写入结果损坏")
                 await uow.actions.append(
@@ -1446,10 +1502,10 @@ class OutreachServiceImpl:
                 tenant_id, campaign_id, version
             )
         except (TransientError, OSError, RuntimeError):
-            raise OutreachProviderUnavailableError("Campaign 审批事实暂不可用") from None
-        if approval is not None and not isinstance(
-            approval, CampaignApprovalSnapshot
-        ):
+            raise OutreachProviderUnavailableError(
+                "Campaign 审批事实暂不可用"
+            ) from None
+        if approval is not None and not isinstance(approval, CampaignApprovalSnapshot):
             raise CampaignApprovalRequiredError("Enrollment 版本缺少有效审批")
         if approval is not None and approval.tenant_id != tenant_id:
             self._tenant_violation(actor, action, tenant_id)
@@ -1509,9 +1565,7 @@ class OutreachServiceImpl:
             campaign = await self._locked_campaign(
                 uow, tenant_id, located.campaign_id, actor, action
             )
-            enrollment = await uow.enrollments.get_for_update(
-                tenant_id, enrollment_id
-            )
+            enrollment = await uow.enrollments.get_for_update(tenant_id, enrollment_id)
             if enrollment is None:
                 raise ValidationError("Enrollment 不存在")
             if (
@@ -1542,18 +1596,15 @@ class OutreachServiceImpl:
                 or campaign.approved_by != approval.approved_by
                 or campaign.approved_at != approval.approved_at
             ):
-                raise CampaignApprovalRequiredError(
-                    "Enrollment 版本审批绑定不匹配"
-                )
+                raise CampaignApprovalRequiredError("Enrollment 版本审批绑定不匹配")
             if (
-                enrollment.state not in {EnrollmentState.ENROLLED, EnrollmentState.IN_SEQUENCE}
+                enrollment.state
+                not in {EnrollmentState.ENROLLED, EnrollmentState.IN_SEQUENCE}
                 or enrollment.next_send_at is None
                 or enrollment.next_send_at > now
             ):
                 raise InvalidStateTransition("Enrollment 当前不可准备消息")
-            reply = await self._reply_snapshot(
-                tenant_id, enrollment, actor, action
-            )
+            reply = await self._reply_snapshot(tenant_id, enrollment, actor, action)
             if reply.state is ReplyState.REPLIED:
                 enrollment.transition_to(
                     EnrollmentState.REPLIED,
@@ -1572,9 +1623,7 @@ class OutreachServiceImpl:
                         now,
                     )
                 )
-                blocked = ReplyAlreadyReceivedError(
-                    "联系人已经回复，不能继续准备消息"
-                )
+                blocked = ReplyAlreadyReceivedError("联系人已经回复，不能继续准备消息")
             elif await self._has_suppression(
                 uow,
                 tenant_id,
@@ -1651,9 +1700,7 @@ class OutreachServiceImpl:
                         current_version.boundary.daily_total_message_limit,
                     )
                     if quota.status is QuotaReservationStatus.CAP_REACHED:
-                        raise CampaignQuotaExceededError(
-                            "Campaign 当日消息额度已满"
-                        )
+                        raise CampaignQuotaExceededError("Campaign 当日消息额度已满")
                     attempt = MessageAttempt(
                         tenant_id=tenant_id,
                         attempt_id=MessageAttemptId(new_id("mat")),
@@ -1671,7 +1718,10 @@ class OutreachServiceImpl:
                         updated_at=now,
                     )
                     created = await uow.attempts.create_if_absent(attempt)
-                    if created.status is AppendStatus.CONFLICT or created.winner is None:
+                    if (
+                        created.status is AppendStatus.CONFLICT
+                        or created.winner is None
+                    ):
                         raise MessageAttemptConflictError(
                             "Message Attempt 幂等记录冲突"
                         )
@@ -1784,9 +1834,7 @@ class OutreachServiceImpl:
                 raise ValidationError("序列步骤越界")
             spec = version.boundary.steps[step_index]
         self._allow(actor, action, tenant_id, _pre_rule)
-        return SequenceStepRequest(
-            spec.step_number, spec.intent, spec.wait_days
-        )
+        return SequenceStepRequest(spec.step_number, spec.intent, spec.wait_days)
 
     async def list_due_sequence_enrollments(
         self,
@@ -1898,7 +1946,9 @@ class OutreachServiceImpl:
         }:
             raise InvalidStateTransition("Enrollment 当前不可发送")
         if attempt.step_number != enrollment.current_step + 1:
-            raise MessageAttemptConflictError("Message Attempt step 与 Enrollment 不匹配")
+            raise MessageAttemptConflictError(
+                "Message Attempt step 与 Enrollment 不匹配"
+            )
         if attempt.state not in {
             MessageAttemptState.RESERVED,
             MessageAttemptState.FAILED_TRANSIENT,
@@ -2017,9 +2067,7 @@ class OutreachServiceImpl:
             not 1 <= len(provider_ref) <= 200
             or provider_ref != provider_ref.strip()
             or any(
-                character.isspace()
-                or ord(character) < 32
-                or ord(character) == 127
+                character.isspace() or ord(character) < 32 or ord(character) == 127
                 for character in provider_ref
             )
             or "://" in provider_ref
@@ -2106,9 +2154,7 @@ class OutreachServiceImpl:
                         EnrollmentState.IN_SEQUENCE, at=now, reason=None
                     )
                     next_step = version.boundary.steps[attempt.step_number]
-                    enrollment.next_send_at = now + timedelta(
-                        days=next_step.wait_days
-                    )
+                    enrollment.next_send_at = now + timedelta(days=next_step.wait_days)
                 await uow.attempts.update(attempt)
                 await uow.enrollments.update(enrollment)
                 await uow.actions.append(
@@ -2251,9 +2297,7 @@ class OutreachServiceImpl:
             campaign = await self._locked_campaign(
                 uow, tenant_id, located.campaign_id, actor, action
             )
-            enrollment = await uow.enrollments.get_for_update(
-                tenant_id, enrollment_id
-            )
+            enrollment = await uow.enrollments.get_for_update(tenant_id, enrollment_id)
             if enrollment is None:
                 raise ValidationError("Enrollment 不存在")
             if (
@@ -2339,12 +2383,14 @@ class OutreachServiceImpl:
         if not isinstance(scope, OutreachScope) or scope is not actor.scope:
             self._deny(actor, action, tenant_id)
             raise PermissionDenied("Phase 1 触达授权拒绝")
-        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or not 1 <= limit <= 200
+        ):
             raise ValidationError("limit 无效")
         async with self._uow_factory(tenant_id) as uow:
-            enrollments = await uow.enrollments.list_scoped(
-                tenant_id, scope, limit
-            )
+            enrollments = await uow.enrollments.list_scoped(tenant_id, scope, limit)
             views: list[EnrollmentView] = []
             rules: list[str] = []
             for enrollment in enrollments:
@@ -2424,29 +2470,19 @@ class OutreachServiceImpl:
         async with self._uow_factory(tenant_id) as uow:
             appended = await uow.suppressions.append_if_absent(entry)
             if appended.status is AppendStatus.CONFLICT or appended.winner is None:
-                raise IdempotencyConflictError(
-                    "Suppression 幂等键已绑定不同内容"
-                )
+                raise IdempotencyConflictError("Suppression 幂等键已绑定不同内容")
             winner = appended.winner
             if winner.tenant_id != tenant_id:
                 self._tenant_violation(actor, action, tenant_id)
-            if not self._same_suppression_payload(
-                winner, request, tenant_id
-            ):
-                raise IdempotencyConflictError(
-                    "Suppression 幂等键已绑定不同内容"
-                )
+            if not self._same_suppression_payload(winner, request, tenant_id):
+                raise IdempotencyConflictError("Suppression 幂等键已绑定不同内容")
             if appended.status is AppendStatus.EXISTING:
-                result = SuppressionResult(
-                    False, self._suppression_view(winner), 0
-                )
+                result = SuppressionResult(False, self._suppression_view(winner), 0)
             else:
                 enrollments = await uow.enrollments.lock_matching_active(
                     tenant_id, request.target
                 )
-                ordered = sorted(
-                    enrollments, key=lambda value: value.enrollment_id
-                )
+                ordered = sorted(enrollments, key=lambda value: value.enrollment_id)
                 for enrollment in ordered:
                     if enrollment.tenant_id != tenant_id:
                         self._tenant_violation(actor, action, tenant_id)
@@ -2553,9 +2589,7 @@ class OutreachServiceImpl:
         ):
             raise ValidationError("limit 无效")
         async with self._uow_factory(tenant_id) as uow:
-            entries = await uow.suppressions.list_scoped(
-                tenant_id, scope, limit
-            )
+            entries = await uow.suppressions.list_scoped(tenant_id, scope, limit)
             views: list[SuppressionView] = []
             rules: list[str] = []
             for entry in entries:

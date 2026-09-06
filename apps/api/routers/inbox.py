@@ -3,8 +3,7 @@
 GET  /inbox/conversations        会话列表（按分类/负责人过滤）
 GET  /inbox/conversations/{id}   线程：消息 + 分类 + 提取的需求字段
 POST /inbox/messages/{id}/correct-classification   人工纠正（原判保留）
-POST /inbox/conversations/{id}/draft-reply         请求追问草稿
-                                 （qualification_agent，最多两个主题）
+GET /inbox/conversations/{id}/messages/{id}/next-questions 受权下一问建议
 """
 
 from __future__ import annotations
@@ -12,13 +11,14 @@ from __future__ import annotations
 import re
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from domains.conversations.schemas import (
     ConversationInboxDetail,
     ConversationInboxItem,
     ReplyCategory,
+    ReplyNextQuestionsView,
 )
 from domains.conversations.service import ConversationService
 from shared.errors import PermissionDenied, TransientError, ValidationError
@@ -140,4 +140,28 @@ async def correct_inbox_classification(
         message_id=str(typed_id),
         category=body.category,
         corrected_by=str(identity.employee.employee_id),
+    )
+
+
+@router.get(
+    "/inbox/conversations/{conversation_id}/messages/{message_id}/next-questions",
+    response_model=ReplyNextQuestionsView,
+)
+async def get_next_questions(
+    request: Request,
+    conversation_id: str,
+    message_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> ReplyNextQuestionsView:
+    _require_inbox_role(identity)
+    if request.query_params:
+        raise ValidationError("回复建议不接受客户端需求字段")
+    if dependencies.reply_suggestions is None:
+        raise TransientError("回复建议服务未配置")
+    return await dependencies.reply_suggestions.read(
+        identity.tenant_id,
+        identity.employee.employee_id,
+        _conversation_id(conversation_id),
+        _message_id(message_id),
     )

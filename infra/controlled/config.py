@@ -33,6 +33,7 @@ class ControlledConfig(BaseModel):
     api_port: int = Field(gt=0, lt=65536)
     web_port: int = Field(gt=0, lt=65536)
     scheduler_port: int = Field(gt=0, lt=65536)
+    notification_port: int = Field(gt=0, lt=65536)
     database_port: int = Field(gt=0, lt=65536)
     object_port: int = Field(gt=0, lt=65536)
     database_url: SecretStr

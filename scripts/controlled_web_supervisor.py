@@ -45,6 +45,14 @@ class Supervisor:
         )
         self.directory.mkdir(mode=0o700)
         self.listeners = listeners
+        if len(listeners) == 3:
+            from scripts.run_web_core_controlled import reserve
+
+            try:
+                listeners.append(reserve(0))
+            except BaseException:
+                self.directory.rmdir()
+                raise
         self.containers: OwnedContainers | None = None
         self.processes: list[OwnedProcess] = []
         self.config: ControlledConfig | None = None
@@ -83,6 +91,7 @@ class Supervisor:
                 api_url=f"http://127.0.0.1:{self.config.api_port}",
                 web_url=f"http://127.0.0.1:{self.config.web_port}",
                 scheduler_url=f"http://127.0.0.1:{self.config.scheduler_port}",
+                notification_url=f"http://127.0.0.1:{self.config.notification_port}",
             )
         target = self.directory / "status.json"
         pending = self.directory / "status.pending"
@@ -201,6 +210,7 @@ class Supervisor:
             api_port=self.listeners[0].getsockname()[1],
             web_port=self.listeners[1].getsockname()[1],
             scheduler_port=self.listeners[2].getsockname()[1],
+            notification_port=self.listeners[3].getsockname()[1],
             database_port=database_port,
             object_port=object_port,
             database_url=SecretStr(
@@ -298,6 +308,15 @@ class Supervisor:
                 environ=self.environ,
             )
         )
+        self.listeners[3].close()
+        self.processes.append(
+            OwnedProcess.start(
+                "notification",
+                [sys.executable, "-m", "apps.notification_worker.controlled", path],
+                cwd=self.root,
+                environ=self.environ,
+            )
+        )
         public = {
             "owner": config.owner,
             "tenantId": config.tenant_id,
@@ -359,6 +378,7 @@ class Supervisor:
         for port, path in (
             (config.api_port, "/health/ready"),
             (config.scheduler_port, "/health/ready"),
+            (config.notification_port, "/health/ready"),
             (config.web_port, "/"),
         ):
             try:
@@ -398,12 +418,13 @@ class Supervisor:
             self.cleanup_errors.extend(errors)
             raise ControlledError("restart_cleanup_failed")
         self.processes.clear()
-        from run_web_core_controlled import reserve
+        from scripts.run_web_core_controlled import reserve
 
         if self.config is None:
             raise ControlledError("configuration_invalid")
         self.listeners[1] = reserve(self.config.web_port)
         self.listeners[2] = reserve(self.config.scheduler_port)
+        self.listeners[3] = reserve(self.config.notification_port)
         self.start_apps()
 
     def close(self) -> None:

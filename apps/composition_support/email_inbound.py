@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
 from artifact_store.repository import ArtifactUnitOfWork
 from artifact_store.service_impl import RawArtifactStoreImpl
+from artifact_store.store import BoundedRawArtifactStore
 from connectors.gmail.client import SecretResolver
 from connectors.gmail.inbound import GmailInboundReader
 from connectors.gmail.inbound_cursor import initial_inbound_cursor
@@ -158,6 +159,7 @@ class InboundComposition:
     processor: InboundPageProcessor
     reader_for: Callable[[InboundRoute], ToolGatewayEmailInboundReader]
     objects: DeferredS3ObjectBlobTransport
+    bounded_raw_store: BoundedRawArtifactStore
 
     async def aclose(self) -> None:
         await self.objects.aclose()
@@ -324,4 +326,5 @@ def build_inbound_composition(
         InboundPageProcessor(store, page_uow, actor),
         reader_for,
         objects,
+        raw_store,
     )

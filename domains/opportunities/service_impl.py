@@ -26,6 +26,7 @@
 编程错误、其他 DB 错误、同名冒充异常）一律原样上抛——不吞、不当作幂等成功。
 判定函数只查异常类名/模块与 SQLSTATE，不在领域层引用 sqlalchemy 异常类型。
 """
+
 from __future__ import annotations
 
 import logging
@@ -67,6 +68,7 @@ from domains.opportunities.schemas import (
     HandoffPacketView,
     HandoffQueueItemView,
     HandoffQueueStats,
+    NotificationAudienceTarget,
     OpportunityCreateRequest,
     OpportunityView,
     ProvenanceSummary,
@@ -143,12 +145,16 @@ def _is_handoff_escalation_duplicate(exc: BaseException) -> bool:
         if current is None or id(current) in seen:
             continue
         seen.add(id(current))
-        sqlstate = sqlstate or getattr(current, "sqlstate", None) or getattr(
-            current, "pgcode", None
+        sqlstate = (
+            sqlstate
+            or getattr(current, "sqlstate", None)
+            or getattr(current, "pgcode", None)
         )
         diag = getattr(current, "diag", None)
-        constraint = constraint or getattr(current, "constraint_name", None) or getattr(
-            diag, "constraint_name", None
+        constraint = (
+            constraint
+            or getattr(current, "constraint_name", None)
+            or getattr(diag, "constraint_name", None)
         )
         pending.extend(
             [
@@ -173,7 +179,9 @@ def validate_present_critical_provenance(request: OpportunityCreateRequest) -> N
         if getattr(request, field, None) is not None:
             prov = request.field_provenance.get(field)
             if prov is None:
-                raise MissingFieldProvenanceError(f"关键字段 {field} 缺来源（硬边界 4）")
+                raise MissingFieldProvenanceError(
+                    f"关键字段 {field} 缺来源（硬边界 4）"
+                )
             if prov.source_type == SourceType.AGENT_INFERENCE:
                 raise AgentInferenceProvenanceError(
                     f"关键字段 {field} 来源是 Agent 推断（硬边界 5）：机会只持久化事实"
@@ -220,12 +228,9 @@ def validate_validated_need_evidence(evidence: ValidatedNeedEvidence) -> None:
             f"已验证需求来源必须是 conversation/upload/employee_input；"
             f"当前 {source_type.value}"
         )
-    if (
-        source_type == SourceType.EMPLOYEE_INPUT
-        and (
-            evidence.provenance.confirmed_by is None
-            or evidence.provenance.confirmed_at is None
-        )
+    if source_type == SourceType.EMPLOYEE_INPUT and (
+        evidence.provenance.confirmed_by is None
+        or evidence.provenance.confirmed_at is None
     ):
         raise ValidationError(
             "EMPLOYEE_INPUT 证据必须带真实人工确认对"
@@ -312,9 +317,7 @@ def _explanation(snapshot: ScoreSnapshot) -> ScoreExplanation:
     )
 
 
-def _provenance_summary(
-    field_name: str, provenance: Provenance
-) -> ProvenanceSummary:
+def _provenance_summary(field_name: str, provenance: Provenance) -> ProvenanceSummary:
     """内部 Provenance 转公共稳定字符串 DTO；不丢任何只增历史字段。"""
     return ProvenanceSummary(
         field_name=field_name,
@@ -348,7 +351,9 @@ class OpportunityServiceImpl:
     ) -> None:
         self._uow_factory = uow_factory
         self._scorer = scorer
-        self._handoff_policy = handoff_policy  # 接管 SLA/积压阈值（get_queue_stats 使用）
+        self._handoff_policy = (
+            handoff_policy  # 接管 SLA/积压阈值（get_queue_stats 使用）
+        )
         self._authorizer = authorizer
         self._audit = audit
         self._now = now
@@ -791,7 +796,13 @@ class OpportunityServiceImpl:
             if opp.state in (OpportunityState.WON, OpportunityState.LOST):
                 raise InvalidStateTransition("机会已处于终态，不能重复终结")
             ok = await uow.opportunities.close_lost_if_state(
-                tenant_id, opportunity_id, opp.state, reason, detail, confirmed_by, confirmed_at
+                tenant_id,
+                opportunity_id,
+                opp.state,
+                reason,
+                detail,
+                confirmed_by,
+                confirmed_at,
             )
             if not ok:
                 raise InvalidStateTransition("机会状态已被并发修改")
@@ -1001,9 +1012,8 @@ class OpportunityServiceImpl:
                 raise ValidationError("接管关联的机会或负责人无效")
             if packet.state is not HandoffState.REQUESTED:
                 raise HandoffAlreadyAcceptedError("接管已被接受")
-            if (
-                actor.scope.level is not ScopeLevel.SYSTEM
-                and accepted_by != EmployeeId(actor.actor_id)
+            if actor.scope.level is not ScopeLevel.SYSTEM and accepted_by != EmployeeId(
+                actor.actor_id
             ):
                 self._deny_abac(
                     actor,
@@ -1121,6 +1131,33 @@ class OpportunityServiceImpl:
                 breached_count=breached_count,
                 is_backlogged=is_backlogged,
             )
+
+    async def get_notification_audience_target(
+        self,
+        tenant_id: TenantId,
+        opportunity_id: OpportunityId,
+        *,
+        actor: Actor,
+    ) -> NotificationAudienceTarget:
+        """通知只读当前账户关联；所有授权和精确ID核验先于仓储。"""
+        action = OpportunityAction.NOTIFICATION_AUDIENCE_READ
+        rule = self._authorize(actor, action, tenant_id)
+        if actor.scope.notification_opportunity_id != opportunity_id:
+            raise PermissionDenied("通知受众机会关联拒绝")
+        async with self._uow_factory() as uow:
+            opportunity = await uow.opportunities.get(tenant_id, opportunity_id)
+            if opportunity is None:
+                raise ValidationError("通知受众机会不存在")
+            if (
+                opportunity.tenant_id != tenant_id
+                or opportunity.opportunity_id != opportunity_id
+            ):
+                raise TenantIsolationViolation("通知受众机会关联拒绝")
+            result = NotificationAudienceTarget(
+                ProspectAccountId(str(opportunity.account_id))
+            )
+        self._audit_allow(actor, action, tenant_id, rule)
+        return result
 
     async def get(
         self,
@@ -1420,7 +1457,9 @@ class OpportunityServiceImpl:
     ) -> dict[str, dict[str, int]]:
         """按 ``(loss_reason, died_at_state)`` 二维交叉统计；同键安全累加。"""
         rule = self._authorize(actor, OpportunityAction.LOSS_REASON_READ, tenant_id)
-        self._enforce_aggregate_abac(actor, OpportunityAction.LOSS_REASON_READ, tenant_id)
+        self._enforce_aggregate_abac(
+            actor, OpportunityAction.LOSS_REASON_READ, tenant_id
+        )
         self._audit_allow(actor, OpportunityAction.LOSS_REASON_READ, tenant_id, rule)
         if since_days <= 0:
             raise ValidationError("since_days 必须 > 0")

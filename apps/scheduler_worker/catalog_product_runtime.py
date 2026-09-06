@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from apps.composition_support.outreach_fact_readers import ProspectingDemandAccountNames
 from domains.approvals.service import ApprovalService
-from domains.demand.service import DemandService
+from domains.demand.service import CustomerReplyEvidenceVerifier, DemandService
 from domains.demand.service_impl import DemandServiceImpl
 from domains.products.catalog_service_impl import CatalogProposalServiceImpl
 from domains.products.permissions import Phase2ProductAuthorizer
@@ -224,6 +224,7 @@ def build_catalog_product_composition(
     approvals: ApprovalService,
     tenant_id: TenantId,
     now: Callable[[], datetime],
+    customer_evidence: CustomerReplyEvidenceVerifier | None = None,
 ) -> CatalogProductComposition:
     """构造专用服务；构造本身不读库、不创建策略或任何供应动作。"""
     if (
@@ -242,6 +243,7 @@ def build_catalog_product_composition(
                 factory, scoped, now=now
             ),
             now=now,
+            customer_evidence=customer_evidence,
             catalog_accounts=ProspectingDemandCatalogAccountFactsReader(prospecting),
             account_names=ProspectingDemandAccountNames(prospecting),
         ),

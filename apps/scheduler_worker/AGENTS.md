@@ -125,3 +125,9 @@ InboundDriver只在本进程已注册完整reply_qualification及原InboundMessa
 原singleton cycle在入站扫描前、返回后及后置outbox前核验同一backend；失锁零后续推进。
 driver不持有锁、不建循环，opaque游标只从tenant账本读取；永久错误等待真人带版本原位核对，
 429/暂态到期才能重试，不能绕过Retry-After、重置history或换身份。
+
+## Task6回复资源（ADR0027）
+
+reply工厂只借用本进程显式typed session/BoundedRaw及canonical服务；不挖private或另建engine。
+Demand的客户证据委托每runtime独立，仅允许绑定一次真实verifier，未绑定拒绝，ready前完成。
+内容复用5a纯解析，完整subject+原HTML候选及subject+文本各先guard再预算，超限拒绝不裁剪。

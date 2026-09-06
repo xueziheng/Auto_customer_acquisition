@@ -1418,6 +1418,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/inbox/conversations/{conversation_id}/messages/{message_id}/next-questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Next Questions */
+        get: operations["get_next_questions_inbox_conversations__conversation_id__messages__message_id__next_questions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/inbox/messages/{message_id}/correct-classification": {
         parameters: {
             query?: never;
@@ -6287,6 +6304,29 @@ export interface components {
          * @enum {string}
          */
         ReplyCategory: "clear_interest" | "willing_to_continue" | "requests_materials" | "requests_quote" | "requests_sample" | "provides_specification" | "no_current_need" | "future_need_possible" | "refers_other_contact" | "rejection" | "unsubscribe" | "bounce" | "auto_reply" | "complaint";
+        /**
+         * ReplyNextQuestionsView
+         * @description 受权只读建议；真实引用和队列状态不被英文措辞替代。
+         */
+        ReplyNextQuestionsView: {
+            /** Completeness */
+            completeness: number | null;
+            /** Conversation Id */
+            conversation_id: string;
+            /** Need Id */
+            need_id: string | null;
+            /** Source Message Id */
+            source_message_id: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "suggested" | "need_unavailable" | "no_missing_fields";
+            /** Suggestions */
+            suggestions: string[];
+            /** Topics */
+            topics: string[];
+        };
         /**
          * ReputationView
          * @description 信誉视图，全部比率/阈值使用 Decimal。
@@ -12451,6 +12491,38 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_next_questions_inbox_conversations__conversation_id__messages__message_id__next_questions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplyNextQuestionsView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -53,7 +53,7 @@ from domains.compliance.permissions import (
 )
 from domains.compliance.service import ComplianceService
 from domains.compliance.service_impl import ComplianceServiceImpl
-from domains.conversations.service import ConversationService
+from domains.conversations.service import ConversationService, ConversationsUnitOfWork
 from domains.conversations.service_impl import ConversationServiceImpl
 from domains.demand.service import DemandService
 from domains.directives.service import DirectiveService
@@ -285,6 +285,7 @@ from workflows.sending_identity_auth.flow import (
 )
 
 from .account_discovery import ComplianceCountryPolicyDecisionReader
+from .adapters.reply_customer_evidence import TenantBoundCustomerReplyEvidenceVerifier
 from .campaign_driver import (
     CampaignSendDriver,
     SchedulerCampaignPermissionCheck,
@@ -330,6 +331,7 @@ from .quotations import (
     build_quotation_runtime,
 )
 from .quote_notifications import NotificationJobQuoteApprovalNotifier
+from .reply_binding import DeferredCustomerReplyEvidenceVerifier, ReplyRuntimeResources
 from .reply_events import ReplyQualificationEventHandlers
 from .sourcing_admission import SourcingAdmissionDriver
 from .sourcing_runtime import (
@@ -1000,6 +1002,8 @@ class SchedulerBootstrap(Protocol):
         self,
         core: SchedulerCoreServices,
         outreach: OutreachService | None,
+        *,
+        resources: ReplyRuntimeResources | None = None,
     ) -> ReplyQualificationComposition | None: ...
 
 
@@ -1253,10 +1257,12 @@ class SchedulerRuntimeFactory:
                 _DomainSeparatedContactValueHasher(fingerprints),
                 now=self._now,
             )
+            reply_verifier = DeferredCustomerReplyEvidenceVerifier()
             catalog_products: CatalogProductComposition = (
                 build_catalog_product_composition(
                     factory=factory,
                     prospecting=catalog_prospecting,
+                    customer_evidence=reply_verifier,
                     approvals=change_approvals,
                     tenant_id=config.tenant_id,
                     now=self._now,
@@ -1488,7 +1494,33 @@ class SchedulerRuntimeFactory:
                     now=self._now,
                 )
             if self._bootstrap is not None:
-                reply = self._bootstrap.build_reply(core, campaign_outreach)
+                if campaign_outreach is not None:
+                    reply_verifier.bind(
+                        TenantBoundCustomerReplyEvidenceVerifier(
+                            tenant_id=config.tenant_id,
+                            conversations_uow_factory=lambda tenant: cast(
+                                ConversationsUnitOfWork,
+                                SqlAlchemyConversationsUnitOfWork(
+                                    factory, tenant, now=self._now
+                                ),
+                            ),
+                            outreach=campaign_outreach,
+                        )
+                    )
+                reply = self._bootstrap.build_reply(
+                    core,
+                    campaign_outreach,
+                    resources=(
+                        ReplyRuntimeResources(
+                            factory,
+                            inbound.bounded_raw_store,
+                            dependencies.opportunity_service,
+                            self._now,
+                        )
+                        if inbound is not None
+                        else None
+                    ),
+                )
                 if reply is not None and (
                     reply.outreach is not campaign_outreach
                     or reply.conversations is not core.conversations

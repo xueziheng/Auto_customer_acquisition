@@ -47,9 +47,7 @@ NEED_FIELD_NAMES = frozenset(
     }
 )
 
-_ALLOWED_OUTPUT_KEYS = frozenset(
-    {"category", "candidate_fields", "suppress_scope"}
-)
+_ALLOWED_OUTPUT_KEYS = frozenset({"category", "candidate_fields", "suppress_scope"})
 _CANDIDATE_KEYS = frozenset({"field", "value", "quote"})
 
 #: 模型输出大小上限（64 KiB）：在 json.loads 之前快速失败，防超大 payload 解析。
@@ -122,6 +120,7 @@ class ReplyClassificationResult:
     category: ReplyCategory
     candidate_fields: tuple[ReplyFieldCandidate, ...] = ()
     suppress_scope: ReplySuppressScope | None = None
+    rejected_candidates: bool = False
 
 
 @runtime_checkable
@@ -133,7 +132,9 @@ class ReplyClassifier(Protocol):
         """模型标识（classified_by 留痕用；评估报告按 provider 区分）。"""
         ...
 
-    async def classify(self, *, message: dict[str, str]) -> ReplyClassificationResult: ...
+    async def classify(
+        self, *, message: dict[str, str]
+    ) -> ReplyClassificationResult: ...
 
 
 class QualificationAgent(CapabilityAgent):
@@ -164,9 +165,7 @@ class QualificationAgent(CapabilityAgent):
 
     # ---- 分类边界 ----------------------------------------------------------
 
-    async def classify(
-        self, *, message: dict[str, str]
-    ) -> ReplyClassificationResult:
+    async def classify(self, *, message: dict[str, str]) -> ReplyClassificationResult:
         """验证受限模型输出并返回 typed 结果；无效输出抛 ValidationError（fail closed）。
 
         port 只收到 subject/body——message_id 等 identifier 绝不进模型调用。
@@ -236,7 +235,9 @@ class QualificationAgent(CapabilityAgent):
                     suppress_scope = ReplySuppressScope(raw_scope)
                 except (TypeError, ValueError):
                     raise ValidationError("模型输出退订抑制范围无效") from None
-            if any(pattern.search(combined) for pattern in _ACCOUNT_UNSUBSCRIBE_PATTERNS):
+            if any(
+                pattern.search(combined) for pattern in _ACCOUNT_UNSUBSCRIBE_PATTERNS
+            ):
                 suppress_scope = ReplySuppressScope.ACCOUNT
         else:
             if raw_scope is not None:
@@ -246,6 +247,7 @@ class QualificationAgent(CapabilityAgent):
         if not isinstance(raw_candidates, list):
             raise ValidationError("模型输出 candidate_fields 必须是数组")
         candidates: list[ReplyFieldCandidate] = []
+        rejected_candidates = False
         seen_fields: dict[str, tuple[str, str]] = {}
         for item in raw_candidates:
             if not isinstance(item, dict):
@@ -256,10 +258,7 @@ class QualificationAgent(CapabilityAgent):
             field = item.get("field")
             value = item.get("value")
             quote = item.get("quote")
-            if (
-                isinstance(quote, str)
-                and len(quote) > MAX_REPLY_FIELD_QUOTE_CODEPOINTS
-            ):
+            if isinstance(quote, str) and len(quote) > MAX_REPLY_FIELD_QUOTE_CODEPOINTS:
                 raise ValidationError("模型输出候选逐字证据超长")
             if (
                 not isinstance(field, str)
@@ -269,14 +268,16 @@ class QualificationAgent(CapabilityAgent):
                 or not isinstance(quote, str)
                 or not quote.strip()
             ):
-                # 词表外/缺值的候选：护栏拦截该候选（不落 ChangeSet）
+                # 词表外/缺值候选被拒；workflow不得将其静默当成缺项。
+                rejected_candidates = True
                 continue
             haystacks = (
                 str(message.get("subject", "")),
                 str(message.get("body", "")),
             )
             if not any(quote in haystack for haystack in haystacks):
-                # quote 不在原消息中：provenance 断裂，拦截该候选
+                # quote不在输入中；仅安全信号交给workflow，无原文/原因。
+                rejected_candidates = True
                 continue
             previous = seen_fields.get(field)
             if previous is not None:
@@ -286,11 +287,14 @@ class QualificationAgent(CapabilityAgent):
                 # 同 field 但 value/quote 不同：整份输出拒绝（无法确定取哪个）
                 raise ValidationError(f"模型输出候选字段冲突：{field}")
             seen_fields[field] = (value, quote)
-            candidates.append(ReplyFieldCandidate(field=field, value=value, quote=quote))
+            candidates.append(
+                ReplyFieldCandidate(field=field, value=value, quote=quote)
+            )
         return ReplyClassificationResult(
             category=category,
             candidate_fields=tuple(candidates),
             suppress_scope=suppress_scope,
+            rejected_candidates=rejected_candidates,
         )
 
     # ---- ChangeSet ---------------------------------------------------------

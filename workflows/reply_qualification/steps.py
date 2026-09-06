@@ -153,6 +153,30 @@ class ClassifyStep:
                 "body": content.body,
             }
         )
+        if result.rejected_candidates:
+            raise ValidationError("回复含不可验证候选，需人工核对")
+        reliable = content.evidence_segments if content.projected else (content.body,)
+        for candidate in result.candidate_fields:
+            if (
+                any(
+                    marker in candidate.quote
+                    for marker in (
+                        "[private reference omitted]",
+                        "[current expression boundary]",
+                    )
+                )
+                or reliable is None
+                or not any(
+                    source is not None
+                    and candidate.quote in source
+                    and (
+                        not content.projected
+                        or candidate.quote in (content.original_body or "")
+                    )
+                    for source in reliable
+                )
+            ):
+                raise ValidationError("回复字段缺少逐字原件证据")
         category = result.category
         classified_by = self._classifier.model
         actions = await self._conversations.record_classification(
@@ -264,8 +288,7 @@ class ApplyActionsStep:
             "contact_point_id": "cp_",
         }
         if any(
-            not isinstance(value, str) or not value.strip()
-            for value in values.values()
+            not isinstance(value, str) or not value.strip() for value in values.values()
         ) or any(
             not str(values[name]).startswith(prefix)
             for name, prefix in prefixes.items()
@@ -273,9 +296,7 @@ class ApplyActionsStep:
             raise ValidationError("回复动作关联上下文无效")
         return ReplyActionContext(
             message_id=MessageId(str(values["message_id"])),
-            outbound_message_id=OutboundMessageId(
-                str(values["outbound_message_id"])
-            ),
+            outbound_message_id=OutboundMessageId(str(values["outbound_message_id"])),
             enrollment_id=EnrollmentId(str(values["enrollment_id"])),
             account_id=ProspectAccountId(str(values["account_id"])),
             contact_point_id=ContactPointId(str(values["contact_point_id"])),

@@ -90,6 +90,11 @@ from .health import NotificationHealthServer, NotificationHealthState
 logger = logging.getLogger("apps.notification_worker")
 
 
+class NotificationRuntimeMode(str, Enum):
+    PRODUCTION = "production"
+    CONTROLLED_IN_APP = "controlled_in_app"
+
+
 @dataclass(frozen=True)
 class NotificationWorkerRuntime:
     jobs: NotificationJobStore
@@ -97,6 +102,7 @@ class NotificationWorkerRuntime:
     renderer: NotificationRenderer
     config: NotificationWorkerConfig
     health: NotificationHealthState
+    mode: NotificationRuntimeMode = NotificationRuntimeMode.PRODUCTION
 
 
 class WorkerRunStatus(str, Enum):
@@ -132,6 +138,17 @@ class NotificationRoutingPolicy(RoutingPolicy):
         raise PolicyViolation("通知优先级无效")
 
 
+class ControlledInAppRoutingPolicy(RoutingPolicy):
+    """仅专用本机入口：优先级保持，完成只代表显式站内通道。"""
+
+    def channels_for(
+        self, notification: Notification, available: list[NotificationChannel]
+    ) -> list[NotificationChannel]:
+        if [channel.name for channel in available] != ["in_app"]:
+            raise PolicyViolation("受控站内渠道注册表无效")
+        return list(available)
+
+
 @dataclass(frozen=True, repr=False)
 class _BoundGmailSecretResolver:
     resolver: SecretResolver
@@ -152,9 +169,7 @@ async def _compose_email_channel(
     email = config.email
     if email is None:
         raise ValidationError("事务通知邮件未配置")
-    fingerprint_key = email.secrets.resolve(email.fingerprint_key_ref).encode(
-        "utf-8"
-    )
+    fingerprint_key = email.secrets.resolve(email.fingerprint_key_ref).encode("utf-8")
     fingerprints = HmacFingerprintProvider(
         email.fingerprint_key_version, fingerprint_key
     )
@@ -192,9 +207,7 @@ async def _compose_email_channel(
         registry.register(NOTIFICATION_EMAIL_MANIFEST, handler)
         user_id = UserId(new_id("usr"))
 
-        async def authorize(
-            ctx: ToolCallContext, _state: ToolInvocationState
-        ) -> bool:
+        async def authorize(ctx: ToolCallContext, _state: ToolInvocationState) -> bool:
             return (
                 ctx.tenant_id == config.tenant_id
                 and ctx.user_id == user_id
@@ -217,9 +230,7 @@ async def _compose_email_channel(
         def tool_uow(requested_tenant: TenantId) -> ToolGatewayUnitOfWork:
             return cast(
                 ToolGatewayUnitOfWork,
-                SqlAlchemyToolGatewayUnitOfWork(
-                    factory, requested_tenant, now=now
-                ),
+                SqlAlchemyToolGatewayUnitOfWork(factory, requested_tenant, now=now),
             )
 
         gateway = ToolGateway(
@@ -231,9 +242,7 @@ async def _compose_email_channel(
             now=now,
             id_factory=new_id,
         )
-        sender = ToolGatewayTransactionalNotificationSender(
-            gateway, handler, user_id
-        )
+        sender = ToolGatewayTransactionalNotificationSender(gateway, handler, user_id)
         return EmailNotificationChannel(sender), transport
     except BaseException:
         close = getattr(transport, "aclose", None)
@@ -250,20 +259,24 @@ async def notification_worker_runtime(
     config: NotificationWorkerConfig,
     *,
     transport_factory: Callable[[str], GmailHttpTransport] = GmailApiHttpTransport,
+    mode: NotificationRuntimeMode = NotificationRuntimeMode.PRODUCTION,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> AsyncIterator[NotificationWorkerRuntime]:
     """装配持久 stores、精确双渠道 router 与 health，并对称释放资源。"""
     if not isinstance(config, NotificationWorkerConfig):
         raise TypeError("通知 worker 配置类型无效")
-    health = NotificationHealthState()
+    if not isinstance(mode, NotificationRuntimeMode):
+        raise ValidationError("通知运行模式无效")
+    health = NotificationHealthState(delivery_mode=mode.value)
     engine = create_engine_from(config.database_url.get_secret_value())
     gmail_transport: GmailHttpTransport | None = None
     server: NotificationHealthServer | None = None
     health_task: asyncio.Task[None] | None = None
     health_started_task: asyncio.Task[None] | None = None
     primary: BaseException | None = None
+    health_listening = False
     try:
-        if config.email is None:
+        if config.email is None and mode is NotificationRuntimeMode.PRODUCTION:
             raise ValidationError("事务通知邮件未配置")
         health.mark_ready("config")
         await assert_database_schema_current(engine)
@@ -274,18 +287,23 @@ async def notification_worker_runtime(
         factory = async_sessionmaker(bind=engine, expire_on_commit=False)
         jobs = PostgresNotificationJobStore(factory)
         router = NotificationRouter(
-            PostgresNotificationDedupStore(factory), NotificationRoutingPolicy()
+            PostgresNotificationDedupStore(factory),
+            ControlledInAppRoutingPolicy()
+            if mode is NotificationRuntimeMode.CONTROLLED_IN_APP
+            else NotificationRoutingPolicy(),
         )
         router.register_channel(InAppChannel(PostgresInAppNotificationStore(factory)))
-        email_channel, gmail_transport = await _compose_email_channel(
-            config,
-            factory,
-            transport_factory,
-            now,
-        )
-        router.register_channel(email_channel)
+        if mode is NotificationRuntimeMode.PRODUCTION:
+            email_channel, gmail_transport = await _compose_email_channel(
+                config, factory, transport_factory, now
+            )
+            router.register_channel(email_channel)
         health.mark_ready("registry")
-        server = NotificationHealthServer(health, config.health_port)
+        server = (
+            NotificationHealthServer(health, config.health_port, host="127.0.0.1")
+            if mode is NotificationRuntimeMode.CONTROLLED_IN_APP
+            else NotificationHealthServer(health, config.health_port)
+        )
         health_task = asyncio.create_task(server.serve())
         health_started_task = asyncio.create_task(server.wait_started())
         done, _pending = await asyncio.wait(
@@ -299,12 +317,14 @@ async def notification_worker_runtime(
         if health_task.done():
             await health_task
             raise RuntimeError("notification health exited before listening")
+        health_listening = True
         yield NotificationWorkerRuntime(
             jobs,
             router,
             FixedNotificationTemplateRenderer(),
             config,
             health,
+            mode,
         )
     except BaseException as error:
         primary = error
@@ -319,10 +339,16 @@ async def notification_worker_runtime(
                     cleanup_error = error
                 else:
                     logger.error("通知 worker health 资源关闭失败")
+            if health_listening and health_task is not None and not health_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(health_task), timeout=5)
+                except TimeoutError:
+                    pass
+                except BaseException as error:  # noqa: BLE001 保留主异常并继续回收owned任务
+                    if primary is None and cleanup_error is None:
+                        cleanup_error = error
             health_tasks = tuple(
-                task
-                for task in (health_started_task, health_task)
-                if task is not None
+                task for task in (health_started_task, health_task) if task is not None
             )
             for task in health_tasks:
                 if not task.done():
@@ -418,7 +444,10 @@ async def run_notification_worker(
     wait: WaitForNextCycle | None = None,
 ) -> WorkerRunResult:
     """逐周期认领；每条 claim 独立 render/dispatch/持久化结果。"""
-    if runtime.config.email is None:
+    if (
+        runtime.config.email is None
+        and runtime.mode is NotificationRuntimeMode.PRODUCTION
+    ):
         raise ValidationError("事务通知邮件未配置")
     stop = stop_event if stop_event is not None else asyncio.Event()
     wait_next = wait if wait is not None else _default_wait
