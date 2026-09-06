@@ -72,8 +72,8 @@ Task 5b: minor M1 addressed by Task8 — 原件octet-stream binary schema及生�
 Task 9: complete — BASE91c77754e295f5eb9754bd87e4e4f920985ae2fe，初始ebb8da6，Fix1源码1810acd、report HEAD27098ce3ed637fd85df722b1a9e997fe972ef4a9；same review_task9 Spec✅/Approved，I1/I2均ADDRESSED，无新增Important。最终Web88/API10有限组分别通过，完整证据task-9-report/review；M1留12。恢复action/稳定canonical header/安全请求422的裁定均持久化，角色演练与真实/受控浏览器界限保留。
 Task 10: complete — BASEeec91eaf4c4356c3ff7a8b24f137056e3de5c28a；初始8cc0419，Fix2源码0890ae99dd1fe340247024991d200eecf72efb91，report HEADa5a59d9d44d208081a53c912b22612ad78d180f9；review_task10 Spec✅/Approved，I1经两轮修复ADDRESSED，无Minor。最终68组件及静态通过；原Mac/Linux分栏证据和平台限制保留给12/13。
 Task 11: complete — BASE940db7c86249aaaa85c3b18df710a804ffd1c398；源码4be8753e5b46442244e9dfe110bd4c308a367c25，report a3390b5144c32fa72fd1e7f2a9c8ed882343ef43；review_task11 Spec✅/Approved，无Critical/Important。Minor sourcing绑定覆盖及旧launcher清理缺口交12；成本/资格unknown与受控限制保留。
-Task 12: in_progress — Task11已通过独立审查；controller同步后给fresh实施者精确BASE。最终同版本A1–A10、已知最小缺口、双环境分栏和正式安全验收证据；13尚未开始。
-Task 13: pending
+Task 12: complete (commits 6cdb40d..5b63744, review clean) — 实现者web_task12，审查者review_task12；SOURCE48e4465全量9318通过，I1源码7e10383主链1passed；Spec/Quality Approved，0未关闭问题。
+Task 13: in_progress — Task12已独立Approved，controller完成交接提交后派fresh实施者。
 
 ## W1 实施前裁定
 Ruling: Task2复审Minor适配器内挂起点取消测试暂不新增。— 新链只捕获Exception，CancelledError按语言语义传播；原Worker取消与资源清理已有行为覆盖且审查无缺陷。— 内部await取消的直接回归覆盖有限，后续接生产provider/改变异常分类时必须补对应测试；最终审查可见。
@@ -322,3 +322,95 @@ Ruling: Task12补原owned launcher的reply-model.sqlite及其SQLite侧文件清�
 
 Task 11: minor (deferred): review M1 tests/integration/test_web_core_observability.py:153缺sourcing成功/版本不匹配/Opportunity.need_id不匹配三种新增分支覆盖；未发现实现错误，交Task12聚焦补证据，最终全分支review核结论。
 - Task11最终review Spec✅/Approved，无Critical/Important，controller读完整报告。Cannot verify逐项：目标Need/Handoff权限已在7/8有当前作用组与竞态证据，12再次覆盖最终身份/拒绝；同版本全仓门禁原属12；launcher已具名定位并裁定12修，当前owner补清0不冒称自动清理通过；真实费用/获客/多人认证/独立Linux链不由本轮合成指标推导，无新增事实缺口。继续Task12，无生产Fix round。
+
+- Task11正式controller验收提交6cdb40d8019d560d1490925df72a58d14f4881d6（8份doc，git commit stderr142行），Task12 BASE即此。fresh /root/web_task12 Astra high已派发，为唯一生产实施者；完整brief包括A1–A10、新依赖/最终门禁、已知最小缺口、两个平台分栏、当前权限与真实未知send调用计数；先详细证据规格，不提前13。
+
+- Task12子规格docs/superpowers/specs/2026-09-06-web-core-final-acceptance.md已写，controller完整读并与正式design A1–A10逐项核，相符；提醒A5显式DB短暂/旧重复审批、A7实际寻源与成本分栏，不把10空Sourcing页面当整链。HTML/生命周期8failed预期RED→35passed中间GREEN；scanner4处安全核3护栏输入+1异常脱敏，显式placeholder保留marker语义后全scan0；sourcing3新PG例首轮fixture漏state_changed_at非生产缺陷待补。A1新环境/Settings内部commit故障/总E2E/全量未跑，未验收。
+
+- Task12执行代理曾因账户usage limit中断，用户再次明确“请继续”，controller于2026-09-06 08:49 UTC恢复同一web_task12（非新任务/不赎回额度）。核HEAD仍6cdb40d8019d560d1490925df72a58d14f4881d6，Task12生产/测试与子规格待提交；新增tests/e2e/test_web_core_controlled.py、tests/integration/test_web_core_settings_recovery.py、tests/unit/test_web_core_private_cleanup.py及output/acceptance/task12/install.json已存在，但未读取或假定结果。尚无task-12-report.md、无最终验收结论，继续原剩余步骤。
+
+Ruling: Task12补原controlled API/scheduler的research_only真实装配，复用ResearchRuntimePorts和CanonicalSchedulerBootstrap，仅替受控search/page/model外部端口、使用真实owned对象store与显式合成技术配置。— 新环境两次ready，实际Playbook/KE政策审批后研究提案仍不能确认；controller具名核infra/controlled/config.py:85–156缺Tavily组、scheduler/controlled.py:35–57未传research，bootstrap.py:175–188/363–399已有完整typed组合，原Task4只证提案/拒绝未证运行，不能满足设计A2。— 代价是本次最终验收新增此前漏接的研究集成工作与最终门禁成本；不是新launcher或真实provider启用。API可用性需与真实scheduler端口一致，合成exclusive只代表owned fixture，不能翻布尔冒称可用；原singleton/额度/Guard/tenant/公开政策审批不变，Signal/Hypothesis只经原域，research_only零Campaign/联系人/send，未知外部输入仍拒绝。补详细spec与真实RED/GREEN，新增资源沿owned关闭/清理，不noop消费事件或扩预算，13更新实际能力。
+
+Ruling: Task12 A3必须在同一owned受控触达链通过原Gateway单Provider验证→原handler/域持久可达性→已批Campaign入组/发送，不接受独立Provider integration与prepare_sent直接record_verification(VERIFIED)拼接为整链通过。— 实施者明确旧helper只是经公开域直接记录合成VERIFIED，并未调用验证Provider；设计A3及Task12要求可达性验证/单Provider验证接缝，正是待证缺口。controller核bootstrap.py:203–210/335–359已有ContactRuntimePorts/真实AccountDiscovery组合。— 代价是本批可能新增最小controlled联系人端口装配及同链证据；优先替换直接验证前置，不无故扩整套聊天意图，不真实Hunter/多源/账号就绪伪造。API/公开获批独立触达入口可复用，若契约必需额外装配先具名方案；原Gateway/权限/额度/当前政策/suppression不变，未验证负例拒绝并记录逐次Provider调用，A2启用相关端口后仍research_only零联系人发现/入组/send。
+- Task12第三轮已实际reply→Need/Opportunity/Handoff、重放与HUP四应用后send_calls1；权限测试把当前归属sales误当越权预期403但真实200，改用EmployeeService.transfer真实撤权再断言，不能称生产权限缺陷。研究接线初始unit缺模块RED→1passed，第四轮E2E进行中，未验收。
+
+Ruling: Task12允许apps CanonicalSchedulerBootstrap新增最小typed contacts late-binding factory，沿既有reply_factory方式，在canonical core/本runtime资源创建后返回原ContactRuntimePorts；先ADR/子规格，现contacts与factory互斥，默认路径兼容。— 原ContactRuntimePorts预构造，而真实验证Gateway需core.prospecting/outreach与本runtime sessions；controller核runtime.py:1545–1609原自定义联系人路径只消费这两个端口，生产Hunter专用builder绑定真实readiness不应伪造。属于apps装配依赖接缝，非Gateway核心业务管线改动，manifest/check/handler插件保持原样。— 代价是本批扩大一次集成接口和原bootstrap/runtime聚焦回归；不得建controlled环境if后门、第二core/engine、挖private、infra导apps/tests或复制业务，必须验证同实例/互斥/未绑定failclosed。受控Gateway只替外部reader，真实tenant/permission/suppression/rate_limit/PG ledger，不用测试_Stage占位或假Hunter snapshot。ContactVerificationHandler只返回typed结果，持久record_verification归原VerifyContactsStep（修正controller前条粗略“handler/域落库”），同链验证到发送不变。
+
+- Task12第四轮E2E原launcher真实研究产生3 Signal/3 Hypothesis，research_only Campaign/send均0（联系人零尚待新增装配后完整断言）；随后reply→Need/Opportunity/Handoff及HUP幂等。失败为Account转移后仍assigned_to当前员工的Handoff应200，测试错误预期403，改真实停用actor；不判生产权限缺陷。DB停启后原池首读500待bounded幂等只读恢复证据，不能抹掉首故障或重试未知写。ADR0065-late-bound-contact-runtime-ports.md已读，typed contacts_factory互斥/同core+Campaign/outreach/资源/唯一engine与原裁定一致；首RED缺参数TypeError，GREEN未报。
+
+- Task12 DB恢复探测20次GET（250ms间隔）仍500，明确未通过，不能归因单次旧池抖动；实施者只捕获固定异常类别/SQLSTATE/阶段定位，不读DSN/原异常正文。controller要求先核PG ready/原端口，再看原API池，不能盲增sleep或重试未知写。contacts factory2项GREEN、受控Provider逐次验证计数测试GREEN；计数复用同owner mail.sqlite独立表，无新增生命周期文件，整链未验收。
+
+Ruling: Task12 DB短暂不可用测试改exact-owner container.pause/unpause，保持容器/数据库/公开端点，finally恢复并核原端点ready，再测原API实例/原key/payload；不改Docker端口分配或生产连接语义。— 实际stop/start两轮内部pg_isready通过但原公开端口SELECT1和API均ConnectionRefused；controller核infra/controlled/resources.py:255随机HostPort且只create初次读取，依赖端点实际上没有恢复，不能归因API连接池。— 代价是本轮证明固定端点暂态恢复，不证明DB容器单独stop/start透明恢复；当前随机端口/配置不自动更新限制必须留report/13运维，不能只叫测试错误而抹去事实。暂停期间实际bounded取消，无遗留后台查询，finally仅owner+ID核验的原容器；原HUP只重启应用，不扩成数据库重启契约。
+
+- Task12 pause首轮asyncio.wait_for取消仍等待暂停PG，实施者核精确owner/容器后手动unpause才结束；两测试最终exit0不算有界故障GREEN。期间误以为前session结束而另启E2E，发现后SIGINT该轮并finally清理；两个pytest已结束，恢复串行，实际失误/中断轮须保留report。controller接受独立固定2秒unpause计时器先建立、最终await收敛、finally再次核owner/未paused/原端点；1秒查询timeout不等于整体1秒，须记录实际2秒恢复后的取消总耗时/无后台任务。属于注入工具恢复保障，不修改生产取消语义或宣称新生产修复。
+
+- Task12第9轮主受控E2E实际1passed/32.36s，owner335a86cc07fc4d7092270b1d8767d809，清理0错误/SQLite侧文件断言过；实施者实看1440 Need、390 Handoff，安全proof待最终生成核contact Run/point、verification provider/status、enrich/verify逐次计数与未验证拒绝。第7轮类别空格公开契约拒绝，第8轮未验证真实ContactNotEligibleError但测试误接ValidationError，均fixture前提已纠正，不是生产缺陷。Settings pause中间2passed/10.68s，计时新断言待最终作用组。原Linux报价Browser/已批PDF不发+Need寻源3目标串行在跑；全Web独立可并行。boundaries/scan/mypy562文件通过，Ruff本批两格式修后0，未冻结或全量通过。
+
+- controller已读第9轮335a86cc... proof.json/cleanup.json，真实3研究信号/3假设、send1、reply model1、handoff accepted及stopped/cleanup_errors[]，proof尚无后补contact细项，不倒写；实看need-1440/handoff-390，客户字段来源与原件入口、当前队列/长ID可读。提醒OpportunityList不消费opportunity_id query，proof含该query仅到看板，不算精确机会深链；需原列表精确ID打开详情/核Need或降为看板展示，勿扩新query功能。need-sales-denied截图名实际URL为handoff，最终名称/断言按实际页纠正。A1新Python3.12.14隔离且无Catalog依赖探针通过；Web五门禁exit0（精确计数待report），A7仍未终态。
+
+- Task12 A7原Linux报价Browser+已批PDF不发送/不成交+原Need寻源三目标3passed/131.60s；Linux Browser ownera79870b4f3714cd79d6211d061c5ab64与integration owner8ad147dd94c84955aa1ba9de772dff88 lifecycle code0/cleanup_verified=true，实施者实看quote390/exact-cost1440。正式acceptance草稿已在docs/acceptance/2026-09-05-web-core-completion.md，仍明确待全量；机会页仅看板/撤销实际Handoff已修正口径。后端全量约2%已有多F，继续整轮汇总，未判同因/未通过。后续只按实际新改动影响复验，不将历史局部数字累加成全仓绿。
+
+- Task12 fresh Node npm ci28.71s/build5.05s通过；首轮npm拒绝user/global同指/dev/null，改两个独立空config后通过，历史失败保留。后端全量先6%约684s后10%约787s仍推进，只有单一DB pytest；短暂无输出不能由最近fixture推断阻塞，未新增PG诊断并发任务。尚无最终汇总/验收。
+
+- Task12完整后端已终态exit1：98failed/9217passed，pytest2076.35s、wrapper2083.9s，session14628结束，24源/测试全程冻结。output/acceptance/task12/backend-failure-index.json初提75项漏23含括号/长标题，正在补完整98安全索引；尚未分类为同因。controller要求修前保留精确源码checkpoint或可复原清单/patch，不把本轮改写为最终源码全过；迁移需区分旧head门禁与特定历史往返，不全局替换revision。新主E2E无失败名仅初步信息，最终proof/cleanup尚待核。开始按实际失败类别修复，无并发DB命令。
+
+- Task12全量失败源码checkpoint 1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d已保存（24源/测试+ADR0065+子规格+明确98失败验收草稿，未混controller/report/log）；24文件SHA256与冻结快照一致，commit stderr518行。完整安全索引98项已补齐。已核2旧head预期0058而实际0059、current_outreach纠正缺actor、15quotation生命周期SimpleNamespace缺email_inbound、4身份权限enum缺INBOUND_BIND；controller允许最小旧fixture兼容，不在生产加getattr默认或optional actor迁就。特定历史迁移往返仍需准确错误/路径诊断，不能批改revision或预期。
+
+- controller核1cbcdcf全量中的主E2E owner39ea7630eb12472eb7b0686ccf3cd52a proof/cleanup：研究3/3，contact.enrich/verify各1，Run run_01M1V0YMQ9PMFM3REMRF9S60JS、point cp_01M1V0YNQGKDF1WQKGT0MXX0G8、controlled-single-provider持久verified、未验证入组拒绝true、send1、Handoff接受true/pageerrors[]，stopped/errors[]；不是第9轮倒写。root实看handoff-accepted-390原件入口/操作区，视口未露上方接受状态，不能靠图名判断，接受由真实断言/proof。提醒model_calls1仅ControlledReplyModelClient计数，不是研究/联系人/TradeManager整条总模型调用，最终口径要注明或保持总量未知。
+- 定向employees0002→head往返已passed，不能由全量失败倒推生产迁移缺陷；Catalog同组poll_due2期待3尚未归因，不机械改预期。quotation fixture补email_inbound后又暴露缺model_lifecycle，按真实完整契约补，生产不加宽默认。旧无政策研究confirm200需真实执行阶段政策拒绝和零副作用证据，而非只改旧disabled预期。
+
+Ruling: Task12 Catalog policy workflow测试每个独立场景在_start后从原get_run持久created_at建立时钟基线，不改engine/审批七日期限或精确匹配，后续advance不能被回拨抹掉。— controller核workflow_engine.py:304–320由PG默认created_at，policy_steps.py:85–88/317–319用created_at+7d，mapping.py要求fact.expires_at与expires_at_limit精确一致；原fixture NOW固定2026-09-05而PG已09-06，Approval min(fixture now+7d,limit)造成真实ValidationError。— 代价是测试基线依赖本轮持久创建时刻，需保留后续超时/重放语义及原processed==3/唯一审批断言，不能机械改2或降低审批边界；这次定向失败不是迁移损坏。
+
+- Task12迁移受影响完整52项52passed/70.96s（session26678结束），仅当前head常量/两断言修为0059，全部特定旧revision往返原样；全量downgrade失败共享前置根因仍未充分归因，不倒推全由head。两全量失败Linux owner5576a5f6fb57458896f3756f093d7424和2ce63f77eb394cf59cba2b39d03fdda8安全核验matching PID+birth0、各owner容器0/网络0/四端口关闭，未删除，linux-failed-owner-audit.json留证；历史cleanup_verified=false不改。Catalog6passed/10.84s、回复无ORDER BY状态列表按精确Run核，slice4两503待具名依赖分析。
+
+Ruling: Task12将98项失败逐项映射到修复/作用组后，在最终提交且冻结版本再跑一次完整后端门禁。— 首轮全量迁移downgrade共享前置仍未充分归因，两Linux浏览器全量失败而独立组通过，实际组合/顺序依赖风险未解除；设计要求同版本完整验收，单独作用组不能证明这类风险消失。— 代价是再投入一轮约此前35分钟量级的验证时间（不作耗时保证），不是无新疑点机械重复；先收完当前已确认缺口、清自有资源，源码冻结/单DB进程/原预算不变，保留98failed/9217passed历史，绝不累加局部通过伪装全量绿色。下一全量仍失败须按具体事实处理，不能因成本已花就标完成。
+
+- Task12旧回复作用组47passed/45.10s：3旧scheduler/闭环fixture缺新Raw bounded_transport，生产reader正确failclosed；补真实S3Bounded或内存外部blob同预算协议，未改reader。unit兼容130passed/9.58s。原launcher无有效政策研究真实failed，search/page/research-model增量0，旧测试不再只沿未装配假设。
+Ruling: Task12 ControlledGmailTransport._read_calls精确检查sqlite_master中provider_calls表是否存在；同owner研究账本先创建mail.sqlite而Gmail尚未初始化/调用时返回空tuple，其他DB错误原样失败。— 新无政策/有政策主链计数E2E真实OperationalError，旧逻辑误将文件存在等同Gmail表存在；controller已核_read_calls当前窄改，没有宽catch。— 代价是新增共享受控文件中独立账本的初始化语义，须unit证明只有研究表→Gmail0、实际Gmail调用后精确1、坏列/损坏DB仍报错，保留tenant查询/非法operation拒绝；不能把计数异常泛吞为零。最终冻结版本及全量门禁覆盖此变更，无真实Provider/业务规则改变。
+
+- Task12最新主E2E与clean migration两项passed/43.20s，旧driver一fixture状态名误推unbound而实际disabled待纠正；新主E2E先无active政策实际failed且research search/page/model0，再独立审批后3/3及联系人/回复链成功。Linux旧failure-boss图为成本只读连接失败，不是机会query精确定位问题；8槽relay饱和仅候选，controller允许本owner固定阶段/槽占用/拒绝计数安全诊断，不记录请求原文/headers/敏感URL参数，不扩槽/超时或盲重试。只有证实机械reload发生在本页请求未收敛时才等真实完成条件；真实就绪后仍失败继续根因，不能用等待掩盖。
+
+
+### Task12 裁定：旧 slice4 精确失败契约与 Linux 首循环就绪
+
+Ruling：root 已读取 slice4-http-status.json，原 sending fixture 未装配 inbound_mailbox；允许仅匹配 /email-inbound/status 503 两次与原 attempts/prepare 409 一次的精确 route/status 多重集，并要求页面真实展示入站状态读取失败，额外错误仍失败。理由：新页面读取未配置能力时的 503 是诚实响应；成本：此旧场景仍不证明入站可用，由新完整受控链单独验收，不扩大通用错误白名单。
+
+Ruling：root 核 tests/integration/costing_quote_case.py runtime_case 及 apps/scheduler_worker/main.py 的循环顺序；公开 wait 回调在真实 _run_cycle 完成且 cycles 增加后调用。允许 fixture 通过首回调事件，在原启动 deadline 内等首完整循环完成再公开 case；保留原 interval/stop、singleton、parser、退出 cycles>0，并在 worker 提前结束或异常时及时失败。理由：短 probe 可能在激活完成前结束，STARTED/0 不能证明 worker 已执行；成本：fixture 就绪语义更严格，不代表生产 readiness 新承诺。未证实 relay 饱和，不加入容量放宽、固定 sleep 或盲重试。
+
+
+### Task12 裁定：迁移组合失败的真实前置数据污染
+
+worker 具名组合 test_current_outreach_facts 全文件后 employees downgrade0002 得到 1 failed/17 passed，0052 明确拒绝删除 sourcing admission base evidence；安全证据 migration-predecessor-safe.json。Ruling：允许最小修复该测试 fixture 对其明确拥有的租户数据与共享引擎生命周期的收口，禁止清空共享库/全租户或放松生产 0052 保护。若需新隔离库须先明确边界、复用原 owner 生命周期。理由：这是此前独立迁移全过但组合失败的具体前置污染证据，不可归因于 head0059 预期；成本：再跑该执行次序组合及最终完整 suite，保留首次 full 失败与组合诊断历史。
+
+
+Ruling（迁移隔离具体方案）：已定位 test_http_account_run_keeps_user_id_for_actual_worker_mapping 的公开 submit_discovery_proposal 持久化 base_directive_version，directive_proposals 不可变触发器禁止删除，不能靠事后清表收口。root 核 tests/integration/test_need_units.py:80 的现有 unit_engine：同 owned 测试容器内 UUID 独立库，迁移 head，finally dispose 后 DROP 精确库名。允许仅此具名例复用该 fixture，所有配置/session/engine 从该库派生，不残留共享 db_url；保留原公开业务入口、不可变触发器与 0052 护栏。理由：已有生命周期专为不可变证据与旧迁移隔离；成本：一例增加独立建库/head 迁移，并需原执行次序组合验收，不新造 fixture 或清共享数据。
+
+
+### Task12 冻结版本第二次完整后端与只读审查调度
+
+第二次完整后端冻结源码 48e4465fc307212e794d6ed87501cb418f74d245，UTC 2026-09-06 10:46:11 启动，原命令/预算不变，单 DB 测试进程。98项具名映射已落正式验收附录；最后指定顺序组合23 passed/63.10s、slice4单项通过，static四门exit0。1630源码文件哈希冻结；报告和安全证据可更新，源码不改。
+
+Ruling: 在完整 suite 运行期间启动同一 Task12 独立只读审查席位，先读冻结 BASE→48e4465 的完整 diff 一次，最终报告/全量结果到齐后再给完整结论；不启动另一个测试进程、不改源码、不提前验收或开始 Task13。理由：代码已提交冻结，审查独立于 DB 运行，可减少串行空等；成本：若全量发现需改动，同一审查者只检查后续修复 diff 与证据更新，不能将预读称最终 Approved，也不增加重复全量审查席位。review package 217324 bytes，Git stderr518行计数保留，不修共享元数据。
+
+
+### Task12 独立预审发现：A3 独立审批证据无效
+
+review_task12 具名确认 Important/P2：web_core_contacts.py:108–142 用 boss_identity 创建/提交 Campaign，却将审批包 proposed_by_employee 设 identities[2]，再由原 boss decide。Campaign/版本持久 created_by 实为原 boss；legacy approvals.submit 不反查 Campaign，仅信任传入提案人，因此此测试绕开自批门槛，不能证明独立审批。Ruling: 接受审查发现；当前第二 full 继续冻结，结束后按同一审查完整清单统一修复，使用真实提案人、先证自批拒绝、再另一老板经原 HTTP 审批并继续原链。理由：审批证据必须来自真实 actor，公开 API/service 调用也可能被错误夹具误组装；成本：此前 A3 独立审批声明无效，历史保留并撤销该通过口径，修后需新 owner 全主链验证。当前 full 仍用于迁移/组合风险证据，是否再 full 依据实际失败和修复范围，不自动无限重跑。
+
+额度疑点已具名消除：原 hunter_contacts 装配同样采用固定 tool_user 与 InMemoryHunterQuotaGuard，contact_provider 明确秒/分钟单 worker 限流，不声称跨进程一致。新装配沿原机制，不新增该缺陷；最终报告必须区分联系人单 worker 短期限流与研究持久 quota，不能总称所有额度跨重启持久。
+
+
+Task 12: fix round 1/5 已授权排队（I1：A3 真实提案人与审批 proposed_by 不一致；当前第二 full 结束后执行，不在冻结运行中改码）。root 已完整阅读 task-12-review.md，Spec/Quality 均 Requires changes，唯一阻断 Important/P2。修复限测试编排及相应安全证据/报告，保留生产审批规则；自批拒绝后另一老板经 HTTP 批准并完整主链新 owner 验证。最终报告区分 48e4465 全量与 fix 后聚焦版本；同 reviewer 仅核 fixdiff 与最终证据。尚无修复提交，Task12 未完成。
+
+
+Task12 第二 full 期间只读视觉核验：原 Linux 完整 browser owner 2ea6b4a4e32f429192c2d1926a2ebfc1，实施者报告 lifecycle code0/cleanup_verified=true/52.535s。root 实际 view output/playwright/t10-2ea6b4a4e32f429192c2d1926a2ebfc1/quote-390.png 与 exact-cost-1440.png：390可见指定报价已批准和对象绑定，1440可见精确Cost ID、quoted成本来源与只读就绪区，无截图内横向溢出。截图不是PDF内容/下载证明，后者沿完整测试断言。该场景不受A3 Campaign夹具提案人缺陷影响，也不是Mac同一实体；最终证据与全量结果待收齐。
+
+
+### Task12 第二次完整门禁通过与 I1 验证范围
+
+冻结 SOURCE 48e4465fc307212e794d6ed87501cb418f74d245 第二完整后端 exit0，9318 passed，pytest2132.64s/wrapper2139.76s，UTC2026-09-06 11:21:50结束，session5079完成。此数为单轮实际结果，不与首次98failed/9217passed或局部组合累计；warnings/skips/source hash/本轮故障owner最终核验待报告。
+
+Ruling: 若 I1 fix 确实只改测试审批 actor 编排和绑定断言，未改生产实现、共享 fixture 或迁移，则新 owner 完整主链聚焦验收加受影响静态足以覆盖，不作无依据第三次 full。理由：第二 full 已消除原迁移/组合疑点，I1 是独占主链 fixture 证据错误；成本：最终分栏报告 48e4465 全量与 fix 后主链版本，不能声称最终 fix SHA 完整全仓同轮运行。若修复扩大或出现新失败，再按具体风险决定验证。Task12 仍待 I1 修复及同 reviewer 限定复审，尚未完成。
+
+
+Task 12: fix round 1/5 complete — I1 addressed，0 open；7e10383 source /5b63744 report；同review_task12限定复审双Approved。root已完整读最终报告/新增review，实读安全proof/audit并看最终Mac Need1440/Handoff390及Linuxquote390/exactcost1440。Task6 void/Task9标题/Task11 sourcing覆盖/私有文件清理等本批闭合；Task7纯文档Minor交13。早期warning未知、平台/恢复/真实外部未运行、内存限流边界仍保留。

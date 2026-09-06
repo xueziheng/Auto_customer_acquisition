@@ -331,12 +331,12 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 **Interfaces:** 覆盖设计 A1–A10；测试只替换外部端口。受控完整链与 research_only 链分别验证，不能把后者自动提升为 Campaign。
 
-- [ ] 使用 Task 4 入口启动；从浏览器发起任务，按正常 API 生成审批与业务状态。
-- [ ] 完成受控发现、单 Provider 验证、已批 Campaign 发送、邮件回复入站、需求验证和员工接管。
-- [ ] 完成现有寻源/成本/报价审批/PDF 的适用场景；没有 quoted 证据且没有符合既有规则的人工风险接受记录时，验证正式报价被拦。
-- [ ] 注入 worker 重启、数据库短暂不可用、重复消息、旧审批、权限撤销和响应未知；核对幂等和恢复。
-- [ ] 停止数据库敏感的并发验收后，按同一源码版本跑完整后端与 Web 门禁；发生修复才重跑受影响范围，最终证据精确标明源码与命令。
-- [ ] 人工检查关键桌面/390px 截图、原始证据深链、日志脱敏和自有资源清理结果；记录真实外部调用为未运行。
+- [x] 使用 Task 4 入口启动；从浏览器发起任务，按正常 API 生成审批与业务状态。
+- [x] 完成受控发现、单 Provider 验证、已批 Campaign 发送、邮件回复入站、需求验证和员工接管。
+- [x] 完成现有寻源/成本/报价审批/PDF 的适用场景；没有 quoted 证据且没有符合既有规则的人工风险接受记录时，验证正式报价被拦。
+- [x] 注入 worker 重启、数据库短暂不可用、重复消息、旧审批、权限撤销和响应未知；核对幂等和恢复。
+- [x] 停止数据库敏感的并发验收后，按同一源码版本跑完整后端与 Web 门禁；发生修复才重跑受影响范围，最终证据精确标明源码与命令。
+- [x] 人工检查关键桌面/390px 截图、原始证据深链、日志脱敏和自有资源清理结果；记录真实外部调用为未运行。
 
 ```bash
 env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 TRADEOS_REQUIRE_E2E=1 python3 -m pytest tests/e2e/test_web_core_controlled.py -q -rs

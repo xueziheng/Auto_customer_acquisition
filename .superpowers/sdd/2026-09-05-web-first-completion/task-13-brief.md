@@ -10,6 +10,7 @@
 - 备份恢复仅针对本次owned隔离数据库/对象store；只恢复到另一个owned目标并验证两者元数据/原件hash一致，不覆盖正在使用的数据库或读取用户生产dump。文档不展示连接、密钥或内网配置；故障日志路径允许用户查看但内容须安全。
 - 能力矩阵应按Task12同源码证据更新；实际日期写当前验收日期，历史报告标历史，不修改过去测试数字或把合成机会当业务成绩。逐条路径/链接核实，命令应可复制在干净声明依赖环境执行，Python>=3.12/Node24来源明确。
 - 根AGENTS九条硬边界不改变；如需同步阶段陈述保持现有范围与已验Phase2事实，不能重写为取消审批/开放真实发送。长期规则仍AGENTS单入口，规格文档不新造平行rules。
+- 就近规则中的事实性状态也须与最终能力一致：controller已见apps/AGENTS.md仍把web列为“Phase1浅骨架”。如Task12最终验收通过，应仅同步这类过期能力描述为本机受控Web的真实范围并指向能力矩阵；不扩大任何权限/审批/全局硬边界，也不把所有worker默认标为生产可用。
 
 **Files:**
 - 更新：`README.md`、`ROADMAP.md`、`HANDBOOK.md`、`docs/operations/web-core-local.md`、`docs/operations/web-core-capability-matrix.md`。
@@ -50,4 +51,14 @@
 最终交付链接不得只指向稍后可能清理的`.superpowers/sdd`临时目录。将Task12最终同版本验收结果、已实际查看的最终截图和必要操作说明留在本仓库正式验收/操作文档路径；只保留安全证据，不复制配置、DSN、原始凭证或不必要完整日志。控制器会在全分支审查结束后汇总本plan ledger每条Ruling及deferred/parked裁定（含原因/代价）为可审阅的交付记录；本批可先准备记录路径，但不要把尚未发生的最终审查写成已通过。临时报告清理只能在证据和裁定已保留、最终门禁完成后进行，不触碰别的plan目录。
 ## Task10 平台限制交付要求
 
+Task12数据库恢复试验明确：Docker随机公开端口在owned PG容器单独stop/start后可能改变，原配置不自动更新；内部pg_isready成功也不表示旧公开端点已恢复。最终A5用同owner pause/unpause证明固定端点暂时不可用后的恢复，不能扩称DB容器stop/start透明恢复。运维HUP只覆盖应用重启，数据库资源重建须走完整owned生命周期/备份恢复说明，不引导用户随意单独重启后沿用旧配置。保留前两轮端口变化失败与该成本，不归因API池故障或抹成无影响测试错误。
+
+Task12最新A2验收发现：旧本机入口只能生成研究提案，缺Tavily技术组及scheduler research端口，真实政策获批后仍不能确认。controller已裁定Task12复用原ResearchRuntimePorts/Canonical组合补受控研究真实链；以Task12最终结果更新能力矩阵和启动说明，不能沿用Task4“提案可用”等同研究执行已完成的旧推断，也不预先把正在修的链写通过。技术合成exclusive配置不表示真实Tavily账号已就绪，真实provider仍not_run。该缺口、修复与额外验收成本须进正式裁定记录。
+
 原Mac受控入口无报价运行配置，原证据解析器要求Linux；Task10完整报价使用独立internal-network Linux owner，公开回复产生自己的Need/Opportunity，再经真实来源/单位/成本/独立审批/PDF。主Mac owner验证另一组真实reply对象、新链接和依赖未配置状态。能力矩阵和可运行说明必须说明两个环境/不同实体/确切启动或验收命令，不把“已有Linux完整报价回归通过”写成“当前Mac统一入口可完整报价”，也不把临时QA注入当用户入口交付。保存Task10该裁定的代价与report DONE_WITH_CONCERNS。用户仍可先用Web核心主链；本轮无桌面端，也未授权生产部署。
+
+
+controller 交付前定向核查：现 docs/operations/web-core-local.md 仍有研究确认拒绝、notification 未启动、HUP 仅三进程、未知发送尚未验证等 Task4/早期陈述；最终须按 Task12 实际四进程/typed research-contact 装配/重放证据逐项改写，不能只改文首“已完成”。web-core-capability-matrix.md 当前是 ec801a8/0058 的 Task0 基线；可保留明确历史附录，但主表须为最终源码与0059事实，避免同页混用“需补组合”和“已完成”。controller 已确认 /tmp/task8-browser-evidence 至 task11-browser-evidence 代表截图仍存在，持久迁移时只选安全且确有查看/解释的代表项，不凭文件名声称额外行为。
+
+
+Task12交接最终：SOURCE48e4465完整9318通过，I1仅两个测试修复源码7e10383完整主链1passed，报告5b63744；同review_task12双Approved，不重复全量。见正式验收与task-12-report/review全部限制。最终Mac代表owner8d234c0956fb498e9f171342c3b72f51、Linux2ea6b4a4e32f429192c2d1926a2ebfc1，root/reviewer已看Need1440/Handoff390/quote390/exactcost1440。前者待接管截图不是accept状态证明，真实HTTP/proof accepted。源测试重生成六张output/playwright/t12-catalog-product-proposal已tracked截图，仅属本轮运行副产物，尚未stage；记录安全归档后可恢复这些明确六文件到Task13 BASE以避免无关二进制混入，不能操作其它未归属改动。其余历史Task10/12输出保留，不批量clean。正式报告只留下安全必要证据，未知成本/token/人工工时不写0。
