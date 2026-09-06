@@ -163,3 +163,29 @@ Git命令stderr均捕获计数不打印：最终源码diff-check5148 bytes、add
 本次没有发现真实drift或敏感扫描问题，只有本报告新增证据；临时证据仍交Task13持久化。
 
 本轮首次报告`git add -- [report]`返回exit1（stderr379 bytes，未打印），随后核对HEAD仍47772bd、索引仅本报告已修改，未改源码；对同一明确报告路径用`git add -f`完成文档暂存，不修共享Git元数据。
+
+
+## Task8 Fix round 1/5 — I1 / I2 撤权后的跨通道竞态
+
+FIX_BASE：`fd550a3c64866e34a3d303beb104e672afbe1fe0`。独立review指出两条同身份跨通道反例，本轮接受并仅修I1/I2。源码提交：**`85b3def23f5b15422f274fc7feeeb7521ec9a610`**，3 files（两组件与新增精确回归），已冻结，报告另做文档提交。
+
+I1：SendingIdentityCenter任何当前401/403/404拒绝同步调用原gate.invalidate并reset受限数据、登记/预热待核对意图、确认框、busy/checkBusyId，再明确收尾listLoading。拒绝后的安全提示在reset之后写入。旧reviews/exact/command/list响应及error/finally因此失效；显式恢复读取使用新generation，旧finally不再结束新请求。
+
+I2：SmartInbox当前列表401/403/404同步失效原gate，并使用clearProtected清列表、选中对象、详情、建议、纠正反馈及其busy；同时递增原list/detail版本并收尾loading。旧详情、建议或纠正返回不能恢复原件与下载入口，也不能发起旧纠正成功后的详情刷新。未调整API/DTO、身份权限框架、其他页面或M1全仓warning。
+
+### 真实RED与GREEN记录
+
+以下所有命令workdir均为`/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion`，本轮未启动或操作此前已清零的owned stack。
+
+1. 将reviewer `/private/tmp/task8-review-races/race.test.ts`两个反例落仓为`apps/web/tests/core-access-revocation.test.ts`。`npm --prefix apps/web test -- tests/core-access-revocation.test.ts`：**exit1，2 failed**。分别实际显示403提示同时回填`protected-review-summary`、`protected-second`。这证明客户端旧响应复活，不声称发生新HTTP越权。
+2. 扩展到9项后同命令初次输出超出工具上下文，未把缺失输出作为有效验收统计。仍未改生产源码，使用Python subprocess捕获同命令至`/tmp/task8-fix1-red.log`重跑：**测试exit1，9 failed**（外层记录脚本exit0）。其中2条Inbox测试错误定位动态“加载中…”按钮而产生TypeError；2条预热测试因旧busy未收尾而缺少确认按钮。保留这轮，不把测试定位问题冒充完整有效RED。
+3. 修正刷新定位器兼容实际加载文案、预热先显式断言按钮已解锁。为核实修正后的RED，Python通过`git show fd550a3c64866e34a3d303beb104e672afbe1fe0:<两组件路径>`暂时取回基点的两组件内容，运行同一`npm --prefix apps/web test -- tests/core-access-revocation.test.ts`，finally恢复本轮两组件内容：**测试exit1，9 failed，均为AssertionError**（外层脚本exit0），归档`/tmp/task8-fix1-red-corrected.log`。覆盖旧复核/原件/精确身份复活、旧预热锁未释放、reviews404后列表仍loading、旧纠正成功多请求详情、旧纠正error与旧详情error覆盖当前状态。
+4. 两组件窄修后同命令：**exit0，9 passed**，1.14s。新增测试固定同一身份generation，覆盖旧success/error/finally以及拒绝后的显式恢复请求；新写锁和新列表loading保持到各自请求完成。其后增加原件反例的账号与下载按钮不得出现断言，再运行以下最终作用组。
+5. `npm --prefix apps/web test -- tests/core-request-generation.test.ts tests/message-evidence.test.ts tests/identity-registration.test.ts tests/smart-inbox.test.ts tests/core-access-revocation.test.ts`：**exit0，5 files / 28 passed**，2.88s。此为本轮最终源码的限定作用组，不累计历史全Web结果。
+6. `npm --prefix apps/web run build`：**exit0**，包含`vue-tsc --noEmit`与Vite构建，157 modules，Vite431ms。
+7. `apps/web/node_modules/.bin/eslint --config apps/web/eslint.config.js apps/web/src/views/SendingIdentityCenter.vue apps/web/src/views/inbox/SmartInbox.vue apps/web/tests/core-access-revocation.test.ts`：**exit0，无输出**。
+8. `env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python scripts/scan_sensitive.py apps/web/src/views/SendingIdentityCenter.vue apps/web/src/views/inbox/SmartInbox.vue apps/web/tests/core-access-revocation.test.ts`：**exit0，无输出、零命中**。仅3个明确本轮文件，未读取.env、未输出匹配值。
+9. `env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python scripts/check_boundaries.py`：**exit0，7组结构自检通过**。
+10. `git diff --check`、`git diff --cached --check`均**exit0**。源码`git add -- <上述3路径>`、`git commit -m 'fix(web): invalidate protected requests after access denial'`均**exit0**；提交后`git status --short`无输出。所有Git stderr捕获只报字节数：diff-check572、cached-check1573、add429、commit20592、status572；不打印stderr内容、不修共享Git元数据或全局身份。
+
+本轮仅请求生命周期逻辑与组件回归，未重跑后端、全Web或真实stack；没有新增视觉/CSS变化，不把本轮jsdom测试当真实浏览器视觉证据。此前真实desktop/390截图属于前述版本与验收范围。源码冻结后仅追加本报告，交Controller独立复审。
