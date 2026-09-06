@@ -1,0 +1,306 @@
+{
+  "captured_at": "2026-09-06T11:53:12.025277+00:00",
+  "base": "aa24508dc77fac1e6cc2e21225cb3dcd21dd240b",
+  "meaning": "精确安全字节快照；截至此时Task13/最终全分支审查尚待；历史状态不覆盖最终结论",
+  "files": [
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/progress.md",
+      "target": "docs/acceptance/web-core-delivery/rulings-progress-history.md",
+      "source_sha256": "fcfd353b7fa5b4993a77f806b4e4b01a6cc79974c7eafb140c0a1f28758998e0",
+      "archived_sha256": "fcfd353b7fa5b4993a77f806b4e4b01a6cc79974c7eafb140c0a1f28758998e0",
+      "bytes": 124486
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-9-spec.md",
+      "target": "docs/acceptance/web-core-delivery/task-9-spec.md",
+      "source_sha256": "579f976556a72fb5c1ad8089ea83fc83a14283f1d04a5414793eaf0136b4619f",
+      "archived_sha256": "579f976556a72fb5c1ad8089ea83fc83a14283f1d04a5414793eaf0136b4619f",
+      "bytes": 6229
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-0-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-0-report.md",
+      "source_sha256": "d9404bf8a89fb7dd78fd1e4848c1e1a0ffdf96b66a5cbf627c2a31ca8d9b61c2",
+      "archived_sha256": "d9404bf8a89fb7dd78fd1e4848c1e1a0ffdf96b66a5cbf627c2a31ca8d9b61c2",
+      "bytes": 6246
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-0-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-0-review.md",
+      "source_sha256": "8295210dd020519c2d5467470da667c47ec764fa766fb03a6b74b753244d2350",
+      "archived_sha256": "8295210dd020519c2d5467470da667c47ec764fa766fb03a6b74b753244d2350",
+      "bytes": 5398
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-1-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-1-report.md",
+      "source_sha256": "455db233f5a623576fdb3d2877e227b690a91186f5e393cd9b9e535a0dd242bf",
+      "archived_sha256": "455db233f5a623576fdb3d2877e227b690a91186f5e393cd9b9e535a0dd242bf",
+      "bytes": 9045
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-1-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-1-review.md",
+      "source_sha256": "0117a857b0d4b3e24517848ba54970d3677bf729aace39750fef5030a29f3c04",
+      "archived_sha256": "0117a857b0d4b3e24517848ba54970d3677bf729aace39750fef5030a29f3c04",
+      "bytes": 10324
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-2-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-2-report.md",
+      "source_sha256": "a21a7f0c905d6e455439a5f0e225ef26e32a2529327b226a168de083ae2db3e3",
+      "archived_sha256": "a21a7f0c905d6e455439a5f0e225ef26e32a2529327b226a168de083ae2db3e3",
+      "bytes": 11471
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-2-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-2-review.md",
+      "source_sha256": "b108d68f92316e547872b70231e29481b3149c2823b3ac55dbf00fbb5c6bce5a",
+      "archived_sha256": "b108d68f92316e547872b70231e29481b3149c2823b3ac55dbf00fbb5c6bce5a",
+      "bytes": 5016
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-4-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-4-report.md",
+      "source_sha256": "ee876123e0fea69bfdf763eb6a0ea118ed9c27f652a03003714b2765cc2e8ca4",
+      "archived_sha256": "ee876123e0fea69bfdf763eb6a0ea118ed9c27f652a03003714b2765cc2e8ca4",
+      "bytes": 19508
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-4-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-4-review.md",
+      "source_sha256": "5706863ad4338d6b3b7fa09e01935fa7370dc77fd9b7a252e0e7fcbddbe443a7",
+      "archived_sha256": "5706863ad4338d6b3b7fa09e01935fa7370dc77fd9b7a252e0e7fcbddbe443a7",
+      "bytes": 8193
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-6-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-6-report.md",
+      "source_sha256": "096604ae9ea849e02bd78a97390bd1308b99ce21eafeb88292f530547d4aa9fa",
+      "archived_sha256": "096604ae9ea849e02bd78a97390bd1308b99ce21eafeb88292f530547d4aa9fa",
+      "bytes": 27485
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-6-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-6-review.md",
+      "source_sha256": "22d8f37e8df9f071ca4fe2cf0f8e7f9bae8ac3e98661466bd9a5ecfa266860f9",
+      "archived_sha256": "22d8f37e8df9f071ca4fe2cf0f8e7f9bae8ac3e98661466bd9a5ecfa266860f9",
+      "bytes": 12874
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-7-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-7-report.md",
+      "source_sha256": "0dbc63958cef5720c0656273e2dcabdabcca84d5e313f6a522e74b1c2eb6d83c",
+      "archived_sha256": "0dbc63958cef5720c0656273e2dcabdabcca84d5e313f6a522e74b1c2eb6d83c",
+      "bytes": 15250
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-7-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-7-review.md",
+      "source_sha256": "a08071eead8bfb60812d61163c40e90b39fa52dcb3a530fc16035706014745d5",
+      "archived_sha256": "a08071eead8bfb60812d61163c40e90b39fa52dcb3a530fc16035706014745d5",
+      "bytes": 6166
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-8-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-8-report.md",
+      "source_sha256": "36548704deb8bb6449ff17f4951dca1bea7268871c2b3f618c1f3e5530e937d8",
+      "archived_sha256": "36548704deb8bb6449ff17f4951dca1bea7268871c2b3f618c1f3e5530e937d8",
+      "bytes": 30522
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-8-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-8-review.md",
+      "source_sha256": "56334abc86df9baffeb2b20d2084c86af07aca6d2dce2a99f087ff31a790ab17",
+      "archived_sha256": "56334abc86df9baffeb2b20d2084c86af07aca6d2dce2a99f087ff31a790ab17",
+      "bytes": 11283
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-9-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-9-report.md",
+      "source_sha256": "b6fe662123207e9f3c2a61b37337ea08a7bcf9dc3b11ed509056ac93618fd43d",
+      "archived_sha256": "b6fe662123207e9f3c2a61b37337ea08a7bcf9dc3b11ed509056ac93618fd43d",
+      "bytes": 25439
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-9-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-9-review.md",
+      "source_sha256": "e5d0092639b2019d3bed531e87893a69732160183a7609985c8317adcb78b7b5",
+      "archived_sha256": "e5d0092639b2019d3bed531e87893a69732160183a7609985c8317adcb78b7b5",
+      "bytes": 13090
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-10-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-10-report.md",
+      "source_sha256": "b16db3d303048a1ffdb98257d3763a9521e1ba48b8574ff2a839a855de9c5eb0",
+      "archived_sha256": "b16db3d303048a1ffdb98257d3763a9521e1ba48b8574ff2a839a855de9c5eb0",
+      "bytes": 24366
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-10-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-10-review.md",
+      "source_sha256": "30afe5026c0ec49fd979eb166655fb31121939311a42c945459096b90339e073",
+      "archived_sha256": "30afe5026c0ec49fd979eb166655fb31121939311a42c945459096b90339e073",
+      "bytes": 15561
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-11-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-11-report.md",
+      "source_sha256": "c3787645db8fef7fe33a8f4dbf199b3f65927e25f8ff3bed966052c4e4575f2a",
+      "archived_sha256": "c3787645db8fef7fe33a8f4dbf199b3f65927e25f8ff3bed966052c4e4575f2a",
+      "bytes": 15418
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-11-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-11-review.md",
+      "source_sha256": "410e2d8efad329aa664f922fcc0aa21312bda571c23a0fa045f77f92145ee149",
+      "archived_sha256": "410e2d8efad329aa664f922fcc0aa21312bda571c23a0fa045f77f92145ee149",
+      "bytes": 6757
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-12-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-12-report.md",
+      "source_sha256": "34606968991ab37a70a256d000a07bd5c1fcaf1ab6dbbc3d6ea2621ca51579f8",
+      "archived_sha256": "34606968991ab37a70a256d000a07bd5c1fcaf1ab6dbbc3d6ea2621ca51579f8",
+      "bytes": 18386
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-12-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-12-review.md",
+      "source_sha256": "f27b992b27303481f03db5e7c947fcab0412fa88fa5609cfd87e356de7aa9457",
+      "archived_sha256": "f27b992b27303481f03db5e7c947fcab0412fa88fa5609cfd87e356de7aa9457",
+      "bytes": 16501
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-3a-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-3a-report.md",
+      "source_sha256": "f7fe9c33a14f211d0910a3b9f0a026e6c957805497744b3b7e09cb2213094c50",
+      "archived_sha256": "f7fe9c33a14f211d0910a3b9f0a026e6c957805497744b3b7e09cb2213094c50",
+      "bytes": 12457
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-3a-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-3a-review.md",
+      "source_sha256": "c8f80361754a7deba7bfa560893586706d1514b74977984ea917e571b2d1a558",
+      "archived_sha256": "c8f80361754a7deba7bfa560893586706d1514b74977984ea917e571b2d1a558",
+      "bytes": 9765
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-3b-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-3b-report.md",
+      "source_sha256": "c0ca378159ce34827474ea581a79d9059442f5cedc1ddf85169ed0c021bf13fd",
+      "archived_sha256": "c0ca378159ce34827474ea581a79d9059442f5cedc1ddf85169ed0c021bf13fd",
+      "bytes": 17324
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-3b-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-3b-review.md",
+      "source_sha256": "dcf60e47e2482797e4371e63cfc867934ad056cb3c47ede6c104cceecbcf97ef",
+      "archived_sha256": "dcf60e47e2482797e4371e63cfc867934ad056cb3c47ede6c104cceecbcf97ef",
+      "bytes": 12484
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-5a-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-5a-report.md",
+      "source_sha256": "ff5a417f3c7d4eb5faafef4f9d894af653e0917272c5ffa27c61faec2a18dd5d",
+      "archived_sha256": "ff5a417f3c7d4eb5faafef4f9d894af653e0917272c5ffa27c61faec2a18dd5d",
+      "bytes": 19976
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-5a-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-5a-review.md",
+      "source_sha256": "67ef6e08cf9cb0dfbc8f0f02e8992ea47df368d1699d648962cb9f133e48bcc1",
+      "archived_sha256": "67ef6e08cf9cb0dfbc8f0f02e8992ea47df368d1699d648962cb9f133e48bcc1",
+      "bytes": 8752
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-5b-report.md",
+      "target": "docs/acceptance/web-core-delivery/task-5b-report.md",
+      "source_sha256": "061a7aac71fed8fe653f383c2e4c880f5dde4b5ebf9a4ef5b456e4d18ed229a5",
+      "archived_sha256": "061a7aac71fed8fe653f383c2e4c880f5dde4b5ebf9a4ef5b456e4d18ed229a5",
+      "bytes": 21053
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/task-5b-review.md",
+      "target": "docs/acceptance/web-core-delivery/task-5b-review.md",
+      "source_sha256": "8ea660a566379ec5a360ff736bd45c67ff41def89f4b0d8979522c2ef4ebbb89",
+      "archived_sha256": "8ea660a566379ec5a360ff736bd45c67ff41def89f4b0d8979522c2ef4ebbb89",
+      "bytes": 10886
+    }
+  ],
+  "ruling_lines": 87,
+  "catalog_side_effects": [
+    {
+      "source": "output/playwright/t12-catalog-product-proposal/03-policy-pending-desktop.png",
+      "archive": "docs/acceptance/web-core-delivery/catalog-full-suite-side-effects/03-policy-pending-desktop.png",
+      "sha256": "642f15829e73fe072dcf50c60136f5606112b021a1c508d3fcc0956be8d06113",
+      "base_sha256": "0db5be55ddde6ba7fd5f22311979c158304ae37b48dc9ade6236fd30a52dd94c",
+      "git_stderr_lines": 7,
+      "viewed": true
+    },
+    {
+      "source": "output/playwright/t12-catalog-product-proposal/04-policy-approval-deep-link.png",
+      "archive": "docs/acceptance/web-core-delivery/catalog-full-suite-side-effects/04-policy-approval-deep-link.png",
+      "sha256": "ef454d11205050713e7382bcef8c7b7ef66aca263d524852eb2ea9124008dbf0",
+      "base_sha256": "5ddd766f971af66b8b0262cb7d85d29c6d41a368b5b3a3c72c8804c18d285dfb",
+      "git_stderr_lines": 7,
+      "viewed": true
+    },
+    {
+      "source": "output/playwright/t12-catalog-product-proposal/05-active-policy-proposal-desktop.png",
+      "archive": "docs/acceptance/web-core-delivery/catalog-full-suite-side-effects/05-active-policy-proposal-desktop.png",
+      "sha256": "1c0376e5899a4392a54d1e5c5845d982be57868328e2fb7fef1c0c6035fa6bac",
+      "base_sha256": "861e54aacb18b3aad4df132e0bfcaa6a5d44887479c337de37406bb183b0057e",
+      "git_stderr_lines": 7,
+      "viewed": true
+    },
+    {
+      "source": "output/playwright/t12-catalog-product-proposal/06-active-policy-proposal-390.png",
+      "archive": "docs/acceptance/web-core-delivery/catalog-full-suite-side-effects/06-active-policy-proposal-390.png",
+      "sha256": "2c07fb5604ca340a45b16c9e44636835f0c3a042a27762be39df54f98c1bcc21",
+      "base_sha256": "f61502cacba241bc82d665d9005760e492867c512d51d39622bb466d4c575586",
+      "git_stderr_lines": 7,
+      "viewed": true
+    },
+    {
+      "source": "output/playwright/t12-catalog-product-proposal/07-queued-cultivation-desktop.png",
+      "archive": "docs/acceptance/web-core-delivery/catalog-full-suite-side-effects/07-queued-cultivation-desktop.png",
+      "sha256": "958e9e7d7870345e6d02debd6a36a19f69080788fcb963d8ae41703c3131790a",
+      "base_sha256": "c9eca892d89e28cfae3b9ec01f028d1196550a3b0a0e4d002aed13c3742ab0af",
+      "git_stderr_lines": 7,
+      "viewed": true
+    },
+    {
+      "source": "output/playwright/t12-catalog-product-proposal/08-stale-and-cultivation-390.png",
+      "archive": "docs/acceptance/web-core-delivery/catalog-full-suite-side-effects/08-stale-and-cultivation-390.png",
+      "sha256": "c338208fe6b4f10eccb690cb1174ce29a7166a259b14c09d03ecd89b39d39eb3",
+      "base_sha256": "ded260fce7d7d0f7db30de6081bf9bd4d8e98487648b483defdef137130c818a",
+      "git_stderr_lines": 7,
+      "viewed": true
+    }
+  ],
+  "additional_reports_captured_at": "2026-09-06T11:58:24.877782+00:00",
+  "historical_representative_images": [
+    {
+      "historical_source": "/tmp/task8-browser-evidence/filled-inbox-evidence-390.png",
+      "target": "docs/acceptance/web-core-delivery/task-8-filled-inbox-evidence-390.png",
+      "sha256": "9618ef045daee5b4e232b0361d81e38caba141ee8eb223abce8fac30b257be93",
+      "viewed_on": "2026-09-06",
+      "scope": "历史该Task代表画面，不作为Task12同源码或额外运行证明"
+    },
+    {
+      "historical_source": "/tmp/task9-browser-evidence/settings-unknown-390.png",
+      "target": "docs/acceptance/web-core-delivery/task-9-settings-unknown-390.png",
+      "sha256": "750704bb8b3287a14ba220072b5502a6b78239792f3cbfc998b74db77ae01856",
+      "viewed_on": "2026-09-06",
+      "scope": "历史该Task代表画面，不作为Task12同源码或额外运行证明"
+    },
+    {
+      "historical_source": "/tmp/task11-browser-evidence/run-cost-inputs-390.png",
+      "target": "docs/acceptance/web-core-delivery/task-11-run-cost-inputs-390.png",
+      "sha256": "b812c47bb4ac9df45f2a7d0144bdbfe0511d28201ddf5fb8587808a743dc1ba8",
+      "viewed_on": "2026-09-06",
+      "scope": "历史该Task代表画面，不作为Task12同源码或额外运行证明"
+    }
+  ]
+}

@@ -694,7 +694,7 @@ async def test_correct_classification_cross_tenant_invisible(
     owned_infrastructure,
 ) -> None:
     """服务级租户不可见：A 有原分类；B-bound 服务以相同 message 纠正 →
-    ValidationError“消息尚未分类”（不是 TenantIsolationViolation，那是仓储
+    PermissionDenied（与无权/不存在一致；TenantIsolationViolation 仅用于仓储
     参数越界测试）；A/B 均零纠正，A 原分类不变。"""
     factory = async_sessionmaker(correction_db, expire_on_commit=False)
     tenant_a = TenantId(new_id("tn"))

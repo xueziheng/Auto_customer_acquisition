@@ -552,7 +552,7 @@ class ConversationServiceImpl:
 
         - 原分类行永不修改：只 append ``ClassificationCorrection``；
           ``classified_by`` 保留模型版本，另记纠正人
-        - 未分类 / 跨租户不可见 → ``ValidationError("消息尚未分类")``
+        - 无权 / 跨租户不可见 / 不存在 → ``PermissionDenied``；授权成功但未分类 → ``ValidationError("消息尚未分类")``
           fail-closed（服务按租户绑定查询，不感知其他租户，不抛
           TenantIsolationViolation）
         - 输入校验（tenant/message/category/corrected_by 空值、长度上限

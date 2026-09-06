@@ -1,71 +1,72 @@
 # Web 核心能力与执行边界清单
 
-日期：2026-09-05。本文只描述提交 `1b760b2` 的业务源码加计划提交 `ec801a8` 在当前隔离工作树中的事实，不代表生产部署、真实外部能力或运营效果已经验收。后续任务应以本清单定位组合缺口，不能把“有页面”“有 Protocol”或“历史受控验收通过”单独解释为当前进程可启动。
+实际验收日期：2026-09-06。**本机受控 Web 核心完成；多人共享部署未验收。**
+当前结论依据[Task12正式验收](../acceptance/2026-09-05-web-core-completion.md)及独立双Approved审查，
+不代表Task13或最终全分支审查已经通过。所有业务输入/外部响应为合成演练，不作为真实采购意愿或效率成绩。
 
-## 一、基线与判定口径
+## 版本、门禁与环境
 
-| 项目 | 当前事实 | 依据 |
+| 项目 | 精确事实 |
+| --- | --- |
+| 后端全量 | `48e4465fc307212e794d6ed87501cb418f74d245`：9318 passed/0 failed/0 skipped，2132.64s；源码1630文件整轮hash差异0 |
+| 最终主链修复 | `7e10383c253df4a98cd224fb7ee526d721476f9a`：仅两测试文件修复真实Campaign审批actor，完整Mac主链1 passed/34.97s；生产仍与48e4465一致，未再全量 |
+| Web | 同Task12未变Web源码，411 passed（32文件），typecheck/build/gen:api通过且API生成无diff；lint112 warnings/0 errors，均历史归属 |
+| 迁移 | 单一head `0059`：[入站正文迁移](../../migrations/versions/0059_email_inbound.py)。实际完整门禁含旧迁移往返/组合，不只源码枚举 |
+| 依赖 | Python3.12.14独立环境安装`.[dev]`；Node24.15.0独立空npm配置执行ci/build，见[操作说明](web-core-local.md) |
+| Mac原入口 | `scripts/run_web_core_controlled.py`：API/scheduler/notification/Web四进程，owned PG/MinIO，loopback。最终主链owner `8d234c0956fb498e9f171342c3b72f51` |
+| Linux独立链 | 完整报价/PDF原测试owner `2ea6b4a4e32f429192c2d1926a2ebfc1`；与Mac不同Need/Opportunity，固定internal-network和parser probe；非Mac用户启动入口 |
+| 历史失败 | 首轮98 failed/9217 passed，第二完整门禁消除；A3旧独立审批声明撤回后由7e10383真实actor修复。早期3/2 warnings类别未知，不抹去 |
+
+不同版本、局部和完整数量不相加。[安全证据/裁定索引](../acceptance/web-core-delivery/README.md)
+保存版本与限制。Task0的ec801a8/0058清单只在[历史附录](../acceptance/web-core-delivery/task-0-capability-history.md)，不能代表当前状态。
+
+## 页面到执行链路
+
+“受控已接通”表示真实域、Gateway、审批、Workflow、Outbox和PG组合已执行，外部端口为具名合成响应。
+“未配置”表示当前入口没有所需技术端口；“disabled”没有可执行消费者；“not_run”表示真实外部或部署验证未运行。
+API只做即时命令和读取；持久步骤唯一执行者是持有单副本锁的scheduler，通知由notification worker消费。
+
+| 能力 | 页面/API与当前权限 | 真实执行链 / 状态与限制 |
 | --- | --- | --- |
-| 工作树 | 分支 `codex/web-core-completion`；当前 HEAD `ec801a87270503b92d3c70389cbcd4b92807dbb9`，其父功能基线为 `1b760b2` | `git branch --show-current`、`git rev-parse HEAD`、`git log -3 --oneline` |
-| 改动基线 | Task 0 开始时 tracked、staged、untracked 路径均为空 | `git diff --name-only`、`git diff --cached --name-only`、`git ls-files --others --exclude-standard` |
-| 迁移源码 head | 单一链尾为 `0058`，`down_revision = "0057"`；这里只核对迁移源码，没有连接数据库 | [`0058_catalog_reconciliation_checkpoints.py`](../../migrations/versions/0058_catalog_reconciliation_checkpoints.py)、[`test_migrations.py`](../../tests/integration/test_migrations.py) |
-| 运行时 | `.venv/bin/python` 为 Python 3.12.14；Node 为 v24.15.0 | 版本命令；[`package.json`](../../apps/web/package.json) 也约束 Node 24.x |
-| 结构与聚焦回归 | 控制者在同一基线运行结构检查，7 项 PASS；`test_agent_worker`、`test_guardrail_checker`、`test_api_runtime`、`test_inbox_api` 合计 60 passed（4.98s） | 本任务接收的控制者基线证据；Task 0 未重复运行 |
-| Git 元数据噪声 | 读取 Git 时会报告共享对象库 `._pack-*.idx` 的既有 `non-monotonic index`；本任务不修改或修复共享 `.git/objects` | 安全 Git 元数据命令的 stderr |
+| 指令 | `/commands`、`/commands/discovery-proposals`；当前boss | API `TradeManagerAgent.propose_discovery`→Directive提案，确认只start Run；scheduler `demand_discovery`持久步骤执行。受控精确研究文本已支持；任意自由文本不访问真实模型 |
+| 研究发现 | `/demand`的Signal/Hypothesis/Cluster；当前boss研究权限 | 原 `ResearchRuntimePorts` + canonical bootstrap、持久quota、Tool Gateway search/page/model已接通。无活跃政策confirm可受理但Run失败/外部calls0；Playbook与KE独立批准后3 Signal/3 Hypothesis。research_only零联系人/Campaign/send，不自动转触达 |
+| 联系人/触达准备 | `/prospects/discoveries`、`/prospects/accounts`；独立明确触达任务/当前授权 | scheduler原`account_discovery`，typed late-binding `ContactRuntimePorts`复用本runtime canonical domains，单Provider enrich→verify→原步骤持久verified→入组。未验证拒绝。真实Hunter validation/readiness未运行，不能把controlled-single-provider或exclusive合成账户当真实就绪 |
+| Campaign/发件身份 | Campaign页面、`/crm/campaigns`及`/crm/sending-identities` API；人工登记/认证/预热与独立审批 | 原DNS→Gateway→认证状态机；真实提议人自批400/pending、另一当前老板批准精确Campaign/v1再激活。scheduler发送仅本owner受控邮箱；抑制/额度/当前回复/可达性门禁真实。真实DNS/冷开发运营/Gmail not_run |
+| 入站 | `/email-inbound/status/binding/reviews`及原件用途读取；绑定boss，阅读按当前actor | scheduler typed mailbox经Gateway→RawArtifact→可信出站关联→ingest/Outbox；客户正文与退信投诉分开。未知/跨租户关联不晋升，正文cursor/重放已验 |
+| Inbox | `/inbox/conversations...`、`/inbox/messages/{id}/correct-classification`、`evidence`；boss/manager/sales按当前owner范围 | ConversationService服务层列表/详情/纠正/下一问/原件授权一致；原reply classify/apply_actions接通，撤权后旧页面清理且HTTP拒绝。无权/跨tenant/不存在统一PermissionDenied，已授权未分类才ValidationError |
+| Need | `/demand/needs/{id}`；按当前角色/对象权限 | 合成MIME经过真实回复证据/逐字段Provenance→原Demand验证→Need，事实与推断分栏、客户原话和原件可读。不能直插结果充当闭环；Need记录不自动成为北极星合格机会 |
+| 机会/接管 | `/crm`、`/crm/handoffs/{id}`及accept；当前归属/管理范围 | 原reply→Opportunity/Ownership/Handoff→human_handoff/通知；真人接受已由HTTP/proof证明。队列按等待时长；OpportunityList不消费opportunity_id查询，不能把看板截图当精确机会深链 |
+| 寻源 | `/sourcing`、Case/计划/确认/评审/Admission；当前sourcing与老板权限 | 既有V2/准入完整受控链与Task12原作用组通过。Mac原入口自动寻源准入/技术组未配置；不能以已有域或合成research账户推导自动启用。Need不合并，公开价格indicative只内部判断 |
+| 成本报价 | `/costing-quotes`页面及同前缀`/quotes/{id}`用途API、Quote→Run→Approval、Opportunity→Need/精确成本单 | 独立Linux公开回复→来源/单位/22项成本→Decimal→独立审批→PDF链通过。Mac完整quotation组未配置返回503。quoted或人工明确接受indicative风险并留痕才可进入报价，仍需正式审批；没有供应商联系或报价发送 |
+| 审批 | `/approvals/{id}`、decide；精确类型/当前角色、独立决定者 | 原审批域与业务canonical包，Outbox/scheduler应用；决定成功不等于已应用。过期、自批、stale、重复回放拒绝/收敛。批准不授予所有后续承诺 |
+| Run/观测 | `/runs`、详情/安全失败与对象链接；当前boss/对象权限 | 原RunAuditService/PG安全投影，可靠ID才深链，来源不足标unknown。成功/失败/等待/缺项可见；无通用强制重试按钮。总模型token、费率、人工工时未知，单位合格机会成本不可算 |
+| Settings/Catalog | `/settings` Playbook/国家政策/Provider readiness；`/products`策略/提案/培养Case | 原候选提交→Run失败可同actor/key/payload恢复，独立审批后生效。Catalog策略/提案/reconciliation持久恢复已验，批准终点仅queued Case；`CatalogCultivationQueued`消费者disabled，无正式Product/供应商/搜索/发送/报价副作用 |
 
-状态只按“当前源码能否在 Web 核心受控运行中形成真实链路”判定：
+接口实现分别见[API routers](../../apps/api/routers/)、[canonical scheduler](../../apps/scheduler_worker/bootstrap.py)、
+[运行装配](../../apps/scheduler_worker/runtime.py)、[受控研究](../../apps/scheduler_worker/controlled.py)、
+[联系人typed装配](../../apps/scheduler_worker/controlled_contacts.py)。
 
-- **已有可组合**：业务、API/流程和安全端口已存在，受显式配置或数据门禁控制；W2 仍需把必要进程放入同一受控启动入口。
-- **需补组合**：主要业务实现已存在，但正式进程入口、typed 依赖或事件/步骤接线尚未闭合。
-- **需新实现**：缺少完成链路必需的安全能力，不是简单接线。
-- **本轮暂缓**：设计明确不进入 Web 核心里程碑，页面必须如实显示终点或不可用状态。
+## 进程与仍未交付项
 
-“执行者”指改变该项状态的唯一进程。API 只执行即时命令；需要恢复、等待或重放的动作只由持有单副本锁的 scheduler 推进。当前 Agent 能力是 API 或 scheduler 中确定步骤的依赖，Agent Worker 不与它们重复消费；Browser Worker 也不替代 scheduler 的公开页面 Gateway 链。
+| 进程/能力 | 当前事实 |
+| --- | --- |
+| API | 原create_runtime_app、显式配置/schema核验、typed组合；无配置fail closed，不用OpenAPI空工厂假称ready |
+| Scheduler | 原CanonicalSchedulerBootstrap/RuntimeFactory，持锁后推进真实步骤。受控入口已装配研究/联系人/触达/回复；报价/寻源按技术组控制 |
+| Notification | 四进程之一，原durable job/站内adapter启用；controlled_in_app，email disabled。不能把排队当送达 |
+| Web | 原Vite、显著开发身份、当前请求generation；四进程健康与业务未配置分别显示；390/1440代表页面实际查看 |
+| Agent Worker | Task1/2技能注册、上下文裁剪、权限工具交集及窄适配仅组件验证。生产AgentJobRepository/任务源、tenant policy、受信descriptor和模型消费者未装配，disabled；当前Agent调用由确定API/scheduler步骤承担 |
+| Browser Worker | 无生产BrowserJobRepository/任务来源或零参数factory，disabled；不启动空队列、不称可用人工浏览器接管。当前公开页由研究/寻源Gateway组合读取 |
+| Email Feedback Worker | 独立配置的DSN/ARF worker仍存在，不在四进程中启动；客户正文归scheduler入站组合，不把反馈worker当正文入口 |
+| 桌面 | 无Tauri/IPC/目录监听/Keychain/原生通知/登录态接管；仅[扩展契约](../architecture/12-client-capability-boundaries.md) |
+| 共享部署 | 后端真实认证/会话撤销/CSRF/来源限制/TLS/运维尚未验收。开发角色和authenticated前端标签不构成登录，客户端不能自报授权 |
+| 真实业务 | Tavily/Hunter/Gmail/真实模型/供应商/商业数据/发送、价格承诺和真实客户市场验证均not_run；真实外部动作须另有明确授权并继续经Gateway与审批 |
 
-## 二、页面到执行链路
+## 重启、成本与可验证界限
 
-| 能力与状态 | 页面动作 → API | 工作流与唯一执行者 | 域服务 | 外部能力 | 当前开启条件、缺口与验收归属 |
-| --- | --- | --- | --- | --- | --- |
-| **指令：需补组合** | boss-only 的 `/commands` 创建、读取、确认、拒绝发现提案：`POST/GET /commands/discovery-proposals...`；另有寻源准入提案 | 创建提案由 **API 即时调用** `TradeManagerAgent.propose_discovery`；确认后 API 只幂等 `start(demand_discovery)`；四个持久步骤只能由 **scheduler** 推进 | `DirectiveService`；研究状态读取服务；`WorkflowEngine` | 提案解析使用 OpenAI JSON 模型端口；后续研究外部能力归“发现”链 | API 工厂已构造专用 Trade Manager，但通用技能注册、上下文裁剪与权限工具交集尚未实现；scheduler 的 `DemandDiscoveryComposition` 只能注入，零参数入口不会装配。W1/W2 覆盖。依据：[`command_center.py`](../../apps/api/routers/command_center.py)、[`runtime.py`](../../apps/api/composition/runtime.py)、[`demand_discovery/flow.py`](../../workflows/demand_discovery/flow.py) |
-| **发现：需补组合** | boss-only 的 `/demand` 读取 Signal/Hypothesis/Validated Need/Need Cluster；`POST /prospects/discoveries` 发起账户发现，`/prospects/accounts` 读取企业/联系人 | `demand_discovery` 的 `plan_search → execute_search → generate_hypotheses → score_and_queue` 与 `account_discovery` 的企业解析、联系人补全/验证、归属、入组均由 **scheduler**；页面读取与 Run 创建由 API | `DemandService`、`ProspectingService`、`EmployeeService`、`OutreachService` | Tavily 搜索、公开页读取、模型提取；联系人可选 Hunter `contact.enrich` + `contact.verify`，全经 Tool Gateway | 研究要求确认提案、有效 Playbook/国家政策、显式 Tavily 组合与额度；触达准备还要求 Campaign 发送组合。Hunter 必须配置声明、真人验证、匹配配置并由锁 owner 写 `runtime_composed`。现有源码和受控验收不等于真实 Provider 已启用。W2 闭合启动组合。依据：[`scheduler runtime`](../../apps/scheduler_worker/runtime.py)、[`account_discovery/flow.py`](../../workflows/account_discovery/flow.py)、[`2026-08-27-phase2-free-discovery.md`](../acceptance/2026-08-27-phase2-free-discovery.md) |
-| **Campaign：需补组合** | `/campaigns` 创建/修订/提交审批/激活/暂停/取消并查看 Enrollment；另有手工邮件 API | 边界和状态命令由 **API 即时调用**；每个 Enrollment 的 `draft_content → prepare_send → send → record_sent → wait_for_reply` 只由 **scheduler** 扫描和推进 | `OutreachService`、`SendingIdentityService`、`ApprovalService` | Gmail `email.send`、DNS 认证检查、退订链接，均经 Tool Gateway | 激活需独立审批；发送还需已验证联系人、可用发件身份、抑制/额度/回复现状和 scheduler `CampaignMessagingComposition`。正式 API 工厂当前传入 `manual_send=None`，因此手工发送 Gateway 明确不可用；scheduler `main()` 也没有生产 bootstrap。W2 闭合。依据：[`campaigns.py`](../../apps/api/routers/campaigns.py)、[`outreach_campaign/flow.py`](../../workflows/outreach_campaign/flow.py)、[`API runtime`](../../apps/api/runtime.py) |
-| **Inbox：需新实现** | `/inbox` 列表、详情、人工纠正分类：`GET /inbox/conversations...`、`POST /inbox/messages/{id}/correct-classification` | 现有数据读取/纠正由 **API 即时调用**；理想入站链应由 **scheduler** 消费 `InboundMessageStored` 并运行 `classify → apply_actions` | `ConversationService`、`OutreachService`；后续动作接 `DemandService`、`OpportunityService` | 当前 Gmail 工具只有 `email.feedback.fetch`，处理 DSN/ARF 退信投诉；没有客户回复正文读取、RawArtifact 归档和可信出站关联入口 | Inbox 当前只允许 boss，缺负责人范围；`ReplyQualificationComposition` 是可选注入且生产入口未提供模型/正文 reader；最前面的 Gmail 正文入口完全缺失。W3 新增安全入站插件，W4 补服务层范围。依据：[`inbox.py`](../../apps/api/routers/inbox.py)、[`reply_qualification/flow.py`](../../workflows/reply_qualification/flow.py)、[`connectors/gmail/AGENTS.md`](../../connectors/gmail/AGENTS.md)、[`email_feedback_worker/AGENTS.md`](../../apps/email_feedback_worker/AGENTS.md) |
-| **Need：需补组合** | `/demand` 查看事实/推断/需求；`/demand/needs/{id}` 查看 Provenance 并跳转寻源 | 查询由 **API 即时调用**；只有 **scheduler** 的回复流程动作可沿可信客户回复把 Hypothesis 晋升为 Validated Need，并继续创建 Opportunity | `DemandService`；回复组合还使用 `ConversationService`、`ProspectingService`、`OutreachService` | 无独立外部动作；依赖 Inbox 的原始邮件 artifact 与分类模型结果 | 读取既有 Need 已可用；新 Need 的完整链被 Inbox 正文入口和 reply composition 阻断。客户原话、逐字段 quote、Enrollment/出站关联验证缺一不可，不能手工直插冒充。W3 验收。依据：[`demand_radar.py`](../../apps/api/routers/demand_radar.py)、[`reply_actions.py`](../../apps/scheduler_worker/reply_actions.py)、[`reply_customer_evidence.py`](../../apps/scheduler_worker/adapters/reply_customer_evidence.py) |
-| **接管：需补组合** | `/crm/handoffs` 查看队列/包并 `POST /crm/handoffs/{id}/accept`；机会列表/详情/状态也已有 API | 接受与 CRM 命令由 **API 即时调用**；接管通知、T1/T2 等待与升级只由 **scheduler** 的 `human_handoff` 工作流推进 | `OpportunityService`、`EmployeeService`，通知 job/adapter | 站内/邮件通知由 Notification Worker 投递；无客户外部承诺 | 已有队列与原子接受；自动创建接管包依赖 reply action 与真实 owner 分配，升级依赖 scheduler bootstrap。W2/W3/W4 覆盖，队列必须按等待时长。依据：[`crm.py`](../../apps/api/routers/crm.py)、[`human_handoff/flow.py`](../../workflows/human_handoff/flow.py)、[`notification_worker/runtime.py`](../../apps/notification_worker/runtime.py) |
-| **寻源：已有可组合** | `/sourcing` 查看 Admission/Case、人工准入；详情可建/确认/运行公开搜索计划、评审和不确定结果核对 | 人工命令由 **API 即时调用**；自动准入扫描和 `sourcing_case.v2` 持久步骤只由持锁 **scheduler** | `SourcingService`、`DirectiveService`、`OpportunityService`；额度 repository | Tavily、公开页、安全解析/模型，经 Tool Gateway；不接联系人、邮件、采购或客户 Quote | 仅在显式 `TRADEOS_SOURCING_SETTINGS_JSON` enabled 且 typed 研究端口齐全时组合；未配置策略不自动准入。现有受控链已验收，W2 只需把真实必要工厂接入受控启动，W5 做跨页面回归。依据：[`sourcing.py`](../../apps/api/routers/sourcing.py)、[`scheduler config`](../../apps/scheduler_worker/config.py)、[`2026-08-30-phase2-sourcing-case-product-cards.md`](../acceptance/2026-08-30-phase2-sourcing-case-product-cards.md)、[`2026-09-02-phase2-need-cluster-sourcing-admission.md`](../acceptance/2026-09-02-phase2-need-cluster-sourcing-admission.md) |
-| **成本报价：已有可组合** | `/costing-quotes` 建 Cost Sheet/成本项、评估完整度、确认政策/汇率/价格证据/范围/单位、确定性计算、建修订 Quote、提交审批、生成/下载 PDF | 成本和报价草稿命令由 **API 即时调用**；`quote_approval` 与到期扫描只由 **scheduler** | `CostingService`、报价域服务、`ApprovalService`、Artifact Store | 对象存储、受限证据解析、PDF 生成；没有自动供应商谈判或 direct supplier quote | 金额由 Decimal 代码计算；`quoted` 价格可直接进入客户可见报价，只有 `indicative` 价格时必须由人工明确接受风险并完整留痕，且审批包和客户报价链路继续显著保留风险标记，否则不得进入。API 仅在报价配置和对象存储端口整组齐全时暴露真实组合，文件组可独立禁用；scheduler 必须使用同一类显式设置注册审批步骤。W5 回归。依据：[`costing_quotes.py`](../../apps/api/routers/costing_quotes.py)、[`quotation_actions.py`](../../apps/api/routers/quotation_actions.py)、[`2026-08-28-phase2-costing-quotation.md`](../acceptance/2026-08-28-phase2-costing-quotation.md) |
-| **审批：已有可组合** | `/approvals` 列表/详情；boss/manager 通过 `POST /approvals/{id}/decide` 决定 | 决定由 **API 即时调用**并发布事实；等待中的 Playbook、国家政策、报价、Catalog 等流程只由 **scheduler** 接收 `ApprovalDecided` 后应用 | `ApprovalService` 加各业务域服务 | 审批本身无外部调用；后续通知由 Notification Worker，报价发送仍另过 Gateway | 每类审批必须读取 canonical 变更包并防自批/过期/重放；“决定成功”不等于下游已应用。scheduler 未运行时应显示 pending/apply 状态，不能伪装完成。依据：[`approvals.py`](../../apps/api/routers/approvals.py)、[`quote_approval/flow.py`](../../workflows/quote_approval/flow.py)、[`catalog policy flow`](../../workflows/catalog_product_proposal/policy_flow.py) |
-| **Run：已有可组合** | boss-only 的 `/runs` 和 `/runs/{id}` 只读列表、步骤、计数、等待/失败/成本安全投影 | 读取由 **API 即时调用**；所有状态变化归创建该 Run 的 **scheduler 工作流**，页面没有通用“强制重试”执行权 | `RunAuditService`、`PostgresWorkflowEngine` | 无直接外部能力；只展示已由步骤安全记录的调用/成本元数据 | API 需显式数据库与当前 schema；运行状态是否变化取决于 scheduler 是否真实持锁并 ready。W2 提供健康/恢复，W4/W5补状态呈现。依据：[`runs.py`](../../apps/api/routers/runs.py)、[`engine/audit.py`](../../workflows/engine/audit.py)、[`scheduler main`](../../apps/scheduler_worker/main.py) |
-| **Settings：已有可组合；Catalog 消费本轮暂缓** | boss-only 的 `/settings` 读取研究、Playbook、国家政策、Hunter readiness并提交 Playbook/国家政策提案；`/products` 管理 Catalog 策略/提案并显示培养 Case | 提案创建和只读状态由 **API 即时调用**；Playbook、国家政策与 Catalog 审批/恢复/评估由持锁 **scheduler** | `OrganizationService`、`ComplianceService`、`ProviderReadinessService`、`CatalogProposalService`、`ApprovalService` | Hunter 只显示 durable readiness；验证需授权真人走专用 Gateway。Settings 不应解析或回显凭证 | Playbook/国家政策批准后才激活；Hunter 当前配置需独立声明、真人验证、重启并匹配 `runtime_composed`。Catalog 审批后只创建 `queued` 培养 Case，下游消费者明确暂缓，不能显示为已培养。依据：[`settings.py`](../../apps/api/routers/settings.py)、[`catalog_product_runtime.py`](../../apps/scheduler_worker/catalog_product_runtime.py)、[`2026-09-04-phase2-catalog-product-proposal.md`](../acceptance/2026-09-04-phase2-catalog-product-proposal.md) |
+HUP覆盖四应用，同owner重放后一份业务结果/一次实际send已验。未知发送使用每次Provider调用账本，
+同消息去重数不能替代实际调用次数。研究额度为PG持久quota；联系人秒/分钟沿原内存限流，不保证跨重启额度。
+reply model_calls=1只计回复模型，研究model另计1；不能推导整链总token或计费成本。
 
-## 三、进程启动事实与唯一职责
-
-| 进程 | 当前正式入口事实 | Web 核心结论 |
-| --- | --- | --- |
-| API | [`create_runtime_app()`](../../apps/api/runtime.py) 读取显式配置，装配 Postgres/域/API，并在 lifespan 核对 schema；对象存储设置也由正式工厂读取。`create_app()` 的零配置形态只供 OpenAPI/失败关闭 | W2 需提供隔离配置与生命周期；不能用 `create_app()` 的未配置 503 形态冒充可用 API |
-| Scheduler Worker | [`SchedulerRuntimeFactory`](../../apps/scheduler_worker/runtime.py) 能装配下层组件，但 [`main()`](../../apps/scheduler_worker/main.py) 未收到 factory 时固定非零退出；typed 业务依赖仍须部署层提供 | W2 的主要启动缺口；必须单副本锁，不能从 API 进程导入或复制第二套流程 |
-| Agent Worker | [`main.py`](../../apps/agent_worker/main.py) 只有队列/runner/context/gate Protocol 和可注入循环；仓库中未找到生产 `AgentJobRepository` 或零参数 factory | 保持 disabled。当前 Web 核心 Agent 调用留在确定 API/scheduler 步骤；除非未来出现真实持久 Agent Job 来源，不创建填空队列 |
-| Browser Worker | [`main.py`](../../apps/browser_worker/main.py) 只有 Gateway 授权 Browser Job 的可注入循环；仓库中未找到生产 `BrowserJobRepository` 或零参数 factory | 保持 disabled。现有公开页读取使用 sourcing/demand 的 Tool Gateway 组合；不为“启动全部进程”复制页面任务 |
-| Email Feedback Worker | 有真实零参数 `EmailFeedbackRuntimeFactory(os.environ)`，可显式 enabled/disabled，只注册 `email.feedback.fetch` | 只负责 DSN/ARF 退信和投诉，不能承担客户回复正文入站；W3 新能力若需要独立进程，须另立规格/ADR |
-| Notification Worker | 有显式环境配置的真实 runtime，固定站内+邮件渠道，缺邮件配置失败关闭 | 只消费持久通知 job；W2 仅在核心场景需要投递时启动，不由 API 同步冒充投递完成 |
-| Web | `npm run dev` 启动 Vite；当前 [`vite.config.ts`](../../apps/web/vite.config.ts) 没有项目级受控 launcher，Makefile `dev` 只启动 PostgreSQL/Redis/MinIO | W2 新增统一受控入口，显式绑定 loopback、使用独立测试数据，并只停止自己拥有的进程/资源 |
-
-## 四、本机身份边界
-
-本机角色切换不是认证。Web 的 [`client.ts`](../../apps/web/src/api/client.ts) 会把 `fixed-dev` 或名为 `authenticated` 的内存身份转换成 `X-Tenant-Id`、`X-Employee-Id`；这个名称不构成服务器验证。API 的 [`resolve_request_identity`](../../apps/api/identity.py) 在 `dev_mode=false` 时无条件返回 403，在 dev 模式也只接受一个员工 ID 头，再从固定租户的员工域 public DTO 重读角色、停用状态和 manager 直属范围。客户端不能自报 role 或 scope。
-
-因此 W2 本机入口必须同时满足：只监听 loopback；只连任务自己创建或明确指定的隔离测试数据库/对象资源；显著标注测试身份；角色切换后清理旧请求和缓存；不允许回退到生产数据库。多人共享使用必须另接后端验证的真实认证主体、会话撤销、员工映射、CSRF/来源约束，并继续由服务端推导 tenant、role、owner scope。在这些门禁完成前，不得把 `authenticated` 前端标记或开发头部署成多人登录。
-
-## 五、启动缺口与后续验证场景
-
-| 缺口 | 归属 | 完成时必须证明 |
-| --- | --- | --- |
-| 技能注册、上下文裁剪、权限工具交集及 Agent Worker 窄适配缺失 | W1（Task 1–2） | 受控任务只加载精确版本和授权事实；必需护栏不被裁掉；ChangeSet 仍经 guardrail/审批 |
-| API、scheduler 与必要通知进程没有统一的受控启动/停止入口；scheduler 无生产 bootstrap | W2（Task 3–4） | 缺配置/旧 schema/未注册步骤不 ready；单副本锁与重启恢复真实；只绑定 loopback、只清理自有资源 |
-| Gmail 客户回复正文读取、RawArtifact 归档、可信关联和 cursor/重放语义缺失 | W3（Task 5） | 从 Gateway 到 Artifact、`ingest_inbound`、Outbox 全链；未知/跨租户关联不晋升；零真实网络 |
-| Reply flow 的模型、正文 reader、护栏和业务动作尚未由生产 scheduler 提供 | W3（Task 6） | `InboundMessageStored` 触发且幂等；逐字段 Provenance；合法门槛才产生 Need/Opportunity/Handoff |
-| Inbox 目前 boss-only，列表/详情/纠正没有统一员工 owner scope | W4（Task 7–9） | boss/manager/sales 的列表、深链、附件和纠正均在服务层一致判权；身份改变不回显旧数据 |
-| 已有寻源、成本、报价、审批、Run 的跨页面启动与恢复尚未在同一版本集中验证 | W5/W6（Task 10–13） | A1–A10 同版本通过；未知、paused、stale、queued 如实展示；真实发送、供应商联系和付费来源调用均为 0 |
-| Catalog 培养 Case 下游消费者 | 本轮暂缓 | 页面终点保持 `queued`，不得注册无业务策略的消费者，也不得称已培养或已创建正式 Product |
-
-本文未读取 `.env`、凭证、数据库或网络，没有启动业务进程或产生外部效果。完整交付范围与 A1–A10 见 [`Web 核心收口验收设计`](../superpowers/specs/2026-09-05-web-first-completion-design.md)，执行顺序见 [`实施计划`](../superpowers/plans/2026-09-05-web-first-completion.md)。
+PG单独stop/start可能更换随机HostPort；原配置不自动更新。A5仅以同owner pause/unpause证明原端点短断恢复。
+静止owned数据备份恢复演练独立列于[操作说明](web-core-local.md)，不覆盖运行库、不等于生产灾备或外部邮箱恢复。
+完整停止删除本次环境，新启动是新owner空业务环境。历史失败与其额外验收成本见正式裁定记录。

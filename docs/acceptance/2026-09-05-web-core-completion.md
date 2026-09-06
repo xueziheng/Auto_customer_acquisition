@@ -1,6 +1,7 @@
 # Web 核心受控验收
 
-实际日期：2026-09-06。Task12实施完成，等待独立限定复审；不代表Task13总交付。
+实际日期：2026-09-06。Task12实施及独立限定复审双Approved；不代表Task13或最终全分支审查已完成。
+安全报告、裁定及代表图的持久交付见[正式索引](web-core-delivery/README.md)。
 BASE：`6cdb40d8019d560d1490925df72a58d14f4881d6`。
 
 ## 版本与实际门禁
@@ -52,7 +53,8 @@ OpportunityList不消费opportunity_id查询参数，相关截图只算看板展
 
 DB独立stop/start可改变随机HostPort，原配置不自动更新；原端点ConnectionRefused失败不应归因API池。HUP只覆盖原四应用，不能承诺DB换端点透明恢复。A5用同owner pause/unpause与独立2秒恢复计时保持端点，finally收敛恢复任务/就绪检查。历史首次取消等待暂停PG、一次误重叠启动和精确主动清理保留，不能倒写成功。
 
-首轮98失败、所有中间fixture错误、初cleanup_unknown及后续精确核验保留在Task12报告与安全索引；不回显原始敏感日志。共享.git AppleDouble只记录stderr行数不维修。Task10原9个未跟踪产物保留；全量重生成的6个既有Catalog截图保留在工作区，未混入Task12源码提交。没有真实外发、供应商接触、部署、push或merge。
+首轮98失败、所有中间fixture错误、初cleanup_unknown及后续精确核验保留在Task12报告与安全索引；不回显原始敏感日志。共享.git AppleDouble只记录stderr行数不维修。Task10原9个未跟踪产物保留；全量重生成的6个既有Catalog截图未混入Task12源码提交；Task13逐张查看并安全归档后，
+仅此六原路径恢复至Task13 BASE，hash与复制关系见正式索引，其他历史output未动。没有真实外发、供应商接触、部署、push或merge。
 
 ## 首轮98项失败逐项映射（第二全量已通过）
 
