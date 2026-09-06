@@ -191,11 +191,13 @@ async function loadVersions(): Promise<void> {
     if (result.data.some((sheet) => sheet.opportunity_id !== requestedOpportunity.value)) {
       revokeBusiness(); error.value = "成本表与当前机会不一致，请重新核对"; return;
     }
-    if (routeSheetId.value && !result.data.some((sheet) => sheet.cost_sheet_id === routeSheetId.value)) {
+    // query 定位进入目标；同一作用域内保留用户已创建或明确选择的版本。
+    const targetSheetId = selectedSheetId.value || routeSheetId.value;
+    if (targetSheetId && !result.data.some((sheet) => sheet.cost_sheet_id === targetSheetId)) {
       sheets.value = []; selectedSheetId.value = ""; error.value = "指定成本表不存在或不属于当前机会"; return;
     }
     sheets.value = result.data;
-    if (routeSheetId.value) selectedSheetId.value = routeSheetId.value;
+    if (targetSheetId) selectedSheetId.value = targetSheetId;
     if (!sheets.value.some((sheet) => sheet.cost_sheet_id === selectedSheetId.value)) {
       selectedSheetId.value = sheets.value[0]?.cost_sheet_id ?? "";
     }

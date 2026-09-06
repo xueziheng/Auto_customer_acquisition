@@ -926,3 +926,106 @@ it("Task10 手工机会工作台进入报价详情仍保留可继续修订的机
   await eventually(() => expect(root.textContent).toContain("指定版本 V1"));
   expect((root.querySelector('[name="opportunity-id"]') as HTMLInputElement).value).toBe(opp);
 });
+
+it("Task10 I1 从A深链创建B并向B保存成本项后仍保持B", async () => {
+  const created = { ...sheet, cost_sheet_id: "cost_created", content_hash: "created-hash", version_number: 2, version_type: "estimated" };
+  let available = [{ ...sheet, is_locked: true }];
+  const creates: unknown[] = []; const itemWrites: { path: string; body: unknown }[] = [];
+  const root = await mount(async (raw) => {
+    const request = raw as Request; const path = new URL(request.url).pathname;
+    if (path.endsWith("/cost-sheets")) {
+      if (request.method === "POST") {
+        creates.push(await request.json()); available = [...available, created]; return json(created, 201);
+      }
+      return json(available);
+    }
+    if (path.endsWith("/items") && request.method === "POST") {
+      itemWrites.push({ path, body: await request.json() });
+      available = available.map((item) => item.cost_sheet_id === created.cost_sheet_id ? { ...item, content_hash: "saved-created-hash", items: [{ ...sheet.items[0]!, source_ref: "created-item-source" }] } : item);
+      return new Response(null, { status: 204 });
+    }
+    return basic(request);
+  }, `/costing-quotes?opportunity_id=${opp}&cost_sheet_id=${sheetId}`);
+  await eventually(() => expect(root.querySelector(".item-panel")?.textContent).toContain(sheetId));
+  const createPanel = [...root.querySelectorAll("article")].find((panel) => panel.querySelector("h2")?.textContent === "创建成本表版本")!;
+  for (const [label, value] of [["数量", "100"], ["核算币种", "USD"], ["报价币种", "USD"]]) {
+    const input = [...createPanel.querySelectorAll("label")].find((item) => item.textContent === label)!.querySelector("input")!;
+    input.value = value!; input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  click(root, "创建新版本");
+  await eventually(() => {
+    expect(creates).toEqual([{ base_currency: "USD", fx_rates: [], fx_snapshot_id: null, quantity: 100, quote_currency: "USD", version_type: "estimated" }]);
+    expect(root.textContent).toContain("成本表版本已创建");
+    expect(root.querySelector(".item-panel")?.textContent).toContain(created.cost_sheet_id);
+  });
+  field(root, "item-amount", "7.25"); field(root, "item-source", "created-item-source");
+  click(root, "保存成本项");
+  await eventually(() => {
+    expect(itemWrites).toEqual([{ path: `/costing-quotes/cost-sheets/${created.cost_sheet_id}/items`, body: { amount: "7.25", currency: "USD", is_per_unit: true, item_type: "product_purchase", note: null, price_basis: "quoted", source_ref: "created-item-source" } }]);
+    expect(root.textContent).toContain("成本项已保存");
+    expect(root.querySelector(".item-panel")?.textContent).toContain("created-item-source");
+    expect(root.querySelector(".item-panel")?.textContent).toContain(created.cost_sheet_id);
+  });
+  click(root, "读取成本版本");
+  await eventually(() => {
+    expect(root.querySelector(".version-row.selected")?.textContent).toContain("v2");
+    expect(root.querySelector(".item-panel")?.textContent).toContain(created.cost_sheet_id);
+    expect([...root.querySelectorAll("button")].find((button) => button.textContent?.includes("读取成本版本"))?.disabled).toBe(false);
+  });
+});
+
+it("Task10 I1 显式选择B后同对象重读保持B，路由改为缺失版本不能退首项", async () => {
+  const other = { ...sheet, cost_sheet_id: "cost_selected", version_number: 2 };
+  let reads = 0;
+  const root = await mount(async (raw) => {
+    const request = raw as Request;
+    if (new URL(request.url).pathname.endsWith("/cost-sheets")) { reads += 1; return json([sheet, other]); }
+    return basic(request);
+  }, `/costing-quotes?opportunity_id=${opp}&cost_sheet_id=${sheetId}`);
+  await eventually(() => expect(root.querySelector(".item-panel")?.textContent).toContain(sheetId));
+  (root.querySelectorAll(".version-row")[1] as HTMLButtonElement).click();
+  await eventually(() => expect(root.querySelector(".item-panel")?.textContent).toContain(other.cost_sheet_id));
+  click(root, "读取成本版本");
+  await eventually(() => {
+    expect(reads).toBe(2);
+    expect([...root.querySelectorAll("button")].find((button) => button.textContent?.includes("读取成本版本"))?.disabled).toBe(false);
+    expect(root.querySelector(".item-panel")?.textContent).toContain(other.cost_sheet_id);
+  });
+  await router.replace(`/costing-quotes?opportunity_id=${opp}&cost_sheet_id=cost_missing`);
+  await eventually(() => expect(root.textContent).toContain("指定成本表不存在或不属于当前机会"));
+  expect(root.querySelector(".item-panel")).toBeNull();
+  expect(root.querySelector(".version-row.selected")).toBeNull();
+});
+
+it("Task10 I1 已选B消失时清除确认，B以相同hash再出现也不复用旧确认", async () => {
+  const other = { ...sheet, cost_sheet_id: "cost_selected", version_number: 2 };
+  let available = [sheet, other];
+  const root = await mount(async (raw) => {
+    const request = raw as Request; const path = new URL(request.url).pathname;
+    if (path.endsWith("/cost-sheets")) return json(available);
+    if (path === `/costing-quotes/cost-sheets/${other.cost_sheet_id}/coverage`) return json({ acquisition_mode: "summary", confirmed_at: "2026-08-28T00:00:00Z", confirmed_by: "employee-a", content_hash: "coverage-hash", cost_sheet_id: other.cost_sheet_id, coverage_id: "coverage-selected", decisions: [], expected_sheet_hash: other.content_hash, field_provenance: {} });
+    if (path === `/costing-quotes/cost-sheets/${other.cost_sheet_id}/scope-confirmations`) return json([{ confirmation_id: "scope-selected", content_hash: "scope-hash", cost_sheet_id: other.cost_sheet_id, coverage_hash: "coverage-hash", coverage_id: "coverage-selected", evidence_bindings: [], need_facts_hash: "need-hash", need_id: need, opportunity_id: opp, provenance, sheet_hash: other.content_hash, specification: "M8 steel", specification_hash: "spec-hash", terms: [], terms_hash: "terms-hash", valid_until: "2026-10-01T00:00:00Z" }]);
+    return basic(request);
+  }, `/costing-quotes?opportunity_id=${opp}&cost_sheet_id=${sheetId}`);
+  await eventually(() => expect(root.querySelectorAll(".version-row")).toHaveLength(2));
+  (root.querySelectorAll(".version-row")[1] as HTMLButtonElement).click();
+  await eventually(() => expect(root.querySelector(".item-panel")?.textContent).toContain(other.cost_sheet_id));
+  field(root, "quote-price", "1.25"); field(root, "quote-currency-exact", "USD");
+  field(root, "quote-unit-places", "2"); field(root, "quote-total-places", "2"); field(root, "quote-rounding", "half_up"); field(root, "quote-valid-until", "2026-10-01T00:00:00Z");
+  click(root, "核对已保存适用清单");
+  await eventually(() => expect(root.textContent).toContain("已读取费用确认"));
+  click(root, "核对已保存适用性确认");
+  await eventually(() => expect(root.textContent).toContain("scope-selected"));
+  click(root, "使用此已保存确认");
+  const quoteButton = () => [...root.querySelectorAll("button")].find((button) => button.textContent?.includes("确认创建新报价"));
+  await eventually(() => expect(quoteButton()?.disabled).toBe(false));
+  available = [sheet]; click(root, "读取成本版本");
+  await eventually(() => expect(root.textContent).toContain("指定成本表不存在或不属于当前机会"));
+  expect(root.querySelector(".item-panel")).toBeNull();
+  expect(root.textContent).not.toContain("scope-selected");
+  available = [sheet, other]; click(root, "读取成本版本");
+  await eventually(() => expect(root.querySelectorAll(".version-row")).toHaveLength(2));
+  (root.querySelectorAll(".version-row")[1] as HTMLButtonElement).click();
+  await eventually(() => expect(root.querySelector(".item-panel")?.textContent).toContain(other.cost_sheet_id));
+  expect(quoteButton()?.disabled).toBe(true);
+});
