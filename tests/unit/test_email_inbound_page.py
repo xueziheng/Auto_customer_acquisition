@@ -94,3 +94,48 @@ async def test_scheduler_requires_lock_for_inbound_phase():
     )
     with pytest.raises(RuntimeError, match="缺少 scheduler 锁确认"):
         await _run_cycle(runtime, 1)
+
+
+@pytest.mark.parametrize("stage", ["commit", "audit_flush"])
+async def test_new_cancellation_survives_close_failure(stage):
+    import asyncio
+    from types import SimpleNamespace
+
+    from infra.db.email_feedback_uow import _TransactionAwareAudit
+    from infra.db.email_inbound_uow import SqlAlchemyInboundPageUnitOfWork
+
+    cancellation = asyncio.CancelledError("controlled cancellation")
+
+    class Session:
+        closed = False
+
+        async def commit(self):
+            if stage == "commit":
+                raise cancellation
+
+        async def close(self):
+            self.closed = True
+            raise RuntimeError("controlled close failure")
+
+    class Sink:
+        def log(self, **kwargs):
+            raise cancellation
+
+    session = Session()
+    audit = _TransactionAwareAudit(Sink())
+    if stage == "audit_flush":
+        audit.records.append(
+            SimpleNamespace(
+                actor="system:test",
+                action="read",
+                tenant_id=TenantId(new_id("tn")),
+                scope="system",
+                rule="allow:test",
+            )
+        )
+    uow = object.__new__(SqlAlchemyInboundPageUnitOfWork)
+    uow._session, uow._audit, uow._sink = session, audit, Sink()
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await uow.__aexit__(None, None, None)
+    assert raised.value is cancellation
+    assert session.closed and audit.records == []

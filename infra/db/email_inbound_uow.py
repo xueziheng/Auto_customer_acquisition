@@ -187,9 +187,9 @@ class SqlAlchemyInboundPageUnitOfWork:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        primary = exc is not None
+        primary = exc
         try:
-            if primary:
+            if primary is not None:
                 await self._session.rollback()
             else:
                 try:
@@ -207,8 +207,10 @@ class SqlAlchemyInboundPageUnitOfWork:
                         )
                     except Exception:  # noqa: BLE001 - 独立日志sink失败不重做已提交页
                         logger.error("入站提交后审计刷新失败")
-        except BaseException:
-            if not primary:
+        except BaseException as error:
+            if primary is None:
+                # commit/审计刷新期间的新取消也是primary，close不能覆盖它。
+                primary = error
                 raise
             logger.error("入站事务清理失败")
         finally:
@@ -216,6 +218,6 @@ class SqlAlchemyInboundPageUnitOfWork:
             try:
                 await self._session.close()
             except BaseException:  # noqa: BLE001 - 固定错误并保留primary
-                if not primary:
+                if primary is None:
                     raise InboundCommitUnknown() from None
                 logger.error("入站事务关闭失败")

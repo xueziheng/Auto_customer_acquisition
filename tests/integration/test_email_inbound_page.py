@@ -777,7 +777,15 @@ async def test_two_sessions_replay_and_stale_cas(page_runtime):
 
 
 @pytest.mark.parametrize(
-    "failure", ["after_commit", "before_commit", "close", "cancel_commit"]
+    "failure",
+    [
+        "after_commit",
+        "before_commit",
+        "close",
+        "cancel_commit",
+        "cancel_before_commit_close",
+        "cancel_after_commit_close",
+    ],
 )
 async def test_uncertain_commit_verifies_durable_database(page_runtime, failure):
     import asyncio
@@ -804,15 +812,21 @@ async def test_uncertain_commit_verifies_durable_database(page_runtime, failure)
             async def commit(self):
                 if failure == "before_commit":
                     raise RuntimeError("controlled commit failure")
-                if failure == "cancel_commit":
+                if failure in {"cancel_commit", "cancel_before_commit_close"}:
                     raise asyncio.CancelledError()
                 await super().commit()
+                if failure == "cancel_after_commit_close":
+                    raise asyncio.CancelledError()
                 if failure == "after_commit":
                     raise RuntimeError("controlled unknown commit")
 
             async def close(self):
                 await super().close()
-                if failure == "close":
+                if failure in {
+                    "close",
+                    "cancel_before_commit_close",
+                    "cancel_after_commit_close",
+                }:
                     raise RuntimeError("controlled close failure")
 
         faulty = InboundStore(
@@ -825,7 +839,27 @@ async def test_uncertain_commit_verifies_durable_database(page_runtime, failure)
             "primary",
             now=lambda: NOW,
         )
-        if failure in {"after_commit", "close"}:
+        if failure in {"cancel_before_commit_close", "cancel_after_commit_close"}:
+            with pytest.raises(asyncio.CancelledError):
+                await processor_for(runtime, page_store=faulty).process(before, page)
+            committed = failure == "cancel_after_commit_close"
+            assert await counts(runtime) == (
+                (1, 1, 1, 0) if committed else (0, 0, 0, 0)
+            )
+            durable = await runtime["repository"].read_cursor()
+            if committed:
+                assert (
+                    durable.cursor == page.next_cursor
+                    and durable.version == before.version + 1
+                )
+                assert await processor.process(before, page) == "replayed"
+            else:
+                assert durable == before
+                assert await processor.process(before, page) == "committed"
+            assert await counts(runtime) == (1, 1, 1, 0)
+            assert await processor.process(before, page) == "replayed"
+            assert await counts(runtime) == (1, 1, 1, 0)
+        elif failure in {"after_commit", "close"}:
             assert (
                 await processor_for(runtime, page_store=faulty).process(before, page)
                 == "replayed"
