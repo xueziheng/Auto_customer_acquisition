@@ -1,0 +1,20 @@
+{
+  "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+  "command": [
+    ".venv/bin/python3",
+    "-m",
+    "pytest",
+    "-q",
+    "-rs",
+    "--tb=short"
+  ],
+  "environment": {
+    "TEST_DATABASE_URL": "unset",
+    "PYTHON_DOTENV_DISABLED": "1",
+    "TRADEOS_REQUIRE_E2E": "1"
+  },
+  "started_at": "2026-09-06T10:46:11.116350+00:00",
+  "exit_code": 0,
+  "elapsed_seconds": 2139.76,
+  "finished_at": "2026-09-06T11:21:50.840329+00:00"
+}

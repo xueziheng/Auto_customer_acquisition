@@ -1,54 +1,62 @@
-# Web 核心同版本受控验收
+# Web 核心受控验收
 
-实际验收日期：2026-09-06。Task12，待独立审查；不是 Task13 总交付声明。
-BASE：`6cdb40d8019d560d1490925df72a58d14f4881d6`。本批24个源/测试文件的冻结内容摘要：`fa21469003d1391487e0f093c33c1adf046bca1d44d4c3037ff0e3f7421b055d`，逐文件 SHA256 见 `output/acceptance/task12/source-snapshot.json`。
+实际日期：2026-09-06。Task12实施完成，等待独立限定复审；不代表Task13总交付。
+BASE：`6cdb40d8019d560d1490925df72a58d14f4881d6`。
 
-## 验收边界与实际入口
+## 版本与实际门禁
 
-Mac 完整链只从原 `scripts/run_web_core_controlled.py` 启动 API、scheduler、notification、Web 四进程。新声明环境实际安装 `.[dev]` 并启动该入口，Python3.12.14、Node24.15.0；隔离探针确认没有旧 Catalog 工作树依赖。PostgreSQL、MinIO、核心域、Gateway、Workflow、Outbox、审批、权限及预算均真实。合成端口只提供具名 DNS、邮件、公开研究页面/搜索、联系人与模型外部响应，网络边界拒绝未知地址，无真实供应商联系、真实邮箱/模型/联系人 Provider 或付费来源调用。
-
-本批发现并修正原受控入口遗漏的研究与联系人装配。研究使用原 ResearchRuntimePorts、真实持久 quota/Artifact/Gateway；联系人按 [ADR0065](../adr/0065-late-bound-contact-runtime-ports.md) 在本 runtime 的 canonical Outreach 形成后借用同一 core/session，注册原 manifest/check/handler。外部合成联系人的验证结果由原 VerifyContactsStep 经 Prospecting 落库；没有直接写已验证结果。真实 Hunter 就绪判断保持不变，合成账户不是现实供应商账户。
-
-## A1–A10 证据
-
-| 项 | 已执行入口与断言 | 安全证据 |
+| 版本 | 本轮结果 | 边界 |
 | --- | --- | --- |
-| A1 | 新声明 Python 环境安装并启动原四进程；原缺 Node/端口占用/迁移故障/未持锁不 ready 回归 | `install.json`、`installation-isolation.json`；原 `test_web_core_launcher.py`、`test_web_core_runtime.py` |
-| A2 | 浏览器创建 Playbook 与 KE 政策，各由另一老板真实审批；确认老板研究指令产生3 Signal/3 Hypothesis，研究阶段无 Campaign、无联系人调用、无发送 | 第九轮主链 owner `335a86cc07fc4d7092270b1d8767d809` 下 `research-confirmation.json`、`proof.json`、研究截图 |
-| A3 | 另一个明确人工输入的企业/需求假设和独立 Campaign 审批；未验证联系人被拒；原 account_discovery v2 经单 Provider enrich→verify→持久验证→归属→精确版本入组→原 HTTP 发送，一次发送 | `test_web_core_controlled.py` 反向消费原入口，`web_core_contacts.py` 只调用公开域/Workflow；最终全量新 proof 记录 Run、联系点、来源及逐次调用 |
-| A4 | 合成 MIME 经原 Gateway、Artifact、ingest、Outbox、回复识别形成真实 Need/Opportunity/Handoff；原字段来源/邮件下载可读；真人接受交接 | 主链 `proof.json`、`message.eml`、Need/Handoff 1440/390截图；`test_reply_completion.py` |
-| A5 | 同消息重放、原四进程 HUP 后一份交接且一次发送；Provider 动作后 ack 前未知响应按每次真实调用计数；candidate commit→Run start故障及同actor/key/payload恢复；DB暂停后原端点恢复 | `test_reply_completion.py::test_unknown_provider_send_is_reconciled_without_a_second_send`；`test_web_core_settings_recovery.py`；原审批/Campaign workflow 回归 |
-| A6 | Need、Handoff、Run、原件均按当前 actor 检查；真实停用 actor 后旧内容清除且入口拒绝。boss/manager/sales 的列表、附件及纠正矩阵由原真实PG测试覆盖 | 主链撤销断言；`test_inbox_access.py`、`test_email_inbound_access.py`、`test_web_core_observability.py` |
-| A7 | 独立原 Linux 公开回复→来源/单位→Decimal成本→独立审批→PDF链；原 Need→Sourcing→estimated cost适用链分开验收；无quoted且无风险接受时拒绝正式报价 | `a7-final-source.log`：3 passed/131.60s；Linux browser owner `a79870b4f3714cd79d6211d061c5ab64`、integration owner `8ad147dd94c84955aa1ba9de772dff88` |
-| A8 | Web全量411项验证等待/失败/未知/暂停/stale/queued；实际看过主链Need1440、Handoff390和Linux报价390/精确成本1440，关键控件可读，无横溢 | `web-test-gate.log`，主链与Linux截图；机会页截图仅证明看板展示，精确Need绑定来自真实API |
-| A9 | 原owner PID+出生时间、容器label+ID核验；正常/HUP/子进程故障停止后精确删除mail与reply-model SQLite及侧文件；停止不确定保留文件 | 主链 `cleanup.json`；原launcher正常/故障回归与 `test_web_core_private_cleanup.py` |
-| A10 | 未知查询/页面/模型输入/联系点拒绝；网络未知地址在连接前拒绝；实际Provider动作独立记数，业务核心不可替代 | 原allowlist测试、新research/contact端口反例、Gateway账本和调用证据；真实外部能力仍为 `not_run` |
+| `1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d` | 首轮完整后端98 failed / 9217 passed；pytest2076.35s、wrapper2083.9s | 历史失败检查点，未通过；98条完整索引保留 |
+| `48e4465fc307212e794d6ed87501cb418f74d245` | 第二完整后端9318 passed / 0 failed / 0 skipped / 0 warning entries；pytest2132.64s、wrapper2139.76s | 1630源码文件在整轮前后SHA256差异0；包含迁移组合与原Linux全链 |
+| `7e10383c253df4a98cd224fb7ee526d721476f9a` | 独立审查I1修复后完整Mac主链1 passed / 34.97s；边界、scan、受影响ruff通过 | 仅2测试文件修正真实审批actor及绑定断言；生产实现、共享fixture、迁移未变。按controller裁定不重复第三次full |
 
-本表路径省略的统一前缀为 `output/acceptance/task12/`；Linux产物位于 `output/playwright/t10-<owner>/`。第九轮是一次中间完整主链通过，最终全仓结果不与该数相加。截图名 `need-sales-denied-390` 实际页面是 Handoff；它只证明当前页面撤销后清除，Need拒绝另由真实HTTP断言证明。OpportunityList 不消费 `?opportunity_id`，没有将无效参数声称为精确深链。
+没有把局部通过相加成完整结果。第二全量命令是 `env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 TRADEOS_REQUIRE_E2E=1 .venv/bin/python3 -m pytest -q -rs --tb=short`，数据库独占串行。结果见 `output/acceptance/task12/backend-final.json`、`backend-final-safe-summary.json`、`final-source-snapshot.json`；修复证据见 `i1-source-commit.json`、`i1-static-gates.json`。
 
-## 完整门禁
+第二全量前boundary/scan/ruff/mypy全部exit0，mypy562文件。Web源码没有后续变动：完整Web411 passed（32文件），typecheck/build/gen:api通过，API生成无diff。ESLint112 warnings/0errors；逐行git blame归属早于本计划branch base：App25、OutreachWorkbench34、BillingUnavailable10、ManualOperations12、ProductSupplyCenter31，见lint-attribution.json。Web本轮无VueRouter R0004或Vue warnings日志；不回填历史提示。早期两组3/2 warnings只保留数量，类别未保存，不能据最终无warning抹去历史。
 
-静态边界与敏感扫描 exit0，mypy 562文件通过；全仓ruff首次两处本批格式提示已修，最终exit0。Web：411 passed，typecheck/lint/build/gen:api均exit0，生成API无diff。lint实际112 warnings/0errors，逐行git blame证实均早于本计划branch base：App.vue25、OutreachWorkbench.vue34、BillingUnavailable.vue10、ManualOperations.vue12、ProductSupplyCenter.vue31。归属见 `lint-attribution.json`，不沿用历史120或172数字，也不声称零告警。
+## 实际入口与实现范围
 
-冻结版本完整后端实际为 **98 failed、9217 passed、exit1**，pytest耗时2076.35s、wrapper耗时2083.9s；本检查点门禁未通过，不能作为最终验收通过。完整98项安全索引见 `backend-failure-index.json`，后续修复与作用组结果另行登记，不倒写本轮结论。最终独立新owner与告警分类待核。所有pytest均清除TEST_DATABASE_URL，设置PYTHON_DOTENV_DISABLED=1、TRADEOS_REQUIRE_E2E=1，数据库测试串行。命令/耗时以 `static-gates.json`、`web-gates.json`、`backend-full.json`、`diff-gates.json` 为准。
+Mac完整链反向消费唯一原 `scripts/run_web_core_controlled.py`，启动API、scheduler、notification、Web四进程。新声明Python环境实际安装 `.[dev]`、Python3.12.14；隔离探针确认未借用旧Catalog工作树。Node24.15.0在独立目录/独立空npm配置实际npm ci与build，见installation-isolation.json及node-isolated-final.json。初次两个npm配置都指向/dev/null被double-loading拒绝，保留为工具装配历史，不算应用失败。
 
-## 限制与失败历史
+本批最小生产修改包括完整13项HTML void保守引用处理、owner停止后精确SQLite生命周期、原受控研究接线、[ADR0065联系人late binding](../adr/0065-late-bound-contact-runtime-ports.md)及受控外部逐次调用账本。核心域、Gateway检查、Workflow、Outbox、审批、tenant/当前actor和Decimal计算保持真实。模型和Agent不接触真实凭证；合成外部端口只接受具名fixture，未知输入与公网拒绝。没有seed Message/Need/Opportunity或批准结果。
 
-Mac 原入口的 quotation 与自动寻源准入配置仍未具备完整运行条件；Mac成本页的明确503不能替代Linux报价证明。Linux与Mac的owner、Need、Opportunity不同。Linux固定业务时钟不作为真实耗时证据。本批没有新增统一launcher、跨网络桥或绕过Linux parser资源probe。
+研究quota使用原PG持久额度；联系人秒/分钟限流沿原InMemoryHunterQuotaGuard，不是跨重启持久额度。持久ToolCall和Provider调用账本不等同限流器持久化。真实Hunter就绪语义未改，controlled single provider与synthetic exclusive研究账户均不是现实供应商账户。
 
-DB独立stop/start会因原随机HostPort分配改变公开端口，原配置不自动更新。内部pg_isready成功而原端点持续ConnectionRefused的失败已保留，不能归因为API连接池问题；应用HUP只重启四应用，不承诺自动恢复改变的DB端点。该情况下必须回到原owner入口受控重建配置/依赖，不能把新空库冒充原业务恢复。A5的短暂不可用用同容器pause/unpause保持端点，并以独立限时恢复任务保证取消请求能完成。
+## A1–A10
 
-首次pause试验的driver取消也等待暂停PG，需精确owner手动unpause才结束；不计作有界恢复通过。期间误启动的E2E已立即中断并清理，之后恢复数据库串行纪律。所有中间TDD、旧fixture错误、审批选错旧记录及上述故障轮保留在Task12报告与独立日志；没有倒推为同一失败原因。
+最终Mac主链owner为 `8d234c0956fb498e9f171342c3b72f51`（修复SHA7e10383）；下表省略路径前缀为 `output/acceptance/task12/`。Linux独立链在48e4465完整门禁内验证，owner及业务对象与Mac不同。
 
-受控输入是合成演练证据，不代表真实买家、法律政策、供应商报价、邮箱可达性或生产账户就绪。受控exclusive研究账户只描述当前owner的合成端口。本批不部署、push、merge或实际外发。
+| 项 | 实际证据与断言 | 来源 |
+| --- | --- | --- |
+| A1 | 新声明依赖环境启动原四进程，缺Node/端口占用/迁移故障/未持锁不ready回归 | installation-isolation.json、node-isolated-final.json；原launcher/runtime测试在9318项中 |
+| A2 | 无活跃政策时confirm200只排队，真实Run failed，外部calls[]与Signal/Hypothesis/Campaign/send全0；Playbook和KE政策各由另一老板批准后研究产生3 Signal/3 Hypothesis，阶段无联系人发现/入组/发送 | 最终owner/research-unconfigured.json、research-confirmation.json、proof.json |
+| A3 | 独立人工输入触达任务；实际Campaign提交人自批HTTP400且仍pending，另一当前老板经原HTTP批准精确包；原account_discovery v2经单Provider enrich→verify→持久verified→入组→HTTP send；未验证负例拒绝 | 最终proof.campaign_approval、contact_run_id、contact_point_id、verification_provider；enrich/verify/send各1 |
+| A4 | 合成MIME经原Gateway/Artifact/ingest/Outbox/回复识别生成Need/Opportunity/Handoff；来源与邮件原件可读；真人接受交接 | 最终proof与message.eml，原reply_completion作用组与完整门禁 |
+| A5 | 同消息重放/HUP后一份业务结果且一次send；未知send在真实Provider动作后ack前，按每次Provider调用计数；Settings candidate commit→Run start故障后同actor/key/payload恢复；同端点PG短断恢复 | 最终proof；test_reply_completion未知发送；test_web_core_settings_recovery两故障分支在完整门禁中 |
+| A6 | Need/Handoff/Run/原件均按当前actor；停用员工后旧内容清除、真实HTTP拒绝；原boss/manager/sales权限矩阵 | 最终撤销断言；inbox_access/email_inbound_access/web_core_observability真实PG门禁 |
+| A7 | 原独立Linux公开回复→来源/单位→Decimal成本→独立审批→PDF；Need→既有Sourcing→estimated cost适用链另列。Mac成本503不是此证明 | Linux owner2ea6b4a4e32f429192c2d1926a2ebfc1完整浏览器；f9aa1aec503442a08e00d81fc8ea5801完整integration。原3目标在第二完整门禁通过 |
+| A8 | Web全量状态恢复；实际view最终Need1440/Handoff390、Linux quote390/exact-cost1440，关键控件/来源可读，无横向溢出 | 最终owner截图及Linux目录；accepted状态由真实断言/proof证明，待接管截图不冒称接受后 |
+| A9 | 正常/HUP/故障停止先核owner并停进程，精确删除mail和reply-model四文件；停止不确定保留私有文件。最终Macstopped/errors[]；第二全量五Linuxowner最终PID/容器/网络/端口均0 | 最终cleanup.json、backend-final-linux-owner-audit.json；两个主动故障初code2/cleanupfalse与后续0分开记录 |
+| A10 | 具名search/page/model/contact允许清单及未知反例；Gmail表尚未初始化返回0，已有坏列/坏DB仍报错，不能吞错误伪造调用数 | controlled端口unit、原Gateway/allowlist，均包含于完整门禁；真实外部能力not_run |
 
-另在只复制声明锁文件、公开src与构建配置的新目录中完成Node依赖安装与构建：`node-isolated-final.json` 记录 `npm ci` exit0/28.71s、`npm run build` exit0/5.05s。用户与全局npm配置均指定各自独立空文件，未借用用户凭证配置。首次两配置都指向/dev/null被npm以double-loading拒绝，原日志保留；这不属于应用运行失败。
+最终I1审批对象：Campaign `cmp_01M1V7H2KYG3YR28747K9S2DVE` / v1，Approval `apr_01M1V7H2PMCX7DXRRCA503FK91`。proof中created_by=submitter=proposed_by，decided_by=campaign_approved_by且与提交人不同；self_decision_status=400、state_after_self_denial=pending，随后approved。修复前两轮RED分别20.33s、20.57s，后者固定记录自批实际返回200；owner631e187e57144938a1c9d4baf30ea341、fe99b028cb53465cb6d6780460eb84ee均正常清理。此前包括48e4465主链在内的“独立Campaign审批”声明撤回，由本次真实修复证据替代，不改生产legacy审批合同。
 
-合成模型没有真实计费token数据，真人处理没有可核实的实际处理时长；这些值保持未知，不填0或编造效率改善。已观察的Provider调用次数与Handoff等待状态分别按持久账本和真实当前时钟解释，Linux固定业务时钟不用于耗时比较。
+最终proof的model_calls=1只计ControlledReplyModelClient；研究调用另为usage3/search3/page3/model1。TradeManager/联系人等全链总模型调用、真实计费token和人工处理工时未知，不填0或编造效率改进。
 
-## 首轮98项失败逐项映射（第二全量前冻结）
+## 平台与证据限制
 
-首轮完整结果保持98 failed/9217 passed；以下是针对修复与作用组证据，不能相加为完整通过。迁移组合原因只在具名顺序复现，未把全部历史异常倒推为同因。完整安全索引为output/acceptance/task12/backend-resolution-index.json。
+Mac原入口未配置完整quotation/自动寻源准入，保留诚实503/未配置状态；Linux遵守原parser资源probe和固定网络/生命周期，不增加统一launcher或跨网络桥。Linux固定业务时钟不作为实际耗时。图中PDF入口/批准状态不是PDF内容证明，下载与解析由原完整测试断言。
+
+OpportunityList不消费opportunity_id查询参数，相关截图只算看板展示，精确Need绑定来自真实API；名为need-sales-denied的截图实际仍是Handoff页，不据标题虚称Need页面。所有输入是合成演练，不代表真实买家意愿、供应商报价、真实邮箱可达性或生产账户就绪。
+
+DB独立stop/start可改变随机HostPort，原配置不自动更新；原端点ConnectionRefused失败不应归因API池。HUP只覆盖原四应用，不能承诺DB换端点透明恢复。A5用同owner pause/unpause与独立2秒恢复计时保持端点，finally收敛恢复任务/就绪检查。历史首次取消等待暂停PG、一次误重叠启动和精确主动清理保留，不能倒写成功。
+
+首轮98失败、所有中间fixture错误、初cleanup_unknown及后续精确核验保留在Task12报告与安全索引；不回显原始敏感日志。共享.git AppleDouble只记录stderr行数不维修。Task10原9个未跟踪产物保留；全量重生成的6个既有Catalog截图保留在工作区，未混入Task12源码提交。没有真实外发、供应商接触、部署、push或merge。
+
+## 首轮98项失败逐项映射（第二全量已通过）
+
+首轮完整结果保持98 failed/9217 passed；以下修复均由48e4465的第二完整门禁实际覆盖通过；作用组数不相加。迁移组合原因只在具名顺序复现，未把全部历史异常倒推为同因。完整安全索引为output/acceptance/task12/backend-resolution-index.json。
 
 | 组 | 最小处理 | 聚焦证据 |
 | --- | --- | --- |
@@ -170,3 +178,5 @@ DB独立stop/start会因原随机HostPort分配改变公开端口，原配置不
 | 96 | `tests/unit/test_sending_identity_permissions.py::test_phase1_matrix_allows_only_the_explicit_actions[system-SYSTEM]` | permissions |
 | 97 | `tests/unit/test_sending_identity_permissions.py::test_phase1_matrix_allows_only_the_explicit_actions[sales-SELF]` | permissions |
 | 98 | `tests/unit/workflows/test_sourcing_plan.py::test_current_quota_and_uncertain_recovery_are_safe_application_projections` | sourcing |
+
+研究 quota 使用原 PostgreSQL 持久额度；联系人秒/分钟限流沿用原 Hunter 组合的 InMemoryHunterQuotaGuard，它不是跨重启持久额度。联系人 ToolCall ledger 与外部逐次调用表持久化不能被混称为该限流器持久化。早期两组3/2 warnings仅保存数量，类别正文未保存；最终一轮有无告警按实际输出登记，不抹去早期数量。

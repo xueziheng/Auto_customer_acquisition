@@ -1,0 +1,49 @@
+{
+  "commit": "7e10383c253df4a98cd224fb7ee526d721476f9a",
+  "parent_full_commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+  "paths": [
+    "tests/e2e/web_core_contacts.py",
+    "tests/e2e/test_web_core_controlled.py"
+  ],
+  "hashes": {
+    "tests/e2e/web_core_contacts.py": "3b4b9ff6effde4340cc0508e0364e77927aff55af25aae31d72b2272e6d3267b",
+    "tests/e2e/test_web_core_controlled.py": "9065d40409e0d93eb9da80d0723e14205081d2556c267d51dab809af6a5c2a68"
+  },
+  "checks": [
+    {
+      "operation": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "stderr_lines": 4
+    },
+    {
+      "operation": [
+        "git",
+        "add",
+        "--"
+      ],
+      "exit": 0,
+      "stderr_lines": 2
+    },
+    {
+      "operation": [
+        "git",
+        "diff",
+        "--cached"
+      ],
+      "exit": 0,
+      "stderr_lines": 7
+    },
+    {
+      "operation": "commit",
+      "exit": 0,
+      "stderr_lines": 89
+    }
+  ],
+  "owner": "8d234c0956fb498e9f171342c3b72f51",
+  "pytest_passed": 1,
+  "pytest_seconds": 34.97
+}

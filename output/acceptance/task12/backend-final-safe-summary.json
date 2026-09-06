@@ -1,0 +1,12 @@
+{
+  "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+  "source_files": 1630,
+  "changed_source_files": [],
+  "passed": 9318,
+  "failed": 0,
+  "skipped": 0,
+  "warning_entries": 0,
+  "warning_categories": [],
+  "pytest_seconds": 2132.64,
+  "wrapper_seconds": 2139.76
+}

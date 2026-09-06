@@ -1,0 +1,811 @@
+{
+  "errors": 0,
+  "warnings": 112,
+  "by_path": {
+    "apps/web/src/App.vue": 25,
+    "apps/web/src/views/OutreachWorkbench.vue": 34,
+    "apps/web/src/views/billing/BillingUnavailable.vue": 10,
+    "apps/web/src/views/manual-phase1/ManualOperations.vue": 12,
+    "apps/web/src/views/products/ProductSupplyCenter.vue": 31
+  },
+  "items": [
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 56,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 59,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 59,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 59,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 60,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 60,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 60,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 61,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 61,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 61,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 62,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 62,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 62,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 63,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 63,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 63,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 64,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 64,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 64,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 65,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 65,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 65,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 66,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 66,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "line": 66,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1355
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 209,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 209,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 211,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 211,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 211,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 211,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 212,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 212,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 216,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 219,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 231,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 231,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 236,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 240,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 264,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 281,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 281,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 281,
+      "rule": "vue/html-self-closing",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 291,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 291,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 291,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 296,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 296,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 296,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 296,
+      "rule": "vue/html-self-closing",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 297,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 297,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 301,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 301,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 301,
+      "rule": "vue/html-self-closing",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 302,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 302,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 306,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/OutreachWorkbench.vue",
+      "line": 306,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "1d823e9f774c21c324fa6d06fa87fdcf55010c8c",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/billing/BillingUnavailable.vue",
+      "line": 3,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/billing/BillingUnavailable.vue",
+      "line": 3,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/billing/BillingUnavailable.vue",
+      "line": 3,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/billing/BillingUnavailable.vue",
+      "line": 3,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/billing/BillingUnavailable.vue",
+      "line": 4,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/billing/BillingUnavailable.vue",
+      "line": 4,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/billing/BillingUnavailable.vue",
+      "line": 5,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/billing/BillingUnavailable.vue",
+      "line": 5,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/billing/BillingUnavailable.vue",
+      "line": 5,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/billing/BillingUnavailable.vue",
+      "line": 5,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/manual-phase1/ManualOperations.vue",
+      "line": 39,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/manual-phase1/ManualOperations.vue",
+      "line": 39,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/manual-phase1/ManualOperations.vue",
+      "line": 44,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/manual-phase1/ManualOperations.vue",
+      "line": 45,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/manual-phase1/ManualOperations.vue",
+      "line": 45,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/manual-phase1/ManualOperations.vue",
+      "line": 46,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/manual-phase1/ManualOperations.vue",
+      "line": 46,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/manual-phase1/ManualOperations.vue",
+      "line": 47,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/manual-phase1/ManualOperations.vue",
+      "line": 47,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/manual-phase1/ManualOperations.vue",
+      "line": 57,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/manual-phase1/ManualOperations.vue",
+      "line": 57,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/manual-phase1/ManualOperations.vue",
+      "line": 57,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "aa585a25305eb29be2d4d6e47e30e37d2c99ed71",
+      "git_stderr_lines": 1413
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 66,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 66,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 69,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 69,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 79,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 79,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 82,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 82,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 82,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 82,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 84,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 84,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 84,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 85,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 85,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 85,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 86,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 86,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 87,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 87,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 90,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 90,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 94,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 102,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 102,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 103,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 104,
+      "rule": "vue/max-attributes-per-line",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 108,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 108,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 109,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    },
+    {
+      "path": "apps/web/src/views/products/ProductSupplyCenter.vue",
+      "line": 109,
+      "rule": "vue/singleline-html-element-content-newline",
+      "blame": "ab570d281088646e856640b0b84f20cb2a83e800",
+      "git_stderr_lines": 985
+    }
+  ],
+  "commit_attribution": {
+    "aa585a25305eb29be2d4d6e47e30e37d2c99ed71": {
+      "warnings": 47,
+      "predates_branch_base": true
+    },
+    "1d823e9f774c21c324fa6d06fa87fdcf55010c8c": {
+      "warnings": 34,
+      "predates_branch_base": true
+    },
+    "ab570d281088646e856640b0b84f20cb2a83e800": {
+      "warnings": 31,
+      "predates_branch_base": true
+    }
+  }
+}

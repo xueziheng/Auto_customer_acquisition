@@ -1,0 +1,1545 @@
+[
+  {
+    "test": "test_real_costing_quote_browser",
+    "locations": [
+      [
+        "tests/e2e/test_costing_quote_browser.py",
+        "305",
+        "test_real_costing_quote_browser"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_real_initial_unit_read_probe",
+    "locations": [
+      [
+        "tests/e2e/test_costing_quote_browser.py",
+        "479",
+        "test_real_initial_unit_read_probe"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_phase1_browser_visible_reply_to_handoff_chain",
+    "locations": [
+      [
+        "tests/e2e/test_phase1_browser.py",
+        "1040",
+        "test_phase1_browser_visible_reply_to_handoff_chain"
+      ]
+    ],
+    "error_types": []
+  },
+  {
+    "test": "test_research_confirm_refresh_and_radar_tabs_are_operable_across_origins[1280-900]",
+    "locations": [
+      [
+        "tests/e2e/test_research_browser.py",
+        "119",
+        "test_research_confirm_refresh_and_radar_tabs_are_operable_across_origins"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_research_confirm_refresh_and_radar_tabs_are_operable_across_origins[390-844]",
+    "locations": [
+      [
+        "tests/e2e/test_research_browser.py",
+        "119",
+        "test_research_confirm_refresh_and_radar_tabs_are_operable_across_origins"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_slice4_manual_send_fixed_journey",
+    "locations": [
+      [
+        "tests/e2e/test_slice4_manual_send.py",
+        "1249",
+        "test_slice4_manual_send_fixed_journey"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_real_workflow_is_visible_in_central_queue_then_applies_and_projects_redacted_notification",
+    "locations": [
+      [
+        "tests/integration/test_catalog_policy_workflow.py",
+        "278",
+        "test_real_workflow_is_visible_in_central_queue_then_applies_and_projects_redacted_notification"
+      ]
+    ],
+    "error_types": []
+  },
+  {
+    "test": "test_response_loss_after_each_committed_boundary_converges_without_duplicates[catalog_product_policy.submit]",
+    "locations": [
+      [
+        "tests/integration/test_catalog_policy_workflow.py",
+        "367",
+        "test_response_loss_after_each_committed_boundary_converges_without_duplicates"
+      ]
+    ],
+    "error_types": [
+      "shared.errors.TransientError"
+    ]
+  },
+  {
+    "test": "test_response_loss_after_each_committed_boundary_converges_without_duplicates[catalog_product_policy.apply]",
+    "locations": [
+      [
+        "tests/integration/test_catalog_policy_workflow.py",
+        "367",
+        "test_response_loss_after_each_committed_boundary_converges_without_duplicates"
+      ]
+    ],
+    "error_types": [
+      "shared.errors.TransientError"
+    ]
+  },
+  {
+    "test": "test_response_loss_after_each_committed_boundary_converges_without_duplicates[catalog_product_policy.mark_applied]",
+    "locations": [
+      [
+        "tests/integration/test_catalog_policy_workflow.py",
+        "367",
+        "test_response_loss_after_each_committed_boundary_converges_without_duplicates"
+      ]
+    ],
+    "error_types": [
+      "shared.errors.TransientError"
+    ]
+  },
+  {
+    "test": "test_rejection_and_timeout_are_durable_terminal_without_activation",
+    "locations": [
+      [
+        "tests/integration/test_catalog_policy_workflow.py",
+        "451",
+        "test_rejection_and_timeout_are_durable_terminal_without_activation"
+      ]
+    ],
+    "error_types": []
+  },
+  {
+    "test": "test_0057_is_the_only_script_head",
+    "locations": [
+      [
+        "tests/integration/test_catalog_product_migration.py",
+        "1117",
+        "test_0057_is_the_only_script_head"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0057_downgrade_refuses_catalog_approval_before_any_ddl",
+    "locations": [
+      [
+        "tests/integration/test_catalog_product_migration.py",
+        "2304",
+        "test_0057_downgrade_refuses_catalog_approval_before_any_ddl"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_reply_unknown_auto_history_and_current_correction",
+    "locations": [
+      [
+        "tests/integration/test_current_outreach_facts.py",
+        "136",
+        "test_reply_unknown_auto_history_and_current_correction"
+      ]
+    ],
+    "error_types": [
+      "TypeError"
+    ]
+  },
+  {
+    "test": "test_owned_api_scheduler_disabled_binding_restart",
+    "locations": [
+      [
+        "tests/integration/test_email_inbound_driver.py",
+        "91",
+        "test_owned_api_scheduler_disabled_binding_restart"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_roundtrip_downgrade_0002_then_upgrade_head",
+    "locations": [
+      [
+        "tests/integration/test_employees_repositories.py",
+        "305",
+        "test_roundtrip_downgrade_0002_then_upgrade_head"
+      ],
+      [
+        "tests/integration/test_employees_repositories.py",
+        "175",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0007_roundtrip_exact_schema_and_append_only",
+    "locations": [
+      [
+        "tests/integration/test_human_handoff_workflow.py",
+        "86",
+        "test_0007_roundtrip_exact_schema_and_append_only"
+      ],
+      [
+        "tests/integration/test_human_handoff_workflow.py",
+        "45",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0052_sourcing_admission_base_version_roundtrip_and_guard",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "174",
+        "test_0052_sourcing_admission_base_version_roundtrip_and_guard"
+      ],
+      [
+        "tests/integration/test_migrations.py",
+        "337",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_costing_quote_evidence_0041_roundtrip_only_adds_four_tables",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "351",
+        "test_costing_quote_evidence_0041_roundtrip_only_adds_four_tables"
+      ],
+      [
+        "tests/integration/test_migrations.py",
+        "337",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_roundtrip_downgrade_base_then_upgrade_head",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "781",
+        "test_roundtrip_downgrade_base_then_upgrade_head"
+      ],
+      [
+        "tests/integration/test_migrations.py",
+        "337",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_sending_identity_roundtrip_0008_0007_0008",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "1602",
+        "test_sending_identity_roundtrip_0008_0007_0008"
+      ],
+      [
+        "tests/integration/test_migrations.py",
+        "337",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0009_outreach_schema_and_roundtrip",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "1878",
+        "test_0009_outreach_schema_and_roundtrip"
+      ],
+      [
+        "tests/integration/test_migrations.py",
+        "337",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0010_tool_call_schema_is_safe_tenant_scoped_and_roundtrips",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "2228",
+        "test_0010_tool_call_schema_is_safe_tenant_scoped_and_roundtrips"
+      ],
+      [
+        "tests/integration/test_migrations.py",
+        "337",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0011_outreach_send_claim_roundtrip_and_state_guard",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "2428",
+        "test_0011_outreach_send_claim_roundtrip_and_state_guard"
+      ],
+      [
+        "tests/integration/test_migrations.py",
+        "337",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0012_email_feedback_schema_and_roundtrip",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "2498",
+        "test_0012_email_feedback_schema_and_roundtrip"
+      ],
+      [
+        "tests/integration/test_migrations.py",
+        "337",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0013_receipt_fingerprint_schema_and_roundtrip",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "2716",
+        "test_0013_receipt_fingerprint_schema_and_roundtrip"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_artifact_store_0014_roundtrip_and_guards",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "2869",
+        "test_artifact_store_0014_roundtrip_and_guards"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0015_notification_jobs_roundtrip",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "3012",
+        "test_0015_notification_jobs_roundtrip"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0016_authentication_check_requests_roundtrip_and_guards",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "3200",
+        "test_0016_authentication_check_requests_roundtrip_and_guards"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0017_email_complaints_schema_and_roundtrip",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "3338",
+        "test_0017_email_complaints_schema_and_roundtrip"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0018_conversation_classifications_roundtrip_and_guards",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "3590",
+        "test_0018_conversation_classifications_roundtrip_and_guards"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0024_contact_verification_observation_revision_present",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "3682",
+        "test_0024_contact_verification_observation_revision_present"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0020_classification_corrections_contract_matches_orm",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "3706",
+        "test_0020_classification_corrections_contract_matches_orm"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0020_classification_corrections_downgrade_roundtrip",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "3811",
+        "test_0020_classification_corrections_downgrade_roundtrip"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0019_conversations_messages_roundtrip_and_guards",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "3841",
+        "test_0019_conversations_messages_roundtrip_and_guards"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0021_demand_signals_contract_matches_orm",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "3944",
+        "test_0021_demand_signals_contract_matches_orm"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0021_demand_signals_downgrade_roundtrip",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "4181",
+        "test_0021_demand_signals_downgrade_roundtrip"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0022_need_hypotheses_contract_matches_orm",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "4414",
+        "test_0022_need_hypotheses_contract_matches_orm"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0022_downgrade_roundtrip",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "4590",
+        "test_0022_downgrade_roundtrip"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0024_prospecting_contract_matches_orm",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "4632",
+        "test_0024_prospecting_contract_matches_orm"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0024_verification_observation_downgrade_roundtrip",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "4754",
+        "test_0024_verification_observation_downgrade_roundtrip"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0023_downgrade_roundtrip",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "4799",
+        "test_0023_downgrade_roundtrip"
+      ],
+      [
+        "tests/integration/test_migrations.py",
+        "337",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0031_company_playbook_contract_matches_orm",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "4827",
+        "test_0031_company_playbook_contract_matches_orm"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0031_company_playbook_downgrade_roundtrip",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "4935",
+        "test_0031_company_playbook_downgrade_roundtrip"
+      ],
+      [
+        "tests/integration/test_migrations.py",
+        "337",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0032_country_policy_contract_matches_orm",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "4971",
+        "test_0032_country_policy_contract_matches_orm"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0032_country_policy_downgrade_roundtrip",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "5107",
+        "test_0032_country_policy_downgrade_roundtrip"
+      ],
+      [
+        "tests/integration/test_migrations.py",
+        "337",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0034_snapshot_artifact_backfill_downgrade_upgrade_roundtrip",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "5211",
+        "test_0034_snapshot_artifact_backfill_downgrade_upgrade_roundtrip"
+      ],
+      [
+        "tests/integration/test_migrations.py",
+        "337",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0035_reply_field_evidence_roundtrip_matches_orm",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "5270",
+        "test_0035_reply_field_evidence_roundtrip_matches_orm"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0036_reply_scope_and_owner_work_roundtrip_match_orm",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "5361",
+        "test_0036_reply_scope_and_owner_work_roundtrip_match_orm"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0037_enrollment_source_hypothesis_roundtrip_matches_orm",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "5476",
+        "test_0037_enrollment_source_hypothesis_roundtrip_matches_orm"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0038_prospect_account_field_provenance_roundtrip_matches_orm",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "5542",
+        "test_0038_prospect_account_field_provenance_roundtrip_matches_orm"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0034_snapshot_artifact_backfill_missing_match_fails_closed",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "5653",
+        "test_0034_snapshot_artifact_backfill_missing_match_fails_closed"
+      ],
+      [
+        "tests/integration/test_migrations.py",
+        "337",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0034_snapshot_artifact_backfill_ambiguous_match_fails_closed",
+    "locations": [
+      [
+        "tests/integration/test_migrations.py",
+        "5705",
+        "test_0034_snapshot_artifact_backfill_ambiguous_match_fails_closed"
+      ],
+      [
+        "tests/integration/test_migrations.py",
+        "337",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0006_upgrade_creates_notification_deliveries",
+    "locations": [
+      [
+        "tests/integration/test_notification_dedup.py",
+        "266",
+        "test_0006_upgrade_creates_notification_deliveries"
+      ],
+      [
+        "tests/integration/test_notification_dedup.py",
+        "104",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0006_unique_tenant_dedup_channel",
+    "locations": [
+      [
+        "tests/integration/test_notification_dedup.py",
+        "302",
+        "test_0006_unique_tenant_dedup_channel"
+      ],
+      [
+        "tests/integration/test_notification_dedup.py",
+        "104",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0006_downgrade_removes_table_roundtrip",
+    "locations": [
+      [
+        "tests/integration/test_notification_dedup.py",
+        "350",
+        "test_0006_downgrade_removes_table_roundtrip"
+      ],
+      [
+        "tests/integration/test_notification_dedup.py",
+        "104",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0005_upgrade_adds_outbox_delivery_columns",
+    "locations": [
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "248",
+        "test_0005_upgrade_adds_outbox_delivery_columns"
+      ],
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "132",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0005_upgrade_creates_outbox_deliveries_table",
+    "locations": [
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "268",
+        "test_0005_upgrade_creates_outbox_deliveries_table"
+      ],
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "132",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0005_upgrade_status_check_allows_dead",
+    "locations": [
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "313",
+        "test_0005_upgrade_status_check_allows_dead"
+      ],
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "132",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0005_upgrade_guard_allows_delivery_fields",
+    "locations": [
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "346",
+        "test_0005_upgrade_guard_allows_delivery_fields"
+      ],
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "132",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0005_upgrade_adds_unique_tenant_event",
+    "locations": [
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "412",
+        "test_0005_upgrade_adds_unique_tenant_event"
+      ],
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "132",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_outbox_deliveries_unique_tenant_event_handler",
+    "locations": [
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "431",
+        "test_outbox_deliveries_unique_tenant_event_handler"
+      ],
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "132",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_outbox_deliveries_composite_fk_tenant_isolation",
+    "locations": [
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "472",
+        "test_outbox_deliveries_composite_fk_tenant_isolation"
+      ],
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "132",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0005_downgrade_restores_0002_semantics",
+    "locations": [
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "509",
+        "test_0005_downgrade_restores_0002_semantics"
+      ],
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "132",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_0005_downgrade_maps_dead_rows_to_pending",
+    "locations": [
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "572",
+        "test_0005_downgrade_maps_dead_rows_to_pending"
+      ],
+      [
+        "tests/integration/test_outbox_delivery.py",
+        "132",
+        "_run_alembic"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_safe",
+    "locations": [
+      [
+        "tests/integration/test_phase1_closed_loop.py",
+        "1039",
+        "test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_safe"
+      ]
+    ],
+    "error_types": []
+  },
+  {
+    "test": "test_missing_need_is_completed_by_later_reply_across_runtime_restart[True]",
+    "locations": [
+      [
+        "tests/integration/test_reply_completion.py",
+        "975",
+        "test_missing_need_is_completed_by_later_reply_across_runtime_restart"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_inbound_stored_starts_reply_run_and_applies_actions",
+    "locations": [
+      [
+        "tests/integration/test_scheduler_reply_trigger.py",
+        "904",
+        "test_inbound_stored_starts_reply_run_and_applies_actions"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_reply_trigger_consumer_redelivery_is_idempotent",
+    "locations": [
+      [
+        "tests/integration/test_scheduler_reply_trigger.py",
+        "1272",
+        "test_reply_trigger_consumer_redelivery_is_idempotent"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_reply_trigger_does_not_retrigger_on_reply_received",
+    "locations": [
+      [
+        "tests/integration/test_scheduler_reply_trigger.py",
+        "1357",
+        "test_reply_trigger_does_not_retrigger_on_reply_received"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_real_http_configuration_approval_and_worker_crash",
+    "locations": [
+      [
+        "tests/integration/test_web_core_launcher.py",
+        "395",
+        "test_real_http_configuration_approval_and_worker_crash"
+      ]
+    ],
+    "error_types": []
+  },
+  {
+    "test": "test_import_and_zero_arg_factory_do_not_create_database_resources",
+    "locations": [
+      [
+        "tests/unit/test_api_app.py",
+        "520",
+        "test_import_and_zero_arg_factory_do_not_create_database_resources"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_factory_openapi_matches_s3_15_crm_runtime_contracts",
+    "locations": [
+      [
+        "tests/unit/test_api_app.py",
+        "568",
+        "test_factory_openapi_matches_s3_15_crm_runtime_contracts"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-None]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "165",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-schema]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "112",
+        "schema"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "172",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "RuntimeError",
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-probe]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "118",
+        "startup"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "172",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "RuntimeError",
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-cancel]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "120",
+        "startup"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "172",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "asyncio.exceptions.CancelledError",
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-body]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "162",
+        "enter"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "172",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "RuntimeError",
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-None]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "165",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-schema]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "112",
+        "schema"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "172",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "RuntimeError",
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-probe]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "118",
+        "startup"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "172",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "RuntimeError",
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-cancel]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "120",
+        "startup"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "172",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "asyncio.exceptions.CancelledError",
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-body]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "162",
+        "enter"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "172",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "RuntimeError",
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-None]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "172",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-schema]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "112",
+        "schema"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "172",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "RuntimeError",
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-probe]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "118",
+        "startup"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "172",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "RuntimeError",
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-cancel]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "120",
+        "startup"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "172",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "asyncio.exceptions.CancelledError",
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-body]",
+    "locations": [
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "162",
+        "enter"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "172",
+        "test_actual_api_lifespan_closes_quotation_before_database_even_before_yield"
+      ],
+      [
+        "tests/unit/test_quotation_lifecycle.py",
+        "159",
+        "enter"
+      ]
+    ],
+    "error_types": [
+      "RuntimeError",
+      "AttributeError"
+    ]
+  },
+  {
+    "test": "test_api_confirmation_gate_is_enforced_before_start[None-True-200]",
+    "locations": [
+      [
+        "tests/unit/test_research_api.py",
+        "289",
+        "test_api_confirmation_gate_is_enforced_before_start"
+      ]
+    ],
+    "error_types": []
+  },
+  {
+    "test": "test_api_confirmation_gate_is_enforced_before_start[record1-True-200]",
+    "locations": [
+      [
+        "tests/unit/test_research_api.py",
+        "289",
+        "test_api_confirmation_gate_is_enforced_before_start"
+      ]
+    ],
+    "error_types": []
+  },
+  {
+    "test": "test_api_confirmation_gate_is_enforced_before_start[record2-True-200]",
+    "locations": [
+      [
+        "tests/unit/test_research_api.py",
+        "289",
+        "test_api_confirmation_gate_is_enforced_before_start"
+      ]
+    ],
+    "error_types": []
+  },
+  {
+    "test": "test_confirmed_without_run_recovers_by_read_then_explicit_same_key",
+    "locations": [
+      [
+        "tests/unit/test_research_ui_preview.py",
+        "29",
+        "test_confirmed_without_run_recovers_by_read_then_explicit_same_key"
+      ]
+    ],
+    "error_types": []
+  },
+  {
+    "test": "test_controlled_preview_confirm_result_and_run_flow",
+    "locations": [
+      [
+        "tests/unit/test_research_ui_preview.py",
+        "64",
+        "test_controlled_preview_confirm_result_and_run_flow"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_phase1_matrix_allows_only_the_explicit_actions[boss-TENANT]",
+    "locations": [
+      [
+        "tests/unit/test_sending_identity_permissions.py",
+        "88",
+        "test_phase1_matrix_allows_only_the_explicit_actions"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_phase1_matrix_allows_only_the_explicit_actions[manager-MANAGER]",
+    "locations": [
+      [
+        "tests/unit/test_sending_identity_permissions.py",
+        "88",
+        "test_phase1_matrix_allows_only_the_explicit_actions"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_phase1_matrix_allows_only_the_explicit_actions[system-SYSTEM]",
+    "locations": [
+      [
+        "tests/unit/test_sending_identity_permissions.py",
+        "88",
+        "test_phase1_matrix_allows_only_the_explicit_actions"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_phase1_matrix_allows_only_the_explicit_actions[sales-SELF]",
+    "locations": [
+      [
+        "tests/unit/test_sending_identity_permissions.py",
+        "88",
+        "test_phase1_matrix_allows_only_the_explicit_actions"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  },
+  {
+    "test": "test_current_quota_and_uncertain_recovery_are_safe_application_projections",
+    "locations": [
+      [
+        "tests/unit/workflows/test_sourcing_plan.py",
+        "359",
+        "test_current_quota_and_uncertain_recovery_are_safe_application_projections"
+      ]
+    ],
+    "error_types": [
+      "AssertionError"
+    ]
+  }
+]

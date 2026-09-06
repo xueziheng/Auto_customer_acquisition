@@ -1,0 +1,1472 @@
+[
+  {
+    "index": 1,
+    "test": "tests/e2e/test_costing_quote_browser.py::test_real_costing_quote_browser",
+    "group": "linux-browser",
+    "change": "Linux成本刷新曾连接失败；定向完整链后通过，未证实relay饱和，保留组合风险由第二全量验证",
+    "focused_evidence": "browser-remaining-diagnostic.log：真实完整链通过",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/e2e/test_costing_quote_browser.py::test_real_costing_quote_browser"
+  },
+  {
+    "index": 2,
+    "test": "tests/e2e/test_costing_quote_browser.py::test_real_initial_unit_read_probe",
+    "group": "linux-ready",
+    "change": "原fixture尚未完成首循环即yield；公开wait首次调用事件等待真实完成，保留cycles>0",
+    "focused_evidence": "final-focused-green.log：23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/e2e/test_costing_quote_browser.py::test_real_initial_unit_read_probe"
+  },
+  {
+    "index": 3,
+    "test": "tests/e2e/test_phase1_browser.py::test_phase1_browser_visible_reply_to_handoff_chain",
+    "group": "legacy-browser",
+    "change": "旧fixture补当前公开契约的bounded artifact/当前actor；真实浏览器",
+    "focused_evidence": "browser-compat.log（最终实际日志见逐项字段）",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/e2e/test_phase1_browser.py::test_phase1_browser_visible_reply_to_handoff_chain"
+  },
+  {
+    "index": 4,
+    "test": "tests/e2e/test_research_browser.py::test_research_confirm_refresh_and_radar_tabs_are_operable_across_origins[1280-900]",
+    "group": "legacy-browser",
+    "change": "旧fixture补当前公开契约的bounded artifact/当前actor；真实浏览器",
+    "focused_evidence": "browser-compat.log（最终实际日志见逐项字段）",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/e2e/test_research_browser.py::test_research_confirm_refresh_and_radar_tabs_are_operable_across_origins[1280-900]"
+  },
+  {
+    "index": 5,
+    "test": "tests/e2e/test_research_browser.py::test_research_confirm_refresh_and_radar_tabs_are_operable_across_origins[390-844]",
+    "group": "legacy-browser",
+    "change": "旧fixture补当前公开契约的bounded artifact/当前actor；真实浏览器",
+    "focused_evidence": "browser-compat.log（最终实际日志见逐项字段）",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/e2e/test_research_browser.py::test_research_confirm_refresh_and_radar_tabs_are_operable_across_origins[390-844]"
+  },
+  {
+    "index": 6,
+    "test": "tests/e2e/test_slice4_manual_send.py::test_slice4_manual_send_fixed_journey",
+    "group": "slice4",
+    "change": "旧fixture无入站端口，精确503×2/prepare409×1与可见错误，不屏蔽其它失败",
+    "focused_evidence": "browser-focused-green-2.log：slice4 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/e2e/test_slice4_manual_send.py::test_slice4_manual_send_fixed_journey"
+  },
+  {
+    "index": 7,
+    "test": "tests/integration/test_catalog_policy_workflow.py::test_real_workflow_is_visible_in_central_queue_then_applies_and_projects_redacted_notification",
+    "group": "catalog-clock",
+    "change": "持久Run.created_at与旧固定测试时钟不一致；仅每个独立场景建立持久时钟基线",
+    "focused_evidence": "catalog-compat-green.log：6 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_catalog_policy_workflow.py::test_real_workflow_is_visible_in_central_queue_then_applies_and_projects_redacted_notification"
+  },
+  {
+    "index": 8,
+    "test": "tests/integration/test_catalog_policy_workflow.py::test_response_loss_after_each_committed_boundary_converges_without_duplicates[catalog_product_policy.submit]",
+    "group": "catalog-clock",
+    "change": "持久Run.created_at与旧固定测试时钟不一致；仅每个独立场景建立持久时钟基线",
+    "focused_evidence": "catalog-compat-green.log：6 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_catalog_policy_workflow.py::test_response_loss_after_each_committed_boundary_converges_without_duplicates[catalog_product_policy.submit]"
+  },
+  {
+    "index": 9,
+    "test": "tests/integration/test_catalog_policy_workflow.py::test_response_loss_after_each_committed_boundary_converges_without_duplicates[catalog_product_policy.apply]",
+    "group": "catalog-clock",
+    "change": "持久Run.created_at与旧固定测试时钟不一致；仅每个独立场景建立持久时钟基线",
+    "focused_evidence": "catalog-compat-green.log：6 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_catalog_policy_workflow.py::test_response_loss_after_each_committed_boundary_converges_without_duplicates[catalog_product_policy.apply]"
+  },
+  {
+    "index": 10,
+    "test": "tests/integration/test_catalog_policy_workflow.py::test_response_loss_after_each_committed_boundary_converges_without_duplicates[catalog_product_policy.mark_applied]",
+    "group": "catalog-clock",
+    "change": "持久Run.created_at与旧固定测试时钟不一致；仅每个独立场景建立持久时钟基线",
+    "focused_evidence": "catalog-compat-green.log：6 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_catalog_policy_workflow.py::test_response_loss_after_each_committed_boundary_converges_without_duplicates[catalog_product_policy.mark_applied]"
+  },
+  {
+    "index": 11,
+    "test": "tests/integration/test_catalog_policy_workflow.py::test_rejection_and_timeout_are_durable_terminal_without_activation",
+    "group": "catalog-clock",
+    "change": "持久Run.created_at与旧固定测试时钟不一致；仅每个独立场景建立持久时钟基线",
+    "focused_evidence": "catalog-compat-green.log：6 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_catalog_policy_workflow.py::test_rejection_and_timeout_are_durable_terminal_without_activation"
+  },
+  {
+    "index": 12,
+    "test": "tests/integration/test_catalog_product_migration.py::test_0057_is_the_only_script_head",
+    "group": "head",
+    "change": "当前head断言0058→0059；旧定向revision往返/降级拒绝语义保持",
+    "focused_evidence": "migration-compat.log：52 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_catalog_product_migration.py::test_0057_is_the_only_script_head"
+  },
+  {
+    "index": 13,
+    "test": "tests/integration/test_catalog_product_migration.py::test_0057_downgrade_refuses_catalog_approval_before_any_ddl",
+    "group": "head",
+    "change": "当前head断言0058→0059；旧定向revision往返/降级拒绝语义保持",
+    "focused_evidence": "migration-compat.log：52 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_catalog_product_migration.py::test_0057_downgrade_refuses_catalog_approval_before_any_ddl"
+  },
+  {
+    "index": 14,
+    "test": "tests/integration/test_current_outreach_facts.py::test_reply_unknown_auto_history_and_current_correction",
+    "group": "actor",
+    "change": "纠正入口补真实当前员工actor，保留实际权限",
+    "focused_evidence": "reply-compat-green.log：47 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_current_outreach_facts.py::test_reply_unknown_auto_history_and_current_correction"
+  },
+  {
+    "index": 15,
+    "test": "tests/integration/test_email_inbound_driver.py::test_owned_api_scheduler_disabled_binding_restart",
+    "group": "inbound",
+    "change": "旧disabled scheduler预期过期；现真实启用收取并review，未绑定状态仍disabled",
+    "focused_evidence": "browser-compat.log（最终实际日志见逐项字段）",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_email_inbound_driver.py::test_owned_api_scheduler_enabled_binding_restart"
+  },
+  {
+    "index": 16,
+    "test": "tests/integration/test_employees_repositories.py::test_roundtrip_downgrade_0002_then_upgrade_head",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_employees_repositories.py::test_roundtrip_downgrade_0002_then_upgrade_head"
+  },
+  {
+    "index": 17,
+    "test": "tests/integration/test_human_handoff_workflow.py::test_0007_roundtrip_exact_schema_and_append_only",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_human_handoff_workflow.py::test_0007_roundtrip_exact_schema_and_append_only"
+  },
+  {
+    "index": 18,
+    "test": "tests/integration/test_migrations.py::test_0052_sourcing_admission_base_version_roundtrip_and_guard",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0052_sourcing_admission_base_version_roundtrip_and_guard"
+  },
+  {
+    "index": 19,
+    "test": "tests/integration/test_migrations.py::test_costing_quote_evidence_0041_roundtrip_only_adds_four_tables",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_costing_quote_evidence_0041_roundtrip_only_adds_four_tables"
+  },
+  {
+    "index": 20,
+    "test": "tests/integration/test_migrations.py::test_roundtrip_downgrade_base_then_upgrade_head",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_roundtrip_downgrade_base_then_upgrade_head"
+  },
+  {
+    "index": 21,
+    "test": "tests/integration/test_migrations.py::test_sending_identity_roundtrip_0008_0007_0008",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_sending_identity_roundtrip_0008_0007_0008"
+  },
+  {
+    "index": 22,
+    "test": "tests/integration/test_migrations.py::test_0009_outreach_schema_and_roundtrip",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0009_outreach_schema_and_roundtrip"
+  },
+  {
+    "index": 23,
+    "test": "tests/integration/test_migrations.py::test_0010_tool_call_schema_is_safe_tenant_scoped_and_roundtrips",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0010_tool_call_schema_is_safe_tenant_scoped_and_roundtrips"
+  },
+  {
+    "index": 24,
+    "test": "tests/integration/test_migrations.py::test_0011_outreach_send_claim_roundtrip_and_state_guard",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0011_outreach_send_claim_roundtrip_and_state_guard"
+  },
+  {
+    "index": 25,
+    "test": "tests/integration/test_migrations.py::test_0012_email_feedback_schema_and_roundtrip",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0012_email_feedback_schema_and_roundtrip"
+  },
+  {
+    "index": 26,
+    "test": "tests/integration/test_migrations.py::test_0013_receipt_fingerprint_schema_and_roundtrip",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0013_receipt_fingerprint_schema_and_roundtrip"
+  },
+  {
+    "index": 27,
+    "test": "tests/integration/test_migrations.py::test_artifact_store_0014_roundtrip_and_guards",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_artifact_store_0014_roundtrip_and_guards"
+  },
+  {
+    "index": 28,
+    "test": "tests/integration/test_migrations.py::test_0015_notification_jobs_roundtrip",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0015_notification_jobs_roundtrip"
+  },
+  {
+    "index": 29,
+    "test": "tests/integration/test_migrations.py::test_0016_authentication_check_requests_roundtrip_and_guards",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0016_authentication_check_requests_roundtrip_and_guards"
+  },
+  {
+    "index": 30,
+    "test": "tests/integration/test_migrations.py::test_0017_email_complaints_schema_and_roundtrip",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0017_email_complaints_schema_and_roundtrip"
+  },
+  {
+    "index": 31,
+    "test": "tests/integration/test_migrations.py::test_0018_conversation_classifications_roundtrip_and_guards",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0018_conversation_classifications_roundtrip_and_guards"
+  },
+  {
+    "index": 32,
+    "test": "tests/integration/test_migrations.py::test_0024_contact_verification_observation_revision_present",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0024_contact_verification_observation_revision_present"
+  },
+  {
+    "index": 33,
+    "test": "tests/integration/test_migrations.py::test_0020_classification_corrections_contract_matches_orm",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0020_classification_corrections_contract_matches_orm"
+  },
+  {
+    "index": 34,
+    "test": "tests/integration/test_migrations.py::test_0020_classification_corrections_downgrade_roundtrip",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0020_classification_corrections_downgrade_roundtrip"
+  },
+  {
+    "index": 35,
+    "test": "tests/integration/test_migrations.py::test_0019_conversations_messages_roundtrip_and_guards",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0019_conversations_messages_roundtrip_and_guards"
+  },
+  {
+    "index": 36,
+    "test": "tests/integration/test_migrations.py::test_0021_demand_signals_contract_matches_orm",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0021_demand_signals_contract_matches_orm"
+  },
+  {
+    "index": 37,
+    "test": "tests/integration/test_migrations.py::test_0021_demand_signals_downgrade_roundtrip",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0021_demand_signals_downgrade_roundtrip"
+  },
+  {
+    "index": 38,
+    "test": "tests/integration/test_migrations.py::test_0022_need_hypotheses_contract_matches_orm",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0022_need_hypotheses_contract_matches_orm"
+  },
+  {
+    "index": 39,
+    "test": "tests/integration/test_migrations.py::test_0022_downgrade_roundtrip",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0022_downgrade_roundtrip"
+  },
+  {
+    "index": 40,
+    "test": "tests/integration/test_migrations.py::test_0024_prospecting_contract_matches_orm",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0024_prospecting_contract_matches_orm"
+  },
+  {
+    "index": 41,
+    "test": "tests/integration/test_migrations.py::test_0024_verification_observation_downgrade_roundtrip",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0024_verification_observation_downgrade_roundtrip"
+  },
+  {
+    "index": 42,
+    "test": "tests/integration/test_migrations.py::test_0023_downgrade_roundtrip",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0023_downgrade_roundtrip"
+  },
+  {
+    "index": 43,
+    "test": "tests/integration/test_migrations.py::test_0031_company_playbook_contract_matches_orm",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0031_company_playbook_contract_matches_orm"
+  },
+  {
+    "index": 44,
+    "test": "tests/integration/test_migrations.py::test_0031_company_playbook_downgrade_roundtrip",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0031_company_playbook_downgrade_roundtrip"
+  },
+  {
+    "index": 45,
+    "test": "tests/integration/test_migrations.py::test_0032_country_policy_contract_matches_orm",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0032_country_policy_contract_matches_orm"
+  },
+  {
+    "index": 46,
+    "test": "tests/integration/test_migrations.py::test_0032_country_policy_downgrade_roundtrip",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0032_country_policy_downgrade_roundtrip"
+  },
+  {
+    "index": 47,
+    "test": "tests/integration/test_migrations.py::test_0034_snapshot_artifact_backfill_downgrade_upgrade_roundtrip",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0034_snapshot_artifact_backfill_downgrade_upgrade_roundtrip"
+  },
+  {
+    "index": 48,
+    "test": "tests/integration/test_migrations.py::test_0035_reply_field_evidence_roundtrip_matches_orm",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0035_reply_field_evidence_roundtrip_matches_orm"
+  },
+  {
+    "index": 49,
+    "test": "tests/integration/test_migrations.py::test_0036_reply_scope_and_owner_work_roundtrip_match_orm",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0036_reply_scope_and_owner_work_roundtrip_match_orm"
+  },
+  {
+    "index": 50,
+    "test": "tests/integration/test_migrations.py::test_0037_enrollment_source_hypothesis_roundtrip_matches_orm",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0037_enrollment_source_hypothesis_roundtrip_matches_orm"
+  },
+  {
+    "index": 51,
+    "test": "tests/integration/test_migrations.py::test_0038_prospect_account_field_provenance_roundtrip_matches_orm",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0038_prospect_account_field_provenance_roundtrip_matches_orm"
+  },
+  {
+    "index": 52,
+    "test": "tests/integration/test_migrations.py::test_0034_snapshot_artifact_backfill_missing_match_fails_closed",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0034_snapshot_artifact_backfill_missing_match_fails_closed"
+  },
+  {
+    "index": 53,
+    "test": "tests/integration/test_migrations.py::test_0034_snapshot_artifact_backfill_ambiguous_match_fails_closed",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_migrations.py::test_0034_snapshot_artifact_backfill_ambiguous_match_fails_closed"
+  },
+  {
+    "index": 54,
+    "test": "tests/integration/test_notification_dedup.py::test_0006_upgrade_creates_notification_deliveries",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_notification_dedup.py::test_0006_upgrade_creates_notification_deliveries"
+  },
+  {
+    "index": 55,
+    "test": "tests/integration/test_notification_dedup.py::test_0006_unique_tenant_dedup_channel",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_notification_dedup.py::test_0006_unique_tenant_dedup_channel"
+  },
+  {
+    "index": 56,
+    "test": "tests/integration/test_notification_dedup.py::test_0006_downgrade_removes_table_roundtrip",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_notification_dedup.py::test_0006_downgrade_removes_table_roundtrip"
+  },
+  {
+    "index": 57,
+    "test": "tests/integration/test_outbox_delivery.py::test_0005_upgrade_adds_outbox_delivery_columns",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_outbox_delivery.py::test_0005_upgrade_adds_outbox_delivery_columns"
+  },
+  {
+    "index": 58,
+    "test": "tests/integration/test_outbox_delivery.py::test_0005_upgrade_creates_outbox_deliveries_table",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_outbox_delivery.py::test_0005_upgrade_creates_outbox_deliveries_table"
+  },
+  {
+    "index": 59,
+    "test": "tests/integration/test_outbox_delivery.py::test_0005_upgrade_status_check_allows_dead",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_outbox_delivery.py::test_0005_upgrade_status_check_allows_dead"
+  },
+  {
+    "index": 60,
+    "test": "tests/integration/test_outbox_delivery.py::test_0005_upgrade_guard_allows_delivery_fields",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_outbox_delivery.py::test_0005_upgrade_guard_allows_delivery_fields"
+  },
+  {
+    "index": 61,
+    "test": "tests/integration/test_outbox_delivery.py::test_0005_upgrade_adds_unique_tenant_event",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_outbox_delivery.py::test_0005_upgrade_adds_unique_tenant_event"
+  },
+  {
+    "index": 62,
+    "test": "tests/integration/test_outbox_delivery.py::test_outbox_deliveries_unique_tenant_event_handler",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_outbox_delivery.py::test_outbox_deliveries_unique_tenant_event_handler"
+  },
+  {
+    "index": 63,
+    "test": "tests/integration/test_outbox_delivery.py::test_outbox_deliveries_composite_fk_tenant_isolation",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_outbox_delivery.py::test_outbox_deliveries_composite_fk_tenant_isolation"
+  },
+  {
+    "index": 64,
+    "test": "tests/integration/test_outbox_delivery.py::test_0005_downgrade_restores_0002_semantics",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_outbox_delivery.py::test_0005_downgrade_restores_0002_semantics"
+  },
+  {
+    "index": 65,
+    "test": "tests/integration/test_outbox_delivery.py::test_0005_downgrade_maps_dead_rows_to_pending",
+    "group": "migration",
+    "change": "组合前置不可变提案导致0052正确拒绝；仅具名HTTP前置例使用已有unit_engine。各旧迁移单独作用组通过，首轮各错误不倒推为同因",
+    "focused_evidence": "migration-compat.log：52 passed；final-focused-green.log：同顺序组合23 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_outbox_delivery.py::test_0005_downgrade_maps_dead_rows_to_pending"
+  },
+  {
+    "index": 66,
+    "test": "tests/integration/test_phase1_closed_loop.py::test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_safe",
+    "group": "reply",
+    "change": "旧RawArtifactStore fixture补实际bounded_transport，保留生产读取护栏",
+    "focused_evidence": "reply-compat-green.log：47 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_phase1_closed_loop.py::test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_safe"
+  },
+  {
+    "index": 67,
+    "test": "tests/integration/test_reply_completion.py::test_missing_need_is_completed_by_later_reply_across_runtime_restart[True]",
+    "group": "reply-order",
+    "change": "SQL结果按created_at/run_id稳定排序，保留精确Run终态",
+    "focused_evidence": "reply-compat-green.log：47 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_reply_completion.py::test_missing_need_is_completed_by_later_reply_across_runtime_restart[True]"
+  },
+  {
+    "index": 68,
+    "test": "tests/integration/test_scheduler_reply_trigger.py::test_inbound_stored_starts_reply_run_and_applies_actions",
+    "group": "reply",
+    "change": "旧RawArtifactStore fixture补实际bounded_transport，保留生产读取护栏",
+    "focused_evidence": "reply-compat-green.log：47 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_scheduler_reply_trigger.py::test_inbound_stored_starts_reply_run_and_applies_actions"
+  },
+  {
+    "index": 69,
+    "test": "tests/integration/test_scheduler_reply_trigger.py::test_reply_trigger_consumer_redelivery_is_idempotent",
+    "group": "reply",
+    "change": "旧RawArtifactStore fixture补实际bounded_transport，保留生产读取护栏",
+    "focused_evidence": "reply-compat-green.log：47 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_scheduler_reply_trigger.py::test_reply_trigger_consumer_redelivery_is_idempotent"
+  },
+  {
+    "index": 70,
+    "test": "tests/integration/test_scheduler_reply_trigger.py::test_reply_trigger_does_not_retrigger_on_reply_received",
+    "group": "reply",
+    "change": "旧RawArtifactStore fixture补实际bounded_transport，保留生产读取护栏",
+    "focused_evidence": "reply-compat-green.log：47 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_scheduler_reply_trigger.py::test_reply_trigger_does_not_retrigger_on_reply_received"
+  },
+  {
+    "index": 71,
+    "test": "tests/integration/test_web_core_launcher.py::test_real_http_configuration_approval_and_worker_crash",
+    "group": "research-negative",
+    "change": "受控研究现在接线；confirm200只排队，无活跃政策实际Run failed且search/page/model0、业务副作用0，审批后才研究",
+    "focused_evidence": "research-unconfigured-chain.log：旧launcher负例passed；controlled-negative-driver.log：主链passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/integration/test_web_core_launcher.py::test_real_http_configuration_approval_and_worker_crash"
+  },
+  {
+    "index": 72,
+    "test": "tests/unit/test_api_app.py::test_import_and_zero_arg_factory_do_not_create_database_resources",
+    "group": "api-schema",
+    "change": "契约快照补现有API路径和公开422，不移除旧契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_api_app.py::test_import_and_zero_arg_factory_do_not_create_database_resources"
+  },
+  {
+    "index": 73,
+    "test": "tests/unit/test_api_app.py::test_factory_openapi_matches_s3_15_crm_runtime_contracts",
+    "group": "api-schema",
+    "change": "契约快照补现有API路径和公开422，不移除旧契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_api_app.py::test_factory_openapi_matches_s3_15_crm_runtime_contracts"
+  },
+  {
+    "index": 74,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-None]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-None]"
+  },
+  {
+    "index": 75,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-schema]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-schema]"
+  },
+  {
+    "index": 76,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-probe]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-probe]"
+  },
+  {
+    "index": 77,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-cancel]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-cancel]"
+  },
+  {
+    "index": 78,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-body]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[None-body]"
+  },
+  {
+    "index": 79,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-None]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-None]"
+  },
+  {
+    "index": 80,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-schema]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-schema]"
+  },
+  {
+    "index": 81,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-probe]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-probe]"
+  },
+  {
+    "index": 82,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-cancel]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-cancel]"
+  },
+  {
+    "index": 83,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-body]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[ordinary-body]"
+  },
+  {
+    "index": 84,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-None]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-None]"
+  },
+  {
+    "index": 85,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-schema]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-schema]"
+  },
+  {
+    "index": 86,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-probe]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-probe]"
+  },
+  {
+    "index": 87,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-cancel]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-cancel]"
+  },
+  {
+    "index": 88,
+    "test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-body]",
+    "group": "lifecycle",
+    "change": "旧SimpleNamespace补显式runtime资源字段并适配已批准cleanup异常契约",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_quotation_lifecycle.py::test_actual_api_lifespan_closes_quotation_before_database_even_before_yield[cancel-body]"
+  },
+  {
+    "index": 89,
+    "test": "tests/unit/test_research_api.py::test_api_confirmation_gate_is_enforced_before_start[None-True-200]",
+    "group": "research-actor",
+    "change": "预览和API旧fixture补当前员工映射/员工服务，未放宽生产权限",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_research_api.py::test_api_confirmation_gate_is_enforced_before_start[None-True-200]"
+  },
+  {
+    "index": 90,
+    "test": "tests/unit/test_research_api.py::test_api_confirmation_gate_is_enforced_before_start[record1-True-200]",
+    "group": "research-actor",
+    "change": "预览和API旧fixture补当前员工映射/员工服务，未放宽生产权限",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_research_api.py::test_api_confirmation_gate_is_enforced_before_start[record1-True-200]"
+  },
+  {
+    "index": 91,
+    "test": "tests/unit/test_research_api.py::test_api_confirmation_gate_is_enforced_before_start[record2-True-200]",
+    "group": "research-actor",
+    "change": "预览和API旧fixture补当前员工映射/员工服务，未放宽生产权限",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_research_api.py::test_api_confirmation_gate_is_enforced_before_start[record2-True-200]"
+  },
+  {
+    "index": 92,
+    "test": "tests/unit/test_research_ui_preview.py::test_confirmed_without_run_recovers_by_read_then_explicit_same_key",
+    "group": "research-actor",
+    "change": "预览和API旧fixture补当前员工映射/员工服务，未放宽生产权限",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_research_ui_preview.py::test_confirmed_without_run_recovers_by_read_then_explicit_same_key"
+  },
+  {
+    "index": 93,
+    "test": "tests/unit/test_research_ui_preview.py::test_controlled_preview_confirm_result_and_run_flow",
+    "group": "research-actor",
+    "change": "预览和API旧fixture补当前员工映射/员工服务，未放宽生产权限",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_research_ui_preview.py::test_controlled_preview_confirm_result_and_run_flow"
+  },
+  {
+    "index": 94,
+    "test": "tests/unit/test_sending_identity_permissions.py::test_phase1_matrix_allows_only_the_explicit_actions[boss-TENANT]",
+    "group": "permissions",
+    "change": "显式权限矩阵补INBOUND_BIND，只有boss允许",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_sending_identity_permissions.py::test_phase1_matrix_allows_only_the_explicit_actions[boss-TENANT]"
+  },
+  {
+    "index": 95,
+    "test": "tests/unit/test_sending_identity_permissions.py::test_phase1_matrix_allows_only_the_explicit_actions[manager-MANAGER]",
+    "group": "permissions",
+    "change": "显式权限矩阵补INBOUND_BIND，只有boss允许",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_sending_identity_permissions.py::test_phase1_matrix_allows_only_the_explicit_actions[manager-MANAGER]"
+  },
+  {
+    "index": 96,
+    "test": "tests/unit/test_sending_identity_permissions.py::test_phase1_matrix_allows_only_the_explicit_actions[system-SYSTEM]",
+    "group": "permissions",
+    "change": "显式权限矩阵补INBOUND_BIND，只有boss允许",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_sending_identity_permissions.py::test_phase1_matrix_allows_only_the_explicit_actions[system-SYSTEM]"
+  },
+  {
+    "index": 97,
+    "test": "tests/unit/test_sending_identity_permissions.py::test_phase1_matrix_allows_only_the_explicit_actions[sales-SELF]",
+    "group": "permissions",
+    "change": "显式权限矩阵补INBOUND_BIND，只有boss允许",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/test_sending_identity_permissions.py::test_phase1_matrix_allows_only_the_explicit_actions[sales-SELF]"
+  },
+  {
+    "index": 98,
+    "test": "tests/unit/workflows/test_sourcing_plan.py::test_current_quota_and_uncertain_recovery_are_safe_application_projections",
+    "group": "sourcing",
+    "change": "uncertain恢复例使用实际active public_search Run步骤，保持公开恢复语义",
+    "focused_evidence": "compat-unit-4.log：130 passed",
+    "first_full_commit": "1cbcdcf3d1bbd5ed088b87fff5329c263f6b731d",
+    "final_full": {
+      "commit": "48e4465fc307212e794d6ed87501cb418f74d245",
+      "result": "passed",
+      "gate": "backend-final-safe-summary.json",
+      "whole_passed": 9318
+    },
+    "current_test": "tests/unit/workflows/test_sourcing_plan.py::test_current_quota_and_uncertain_recovery_are_safe_application_projections"
+  }
+]
