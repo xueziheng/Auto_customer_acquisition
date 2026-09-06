@@ -69,7 +69,7 @@
 
 Owner `4867dcc1d5ab4866bea2285bf1ff5f7e`，Web `http://127.0.0.1:61329`、API61328。用原 launcher 新建，不复用旧环境。仅确定性原 ControlledConfig loader 在脚本内存装配自身连接，从不向模型/日志输出配置。
 
-原公开发件身份注册/授权/15日预热确认/绑定→已发布playbook提案→独立老板审批→原受控发送历史→Gmail入站→分类与四个消费者，实际生成：
+原公开发件身份注册/授权/人工确认预热目标15封/日（当日预热容量按原固定曲线，并非已运行15天）/绑定→已发布playbook提案→独立老板审批→原受控发送历史→Gmail入站→分类与四个消费者，实际生成：
 
 - sender `sid_01M1TR25DH6DE6CASBWBY5MQZJ`
 - message `msg_01M1TR6GZKDTG1192K2X5T36FN`，conversation `con_01M1TR6GZDA4QDH2VW4NMP5QH5`
