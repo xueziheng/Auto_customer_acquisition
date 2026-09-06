@@ -5,7 +5,7 @@
 Task13与最终全分支审查在本快照截止时尚待完成，最终裁定由控制者追加，不从历史进度文字推导通过。
 未推送、合并、部署或真实外发。
 
-本批实施与局部门禁见[Task13报告](task-13-report.md)及[源码提交清单](source-commit.json)；独立审查仍待。
+本批实施与局部门禁见[Task13报告](task-13-report.md)及[首次源码提交清单](source-commit.json)、[限定修复源码清单](fix1-source-commit.json)；独立限定复审仍待。
 
 ## 当前可核证据
 

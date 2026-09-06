@@ -1,4 +1,70 @@
-# Task13 实施报告
+# Task13 限定修复报告 · round 1/5
+
+状态：**DONE_WITH_CONCERNS**，I1/P2与M1/M2的实施修复及局部验证完成，等待原review_task13限定复审。
+本报告不提前宣布Task13或最终全分支审查通过。实际日期：2026-09-06。
+FIX BASE `fe6f7dc2622391c9359866dd90fafbf3573ebdb5`；FIX SOURCE `041bc741e0cd57dc9ed942d3a53f116b4fdffcbd`。
+
+## 修复内容
+
+- I1：本批验收helper使用ExitStack/AsyncExitStack，每创建engine/transport/S3 client立即注册关闭。
+  关闭回调各自捕获普通关闭异常并仅追加固定类别，其他已注册资源仍被尝试关闭；存在主失败时保留原主失败，
+  无主失败但有关闭错误则固定`backup_resource_cleanup_failed`，不能报告通过。
+  `_artifact`在settings/transport构造前即登记engine，第二client构造前已登记first；正常证据新增
+  `resource_cleanup_errors`。不修改生产Connector、Supervisor或业务规则。
+- M1：原logging.disable状态由测试最外层finally恢复，覆盖运行、资源清理和证据写入。
+  证据写失败不会覆盖已有主失败；无主失败时固定`backup_evidence_write_failed`，不回显OSError原文。
+- M2：仅移除正式索引历史表格中间空行，32条历史导航均属于连续的同一GFM表格；历史文件/hash不变。
+
+本轮7个源码/证据文件见`fix1-source-commit.json`；测试源码hash见`task-13-fix1-gates.json`和
+新`backup-restore.json`。未新增业务backup/restore接口、launcher、公共协议、字段或迁移。
+
+## 真实RED/GREEN与正常恢复复验
+
+新增`tests/unit/test_backup_restore_cleanup.py`全部使用无DB/无Docker/无网络替身，初始4 failed/0.48s
+分别命中engine未dispose、第二client构造失败first未close、first.close失败second未close、
+证据写失败后全局日志disable仍50（原0），不是fixture setup失败。关闭失败替身只用合成错误。
+
+修复后首轮4 passed/0.41s；补精确安全关闭类别断言后4 passed/0.43s；该轮ruff发现1个PIE807，
+将空dict lambda改为dict后最终unit4 passed/0.44s、ruff通过。每轮结果独立，不相加。
+
+| 最终命令/检查 | 结果 | 耗时 |
+| --- | --- | --- |
+| `.venv/bin/python -m pytest tests/unit/test_backup_restore_cleanup.py -q --tb=short` | exit0 / 4 passed | 0.44s |
+| `env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest tests/integration/test_web_core_backup_restore.py -q --tb=short` | exit0 / 1 passed，新owner正常复验一次 | 9.67s |
+| `.venv/bin/python scripts/check_boundaries.py` | exit0 / 7项PASS | 4.868s |
+| `.venv/bin/python -m ruff check tests/integration/test_web_core_backup_restore.py tests/unit/test_backup_restore_cleanup.py --output-format concise` | exit0 | 0.083s |
+| 显式本轮文件敏感扫描 | exit0 | 0.028s |
+| `.venv/bin/python scripts/scan_sensitive.py --staged` | exit0 | 0.155s |
+| `git diff --cached --check` | exit0 | 未单独计时 |
+| 历史表格连续行/索引链接 | 32行 / 66链接 / 缺失0 | 未单独计时 |
+
+关闭失败时“其余资源仍被尝试释放”由替身回归证明，不宣称真实SDK关闭失败必然成功释放。
+主失败保留和固定安全类别已断言；证据写失败测试也断言原主失败及日志状态恢复。
+
+新正常复验 source owner `25cfa8c8ff3445cfa969c9e5474df64f`，target owner `f9e358faf5424a4cb2e6e619d36c225e`；
+两者metadata hash `c1df0afa630f47c29dee24c67ea62822dc3939c96cf85e44021be51ddd345378`一致，
+原件SHA256 `fa9a230d284f919df4a6d374649935e4f4ad53ae95ade1a56a903f00b1d32de9`一致，
+源复读不变，same-owner/nonempty目标拒绝。resource_cleanup_errors=[]；两组精确owner清理errors=[]、
+private_config_removed=true、processes=[]、四listener fd=-1。所有DB操作串行，没有与其他DB测试重叠。
+
+审查前9.31s正常路径证据精确复制为`backup-restore-pre-review.json`；旧证据仍有效，但没有当时
+I1/M1关闭失败覆盖，不能把旧正常通过升级成异常路径已验。新结果写`backup-restore.json`，不覆盖历史数字。
+
+## 范围与保留限制
+
+没有重跑Task12全仓、Web或旧archive审计，没有改生产代码。Task12 48e4465全量9318与
+7e10383主链1的既有版本分栏保持，不与本轮unit/恢复数量合计。
+本轮仅静止owned PG/原件恢复；不证明PITR、运行中快照、生产灾备或受控邮箱/模型/游标恢复。
+Mac完整报价/自动寻源准入未配置，Linux不同owner/Need；真实Provider、共享认证/部署、桌面和
+通用Agent/Browser/Catalog后续消费者限制全部保留。没有push/merge/部署/外发/真实凭证读取。
+
+source提交仅明确7路径；root的progress/review-context/final-context未stage。Git stderr仅计数：
+stage7、staged列表11、diff-check15、source commit391行；不回显AppleDouble或维修共享.git。
+后续只由同reviewer读取fixdiff限定复审；以下首批报告保留历史交付、正常路径和失败记录，不代替本节。
+
+---
+
+# 首次交付历史报告（SOURCE 0bfb4d1）
 
 状态：**DONE_WITH_CONCERNS**。本批实现/局部自检完成，待控制者派独立Task13审查及最终全分支审查；不预写通过。
 实际日期：2026-09-06。BASE `aa24508dc77fac1e6cc2e21225cb3dcd21dd240b`。

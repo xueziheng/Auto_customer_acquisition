@@ -1,0 +1,13 @@
+{
+  "source_commit": "041bc741e0cd57dc9ed942d3a53f116b4fdffcbd",
+  "base": "fe6f7dc2622391c9359866dd90fafbf3573ebdb5",
+  "files": [
+    "docs/superpowers/specs/2026-09-06-web-core-delivery.md",
+    "tests/integration/test_web_core_backup_restore.py",
+    "tests/unit/test_backup_restore_cleanup.py",
+    "docs/acceptance/web-core-delivery/README.md",
+    "docs/acceptance/web-core-delivery/backup-restore-pre-review.json",
+    "docs/acceptance/web-core-delivery/backup-restore.json",
+    "docs/acceptance/web-core-delivery/task-13-fix1-gates.json"
+  ]
+}
