@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal, cast
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from fastapi.exceptions import RequestValidationError
-from fastapi.routing import APIRoute
+from fastapi import APIRouter, Depends, Header, Query
 from pydantic import BaseModel, BeforeValidator, ConfigDict, model_validator
-from starlette.responses import Response
 
 from domains.approvals.service import ApprovalService
 from domains.compliance.permissions import ComplianceActor, ComplianceScope
@@ -65,30 +61,7 @@ from ..identity import RequestIdentity
 from ..middleware import ApiErrorResponse
 from ..research import ResearchAccessService
 from ..research_schemas import ResearchAccessView
-
-
-class _SettingsRoute(APIRoute):
-    """只让显式声明安全 422 契约的 Settings route 使用运行时 422。"""
-
-    def get_route_handler(
-        self,
-    ) -> Callable[[Request], Coroutine[Any, Any, Response]]:
-        handler = super().get_route_handler()
-        response_422 = self.responses.get(422)
-        if not (
-            isinstance(response_422, Mapping)
-            and response_422.get("model") is ApiErrorResponse
-        ):
-            return handler
-
-        async def explicit_422_validation_handler(request: Request) -> Response:
-            try:
-                return await handler(request)
-            except RequestValidationError:
-                raise HTTPException(status_code=422) from None
-
-        return explicit_422_validation_handler
-
+from ..validation_route import ExplicitValidationRoute as _SettingsRoute
 
 router = APIRouter(route_class=_SettingsRoute)
 

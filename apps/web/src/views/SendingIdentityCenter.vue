@@ -11,6 +11,7 @@ type Review = components["schemas"]["InboundReviewView"];
 const client = inject<ReturnType<typeof createApiClient>>("tradeos-api-client", apiClient);
 const identities = ref<IdentityView[]>([]), listLoading = ref(true), listError = ref<string | null>(null);
 const checkFeedback = ref<string | null>(null), checkBusyId = ref<string | null>(null);
+const bindingBusy = ref(false);
 const retryBusy = ref(false), retryUnknown = ref(false), retryMessage = ref<string | null>(null);
 const binding = ref<InboundStatus | null>(null), bindingError = ref<string | null>(null);
 const pendingRegistration = ref<Registration | null>(null), registrationUnknown = ref(false);
@@ -22,7 +23,7 @@ const target = ref<number | null>(null);
 const dialog = ref<{ kind: "register" } | { kind: "warmup"; identity: IdentityView; target: number } | { kind: "bind"; identity: IdentityView } | null>(null);
 const requestKeys = new Map<string, string>();
 function reset(): void {
-  retryBusy.value = false; retryUnknown.value = false; retryMessage.value = null;
+  bindingBusy.value = false; retryBusy.value = false; retryUnknown.value = false; retryMessage.value = null;
   identities.value = []; selectedIdentity.value = null; binding.value = null; reviews.value = null;
   listError.value = null; checkFeedback.value = null; bindingError.value = null; reviewError.value = null;
   pendingRegistration.value = null; registrationUnknown.value = false; warmupUnknown.value = null;
@@ -57,8 +58,9 @@ async function loadIdentities(): Promise<void> {
   if(op.valid()) await loadBinding();
 }
 async function loadBinding(): Promise<void> {
- const op=gate.begin("binding-read");if(!op?.valid())return;
- binding.value=null;bindingError.value=null;
+ if (bindingBusy.value || retryBusy.value) return;
+ const op=gate.begin("inbound");if(!op?.valid())return;
+ bindingError.value=null;
  try {const result=await client.GET("/email-inbound/status",{signal:op.signal});if(!op.valid())return;
   if(result.response.status===200 && result.data){binding.value=result.data;retryUnknown.value=false;}
   else {protectedFailure(result.response.status);bindingError.value="入站绑定状态暂不可读取";}
@@ -102,7 +104,8 @@ async function confirmCommand(): Promise<void> {
  const intent=dialog.value;if(!intent||busy.value)return;
  if(intent.kind==="warmup"&&!canStartWarmup(identities.value.find(item=>item.identity_id===intent.identity.identity_id)??intent.identity))return;
  if(intent.kind==="register"){await register();return;}
- const op=gate.begin("command");if(!op?.valid())return;busy.value=true;dialog.value=null;checkFeedback.value=null;
+ const op=gate.begin(intent.kind === "bind" ? "inbound" : "command");if(!op?.valid())return;busy.value=true;dialog.value=null;checkFeedback.value=null;
+ if (intent.kind === "bind") { bindingBusy.value = true; retryBusy.value = false; retryUnknown.value = true; retryMessage.value = null; bindingError.value = null; }
  try {
   if(intent.kind==="warmup") {
    const result=await client.POST("/crm/sending-identities/{identity_id}/warmup",{params:{path:{identity_id:intent.identity.identity_id}},body:{target_daily_volume:intent.target,confirmed:true},signal:op.signal});
@@ -112,11 +115,11 @@ async function confirmCommand(): Promise<void> {
    else {protectedFailure(result.response.status);checkFeedback.value="预热被拒绝，请刷新核对权限、认证与当前状态";}
   } else {
    const result=await client.POST("/email-inbound/binding",{body:{identity_id:intent.identity.identity_id},signal:op.signal});if(!op.valid())return;
-   if(result.response.status===200&&result.data){binding.value=result.data;checkFeedback.value="入站绑定已记录；处理状态待核对";}
+   if(result.response.status===200&&result.data){binding.value=result.data;retryUnknown.value=false;checkFeedback.value="入站绑定已记录；处理状态待核对";}
    else {protectedFailure(result.response.status);checkFeedback.value="绑定未确认，请刷新核对当前绑定；不自动更换身份或重置同步位置";}
   }
  }catch {if(op.valid()){if(intent.kind==="warmup")warmupUnknown.value=intent.identity.identity_id;checkFeedback.value="操作结果待核对，请刷新精确记录，不自动重试";}}
- finally {if(op.valid())busy.value=false;}
+ finally {if(op.valid()){busy.value=false;if(intent.kind === "bind") bindingBusy.value=false;}}
 }
 async function loadReviews():Promise<void>{
  const op=gate.begin("reviews");if(!op?.valid())return;reviews.value=null;reviewError.value=null;
@@ -142,7 +145,7 @@ const retryBlocked = computed(() => {
     const at = Date.parse(status.next_retry_at);
     if (!Number.isFinite(at) || at > Date.now()) return true;
   }
-  return retryBusy.value || retryUnknown.value;
+  return bindingBusy.value || retryBusy.value || retryUnknown.value;
 });
 const inboundReasons: Readonly<Record<NonNullable<InboundStatus["reason"]>, string>> = {
   provider_transient: "服务暂态失败", rate_limited: "服务限流，等待期限结束", provider_permanent: "服务永久阻断（历史位置可能已过期），原位重试仍可能阻断",
@@ -150,14 +153,14 @@ const inboundReasons: Readonly<Record<NonNullable<InboundStatus["reason"]>, stri
 };
 async function retryInbound(): Promise<void> {
   if (retryBlocked.value || !binding.value || binding.value.version == null) return;
-  const op = gate.begin("inbound-retry"); if (!op?.valid()) return;
+  const op = gate.begin("inbound"); if (!op?.valid()) return;
   const version = binding.value.version;
-  retryBusy.value = true; retryMessage.value = null;
+  retryBusy.value = true; retryMessage.value = null; bindingError.value = null;
   try {
     const result = await client.POST("/email-inbound/retry", { body: { expected_version: version }, signal: op.signal });
     if (!op.valid()) return;
     if (result.response.status === 200 && result.data) { binding.value = result.data; retryMessage.value = "原位重试请求已处理；请刷新核对后续处理状态，未跳过历史邮件"; }
-    else if (result.response.status === 409) { retryMessage.value = "入站状态已变化，已重新读取当前版本；请核对后再决定"; await loadBinding(); }
+    else if (result.response.status === 409) { retryMessage.value = "入站状态已变化，已重新读取当前版本；请核对后再决定"; retryBusy.value = false; retryUnknown.value = true; await loadBinding(); }
     else { protectedFailure(result.response.status); retryMessage.value = "重试结果待核对，请刷新当前绑定状态"; if (op.valid()) retryUnknown.value = true; }
   } catch { if (op.valid()) { retryUnknown.value = true; retryMessage.value = "重试结果未知；请先刷新当前绑定状态，不直接再次提交"; } }
   finally { if (op.valid()) retryBusy.value = false; }
@@ -363,7 +366,7 @@ onMounted(()=>void loadIdentities());
       </p>
       <button
         type="button"
-        :disabled="retryBusy"
+        :disabled="bindingBusy||retryBusy"
         @click="loadBinding"
       >
         刷新入站状态

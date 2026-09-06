@@ -21,3 +21,9 @@ Web 未知请求冻结 reconciliation_id、run/request、reason、artifact、原
 ## HTTP key 兼容裁定
 
 Task 9 新操作使用 `sourcing-reconcile-${reconciliation_id}`，首次/同页/刷新后相同。历史随机HTTP header未持久化且原路由已丢弃，不是权威；不建立浏览器账本或猜回其值。legacy只在后端明确resume、当前同actor且canonical字段完整时，从既有reconciliation_id派生稳定header，续交付同一记录；原reconciliation_id、payload、reconciled_by不可变化，原header校验仍适用。耐久幂等继续由原域、quota与engine保证。
+
+## Fix round 1：可证明的HTTP模型拒绝
+
+复审指出首次422应允许修正，但实际Sourcing原路由由全局中间件把HTTP模型失败、运行时Pydantic失败与业务ValidationError都返回400/validation_error。因此前端不能把该400当作未提交证明。controller授权只给reconcile-uncertain-request显式安全422契约，复用从Settings机械提取的显式ApiErrorResponse 422 APIRoute：仅捕获RequestValidationError，继续由原中间件脱敏为422/http_error；普通业务400、运行时PydanticError及其他路由不变。
+
+只有本地首次新核对收到该安全422，才清父子pending命令允许修改。先503未知后422或已有canonical续交付继续保留原命令。新增HTTP定向测试以application调用0证明坏字段未进入业务，并以调用1且400证明业务错误不被转换。本裁定只补必要的HTTP错误语义，不新增账本或业务重试。

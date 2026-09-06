@@ -106,3 +106,69 @@ it('Settings并行读取中的403立即撤销页面，不等待另一读取完�
  const pending=deferred();const {root}=await mount(SettingsCenter,async input=>{const p=new URL((input as Request).url).pathname;if(p==='/settings/playbook')return json({},403);if(p==='/settings/playbook/versions')return pending.promise;return json({},503);});
  expect(root.textContent).toContain('只有老板可以查看或提交 Company Playbook');expect(root.textContent).not.toContain('尚未配置 Company Playbook');pending.resolve(json([]));await flush();expect(root.textContent).toContain('只有老板');
 });
+
+it.each([200,503])('入站A旧retry %s晚到不覆盖B绑定及B新retry busy/unknown',async staleStatus=>{
+ const old=deferred(), latest=deferred();const payloads:unknown[]=[];
+ const a={state:'blocked',identity_id:'sid-one',reason:'provider_permanent',version:7};
+ const b={...a,identity_id:'sid-two',version:12};
+ const {root}=await mount(SendingIdentityCenter,async input=>{
+  const r=input as Request,p=new URL(r.url).pathname;
+  if(p.endsWith('/management'))return json([identity,{...identity,identity_id:'sid-two',address:'two@example.test'}]);
+  if(p.endsWith('/binding'))return json(b);
+  if(r.method==='POST'){payloads.push(await r.json());return payloads.length===1?old.promise:latest.promise;}
+  return json(a);
+ });
+ button(root,'原位重试').click();await flush();
+ const bind=[...root.querySelectorAll<HTMLButtonElement>('button')].filter(x=>x.textContent?.includes('绑定本机入站邮箱')).at(-1)!;
+ bind.click();await flush();button(root,'确认绑定').click();await flush();
+ expect(root.textContent).toContain('当前绑定：sid-two');expect(button(root,'原位重试').disabled).toBe(false);
+ button(root,'原位重试').click();await flush();expect(payloads).toEqual([{expected_version:7},{expected_version:12}]);
+ old.resolve(json({...a,version:8},staleStatus));await flush();
+ expect(root.textContent).toContain('当前绑定：sid-two');expect(button(root,'原位重试').disabled).toBe(true);expect(button(root,'刷新入站状态').disabled).toBe(true);
+ latest.resolve(json({},503));await flush();expect(root.textContent).toContain('重试结果待核对');expect(button(root,'原位重试').disabled).toBe(true);expect(button(root,'刷新入站状态').disabled).toBe(false);
+});
+it.each(['busy','unknown'])('入站旧status晚到不覆盖新绑定version及%s边界',async phase=>{
+ const old=deferred(), latest=deferred();let reads=0;const payloads:unknown[]=[];
+ const a={state:'blocked',identity_id:'sid-one',reason:'provider_permanent',version:7};const b={...a,identity_id:'sid-two',version:12};
+ const {root}=await mount(SendingIdentityCenter,async input=>{
+  const r=input as Request,p=new URL(r.url).pathname;
+  if(p.endsWith('/management'))return json([identity,{...identity,identity_id:'sid-two',address:'two@example.test'}]);
+  if(p.endsWith('/binding'))return json(b);
+  if(r.method==='POST'){payloads.push(await r.json());return latest.promise;}
+  return ++reads===1?json(a):old.promise;
+ });
+ button(root,'刷新入站状态').click();await flush();
+ [...root.querySelectorAll<HTMLButtonElement>('button')].filter(x=>x.textContent?.includes('绑定本机入站邮箱')).at(-1)!.click();await flush();button(root,'确认绑定').click();await flush();
+ button(root,'原位重试').click();await flush();expect(payloads).toEqual([{expected_version:12}]);
+ if(phase==='unknown'){latest.resolve(json({},503));await flush();}
+ old.resolve(json(a));await flush();expect(root.textContent).toContain('当前绑定：sid-two');expect(button(root,'原位重试').disabled).toBe(true);
+ expect(button(root,'刷新入站状态').disabled).toBe(phase==='busy');
+ if(phase==='unknown')expect(root.textContent).toContain('重试结果待核对');else {latest.resolve(json({...b,version:13}));await flush();expect(button(root,'原位重试').disabled).toBe(false);}
+});
+
+it.each([false,true])('Sourcing安全422首次可修正，但此前unknown=%s保留原命令',async wasUnknown=>{
+ const bodies:components['schemas']['SourcingUncertainReconciliationCommand'][]=[];const keys:string[]=[];
+ const {root}=await mount(SourcingCaseDetail,async input=>{
+  const r=input as Request,p=new URL(r.url).pathname;
+  if(r.method==='POST'){bodies.push(await r.json());keys.push(r.headers.get('Idempotency-Key')!);return wasUnknown&&bodies.length===1?json({},503):bodies.length===(wasUnknown?2:1)?json({code:'http_error',message:'请求未完成'},422):json(null);}
+  if(p==='/sourcing-cases/case-one')return json(caseView);
+  if(p.endsWith('/uncertain-reconciliations'))return json([execution]);
+  if(p.endsWith('/public-search-plan')||p.endsWith('/review')||p.endsWith('/current-quota'))return json(null);return json([]);
+ },'/sourcing/case-one');
+ field(root,'.recovery-panel select','execution-one');field(root,'.recovery-panel input','art-invalid');field(root,'.recovery-panel textarea','确实消耗');await flush();button(root,'确认已消耗并请求恢复').click();await flush();
+ if(wasUnknown){button(root,'核对原请求并恢复').click();await flush();expect(root.querySelector<HTMLInputElement>('.recovery-panel input')!.disabled).toBe(true);expect(bodies[1]).toEqual(bodies[0]);expect(keys[1]).toBe(keys[0]);}
+ else {expect(root.querySelector<HTMLInputElement>('.recovery-panel input')!.disabled).toBe(false);field(root,'.recovery-panel input','art-fixed');await flush();button(root,'确认已消耗并请求恢复').click();await flush();expect(bodies[1]!.provider_usage_artifact_ref).toBe('art-fixed');expect(bodies[1]!.reconciliation_id).not.toBe(bodies[0]!.reconciliation_id);expect(root.textContent).toContain('核对请求已被接受');}
+});
+it('Sourcing业务400及已存在canonical的422均不能按首次字段失败解锁',async()=>{
+ for(const canonical of [false,true]){
+  const fact={execution_id:execution.execution_id,reconciliation_id:'recorded-one',reason:'原理由',provider_usage_artifact_ref:'art-one',reconciled_by:'boss-one',reconciled_at:'2026-09-06T00:00:00Z',status:'confirmed_consumed' as const};
+  const {root}=await mount(SourcingCaseDetail,async input=>{const r=input as Request,p=new URL(r.url).pathname;if(r.method==='POST')return canonical?json({code:'http_error',message:'请求未完成'},422):json({code:'validation_error',message:'请求参数无效'},400);if(p==='/sourcing-cases/case-one')return json(caseView);if(p.endsWith('/uncertain-reconciliations'))return json([{...execution,recovery_action:canonical?'resume_reconciliation':'record_reconciliation',can_current_user_reconcile:!canonical,reconciliation:canonical?fact:null}]);if(p.endsWith('/public-search-plan')||p.endsWith('/review')||p.endsWith('/current-quota'))return json(null);return json([]);},'/sourcing/case-one');
+  if(canonical)button(root,'恢复已记录核对').click();else {field(root,'.recovery-panel select','execution-one');field(root,'.recovery-panel input','art-one');field(root,'.recovery-panel textarea','原理由');await flush();button(root,'确认已消耗并请求恢复').click();}
+  await flush();expect(root.querySelector<HTMLInputElement>('.recovery-panel input')!.disabled).toBe(true);expect(button(root,'核对原请求并恢复')).toBeDefined();mounted.pop()!.unmount();root.remove();
+ }
+});
+it('入站409核对读取在途不重新开放旧version，成功后仅用当前version',async()=>{
+ const pending=deferred();let reads=0;const payloads:unknown[]=[];
+ const {root}=await mount(SendingIdentityCenter,async input=>{const r=input as Request,p=new URL(r.url).pathname;if(p.endsWith('/management'))return json([]);if(r.method==='POST'){payloads.push(await r.json());return json({},409);}return ++reads===1?json({state:'blocked',identity_id:'sid-one',reason:'provider_permanent',version:7}):reads===2?pending.promise:json({state:'blocked',identity_id:'sid-one',reason:'provider_permanent',version:8});});
+ button(root,'原位重试').click();await flush();expect(button(root,'原位重试').disabled).toBe(true);pending.resolve(json({state:'blocked',identity_id:'sid-one',reason:'provider_permanent',version:8}));await flush();expect(button(root,'原位重试').disabled).toBe(false);button(root,'原位重试').click();await flush();expect(payloads).toEqual([{expected_version:7},{expected_version:8}]);
+});

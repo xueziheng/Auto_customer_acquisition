@@ -500,6 +500,11 @@ async function reconcileUncertain(command: ReconciliationCommand): Promise<void>
     const result = await client.POST("/sourcing-cases/{case_id}/reconcile-uncertain-request", { body: attempt.command, params: { path: { case_id: caseId.value }, header: { "Idempotency-Key": attempt.key } }, signal: op.signal });
     if (!op.valid()) return;
     if (result.response.status !== 200) {
+      if (!existing && !canonical && result.response.status === 422 && result.error?.code === "http_error") {
+        recoveryAttempt.value = null;
+        error.value = "核对字段校验未通过，尚未进入业务处理；请修正后提交";
+        return;
+      }
       protectedFailure(result.response.status);
       error.value = result.response.status >= 500 ? "核对结果未知；保留原命令，先读取精确执行事实" : safeError(result.response.status); return;
     }
