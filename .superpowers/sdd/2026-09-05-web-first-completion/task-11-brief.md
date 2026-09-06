@@ -12,6 +12,8 @@ Task10最终源码0890ae9/report HEADa5a59d9已独立Approved。QuoteVersions仅
 
 ## 已有审计事实与口径
 
+- 各阶段若使用各自created/observed时间计数，必须标明对应字段/窗口；同一时间段不意味着同一批业务对象。无可靠跨阶段cohort归因时不计算阶段转化率，也不用漏斗视觉暗示同批转化。本任务不为此新建归因系统。
+
 - Task10原Linux报价夹具使用固定NOW（2026/8/29），但部分DB开始时间用真实时钟（2026/9/6），截图存在结束早于开始。该合成证据不能用作真实耗时或业绩；任何指标遇时序不一致应明确未知/缺项，不能生成负耗时或用abs掩盖。不要因此在本任务重写整个旧夹具时钟；对指标处理实际异常输入即可。
 
 - 先读 workflows/engine/audit.py 与 infra/db/run_audit.py。现有RunDetail只有steps/tool_calls/artifacts/approvals，研究阶段数来自安全context白名单，Tavily credits来自独立reservation状态计数；工具cost_class不是费用。不要把多Run投影简单求和当唯一实体数或真实成本。

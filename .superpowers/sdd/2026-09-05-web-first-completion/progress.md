@@ -71,8 +71,8 @@ Task 8: ⚠️ resolved by controller — 原register耐久winner/预热原子�
 Task 5b: minor M1 addressed by Task8 — 原件octet-stream binary schema及生成类型已补，初始RED无content→API组通过，独立exporter/generator0且无漂移，真实binary下载有浏览器证据，8独立Spec✅。最终全分支核保留此解决记录。
 Task 9: complete — BASE91c77754e295f5eb9754bd87e4e4f920985ae2fe，初始ebb8da6，Fix1源码1810acd、report HEAD27098ce3ed637fd85df722b1a9e997fe972ef4a9；same review_task9 Spec✅/Approved，I1/I2均ADDRESSED，无新增Important。最终Web88/API10有限组分别通过，完整证据task-9-report/review；M1留12。恢复action/稳定canonical header/安全请求422的裁定均持久化，角色演练与真实/受控浏览器界限保留。
 Task 10: complete — BASEeec91eaf4c4356c3ff7a8b24f137056e3de5c28a；初始8cc0419，Fix2源码0890ae99dd1fe340247024991d200eecf72efb91，report HEADa5a59d9d44d208081a53c912b22612ad78d180f9；review_task10 Spec✅/Approved，I1经两轮修复ADDRESSED，无Minor。最终68组件及静态通过；原Mac/Linux分栏证据和平台限制保留给12/13。
-Task 11: pending
-Task 12: pending
+Task 11: complete — BASE940db7c86249aaaa85c3b18df710a804ffd1c398；源码4be8753e5b46442244e9dfe110bd4c308a367c25，report a3390b5144c32fa72fd1e7f2a9c8ed882343ef43；review_task11 Spec✅/Approved，无Critical/Important。Minor sourcing绑定覆盖及旧launcher清理缺口交12；成本/资格unknown与受控限制保留。
+Task 12: in_progress — Task11已通过独立审查；controller同步后给fresh实施者精确BASE。最终同版本A1–A10、已知最小缺口、双环境分栏和正式安全验收证据；13尚未开始。
 Task 13: pending
 
 ## W1 实施前裁定
@@ -305,3 +305,20 @@ Task 10: fix round1/5 (0完全addressed, 1open — I1成功/200缺失已修，�
 Task 10: fix round2/5 in_progress — 原web_task10收到复审原文，FIX_BASE40f751c4951fad160839a61f082af5d8f99d5a7e；仅非授权成本读取失败保留B目标意图但清数据/确认，权限/身份/机会/route撤销不放宽；完整Vue503/网络参数化RED/GREEN、两文件作用组/静态，不stack/Linux。11未开始。
 
 - Task10 Fix2源码0890ae99dd1fe340247024991d200eecf72efb91，report HEADa5a59d9d44d208081a53c912b22612ad78d180f9；controller读完整新增报告。原完整Vue missing/503/network RED2failed/1passed，最终两文件68passed/1.90s，build/类型/lint/7边界/2路径scan/diff通过；仅非200/catch保留目标意图并清数据确认，401/403及scope重置不变。包40f751c..a5a59d9为14528bytes/2commits（stderr106行），same review_task10限定复审，无stack/Linux重跑，11未开始。
+
+Ruling: Task11无可信模型usage/费率/人工工时来源时只给typed unknown与缺项，不新增人工成本录入/计量账本；可靠canonical实体计数可含真实零。— brief明确来源不足不得补造成本，当前StructuredJsonModelClient不提供usage，等待不等于工时；新增账本不是现阶段观测所必需。— 代价是单位合格机会成本等指标仍不可算，必须明确限制；Need记录不自动等于已验证需求，Opportunity五门槛缺证据不称合格，Run归因只现有可靠ID，不猜文本关系。
+
+- Task11正式spec docs/design/2026-09-06-web-core-observability.md：boss-only GET /runs/observability，成对aware起止/默认服务端7天/上限31天；单SQL tenant/window快照，各阶段独立时间字段非cohort，当前requested接管队列另scope，成本unknown。Need仅当前validated/sourcing_ready/handed_to_sourcing状态，须明确非累计曾验证数量；机会不等于合格。真实PG首3 RED/GREEN，后续精确Handoff绑定/反序时钟/新API RED/GREEN，中间14passed；生成DTO/前端/owned实际浏览器待进行，未验收。
+
+Ruling: Task11只显示已核验Opportunity ID，导航使用已存在的精确Handoff/Need路由；不生成OpportunityList尚未消费的opportunity_id伪深链，不扩改机会看板。— 实施者核当前路由无精确机会消费，已有handoff详情含真实机会组合，需求入口可定位已绑定对象。— 代价是没有单独机会深链，spec/docs明确；只有该Run持久绑定经tenant/当前对象核验时才能导航，没有可靠绑定则暂无可定位对象，不能借tenant队列任一项猜关联，目标API仍重新授权。
+
+- Task11 controller具名核workflows/human_handoff/flow.py:434–452原RequestedHandler写入Run.subject_ref=handoff_id，145–155读取context并核一致，与正式spec持久绑定一致，无缺陷。提醒ToolCall按created_at入窗但attempt_count当前累计、quota当前状态须明确为窗口内创建记录的当前值，不能冒称历史窗口实际发生次数/消费；Need/Quote/Outcome也标observed_at当前状态快照。
+Ruling: Task11允许对本轮真实Handoff通过原WorkflowEngine.start提交明确故障注入缺字段context，由原scheduler/handler生成失败审计Run，验证失败分类与精确链接。— 正常受控回复链已生成真实Need/Opportunity/Handoff各1，正常运行未自然产生所需失败场景；走真实引擎失败路径避免直接写failed状态。— 代价是该失败率/Run只是人工故障注入验收，不能作为真实业务失败统计或运营效率证据；报告和截图说明明确区分，不改时钟或业务结果。
+
+- Task11实施者报真实受控Browser10页/交互1440×1000与390×844，pageerror/console/overlay/横溢均0；缺context Run经原engine实际failed重试0，精确Handoff/Need导航成功，boss200/sales403/错tenant403。阶段1/1/1/1、供应unknown、报价/接受接管/成交0仅合成验收数据。最终作用组后端16/Web46及build/type/mypy5/ruff/eslint/七边界过，余schema漂移/scan/diff/提交与report。owner停止exit0，9PID/2容器/4端口0；原launcher未管reply-model.sqlite在owner已停后补删，须报告初次缺项及生命周期界限，12具名评估。root尚未实看截图/最终report，尚未验收。
+Ruling: Task12补原owned launcher的reply-model.sqlite及其SQLite侧文件清理，停止确认后仅按精确文件名处理，并覆盖正常/故障清理。— Task11实际补删暴露旧生命周期缺口，controller具名核scheduler_worker/controlled.py:52在配置同目录创建文件，而supervisor.py:442–447只清mail.sqlite系列，属当前真实残留而非假设风险。— 增加最小原launcher修复与有意义生命周期回归；不并入Task11观测源码、不泛删目录或读配置/SQLite，不覆盖Task11初次清理缺项历史。
+
+- Task11源码4be8753e5b46442244e9dfe110bd4c308a367c25，报告HEAD a3390b5144c32fa72fd1e7f2a9c8ed882343ef43；controller读完整report，HEAD匹配，仅4份controller文档与9个Task10产物待变，新的12/13review-context仍ignored待controller提交。后端16/5.76s（含6PG）、Web46/1.97s、build160/413ms、静态/schema无漂移/15显式源scan通过。root实看run-cost-inputs-390及failed-run-binding-390，缺项/精确链接/长ID可读。owner c820695ce9b44dbaad2cd6099738ab2b本轮手动补清后0，初始遗漏保留。review包940db7c..a3390b5 113711bytes/2commits（stderr258行），fresh review_task11 Astra high正在独立审查；Task12未派发。
+
+Task 11: minor (deferred): review M1 tests/integration/test_web_core_observability.py:153缺sourcing成功/版本不匹配/Opportunity.need_id不匹配三种新增分支覆盖；未发现实现错误，交Task12聚焦补证据，最终全分支review核结论。
+- Task11最终review Spec✅/Approved，无Critical/Important，controller读完整报告。Cannot verify逐项：目标Need/Handoff权限已在7/8有当前作用组与竞态证据，12再次覆盖最终身份/拒绝；同版本全仓门禁原属12；launcher已具名定位并裁定12修，当前owner补清0不冒称自动清理通过；真实费用/获客/多人认证/独立Linux链不由本轮合成指标推导，无新增事实缺口。继续Task12，无生产Fix round。

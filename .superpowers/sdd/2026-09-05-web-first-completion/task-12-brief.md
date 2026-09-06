@@ -61,3 +61,11 @@ Task10平台裁定：Mac原ControlledConfig未装配quotation，且LinuxEvidence
 Task9独立review Minor M1：`apps/web/tests/web-core-state-recovery.test.ts:40` 测试标题声称“拒绝后旧研究响应不能复活”，实际仅503读取失败文案断言。根据实际测试语义收窄标题；如本任务需要该延迟场景则写有意义断言，不能将旧标题本身当已有覆盖证明。此项不混入Task9 I1/I2修复。
 
 Task9真实Settings浏览器恢复是在原服务器202之后丢失响应并替换为503，原key/payload再次202；不等于服务内部候选持久化后启动Run失败。本任务在原已授权故障验证中核查该内部中间状态与重启恢复是否已有精确证据；缺失则补最小故障注入，沿原公开端口和同key/payload，不按同内容或最新历史判定自己的提交成功。Task9 Sourcing已在真实PG覆盖canonical保存后ack失败、ack后event失败及原命令恢复。当前每批分组不累加为最终全仓通过。
+
+## Task11 观测口径交接
+
+Task11清理发现并已补删本owner的reply-model.sqlite。controller具名核apps/scheduler_worker/controlled.py:52在owned配置同目录创建该文件，而scripts/controlled_web_supervisor.py:442–447的close仅清config.json/mail.sqlite及其journal/wal/shm，遗漏reply-model.sqlite及其侧文件。本批按实际owned生命周期最小修复，先验证停止进程后删除，覆盖正常停止/故障清理，不扫目录或删除其他owner，不读取SQLite内容/配置值；Task11初次清理缺项和后续精确补删历史保持。
+
+Task11已通过独立审查（源码4be8753e5b46442244e9dfe110bd4c308a367c25，报告a3390b5144c32fa72fd1e7f2a9c8ed882343ef43），读取最终report/review。正式spec为docs/design/2026-09-06-web-core-observability.md。各阶段采用各自时间字段与当前状态快照，不是同批cohort；接管队列为独立当前范围。ToolCall窗口内创建记录的当前累计attempt_count及quota当前状态不能当成历史窗口实际调用/消费。无可信usage、费率、人工工时及合格机会五条件合取证据时保留typed unknown，不把Task12合成样本当成生产成本数据。Task11人工缺字段Handoff Run故障注入仅验证原engine/scheduler失败路径；它不代表正常链业务失败率。精确对象来自持久Run.subject_ref绑定与tenant校验，页面导航仍须重新授权。
+
+Task11 review Minor M1：新sourcing绑定分支缺真实PG聚焦覆盖，本批补成功绑定、workflow_version不一致和Opportunity.need_id不一致三种用例，当前未发现实现错误，不改变既有精确关联谓词。Need/Handoff目标页面在7/8已有权限作用组，本批最终当前身份变更/拒绝覆盖须保留；boss成功链接不是全角色权限证明。
