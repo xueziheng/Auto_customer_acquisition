@@ -107,7 +107,10 @@ const selectedSheet = computed(() =>
 const quoteMutation = useQuoteConfirmation(client, () => [...routeScope(), opportunityId.value, quoteId.value, selectedSheetId.value, selectedSheet.value?.content_hash, JSON.stringify(draft), JSON.stringify(terms.value), fxForm.ref, quoteContext.value?.context_hash, scopeConfirmation.value?.confirmation_id], () => {});
 const fxMutation = useQuoteConfirmation(client, () => [...routeScope(), opportunityId.value, quoteId.value, JSON.stringify(fxForm)], () => { fx.value = null; });
 watch(() => [...routeScope(), opportunityId.value, quoteId.value], clearBusiness, { flush: "sync" });
-watch(selectedSheetId, () => { coverage.value = null; scopeConfirmation.value = null; calculated.value = null; targetCalculated.value = null; }, { flush: "sync" });
+function clearCostConfirmation(): void {
+  coverage.value = null; scopeConfirmation.value = null; calculated.value = null; targetCalculated.value = null;
+}
+watch(selectedSheetId, clearCostConfirmation, { flush: "sync" });
 
 const scopeCurrent = computed(() => {
   const confirmation = scopeConfirmation.value;
@@ -194,7 +197,9 @@ async function loadVersions(): Promise<void> {
     // query 定位进入目标；同一作用域内保留用户已创建或明确选择的版本。
     const targetSheetId = selectedSheetId.value || routeSheetId.value;
     if (targetSheetId && !result.data.some((sheet) => sheet.cost_sheet_id === targetSheetId)) {
-      sheets.value = []; selectedSheetId.value = ""; error.value = "指定成本表不存在或不属于当前机会"; return;
+      sheets.value = []; clearCostConfirmation();
+      // 缺失时保留目标意图，后续重读不能静默退回原 query 的另一个版本。
+      selectedSheetId.value = targetSheetId; error.value = "指定成本表不存在或不属于当前机会"; return;
     }
     sheets.value = result.data;
     if (targetSheetId) selectedSheetId.value = targetSheetId;
