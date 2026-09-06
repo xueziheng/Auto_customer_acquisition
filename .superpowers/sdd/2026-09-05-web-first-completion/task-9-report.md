@@ -108,3 +108,45 @@ API生成是两个独立过程，无管线掩盖exit：
 - 本报告以单独提交 `docs: record task 9 verification and cleanup evidence` 交付；最终SHA由agent返回controller，以免自引用报告SHA。
 
 Git stderr仅存临时文件并按字节计数，未读取噪音正文或修shared.git：task9-git-add-spec-stderr=143 bytes；task9-git-add-stderr=2288 bytes；task9-git-diff-check-stderr=3432 bytes；task9-git-diff-stderr=5148 bytes；task9-git-final-status-stderr=572 bytes；task9-git-source-commit-stderr=57629 bytes；task9-git-staged-stderr=6721 bytes；task9-git-status-stderr=572 bytes。
+
+## Fix round 1 / 5（I1、I2）
+
+FIX_BASE `ffdbb0ec980531ee2745608952e06a519b67cb5d`。读取原task-9-review.md；仅处理Important I1/I2，Minor M1按controller留Task12。相同唯一实现者，所有exec显式workdir，未派子代理或自行独立review。
+
+### 修复与实际契约裁定
+
+I1：入站status、binding、retry复用同一`inbound`操作generation；新绑定意图立即让旧retry/status失效，旧success/error/finally不能改变新绑定、busy或unknown。绑定与retry写入在途禁止status读取抢占；绑定成功后只用返回的当前version。409核对读完成前锁住旧version，当前GET成功后才解除。身份大scope仍复用原useQuoteRequestScope。未修改绑定业务命令或后端CAS。
+
+I2：实际核对发现review的“当前FastAPI422”前提不成立。原Sourcing没有Settings专用显式422路由，middleware.py把RequestValidationError、运行时PydanticError及业务ValidationError合流400/validation_error。不能把该400当作确定未提交。controller因此授权最小API扩展：把Settings原APIRoute机械提取至`apps/api/validation_route.py`，Settings保留原alias和行为；Sourcing仅reconcile路由声明安全ApiErrorResponse 422，只有RequestValidationError转换，原全局中间件负责脱敏。业务400、运行时PydanticError、其他路由均不转422，无域/workflow改动。
+
+前端只有“无原attempt且无canonical、首次响应422/code=http_error”清父attempt，原子表单已有pendingCommand watcher同步清本地attempt，保留可修改输入；无需修改子表单。503后422、业务400、已有canonical恢复422继续冻结同命令。正式spec及ADR0064已先追加裁定。
+
+### RED → GREEN 实录
+
+- I1：`npm --prefix apps/web test -- --run tests/web-core-state-recovery.test.ts -t '入站A旧retry|入站旧status'`，RED exit1：4 failed/15 skipped，1.01s。A旧retry200/503用例首先揭示B绑定后仍继承A的busy；旧status两例直接把B覆盖回A。实现共享generation后，加原409回归同命令过滤`入站A旧retry|入站旧status|入站原位重试`，exit0：5 passed/14 skipped，1.12s。原A后到仍保持B的新retry busy；旧status后到不能清B unknown。
+- I2组件：`npm --prefix apps/web test -- --run tests/web-core-state-recovery.test.ts -t 'Sourcing安全422'`，RED exit1：1 failed/1 passed/19 skipped，766ms，首次422后input仍disabled。实现后同命令exit0：2 passed/19 skipped，810ms；首次允许改字段并新reconciliation_id成功，503后422仍原body/key。
+- I2真实HTTP：`env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest tests/unit/test_sourcing_router.py -q -k reconciliation_request_validation`，RED exit1：1 failed/13 deselected，1.23s；坏字段预期422实际400。局部路由修复后同命令exit0：1 passed/13 deselected，1.46s；坏字段application调用0，合法body进入业务ValidationError调用1返回400。随后同测试补运行时PydanticError调用1且400，以及OpenAPI422引用ApiErrorResponse。
+- 首次最终六文件组exit0：87 passed，4.39s。读改动检查发现409读核对期间保留旧binding可能重新开放旧version，追加deferred反例 `-t '入站409核对'`：RED exit1，1 failed/22 skipped，683ms，disabled预期true实际false；409转核对前设置unknown锁，等待新version读完才解锁，纳入最后六文件重新整组运行。
+- Ruff自动整理限定4个API/test路径的4项导入/空行问题，exit0；最终不带fix再次exit0：All checks passed。此轮没有fixture异常、未解决warning或环境失败。
+
+### 最终有限验证与版本范围
+
+以下命令均在Fix1最终运行代码上执行（含409读锁、运行时Pydantic400测试）；没有把上次150、此次87或分批数字累加。
+
+- 前端：`npm --prefix apps/web test -- --run tests/web-core-state-recovery.test.ts tests/sending-identity-center.test.ts tests/identity-registration.test.ts tests/core-access-revocation.test.ts tests/sourcing-case-detail.test.ts tests/sourcing-center.test.ts`：exit0，Test Files 6 passed (6)，Tests 88 passed (88)，4.40s。
+- 有限API组合：`env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest tests/unit/test_sourcing_router.py tests/unit/test_settings_router.py -q -k 'reconciliation_request_validation or candidate_read_limit_is_forwarded or settings_runtime_validation or request_body_cannot_supply or proposal_requires_idempotency_header'`：exit0，10 passed/52 deselected，3.10s。包括真实ASGI坏字段422/application0、业务/运行时400、原Settings显式422/默认400/错误model400、国家政策禁止额外字段与缺header422，以及原成功202流程。API代码与测试在此后未改；后续仅Web409锁。
+- 独立export：`env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python`运行subprocess exporter，以文件句柄写`/tmp/task9-fix1-openapi.json`，exit0，stderr0 bytes；独立generator `apps/web/node_modules/.bin/openapi-typescript /tmp/task9-fix1-openapi.json -o apps/web/src/api/api.d.ts`，exit0，140.5ms。唯一DTO差异为reconcile响应422引用ApiErrorResponse（9行），没有手写API类型。
+- apps/web内显式ESLint：`./node_modules/.bin/eslint src/views/SendingIdentityCenter.vue src/views/sourcing/SourcingCaseDetail.vue tests/web-core-state-recovery.test.ts`，exit0无输出；随后的`npm run build`含vue-tsc，exit0，vue-tsc通过，Vite157 modules，412ms。
+- Mypy：`env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m mypy apps/api/validation_route.py apps/api/routers/settings.py apps/api/routers/sourcing.py`，exit0：Success: no issues found in 3 source files。
+- Ruff：相同3个API路径加`tests/unit/test_sourcing_router.py`，`python -m ruff check`，exit0：All checks passed。
+- 结构：`env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python scripts/check_boundaries.py`，exit0，原7项全部通过（在最终Web一行409锁之前执行，后端/依赖未再变化）；`git diff --check` exit0无输出。
+- 环境版本沿用本报告环境节：Python3.12.14、Node24.15.0、Vitest4.1.10、Vite8.2.1、openapi-typescript7.13.0。未运行232后端全组、全仓测试、stack、真实发送或浏览器；没有CSS修改，本轮证据是deferred组件与真实ASGI合同，不冒称新增浏览器或实际数据库端到端。
+
+### Fix1冻结
+
+最终六文件88项和10项API有限组合分别通过，不相加。源码SHA及敏感扫描补记如下。未重新创建owned资源，因此原清理四项零记录仍为本任务最后一次owned核验。
+
+- Fix1最终显式11路径敏感扫描（3个API、API DTO、两Vue、两测试、ADR/spec/report）exit0，无输出、零命中；报告补SHA后另扫本报告。最终diff-check exit0无输出。
+- 源码冻结提交 `1810acd2072888f8378de3dfd3ed306c60d393fd`，`git commit -m 'fix(web): isolate inbound epochs and release rejected reconciliation drafts'` exit0，10 files changed，201 insertions / 42 deletions。源码冻结后仅提交报告，独立复审由controller安排。
+- 暂存显式源码与spec的git add一次exit1，无stdout；未读取stderr噪音，逐路径staged stat确认10文件齐全，随后对本批spec显式`git add -f` exit0，commit成功。未修shared.git。
+- Fix1 Git stderr仅计数字节，未读取正文：task9-fix1-add-stderr=1666 bytes；task9-fix1-diff-check-stderr=2288 bytes；task9-fix1-diff-stderr=3289 bytes；task9-fix1-final-check-stderr=2574 bytes；task9-fix1-force-spec-stderr=0 bytes；task9-fix1-source-commit-stderr=54626 bytes；task9-fix1-staged-stderr=5005 bytes；task9-fix1-stat-stderr=3432 bytes。
