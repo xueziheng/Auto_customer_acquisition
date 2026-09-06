@@ -187,7 +187,11 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 本任务拆为5a技术读取/归档与5b耐久入库/关联/待核对入口。5a已完成并通过独立复审：初始源码`0daa7e2d`，修复源码`904a2947`，交付文档HEAD `46df91c3`。独立gic1游标、typed Gmail读取、Gateway内Raw写后实际读回、task-owned一次性交付槽与完整候选护栏均已实现。审查发现的任意codec提前解压及Date尾部歧义均已真实复现并修复，最终97项单元通过；6项真实PG/MinIO/Gateway定向组另有分轮证据。初始80项、HTTP59项、较早216项兼容组各按报告版本记录，不合并为全量总数。静态、结构和增量敏感检查通过。
 
-5a正式契约见`docs/superpowers/specs/2026-09-05-email-inbound-5a.md`和ADR0026。它只产生技术候选页，不验证客户关联、不写Message/Need/Opportunity；`parse_inbound_content`供后续授权Raw重读复用，已解析不等于已过护栏。5b仍需完成整页事务、实际SENT关联、永久失败恢复和待核对API，以及与Web发件身份配置衔接的明确邮箱绑定，故整体Task5尚未勾选。
+5a正式契约见`docs/superpowers/specs/2026-09-05-email-inbound-5a.md`和ADR0026。它只产生技术候选页，不验证客户关联、不写Message/Need/Opportunity；`parse_inbound_content`供后续授权Raw重读复用，已解析不等于已过护栏。
+
+5b也已完成并于2026-09-06通过独立复审，正式契约为`docs/superpowers/specs/2026-09-05-email-inbound-5b.md`。初始源码`34be4346`、取消修复`f3e2a942`、文档HEAD `a2b7a64c`。交付0059三表、整页原子提交、真实SENT关联、人工邮箱绑定、版本化原位重试和受限待核对下载；初始同版本集中回归46 passed，修复后的定向事务组12 passed，分别保留证据，不累加。提交或日志刷新中取消被关闭错误覆盖的问题已真实复现并修复，复审无未解决阻断项；下载OpenAPI二进制声明这一非阻断问题由Task8消费前补齐。
+
+当前受控启动仍因完整回复消费者尚未装配而将`inbound_body`明确标为disabled/required_ports_missing：允许人工绑定，自动抓取与cursor推进均停止，避免入站事件死信。Task6须装配原回复消费者后自然启用；本批真实Outbox到原reply Run、独立进程重启与零推进已有验证，不表示完整分类或Web页面已完成。真实Provider仍未运行。
 
 **Files:**
 - 读取：`connectors/gmail/AGENTS.md`、`artifact_store/AGENTS.md`、`tool_gateway/AGENTS.md`、`domains/conversations/AGENTS.md`。
@@ -198,11 +202,11 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 **Interfaces:** 调用现有 `ConversationService.ingest_inbound(tenant_id, conversation_id, account_id, raw_artifact_ref, external_message_id, sent_at, *, outbound_message_id=None) -> MessageId`。新 Gateway 工具拟名 `email.inbound.fetch`，使用 typed 一次性结果槽，ledger 只存安全引用。
 
-- [ ] 先完成该批子规格：Gmail 正文读取与 feedback 的边界、cursor 提交点、页面/消息大小上限、关联规则、隔离待核对和恢复语义；只把批准的设计写成新契约。
-- [ ] 建受控消息矩阵：正常回复、自动回复、退订、DSN/ARF、缺 Message-ID、未知关联、跨租户关联、同 ID 异内容、超大 MIME、正文含凭证标记。
-- [ ] 写失败测试：重复读取不能重复 ingest；未知关联不得伪造 account/outbound；落库失败 cursor 不越过尚未持久化消息；异常不回显 MIME/地址/凭证。
-- [ ] 按插件点实现读取→Artifact→可信关联→ingest；不恢复 Gmail 旧 free-dict 接口，不让 feedback worker 承担正文业务。
-- [ ] 经真实 Gateway、PostgreSQL 和原始资料端口验证整页重放/部分失败/取消；提交。
+- [x] 先完成该批子规格：Gmail 正文读取与 feedback 的边界、cursor 提交点、页面/消息大小上限、关联规则、隔离待核对和恢复语义；只把批准的设计写成新契约。
+- [x] 建受控消息矩阵：正常回复、自动回复、退订、DSN/ARF、缺 Message-ID、未知关联、跨租户关联、同 ID 异内容、超大 MIME、正文含凭证标记。
+- [x] 写失败测试：重复读取不能重复 ingest；未知关联不得伪造 account/outbound；落库失败 cursor 不越过尚未持久化消息；异常不回显 MIME/地址/凭证。
+- [x] 按插件点实现读取→Artifact→可信关联→ingest；不恢复 Gmail 旧 free-dict 接口，不让 feedback worker 承担正文业务。
+- [x] 经真实 Gateway、PostgreSQL 和原始资料端口验证整页重放/部分失败/取消；提交。
 
 ### Task 6：回复组合、下一问和接管
 
