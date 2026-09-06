@@ -149,3 +149,22 @@ I1确由完整Vue组件复现：A深链进入后，真实组件通过受控fetch
 | `git diff --check -- apps/web/src/views/costing-quotes/CostingQuotes.vue apps/web/tests/quotation-flow.test.ts` | 最终exit0 |
 
 按controller指定范围，本轮不重启stack、不重跑Linux、不新增浏览器截图；原Linux62.99s、Mac截图、Python80项等均是先前源码8cc0419的证据，不宣称已在54a0126重跑。当前修复版本新增证据严格限上表66项及静态/build验证。Mac报价配置/平台限制、混合时钟和原早轮未知根因仍保留，状态仍DONE_WITH_CONCERNS；same reviewer只复审FIX_BASE到本轮最终源码的fixdiff。没有新资源创建或清理操作。
+
+## Fix round 2/5：I1 非授权读取失败后的意图保留
+
+- FIX_BASE：`40f751c4951fad160839a61f082af5d8f99d5a7e`；最终冻结源码：`0890ae99dd1fe340247024991d200eecf72efb91`。本节报告独立提交。
+- Fix1独立复审I1仍为NOT ADDRESSED：此前成功列表及200缺失路径已修，但非200/catch仍清selectedSheetId，503/网络失败后恢复会回到URL的A。本轮完整Vue组件复现了这个残余，不用Fix1的66项通过否定它。
+- 仅两文件：`CostingQuotes.vue` 的非200与catch两处，将“清数据并清目标ID”改为“清数据并显式清coverage/scope/calculation”；没有改401/403的revokeBusiness、身份/机会/route重置，也没有改其他页/后端/CSS/API/fixture。目标ID是同scope用户意图，失败期间没有旧成本详情可用；它不是已授权成本事实。成功恢复仍须重新读取列表确认目标归属。401/403继续撤销目标和并行受限读取。
+- 原完整组件缺失测试参数化为missing/503/network。先选择B并读取费用与scope确认、完成实际报价计算，随后连续两次失败；断言错误、无成本详情、无报价按钮、无旧scope或计算；恢复返回同hash的A/B后不额外点选，直接断言仍B，报价按钮因确认失效禁用，旧scope/计算均不回来。响应为受控fetch，非真实API/PG/浏览器。
+
+| 命令（cwd仍工作目录） | 本轮准确输出 / exit |
+| --- | --- |
+| `npm --prefix apps/web test -- tests/quotation-flow.test.ts -t 'Task10 I1 .*失败后'`，源码未改的RED | **2 failed /1 passed /64 skipped（67），exit1**；missing通过，503和network均恢复成A而不是cost_selected。875ms总时长 |
+| `npm --prefix apps/web test -- tests/quotation-flow.test.ts tests/costing-quotes.test.ts`，最终源码GREEN | **2文件68 passed，1.90s，exit0**；包含上述三分支与原授权、同ID hash、scope、请求失效和成本保存用例 |
+| `npm --prefix apps/web run build` | exit0；vue-tsc --noEmit，Vite157 modules，built459ms |
+| `./node_modules/.bin/eslint src/views/costing-quotes/CostingQuotes.vue tests/quotation-flow.test.ts`（cwd apps/web） | exit0，无输出 |
+| `env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python scripts/check_boundaries.py` | exit0，七组通过 |
+| `.venv/bin/python scripts/scan_sensitive.py apps/web/src/views/costing-quotes/CostingQuotes.vue apps/web/tests/quotation-flow.test.ts` | exit0，仅两显式源路径 |
+| `git diff --check -- apps/web/src/views/costing-quotes/CostingQuotes.vue apps/web/tests/quotation-flow.test.ts` | exit0 |
+
+版本范围：Node24.15.0、Python3.12.14、Vitest4.1.10、Vite8.2.1未变。本轮68项及build/static对应0890ae9；Fix1的66项对应54a0126，原实际Mac/Linux与Python80项仍属于8cc0419，不混算最新版本覆盖。按限定范围没有stack/Linux重跑、没有新资源或截图、没有代理。Mac主入口配置/平台concerns以及原证据分栏继续保留，状态DONE_WITH_CONCERNS，待同一reviewer限定fixdiff复审。
