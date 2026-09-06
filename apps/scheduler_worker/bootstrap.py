@@ -81,6 +81,7 @@ from .account_discovery import (
     DemandAccountDiscoveryTaskReader,
 )
 from .config import SchedulerWorkerConfig
+from .contact_binding import ContactRuntimeResources
 from .directive_reader import DirectiveDemandDiscoveryTaskReader
 from .notification_projection import NotificationAudienceMember
 from .reply_binding import ReplyRuntimeResources
@@ -255,6 +256,13 @@ class CanonicalSchedulerBootstrap:
     research: ResearchRuntimePorts | None = None
     contacts_enabled: bool = False
     contacts: ContactRuntimePorts | None = None
+    contacts_factory: (
+        Callable[
+            [SchedulerCoreServices, OutreachService, ContactRuntimeResources],
+            ContactRuntimePorts,
+        ]
+        | None
+    ) = None
     campaign_enabled: bool = False
     gmail_transport: GmailHttpTransport | None = None
     secret_resolver: SecretResolver | None = None
@@ -271,8 +279,18 @@ class CanonicalSchedulerBootstrap:
             self.research, ResearchRuntimePorts
         ):
             raise ValidationError("scheduler 研究依赖未完整配置")
+        if self.contacts_factory is not None and (
+            not callable(self.contacts_factory)
+            or self.contacts is not None
+            or not self.contacts_enabled
+            or not self.campaign_enabled
+        ):
+            raise ValidationError("scheduler 联系人工厂配置无效")
         if self.contacts_enabled and (
-            not isinstance(self.contacts, ContactRuntimePorts)
+            (
+                not isinstance(self.contacts, ContactRuntimePorts)
+                and self.contacts_factory is None
+            )
             or not self.campaign_enabled
         ):
             raise ValidationError("scheduler 联系人依赖未完整配置")
@@ -332,29 +350,11 @@ class CanonicalSchedulerBootstrap:
                 self.gmail_transport,
             )
         account = None
-        scoped_employees = cast(EmployeeService, ScopedDiscoveryEmployees(employees))
-        if self.contacts_enabled:
+        if self.contacts_enabled and self.contacts_factory is None:
             contacts = self.contacts
             if contacts is None:
                 raise ValidationError("scheduler 联系人依赖未完整配置")
-            account = AccountDiscoveryComposition(
-                DemandAccountDiscoveryTaskReader(
-                    core.demand, allowed_countries=contacts.allowed_countries
-                ),
-                AccountDiscoveryAgent(
-                    contacts.model,
-                    StructuredAccountDiscoveryModelPort(
-                        contacts.model_client, contacts.model
-                    ),
-                    None,
-                    CredentialMarkerGuard(),
-                ),
-                core.prospecting,
-                scoped_employees,
-                BossAccountDiscoveryActorResolver(scoped_employees),
-                enricher=contacts.enricher,
-                verifier=contacts.verifier,
-            )
+            account = self._account_composition(core, contacts)
         discovery = None
         if self.research_enabled:
             research = self.research
@@ -432,6 +432,49 @@ class CanonicalSchedulerBootstrap:
             account_discovery=account,
             demand_discovery=discovery,
             sourcing_case=sourcing,
+        )
+
+    def build_contacts(
+        self,
+        core: SchedulerCoreServices,
+        outreach: OutreachService | None,
+        *,
+        resources: ContactRuntimeResources,
+    ) -> AccountDiscoveryComposition | None:
+        """默认不覆盖静态组合；late factory必须绑定本runtime的发送服务。"""
+        if self.contacts_factory is None:
+            return None
+        if outreach is None:
+            raise ValidationError("scheduler 联系人工厂未绑定发送服务")
+        ports = self.contacts_factory(core, outreach, resources)
+        if not isinstance(ports, ContactRuntimePorts):
+            raise ValidationError("scheduler 联系人工厂返回无效")
+        return self._account_composition(core, ports)
+
+    @staticmethod
+    def _account_composition(
+        core: SchedulerCoreServices, contacts: ContactRuntimePorts
+    ) -> AccountDiscoveryComposition:
+        scoped_employees = cast(
+            EmployeeService, ScopedDiscoveryEmployees(core.employee_scope)
+        )
+        return AccountDiscoveryComposition(
+            DemandAccountDiscoveryTaskReader(
+                core.demand, allowed_countries=contacts.allowed_countries
+            ),
+            AccountDiscoveryAgent(
+                contacts.model,
+                StructuredAccountDiscoveryModelPort(
+                    contacts.model_client, contacts.model
+                ),
+                None,
+                CredentialMarkerGuard(),
+            ),
+            core.prospecting,
+            scoped_employees,
+            BossAccountDiscoveryActorResolver(scoped_employees),
+            enricher=contacts.enricher,
+            verifier=contacts.verifier,
         )
 
     def build_reply(

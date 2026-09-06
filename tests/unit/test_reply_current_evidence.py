@@ -6,6 +6,26 @@ from connectors.gmail.inbound_mime import parse_inbound_content
 
 
 @pytest.mark.parametrize(
+    "tag", ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]
+)
+@pytest.mark.parametrize("closing", [">", "/>"])
+def test_void_media_in_quote_preserves_later_current_evidence(tag, closing):
+    html = (
+        "<p>We need hinges.</p><blockquote><" + tag + ' src="x"' + closing
+        + "old reply 100 units</blockquote><p>5000 units.</p>"
+    )
+    parsed = parse_inbound_content(("Content-Type: text/html\r\n\r\n" + html).encode())
+    assert parsed.evidence_available is True
+    assert any("5000 units." in segment for segment in parsed.evidence_segments)
+    assert any("We need hinges." in segment for segment in parsed.evidence_segments)
+    assert all("old reply" not in segment for segment in parsed.evidence_segments)
+    assert all(
+        not ("We need hinges." in segment and "5000 units." in segment)
+        for segment in parsed.evidence_segments
+    )
+
+
+@pytest.mark.parametrize(
     "body,mime,current,excluded",
     [
         (

@@ -1,0 +1,26 @@
+# 0065：联系人外部端口在规范服务形成后装配
+
+日期：2026-09-06。状态：Task12 controller已批准最小接缝。
+
+## 背景
+
+原CanonicalSchedulerBootstrap在build_base阶段尚无当前Campaign Outreach实例。
+单Provider联系人验证必须复用这个实例的suppression及当前Prospecting读取，不能在受控模式
+用直接record_verification代替真实Gateway→VerifyContactsStep→领域落库，也不能伪造Hunter ready。
+已有静态ContactRuntimePorts不能安全提前构造这些依赖。
+
+## 决策
+
+沿原reply_factory增加显式可选contacts_factory；它与静态contacts互斥，必须同时启用contacts与Campaign。
+原runtime先形成规范core和Campaign Outreach，再传入typed当前session/tenant/tool_user/fingerprints/lease/clock
+资源调用factory，随后构造原AccountDiscoveryComposition与handlers，保持唯一WorkflowEngine。
+factory只返回原ContactRuntimePorts，不能替换核心服务。默认静态路径保持原行为。
+
+受控factory只在原scheduler入口显式注入，使用既有contact.enrich/contact.verify manifest/check/handler与
+真实PG ledger、permission、suppression和quota；外部Provider/模型严格合成、无网络fallback。
+Hunter生产readiness snapshot/guard保持原语义，受控Provider不得标记成已验证真实Hunter账户。
+
+## 后果
+
+这增加的是apps装配时机，不是Gateway核心业务分支或新队列。需覆盖互斥、缺依赖失败关闭、规范实例身份、
+research_only零联系人行为和单Provider真实验证入组发送。全量验收按最终源码重新记录。

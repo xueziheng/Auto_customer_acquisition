@@ -20,6 +20,101 @@ from workflows.engine.audit import (
 NOW = datetime(2026, 9, 6, 12, tzinfo=UTC)
 
 
+@pytest.mark.parametrize("case", ["bound", "version_mismatch", "need_mismatch"])
+async def test_sourcing_run_binding_requires_exact_version_and_need(observation, case):
+    from infra.db.tables import (
+        SourcingAdmissionRow,
+        SourcingCaseRow,
+        SourcingPrioritySnapshotRow,
+        WorkflowRunRow,
+    )
+    from shared.schemas.identifiers import RunId
+
+    repo, tenant, other, session = observation
+    session.add(
+        SourcingCaseRow(
+            tenant_id=tenant,
+            case_id="sc_binding",
+            need_id="need_0",
+            opportunity_id="opp_window",
+            workflow_version=2,
+            trigger_key="binding",
+            need_snapshot={},
+            need_snapshot_hash="a" * 64,
+            opened_at=NOW,
+            state_changed_at=NOW,
+        )
+    )
+    await session.flush()
+    session.add(
+        SourcingAdmissionRow(
+            tenant_id=tenant,
+            admission_id="adm_binding",
+            case_id="sc_binding",
+            need_id="need_0",
+            state="starting",
+            ready_at=NOW,
+            current_snapshot_id="sps_binding",
+            claim_token="synthetic-owned-claim",
+            claim_expires_at=NOW + timedelta(minutes=5),
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    await session.flush()
+    session.add(
+        SourcingPrioritySnapshotRow(
+            tenant_id=tenant,
+            snapshot_id="sps_binding",
+            admission_id="adm_binding",
+            case_id="sc_binding",
+            need_id="need_0",
+            cluster_member_count=1,
+            ready_at=NOW,
+            ranking_version="need-cluster-admission-v1",
+            facts_observed_at=NOW,
+            facts_hash="b" * 64,
+            created_at=NOW,
+        )
+    )
+    await session.flush()
+    session.add(
+        WorkflowRunRow(
+            tenant_id=tenant,
+            run_id="run_sourcing_bound",
+            workflow_type="sourcing_case",
+            workflow_version=1 if case == "version_mismatch" else 2,
+            subject_ref="sc_binding",
+            current_step="search",
+            status="running",
+            created_at=NOW,
+            context={},
+            idempotency_key=(
+                "version-mismatch"
+                if case == "version_mismatch"
+                else f"sourcing-case:v2:{tenant}:need_0"
+            ),
+        )
+    )
+    opportunity = await session.get(OpportunityRow, "opp_window")
+    opportunity.owner = "emp_sourcing"
+    if case == "need_mismatch":
+        opportunity.need_id = "need_1"
+    await session.flush()
+    result = await repo.get_run(tenant, RunId("run_sourcing_bound"))
+    assert result.observation.handoff_id is None
+    assert result.observation.need_id == (
+        None if case == "version_mismatch" else "need_0"
+    )
+    assert result.observation.opportunity_id == (
+        "opp_window" if case == "bound" else None
+    )
+    assert result.observation.responsible_employee_id == (
+        "emp_sourcing" if case == "bound" else None
+    )
+    assert await repo.get_run(other, RunId("run_sourcing_bound")) is None
+
+
 @pytest.fixture
 async def observation(integration_engine):
     tenant = TenantId("tn_" + uuid4().hex[:24])
@@ -282,6 +377,13 @@ async def test_credit_reservations_use_creation_window_and_current_status(
     assert result.inputs.total_cost is None  # 免费额度状态不是可确认金额
 
     foreign_result = await PostgresRunAuditRepository(factory).get_observability(
-        other, start=NOW - timedelta(days=1), end=NOW, observed_at=NOW,
+        other,
+        start=NOW - timedelta(days=1),
+        end=NOW,
+        observed_at=NOW,
     )
-    assert (foreign_result.consumed_credits, foreign_result.reserved_credits, foreign_result.uncertain_credits) == (0, 0, 0)
+    assert (
+        foreign_result.consumed_credits,
+        foreign_result.reserved_credits,
+        foreign_result.uncertain_credits,
+    ) == (0, 0, 0)

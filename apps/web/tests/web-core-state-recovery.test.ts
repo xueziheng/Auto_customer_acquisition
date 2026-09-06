@@ -37,7 +37,7 @@ it('Run 失败读取与无数据分开，缺失深链不回退其他Run',async()
  const calls:string[]=[];const {root}=await mount(RunCenter,async input=>{const p=new URL((input as Request).url).pathname;calls.push(p);return json({},p==='/runs'?503:404);},'/runs?run=missing');
  expect(root.textContent).not.toContain('当前没有可审计的 Run 记录');expect(root.textContent).not.toContain('选择一条 Run');expect(root.textContent).toContain('不存在');expect(calls).toContain('/runs/missing');
 });
-it('Settings 读取失败不渲染未配置，拒绝后旧研究响应不能复活',async()=>{
+it('Settings 503读取失败显示研究配置错误，不渲染未配置',async()=>{
  const {root}=await mount(SettingsCenter,async()=>json({},503));
  expect(root.textContent).toContain('研究配置读取失败');expect(root.textContent).not.toContain('尚未配置 Company Playbook');
 });

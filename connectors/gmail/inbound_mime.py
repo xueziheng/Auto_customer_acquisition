@@ -234,7 +234,10 @@ class _HTMLText(HTMLParser):
         )
         if quoted or self.quote_stack:
             self._boundary()
-            if tag not in {"br", "hr", "img", "input", "meta", "link", "wbr"}:
+            if tag not in {
+                "area", "base", "br", "col", "embed", "hr", "img",
+                "input", "link", "meta", "source", "track", "wbr",
+            }:
                 self.quote_stack.append(tag)
         if tag in {"script", "style"}:
             self._boundary()

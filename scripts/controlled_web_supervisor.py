@@ -231,6 +231,7 @@ class Supervisor:
                     "CONTROLLED_OBJECT_ACCESS": object_access,
                     "CONTROLLED_OBJECT_SECRET": object_secret,
                     "CONTROLLED_GMAIL": secrets.token_hex(32),
+                    "CONTROLLED_RESEARCH": secrets.token_hex(32),
                     "CONTROLLED_FINGERPRINT": secrets.token_hex(32),
                     "CONTROLLED_UNSUBSCRIBE": secrets.token_hex(32),
                 }.items()
@@ -428,7 +429,8 @@ class Supervisor:
         self.start_apps()
 
     def close(self) -> None:
-        self.cleanup_errors.extend(self.stop_apps())
+        stop_errors = self.stop_apps()
+        self.cleanup_errors.extend(stop_errors)
         if self.containers:
             try:
                 self.cleanup_errors.extend(self.containers.close())
@@ -439,12 +441,19 @@ class Supervisor:
                 listener.close()
             except OSError:
                 self.cleanup_errors.append("listener_cleanup_unknown")
+        # 停止未确认时保留私有文件，避免仍存活的进程重建/写入已删除的SQLite。
+        if stop_errors:
+            return
         for name in (
             "config.json",
             "mail.sqlite",
             "mail.sqlite-journal",
             "mail.sqlite-wal",
             "mail.sqlite-shm",
+            "reply-model.sqlite",
+            "reply-model.sqlite-journal",
+            "reply-model.sqlite-wal",
+            "reply-model.sqlite-shm",
         ):
             try:
                 (self.directory / name).unlink(missing_ok=True)

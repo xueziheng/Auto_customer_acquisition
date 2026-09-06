@@ -228,7 +228,7 @@ async def test_budget_keeps_complete_rules_and_discards_background_with_audit() 
 async def test_credentials_rejected_before_budget_discard_without_echo(
     location: str,
 ) -> None:
-    marker = "password=fixture_sensitive_value"
+    marker = "password=placeholder"
     p = policy()
     s = section()
     objective = "总结"
@@ -645,7 +645,7 @@ async def test_adapter_prompt_guard_and_unknown_or_unlocked_skills(
                         skill_id="qualification.review",
                         version="1.0.0",
                         prompt_ref="prompt.md",
-                        prompt="password=fixture_value",
+                        prompt="password=placeholder",
                     ),
                 )
             )
@@ -1145,7 +1145,7 @@ async def test_credential_in_fact_means_zero_consumer_calls(tmp_path: Path) -> N
 
     runtime = adapter(tmp_path)
     unsafe_fact = (
-        section().facts[0].model_copy(update={"value": "password=fixture_credential"})
+        section().facts[0].model_copy(update={"value": "password=placeholder"})
     )
     runtime = replace(
         runtime,

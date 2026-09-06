@@ -206,6 +206,9 @@ def test_stack_ready_restart_and_term_owned_cleanup(tmp_path: Path) -> None:
         assert final["status"] == "stopped"
         assert final["cleanup_errors"] == []
         assert not (paths[0].parent / "config.json").exists()
+        for stem in ("mail.sqlite", "reply-model.sqlite"):
+            for suffix in ("", "-journal", "-wal", "-shm"):
+                assert not (paths[0].parent / (stem + suffix)).exists()
     finally:
         if process.poll() is None:
             process.terminate()
@@ -508,6 +511,9 @@ def test_real_http_configuration_approval_and_worker_crash(tmp_path: Path) -> No
         final = json.loads(stdout.splitlines()[-1])
         assert final["reason"] == "child_exited"
         assert final["cleanup_errors"] == []
+        for stem in ("mail.sqlite", "reply-model.sqlite"):
+            for suffix in ("", "-journal", "-wal", "-shm"):
+                assert not (paths[0].parent / (stem + suffix)).exists()
         docker_client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
         try:
             assert (

@@ -303,6 +303,7 @@ from .catalog_product_runtime import (
     build_catalog_product_composition,
 )
 from .config import SchedulerWorkerConfig
+from .contact_binding import ContactRuntimeResources
 from .directive_reader import (
     DirectiveSourcingAdmissionPolicyReader,
     SchedulerDirectiveEmployeeReader,
@@ -998,6 +999,14 @@ class SchedulerBootstrap(Protocol):
         now: Callable[[], datetime],
     ) -> SchedulerDomainDependencies: ...
 
+    def build_contacts(
+        self,
+        core: SchedulerCoreServices,
+        outreach: OutreachService | None,
+        *,
+        resources: ContactRuntimeResources,
+    ) -> AccountDiscoveryComposition | None: ...
+
     def build_reply(
         self,
         core: SchedulerCoreServices,
@@ -1507,6 +1516,22 @@ class SchedulerRuntimeFactory:
                             outreach=campaign_outreach,
                         )
                     )
+                contacts = self._bootstrap.build_contacts(
+                    core,
+                    campaign_outreach,
+                    resources=ContactRuntimeResources(
+                        factory,
+                        config.tenant_id,
+                        tool_user,
+                        fingerprints,
+                        timedelta(seconds=config.tool_lease_seconds),
+                        self._now,
+                    ),
+                )
+                if contacts is not None:
+                    if contacts.prospecting is not core.prospecting:
+                        raise ValidationError("scheduler 联系人必须使用当前规范服务")
+                    dependencies = replace(dependencies, account_discovery=contacts)
                 reply = self._bootstrap.build_reply(
                     core,
                     campaign_outreach,

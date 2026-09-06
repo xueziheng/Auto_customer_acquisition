@@ -217,7 +217,7 @@ async def test_context_failure_is_permanent_redacted_and_never_runs_agent_or_gat
 
     class FailingContexts:
         async def build(self, task: AgentTask) -> object:
-            raise ValidationError("password=fixture_should_not_be_logged")
+            raise ValidationError("password=placeholder")
 
     async def stop_when_empty(seconds: float, stop: asyncio.Event) -> None:
         stop.set()
@@ -242,7 +242,7 @@ async def test_context_failure_is_permanent_redacted_and_never_runs_agent_or_gat
     assert jobs.failed == [("agent-job-context-failure", "permanent", False)]
     assert not agent.calls and not gate.accepted and not jobs.completed
     assert not ready.is_set()
-    assert "fixture_should_not_be_logged" not in caplog.text
+    assert "password=placeholder" not in caplog.text
 
 
 @pytest.mark.asyncio

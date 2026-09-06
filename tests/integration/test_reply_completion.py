@@ -667,8 +667,6 @@ async def deliver_notifications(runtime):
 async def test_unknown_provider_send_is_reconciled_without_a_second_send(
     page_runtime, tmp_path, monkeypatch, caplog
 ):
-    import sqlite3
-
     from connectors.gmail.transport import GmailNetworkError
 
     runtime = page_runtime
@@ -731,13 +729,9 @@ async def test_unknown_provider_send_is_reconciled_without_a_second_send(
     finally:
         if recovered_deps.model_lifecycle:
             await recovered_deps.model_lifecycle.aclose()
-    with sqlite3.connect(tmp_path / "mail.sqlite") as provider:
-        calls = provider.execute(
-            "SELECT operation,count(*) FROM provider_calls WHERE tenant_id=? GROUP BY operation",
-            (tenant,),
-        ).fetchall()
-        assert dict(calls)["send"] == 1
-        assert dict(calls)["search"] >= 2
+    calls = await runtime["provider"].list_calls()
+    assert sum(call.operation == "send" for call in calls) == 1
+    assert sum(call.operation == "search" for call in calls) >= 2
     async with runtime["factory"]() as session:
         assert (
             await session.scalar(

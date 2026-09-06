@@ -4,21 +4,31 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from pathlib import Path
 
 from apps.composition_support.email_inbound import InboundMailbox, InboundRuntimePorts
 from connectors.object_store.config import S3ObjectStoreSettings
+from connectors.object_store.deferred import DeferredS3ObjectBlobTransport
 from domains.opportunities.scoring import ScoringPolicy
 from domains.opportunities.service_impl import HandoffPolicy
 from infra.controlled.config import ControlledConfig
 from infra.controlled.network import install_network_boundary
 from infra.controlled.providers import ControlledDnsResolver, ControlledGmailTransport
 from infra.controlled.reply_model import ControlledReplyModelClient
-from shared.schemas.identifiers import EmployeeId, TenantId
+from infra.controlled.research import (
+    ControlledResearchModel,
+    ControlledResearchPages,
+    ControlledResearchSearch,
+)
+from shared.schemas.identifiers import EmployeeId, TenantId, UserId
 from shared.schemas.money import CurrencyCode, Money
 
-from .bootstrap import CanonicalSchedulerBootstrap
+from .bootstrap import CanonicalSchedulerBootstrap, ResearchRuntimePorts
+from .controlled_contacts import ControlledContactFactory
+from .main import SchedulerRuntime
 from .main import main as run_worker
 from .reply_composition import CurrentEmployeeReplyFactory
 from .runtime import SchedulerHealthServer, SchedulerRuntimeFactory
@@ -33,6 +43,10 @@ def main() -> int:
             destinations=frozenset({config.database_port, config.object_port}),
             listeners=frozenset({config.scheduler_port}),
         )
+        objects = DeferredS3ObjectBlobTransport(
+            S3ObjectStoreSettings.from_environ(config.runtime_environment()),
+            config,
+        )
         bootstrap = CanonicalSchedulerBootstrap(
             ScoringPolicy(
                 "controlled-v1",
@@ -40,6 +54,21 @@ def main() -> int:
                 {k: "low" for k in range(1, 8)},
             ),
             HandoffPolicy(sla_seconds=3600, backlog_threshold=10),
+            research_enabled=True,
+            research=ResearchRuntimePorts(
+                model_client=ControlledResearchModel(),
+                model="controlled-research-v1",
+                user_id=UserId(config.identities[0].user_id),
+                search_transport=ControlledResearchSearch(),
+                page_transport=ControlledResearchPages(),
+                object_transport=objects,
+                maximum_artifact_bytes=10485760,
+                secret_ref="CONTROLLED_RESEARCH",
+                secret_resolver=config,
+                exclusive_account_confirmed=True,
+            ),
+            contacts_enabled=True,
+            contacts_factory=ControlledContactFactory(path.parent / "mail.sqlite"),
             campaign_enabled=True,
             gmail_transport=ControlledGmailTransport(
                 path.parent / "mail.sqlite", tenant_id=config.tenant_id
@@ -80,7 +109,16 @@ def main() -> int:
                 state, port, host="127.0.0.1"
             ),
         )
-        return run_worker(factory)
+
+        @asynccontextmanager
+        async def owned_runtime() -> AsyncIterator[SchedulerRuntime]:
+            try:
+                async with factory() as runtime:
+                    yield runtime
+            finally:
+                await objects.aclose()
+
+        return run_worker(owned_runtime)
     except BaseException:  # noqa: BLE001 进程边界固定失败，不能回显底层异常
         return 2
 

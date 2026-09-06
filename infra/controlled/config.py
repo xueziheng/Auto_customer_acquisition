@@ -139,6 +139,8 @@ class ControlledConfig(BaseModel):
                 "TRADEOS_CAMPAIGN_RETRY_INTERVAL_SECONDS": "30",
                 "TRADEOS_HUNTER_CONTACTS_ENABLED": "false",
                 "TRADEOS_TRADE_MANAGER_MODEL": "controlled-json-v1",
+                "TAVILY_API_KEY_REF": "CONTROLLED_RESEARCH",
+                "TRADEOS_TAVILY_EXCLUSIVE_ACCOUNT_CONFIRMED": "true",
             }
         )
         return result
