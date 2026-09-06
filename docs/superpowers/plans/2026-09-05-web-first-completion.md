@@ -236,12 +236,14 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 - 更新：`apps/api/identity.py`、`apps/api/routers/inbox.py`；跨域员工/负责人读取通过上层公开端口映射。
 - 测试：`tests/unit/test_inbox_api.py`、`test_conversation_inbox_views.py`；新增 `tests/integration/test_inbox_access.py`。
 
-**Interfaces:** 在 conversations 公共契约中显式传入受信访问范围，覆盖列表、详情、纠正和证据读取；沿用现有 EmployeeView / RequestIdentity，不能仅把 `_INBOX_ROLES` 加上 sales。
+**Interfaces:** 在 conversations 公共契约中显式传入受信访问范围，覆盖列表、详情、纠正、证据和下一问读取；沿用现有 EmployeeView / RequestIdentity。ADR0028采用同UoW/session的最小当前权限事实端口、SQL过滤与纠正事务锁，不能仅把 `_INBOX_ROLES` 加上 sales。
 
-- [ ] 先为每个动作建立 boss/manager/sales/其他角色 × 自己/直属员工/其他人/其他租户的期望矩阵。
-- [ ] 写拒绝与竞态测试：员工停用、归属改变、旧链接、直接 HTTP 访问均重新判权；缺归属事实不开放整租户。
-- [ ] 服务与 repository 实现一致过滤，API 再按安全投影返回；所需新关联通过独立 ADR/迁移落地，不由前端回传 owner 决定权限。
-- [ ] 生成 OpenAPI 类型，跑既有 Inbox 与 CRM 权限回归，提交。
+- [x] 先为每个动作建立 boss/manager/sales/其他角色 × 自己/直属员工/其他人/其他租户的期望矩阵。
+- [x] 写拒绝与竞态测试：员工停用、归属改变、旧链接、直接 HTTP 访问均重新判权；缺归属事实不开放整租户。
+- [x] 服务与 repository 实现一致过滤，API 再按安全投影返回；ADR0028明确当前事实与锁，不新增归属缓存或迁移，不由前端回传 owner 决定权限。
+- [x] 生成 OpenAPI 类型，跑既有 Inbox 与 CRM 权限回归，提交。
+
+验收：源码3090ee3、报告1aa1d99；同版本179项测试无跳过，Ruff/Mypy/结构/增量扫描/schema与TS通过，独立规格与质量审查Approved。分类窗口为最近200条已授权会话；浏览器消费与独立附件不是本批交付。纠正接口旧异常docstring的Minor由Task13同步。
 
 ### Task 8：Web 核心操作闭环
 
