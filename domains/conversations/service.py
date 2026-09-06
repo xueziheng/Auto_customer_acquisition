@@ -5,6 +5,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
+from domains.conversations.inbox_access import (
+    InboxAccessFactsReader as InboxAccessFactsReader,  # noqa: PLC0414 - 会话域公共权限契约
+)
+from domains.conversations.inbox_access import (
+    InboxAction as InboxAction,  # noqa: PLC0414 - 会话域公共权限契约
+)
+from domains.conversations.inbox_access import (
+    InboxActor as InboxActor,  # noqa: PLC0414 - 会话域公共权限契约
+)
+from domains.conversations.inbox_access import (
+    InboxEmployeeFacts as InboxEmployeeFacts,  # noqa: PLC0414 - 会话域公共权限契约
+)
+from domains.conversations.inbox_access import (
+    InboxScope as InboxScope,  # noqa: PLC0414 - 会话域公共权限契约
+)
 from domains.conversations.models import (
     Conversation,
     Message,
@@ -21,6 +36,7 @@ from domains.conversations.schemas import (
     AccountReplyStatus,
     ConversationInboxDetail,
     ConversationInboxItem,
+    InboxEvidenceRef,
     ReplyWorkActionRequest,
     ReplyWorkActionView,
     ReplyWorkStatus,
@@ -121,6 +137,8 @@ class ConversationService(Protocol):
         message_id: MessageId,
         corrected_category: ReplyCategory,
         corrected_by: str,
+        *,
+        actor: InboxActor,
     ) -> None:
         """人工纠正分类。
 
@@ -175,10 +193,22 @@ class ConversationService(Protocol):
         self, tenant_id: TenantId, conversation_id: ConversationId
     ) -> list[Message]: ...
 
+    async def get_message_evidence(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+        *,
+        actor: InboxActor,
+        action: InboxAction = InboxAction.EVIDENCE_READ,
+    ) -> InboxEvidenceRef:
+        """按真实Message关联判权；artifact引用不授予访问权。"""
+        ...
+
     async def list_inbox(
         self,
         tenant_id: TenantId,
         *,
+        actor: InboxActor,
         category: ReplyCategory | None,
         limit: int,
     ) -> list[ConversationInboxItem]:
@@ -186,7 +216,12 @@ class ConversationService(Protocol):
         ...
 
     async def get_inbox_detail(
-        self, tenant_id: TenantId, conversation_id: ConversationId
+        self,
+        tenant_id: TenantId,
+        conversation_id: ConversationId,
+        *,
+        actor: InboxActor,
+        action: InboxAction = InboxAction.READ,
     ) -> ConversationInboxDetail:
         """读取会话消息、模型原判、人工纠正与 artifact 公共引用。"""
         ...

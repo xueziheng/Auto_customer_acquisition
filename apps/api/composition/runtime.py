@@ -1557,7 +1557,16 @@ def build_phase1_dependencies(
             lease_owner="api-email-inbound",
             now=now,
         )
+    from apps.api.inbox_evidence import build_inbox_evidence_reader
+
     return ConfiguredApiDependencies(
+        inbox_evidence=(
+            build_inbox_evidence_reader(
+                tenant, factory, conversations, inbound.bounded_raw_store, now=now
+            )
+            if inbound is not None
+            else None
+        ),
         email_inbound=inbound,
         runtime_capabilities=capabilities,
         opportunities=opportunities,

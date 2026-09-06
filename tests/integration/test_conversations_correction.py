@@ -19,14 +19,25 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
+
+# ruff: noqa: F811 - 复用owned数据库fixture
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from domains.conversations.schemas import ReplyCategory
-from domains.conversations.service import ConversationService
-from shared.errors import TenantIsolationViolation, ValidationError
-from shared.schemas.identifiers import MessageId, TenantId, new_id
+from domains.conversations.service import ConversationService, InboxActor, InboxScope
+from shared.errors import PermissionDenied, TenantIsolationViolation, ValidationError
+from shared.schemas.identifiers import (
+    EmployeeId,
+    MessageId,
+    ProspectAccountId,
+    TenantId,
+    new_id,
+)
+from tests.integration.test_email_inbound_gateway import (
+    owned_infrastructure,  # noqa: F401
+)
 
 NOW = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
 
@@ -51,17 +62,17 @@ class MutableClock:
 
 
 @pytest_asyncio.fixture
-async def correction_db(db_url: str) -> AsyncIterator[AsyncEngine]:
-    engine = importlib.import_module("infra.db.session").create_engine_from(db_url)
+async def correction_db(owned_infrastructure) -> AsyncIterator[AsyncEngine]:
+    engine = importlib.import_module("infra.db.session").create_engine_from(
+        owned_infrastructure.config.database_url.get_secret_value()
+    )
     try:
         yield engine
     finally:
         await engine.dispose()
 
 
-def _uow_factory(
-    factory: async_sessionmaker[AsyncSession], tenant: TenantId
-):
+def _uow_factory(factory: async_sessionmaker[AsyncSession], tenant: TenantId):
     uow_type = importlib.import_module(
         "infra.db.conversations_uow"
     ).SqlAlchemyConversationsUnitOfWork
@@ -188,7 +199,9 @@ async def _list_through_repo(
         raise AssertionError("RED：ClassificationRepositoryImpl 不存在")
     list_method = getattr(repo_type, "list_corrections", None)
     if list_method is None:
-        raise AssertionError("RED：ClassificationRepositoryImpl.list_corrections 不存在")
+        raise AssertionError(
+            "RED：ClassificationRepositoryImpl.list_corrections 不存在"
+        )
     uow_factory = _uow_factory(factory, tenant)
     async with uow_factory(tenant) as uow:
         return await uow.classifications.list_corrections(tenant, message_id)
@@ -308,6 +321,46 @@ async def test_correction_repository_cross_tenant_fails_closed(
             raise AssertionError("RED：跨租户 list 应抛 TenantIsolationViolation")
 
 
+def _employee_id(tenant, index=1):
+    return EmployeeId(f"e{index}_{tenant[3:]}")
+
+
+def _actor(tenant, index=1):
+    return InboxActor(tenant, _employee_id(tenant, index), "boss", InboxScope.TENANT)
+
+
+async def _inbox_fixture(service, factory, tenant, config):
+    from apps.api.controlled import initialize_identities
+
+    identities = []
+    boss_index = 0
+    for identity in config.identities:
+        if identity.role == "boss":
+            boss_index += 1
+        identities.append(
+            identity.model_copy(
+                update={
+                    "employee_id": _employee_id(tenant, boss_index)
+                    if identity.role == "boss"
+                    else new_id("emp"),
+                    "user_id": new_id("usr"),
+                }
+            )
+        )
+    assert boss_index >= 2
+    await initialize_identities(
+        config.model_copy(update={"tenant_id": tenant, "identities": tuple(identities)})
+    )
+    return await service.ingest_inbound(
+        tenant,
+        None,
+        ProspectAccountId(new_id("acc")),
+        new_id("raw"),
+        f"<{new_id('ext')}@example.test>",
+        NOW,
+    )
+
+
 # --- 阶段 2：ConversationServiceImpl.correct_classification（真实服务+UoW） ---
 
 
@@ -334,12 +387,16 @@ async def _outbox_events(
     tables = importlib.import_module("infra.db.tables")
     async with factory() as session:
         rows = (
-            await session.execute(
-                select(tables.OutboxEventRow).where(
-                    tables.OutboxEventRow.tenant_id == str(tenant)
+            (
+                await session.execute(
+                    select(tables.OutboxEventRow).where(
+                        tables.OutboxEventRow.tenant_id == str(tenant)
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     return list(rows)
 
 
@@ -350,12 +407,16 @@ async def _classification_rows(
     tables = importlib.import_module("infra.db.tables")
     async with factory() as session:
         rows = (
-            await session.execute(
-                select(tables.ConversationClassificationRow).where(
-                    tables.ConversationClassificationRow.tenant_id == str(tenant)
+            (
+                await session.execute(
+                    select(tables.ConversationClassificationRow).where(
+                        tables.ConversationClassificationRow.tenant_id == str(tenant)
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     return list(rows)
 
 
@@ -366,18 +427,23 @@ async def _correction_rows(
     tables = importlib.import_module("infra.db.tables")
     async with factory() as session:
         rows = (
-            await session.execute(
-                select(tables.ConversationClassificationCorrectionRow).where(
-                    tables.ConversationClassificationCorrectionRow.tenant_id
-                    == str(tenant)
+            (
+                await session.execute(
+                    select(tables.ConversationClassificationCorrectionRow).where(
+                        tables.ConversationClassificationCorrectionRow.tenant_id
+                        == str(tenant)
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     return list(rows)
 
 
 async def test_correct_classification_persists_and_preserves_original_classification(
     correction_db: AsyncEngine,
+    owned_infrastructure,
 ) -> None:
     """happy path：先落分类（REQUESTS_MATERIALS/model-v1），纠正到
     UNSUBSCRIBE/emp-1 → 恰一条纠正（correction_id 为 new_id("ccr") 前缀、
@@ -388,6 +454,9 @@ async def test_correct_classification_persists_and_preserves_original_classifica
     message_id = MessageId(new_id("msg"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
+    message_id = await _inbox_fixture(
+        service, factory, tenant, owned_infrastructure.config
+    )
 
     await service.record_classification(
         tenant,
@@ -401,7 +470,11 @@ async def test_correct_classification_persists_and_preserves_original_classifica
 
     clock.calls = 0
     result = await service.correct_classification(
-        tenant, message_id, ReplyCategory.UNSUBSCRIBE, corrected_by="emp-1"
+        tenant,
+        message_id,
+        ReplyCategory.UNSUBSCRIBE,
+        corrected_by=_employee_id(tenant),
+        actor=_actor(tenant),
     )
     assert result is None
     assert clock.calls == 1  # now 只调用/验证一次
@@ -412,7 +485,7 @@ async def test_correct_classification_persists_and_preserves_original_classifica
     assert correction.correction_id.startswith("ccr_")
     assert len(correction.correction_id) <= 32
     assert correction.corrected_category is ReplyCategory.UNSUBSCRIBE
-    assert correction.corrected_by == "emp-1"
+    assert correction.corrected_by == _employee_id(tenant)
     assert correction.corrected_at == NOW
 
     original = await _classification_rows(factory, tenant)
@@ -429,6 +502,7 @@ async def test_correct_classification_persists_and_preserves_original_classifica
 
 async def test_correct_classification_unclassified_message_fails_closed(
     correction_db: AsyncEngine,
+    owned_infrastructure,
 ) -> None:
     """未分类消息：ValidationError 精确摘要“消息尚未分类”，零纠正、零事件。"""
     factory = async_sessionmaker(correction_db, expire_on_commit=False)
@@ -436,13 +510,20 @@ async def test_correct_classification_unclassified_message_fails_closed(
     message_id = MessageId(new_id("msg"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
+    message_id = await _inbox_fixture(
+        service, factory, tenant, owned_infrastructure.config
+    )
 
     baseline = [
         (e.event_type, e.event_payload) for e in await _outbox_events(factory, tenant)
     ]
     with pytest.raises(ValidationError) as exc_info:
         await service.correct_classification(
-            tenant, message_id, ReplyCategory.UNSUBSCRIBE, corrected_by="emp-1"
+            tenant,
+            message_id,
+            ReplyCategory.UNSUBSCRIBE,
+            corrected_by=_employee_id(tenant),
+            actor=_actor(tenant),
         )
     assert str(exc_info.value) == "消息尚未分类"
     assert await _correction_rows(factory, tenant) == []
@@ -453,6 +534,7 @@ async def test_correct_classification_unclassified_message_fails_closed(
 
 async def test_correct_classification_sequential_idempotency(
     correction_db: AsyncEngine,
+    owned_infrastructure,
 ) -> None:
     """顺序重复幂等：同 (by, category) 两次均正常返回 None 且恰一条；
     同 by 不同 category、同 category 不同 by（固定时钟）各自保留一行。"""
@@ -461,6 +543,9 @@ async def test_correct_classification_sequential_idempotency(
     message_id = MessageId(new_id("msg"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
+    message_id = await _inbox_fixture(
+        service, factory, tenant, owned_infrastructure.config
+    )
 
     await service.record_classification(
         tenant,
@@ -470,35 +555,52 @@ async def test_correct_classification_sequential_idempotency(
     )
 
     first = await service.correct_classification(
-        tenant, message_id, ReplyCategory.UNSUBSCRIBE, corrected_by="emp-1"
+        tenant,
+        message_id,
+        ReplyCategory.UNSUBSCRIBE,
+        corrected_by=_employee_id(tenant),
+        actor=_actor(tenant),
     )
     second = await service.correct_classification(
-        tenant, message_id, ReplyCategory.UNSUBSCRIBE, corrected_by="emp-1"
+        tenant,
+        message_id,
+        ReplyCategory.UNSUBSCRIBE,
+        corrected_by=_employee_id(tenant),
+        actor=_actor(tenant),
     )
     assert first is None and second is None
     rows = await _list_through_repo(factory, tenant, message_id)
     assert len(rows) == 1
     assert rows[0].corrected_category is ReplyCategory.UNSUBSCRIBE
-    assert rows[0].corrected_by == "emp-1"
+    assert rows[0].corrected_by == _employee_id(tenant)
 
     await service.correct_classification(
-        tenant, message_id, ReplyCategory.REJECTION, corrected_by="emp-1"
+        tenant,
+        message_id,
+        ReplyCategory.REJECTION,
+        corrected_by=_employee_id(tenant),
+        actor=_actor(tenant),
     )
     await service.correct_classification(
-        tenant, message_id, ReplyCategory.UNSUBSCRIBE, corrected_by="emp-2"
+        tenant,
+        message_id,
+        ReplyCategory.UNSUBSCRIBE,
+        corrected_by=_employee_id(tenant, 2),
+        actor=_actor(tenant, 2),
     )
     rows = await _list_through_repo(factory, tenant, message_id)
     assert len(rows) == 3
     assert {(r.corrected_category, r.corrected_by) for r in rows} == {
-        (ReplyCategory.UNSUBSCRIBE, "emp-1"),
-        (ReplyCategory.REJECTION, "emp-1"),
-        (ReplyCategory.UNSUBSCRIBE, "emp-2"),
+        (ReplyCategory.UNSUBSCRIBE, _employee_id(tenant)),
+        (ReplyCategory.REJECTION, _employee_id(tenant)),
+        (ReplyCategory.UNSUBSCRIBE, _employee_id(tenant, 2)),
     }
     assert {r.corrected_at for r in rows} == {NOW}  # 固定时钟下多条并存
 
 
 async def test_correct_classification_input_fail_closed(
     correction_db: AsyncEngine,
+    owned_infrastructure,
 ) -> None:
     """输入 fail-closed：空值/空白/超长/非枚举/时钟非法 → 固定摘要
     ValidationError（不回显输入）；错误发生在任何外部副作用之前：零纠正、
@@ -508,6 +610,9 @@ async def test_correct_classification_input_fail_closed(
     message_id = MessageId(new_id("msg"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
+    message_id = await _inbox_fixture(
+        service, factory, tenant, owned_infrastructure.config
+    )
 
     # 先落原分类：证明输入校验先于“消息尚未分类”路径与任何 UoW 副作用
     await service.record_classification(
@@ -534,7 +639,8 @@ async def test_correct_classification_input_fail_closed(
             "tenant_id": tenant,
             "message_id": message_id,
             "corrected_category": ReplyCategory.UNSUBSCRIBE,
-            "corrected_by": "emp-1",
+            "corrected_by": _employee_id(tenant),
+            "actor": _actor(tenant),
             **overrides,
         }
         with pytest.raises(ValidationError) as exc_info:
@@ -552,7 +658,8 @@ async def test_correct_classification_input_fail_closed(
             "tenant_id": tenant,
             "message_id": message_id,
             "corrected_category": ReplyCategory.UNSUBSCRIBE,
-            "corrected_by": "emp-1",
+            "corrected_by": _employee_id(tenant),
+            "actor": _actor(tenant),
             **overrides,
         }
         with pytest.raises(ValidationError) as exc_info:
@@ -567,7 +674,11 @@ async def test_correct_classification_input_fail_closed(
         clock.value = bad_now
         with pytest.raises(ValidationError) as exc_info:
             await service.correct_classification(
-                tenant, message_id, ReplyCategory.UNSUBSCRIBE, corrected_by="emp-1"
+                tenant,
+                message_id,
+                ReplyCategory.UNSUBSCRIBE,
+                corrected_by=_employee_id(tenant),
+                actor=_actor(tenant),
             )
         assert str(exc_info.value) == "服务时钟必须为 UTC"
     clock.value = NOW
@@ -580,6 +691,7 @@ async def test_correct_classification_input_fail_closed(
 
 async def test_correct_classification_cross_tenant_invisible(
     correction_db: AsyncEngine,
+    owned_infrastructure,
 ) -> None:
     """服务级租户不可见：A 有原分类；B-bound 服务以相同 message 纠正 →
     ValidationError“消息尚未分类”（不是 TenantIsolationViolation，那是仓储
@@ -591,6 +703,10 @@ async def test_correct_classification_cross_tenant_invisible(
     clock = MutableClock(NOW)
     service_a = _service(factory, tenant_a, clock)
     service_b = _service(factory, tenant_b, clock)
+    message_id = await _inbox_fixture(
+        service_a, factory, tenant_a, owned_infrastructure.config
+    )
+    await _inbox_fixture(service_b, factory, tenant_b, owned_infrastructure.config)
 
     await service_a.record_classification(
         tenant_a,
@@ -599,11 +715,15 @@ async def test_correct_classification_cross_tenant_invisible(
         classified_by="model-v1",
     )
 
-    with pytest.raises(ValidationError) as exc_info:
+    with pytest.raises(PermissionDenied) as exc_info:
         await service_b.correct_classification(
-            tenant_b, message_id, ReplyCategory.UNSUBSCRIBE, corrected_by="emp-1"
+            tenant_b,
+            message_id,
+            ReplyCategory.UNSUBSCRIBE,
+            corrected_by=_employee_id(tenant_b),
+            actor=_actor(tenant_b),
         )
-    assert str(exc_info.value) == "消息尚未分类"
+    assert str(exc_info.value) == "收件箱访问拒绝"
 
     assert await _correction_rows(factory, tenant_a) == []
     assert await _correction_rows(factory, tenant_b) == []
@@ -614,6 +734,7 @@ async def test_correct_classification_cross_tenant_invisible(
 
 async def test_correct_classification_no_event_no_leak(
     correction_db: AsyncEngine,
+    owned_infrastructure,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """no-leak/no-event：超长 corrected_by 用凭证 marker（101 字符）→ 固定
@@ -624,6 +745,9 @@ async def test_correct_classification_no_event_no_leak(
     message_id = MessageId(new_id("msg"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
+    message_id = await _inbox_fixture(
+        service, factory, tenant, owned_infrastructure.config
+    )
     marker = "sk-prod-" + "x" * 93  # 101 字符 > corrected_by 上限 100
 
     await service.record_classification(
@@ -635,22 +759,32 @@ async def test_correct_classification_no_event_no_leak(
     baseline = [
         (e.event_type, e.event_payload) for e in await _outbox_events(factory, tenant)
     ]
-    assert len(baseline) == 1 and baseline[0][0] == "ReplyReceived"
+    assert {item[0] for item in baseline} == {"InboundMessageStored", "ReplyReceived"}
 
     caplog.clear()
     with pytest.raises(ValidationError) as exc_info:
         await service.correct_classification(
-            tenant, message_id, ReplyCategory.UNSUBSCRIBE, corrected_by=marker
+            tenant,
+            message_id,
+            ReplyCategory.UNSUBSCRIBE,
+            corrected_by=marker,
+            actor=_actor(tenant),
         )
     assert str(exc_info.value) == "纠正人超长"
     assert marker not in str(exc_info.value)
     assert caplog.records == []
-    assert all(marker not in getattr(record, "message", "") for record in caplog.records)
+    assert all(
+        marker not in getattr(record, "message", "") for record in caplog.records
+    )
 
     # 成功路径同样零事件、零日志
     caplog.clear()
     await service.correct_classification(
-        tenant, message_id, ReplyCategory.UNSUBSCRIBE, corrected_by="emp-1"
+        tenant,
+        message_id,
+        ReplyCategory.UNSUBSCRIBE,
+        corrected_by=_employee_id(tenant),
+        actor=_actor(tenant),
     )
     assert caplog.records == []
     after = [
@@ -668,6 +802,7 @@ async def test_correct_classification_no_event_no_leak(
 
 async def test_correction_concurrent_same_key_exactly_one_row(
     correction_db: AsyncEngine,
+    owned_infrastructure,
 ) -> None:
     """同幂等键并发：恰一行。
 
@@ -683,6 +818,9 @@ async def test_correction_concurrent_same_key_exactly_one_row(
     clock = MutableClock(NOW)
     service_a = _service(factory, tenant, clock)
     service_b = _service(factory, tenant, clock)
+    message_id = await _inbox_fixture(
+        service_a, factory, tenant, owned_infrastructure.config
+    )
 
     await service_a.record_classification(
         tenant,
@@ -696,10 +834,18 @@ async def test_correction_concurrent_same_key_exactly_one_row(
 
     results = await asyncio.gather(
         service_a.correct_classification(
-            tenant, message_id, ReplyCategory.UNSUBSCRIBE, corrected_by="emp-1"
+            tenant,
+            message_id,
+            ReplyCategory.UNSUBSCRIBE,
+            corrected_by=_employee_id(tenant),
+            actor=_actor(tenant),
         ),
         service_b.correct_classification(
-            tenant, message_id, ReplyCategory.UNSUBSCRIBE, corrected_by="emp-1"
+            tenant,
+            message_id,
+            ReplyCategory.UNSUBSCRIBE,
+            corrected_by=_employee_id(tenant),
+            actor=_actor(tenant),
         ),
         return_exceptions=True,
     )
@@ -708,7 +854,7 @@ async def test_correction_concurrent_same_key_exactly_one_row(
     rows = await _list_through_repo(factory, tenant, message_id)
     assert len(rows) == 1
     assert rows[0].corrected_category is ReplyCategory.UNSUBSCRIBE
-    assert rows[0].corrected_by == "emp-1"
+    assert rows[0].corrected_by == _employee_id(tenant)
     assert rows[0].corrected_at == NOW
     assert [
         (e.event_type, e.event_payload) for e in await _outbox_events(factory, tenant)
@@ -717,6 +863,7 @@ async def test_correction_concurrent_same_key_exactly_one_row(
 
 async def test_correction_concurrent_different_keys_two_rows_same_clock(
     correction_db: AsyncEngine,
+    owned_infrastructure,
 ) -> None:
     """不同幂等键并发（同固定时钟）：恰两行。
 
@@ -731,6 +878,9 @@ async def test_correction_concurrent_different_keys_two_rows_same_clock(
     clock = MutableClock(NOW)
     service_a = _service(factory, tenant, clock)
     service_b = _service(factory, tenant, clock)
+    message_id = await _inbox_fixture(
+        service_a, factory, tenant, owned_infrastructure.config
+    )
 
     await service_a.record_classification(
         tenant,
@@ -745,10 +895,18 @@ async def test_correction_concurrent_different_keys_two_rows_same_clock(
 
     results = await asyncio.gather(
         service_a.correct_classification(
-            tenant, message_id, ReplyCategory.UNSUBSCRIBE, corrected_by="emp-1"
+            tenant,
+            message_id,
+            ReplyCategory.UNSUBSCRIBE,
+            corrected_by=_employee_id(tenant),
+            actor=_actor(tenant),
         ),
         service_b.correct_classification(
-            tenant, message_id, ReplyCategory.REJECTION, corrected_by="emp-1"
+            tenant,
+            message_id,
+            ReplyCategory.REJECTION,
+            corrected_by=_employee_id(tenant),
+            actor=_actor(tenant),
         ),
         return_exceptions=True,
     )
@@ -757,12 +915,13 @@ async def test_correction_concurrent_different_keys_two_rows_same_clock(
     rows = await _list_through_repo(factory, tenant, message_id)
     assert len(rows) == 2
     assert {(r.corrected_category, r.corrected_by) for r in rows} == {
-        (ReplyCategory.UNSUBSCRIBE, "emp-1"),
-        (ReplyCategory.REJECTION, "emp-1"),
+        (ReplyCategory.UNSUBSCRIBE, _employee_id(tenant)),
+        (ReplyCategory.REJECTION, _employee_id(tenant)),
     }
     assert {r.corrected_at for r in rows} == {NOW}
 
     original_after = await _classification_rows(factory, tenant)
+
     # 两次直读是不同 ORM 实例（identity 比较恒不等），按字段值比较
     def _row_fields(rows: list[object]) -> list[tuple[object, ...]]:
         return [

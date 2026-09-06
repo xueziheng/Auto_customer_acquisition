@@ -8,7 +8,8 @@ from typing import Protocol
 from domains.conversations.schemas import ReplyNextQuestionsView
 from domains.conversations.service import (
     ConversationService,
-    require_reply_internal_access,
+    InboxAction,
+    InboxActor,
 )
 from domains.demand.service import DemandService
 from domains.employees.schemas import EmployeeView
@@ -25,7 +26,6 @@ from shared.schemas.identifiers import (
     TenantId,
     ValidatedNeedId,
 )
-from shared.schemas.quote_facts import QuoteEmployeeFact
 
 
 class ReplyEmployeeReader(Protocol):
@@ -51,26 +51,37 @@ class ReplySuggestionApplication:
         actor_id: EmployeeId,
         conversation_id: ConversationId,
         message_id: MessageId,
+        *,
+        actor: InboxActor,
     ) -> ReplyNextQuestionsView:
         if tenant != self.tenant_id:
             raise PermissionDenied("回复建议权限拒绝")
         employee = await self.employees.get_employee(
             tenant, actor_id, actor=self.lookup_actor
         )
-        if employee.employee_id != actor_id:
+        if employee.employee_id != actor_id or employee.tenant_id != tenant:
             raise PermissionDenied("回复建议权限拒绝")
-        fact = QuoteEmployeeFact.model_validate(
-            {
-                "tenant_id": employee.tenant_id,
-                "employee_id": employee.employee_id,
-                "role": employee.role,
-                "is_active": employee.is_active,
-                "manager_id": employee.manager_id,
-                "team_id": employee.team_id,
-            }
+        if (
+            employee.role != actor.role
+            or not employee.is_active
+            or actor.employee_id != actor_id
+        ):
+            raise PermissionDenied("回复建议权限拒绝")
+        detail = await self.conversations.get_inbox_detail(
+            tenant, conversation_id, actor=actor, action=InboxAction.NEXT_QUESTIONS
         )
-        require_reply_internal_access(tenant, fact, action="next_questions")
-        detail = await self.conversations.get_inbox_detail(tenant, conversation_id)
+
+        async def finish(value: ReplyNextQuestionsView) -> ReplyNextQuestionsView:
+            reference = await self.conversations.get_message_evidence(
+                tenant, message_id, actor=actor, action=InboxAction.NEXT_QUESTIONS
+            )
+            if (
+                reference.conversation_id != conversation_id
+                or reference.account_id != detail.account_id
+            ):
+                raise PermissionDenied("回复建议权限拒绝")
+            return value
+
         message = next((m for m in detail.messages if m.message_id == message_id), None)
         if message is None or message.direction != "inbound":
             raise ValidationError("回复建议消息关联不存在")
@@ -84,11 +95,15 @@ class ReplySuggestionApplication:
             "suggestions": (),
         }
         if message.outbound_message_id is None or message.original_category is None:
-            return ReplyNextQuestionsView.model_validate(base)
-        actor = Actor(
+            return await finish(ReplyNextQuestionsView.model_validate(base))
+        outreach_actor = Actor(
             str(actor_id),
             OutreachScope(
-                level=ScopeLevel.TENANT,
+                level={
+                    "boss": ScopeLevel.TENANT,
+                    "manager": ScopeLevel.MANAGER,
+                    "sales": ScopeLevel.SELF,
+                }[employee.role],
                 allowed_account_ids=frozenset({detail.account_id}),
             ),
             employee.role,
@@ -98,16 +113,25 @@ class ReplySuggestionApplication:
             DeliveryCorrelationLookup(
                 deterministic_message_id=str(message.outbound_message_id)
             ),
-            actor=actor,
+            actor=outreach_actor,
         )
         if (
             delivery is None
             or delivery.tenant_id != tenant
             or delivery.account_id != detail.account_id
         ):
-            return ReplyNextQuestionsView.model_validate(base)
+            return await finish(ReplyNextQuestionsView.model_validate(base))
+        outreach_actor = Actor(
+            str(actor_id),
+            OutreachScope(
+                level=outreach_actor.scope.level,
+                allowed_account_ids=frozenset({detail.account_id}),
+                allowed_enrollment_ids=frozenset({delivery.enrollment_id}),
+            ),
+            employee.role,
+        )
         enrollment = await self.outreach.get_enrollment(
-            tenant, delivery.enrollment_id, actor=actor
+            tenant, delivery.enrollment_id, actor=outreach_actor
         )
         if (
             enrollment.tenant_id != tenant
@@ -117,33 +141,35 @@ class ReplySuggestionApplication:
         ):
             raise ValidationError("回复建议投递关联无效")
         if enrollment.source_hypothesis_id is None:
-            return ReplyNextQuestionsView.model_validate(base)
+            return await finish(ReplyNextQuestionsView.model_validate(base))
         hypothesis = await self.demand.get_hypothesis(
             tenant, NeedHypothesisId(str(enrollment.source_hypothesis_id))
         )
         if hypothesis.account_id != str(detail.account_id):
             raise ValidationError("回复建议需求关联无效")
         if hypothesis.validated_need_id is None:
-            return ReplyNextQuestionsView.model_validate(base)
+            return await finish(ReplyNextQuestionsView.model_validate(base))
         need = await self.demand.get_need(
             tenant, ValidatedNeedId(hypothesis.validated_need_id)
         )
         if need.account_id != str(detail.account_id):
             raise ValidationError("回复建议需求关联无效")
         if not any(field.source_ref == str(message_id) for field in need.fields):
-            return ReplyNextQuestionsView.model_validate(base)
+            return await finish(ReplyNextQuestionsView.model_validate(base))
         selected = await self.conversations.suggest_next_questions(
             tenant, conversation_id, need.missing_for_sourcing, need.completeness
         )
         from agent_runtime.qualification_agent.questions import render_questions
 
-        return ReplyNextQuestionsView.model_validate(
-            base
-            | {
-                "need_id": need.need_id,
-                "state": "suggested" if selected.topics else "no_missing_fields",
-                "completeness": need.completeness,
-                "topics": tuple(selected.topics),
-                "suggestions": render_questions(tuple(selected.topics)),
-            }
+        return await finish(
+            ReplyNextQuestionsView.model_validate(
+                base
+                | {
+                    "need_id": need.need_id,
+                    "state": "suggested" if selected.topics else "no_missing_fields",
+                    "completeness": need.completeness,
+                    "topics": tuple(selected.topics),
+                    "suggestions": render_questions(tuple(selected.topics)),
+                }
+            )
         )

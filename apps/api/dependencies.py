@@ -85,6 +85,7 @@ from tool_gateway.handlers.email_send import (
     DeliveryMaterialProvider,
     UnsubscribeLinkProvider,
 )
+from tool_gateway.handlers.inbox_evidence import ToolGatewayInboxEvidenceReader
 from tool_gateway.pipeline import ToolCallContext, ToolCallResult
 from tool_gateway.provider_readiness import (
     ProviderReadinessActor,
@@ -286,6 +287,7 @@ class ConfiguredApiDependencies:
     approvals: ApprovalService | None = None
     organization: OrganizationService | None = None
     compliance: ComplianceService | None = None
+    inbox_evidence: ToolGatewayInboxEvidenceReader | None = None
     conversations: ConversationService | None = None
     reply_suggestions: ReplySuggestionApplication | None = None
     commitments: CommitmentService | None = None

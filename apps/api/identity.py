@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, Request
 
+from domains.conversations.service import InboxActor, InboxScope
 from domains.employees.errors import EmployeeNotFoundError
 from domains.employees.permissions import (
     Actor as EmployeeActor,
@@ -43,6 +44,21 @@ class RequestIdentity:
     employee: EmployeeView
     employee_actor: EmployeeActor
     opportunity_actor: OpportunityActor
+
+    @property
+    def conversation_inbox_actor(self) -> InboxActor:
+        """沿同次public员工快照机械映射，执行时由Conversations再次求交。"""
+        return InboxActor(
+            self.tenant_id,
+            self.employee.employee_id,
+            self.employee.role,
+            {
+                "boss": InboxScope.TENANT,
+                "manager": InboxScope.MANAGER,
+                "sales": InboxScope.SELF,
+            }.get(self.employee.role, InboxScope.SELF),
+            self.opportunity_actor.scope.allowed_owners or frozenset(),
+        )
 
 
 def _single_header(request: Request, name: bytes) -> list[str]:

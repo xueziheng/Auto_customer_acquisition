@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol, Self, runtime_checkable
 
+from domains.conversations.inbox_access import InboxAccessFactsReader, InboxActor
 from domains.conversations.models import (
     ClassificationCorrection,
     Conversation,
@@ -53,8 +54,14 @@ class ConversationRepository(Protocol):
         self, tenant_id: TenantId, account_id: ProspectAccountId, channel: str
     ) -> Conversation | None: ...
 
+    async def get_inbox(
+        self, tenant_id: TenantId, conversation_id: ConversationId, *, actor: InboxActor
+    ) -> Conversation | None:
+        """当前员工与归属SQL过滤的Inbox专用读取；内部工作流get不对HTTP暴露。"""
+        ...
+
     async def list_recent(
-        self, tenant_id: TenantId, *, limit: int
+        self, tenant_id: TenantId, *, actor: InboxActor, limit: int
     ) -> list[Conversation]:
         """按最近活动倒序列出本租户会话。"""
         ...
@@ -120,6 +127,7 @@ class ConversationsUnitOfWork(Protocol):
     服务层只依赖本 Protocol——仓储、消息锁与事件总线都在事务内串行化。
     """
 
+    inbox_facts: InboxAccessFactsReader
     classifications: ClassificationRepository
     conversations: ConversationRepository
     messages: MessageRepository

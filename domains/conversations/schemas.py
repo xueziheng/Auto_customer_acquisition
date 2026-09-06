@@ -179,3 +179,14 @@ class ReplyNextQuestionsView(BaseModel):
     completeness: int | None = Field(ge=0, le=5)
     topics: tuple[str, ...] = Field(max_length=2)
     suggestions: tuple[str, ...] = Field(max_length=2)
+
+
+class InboxEvidenceRef(BaseModel):
+    """仅服务端Message授权后使用的不可变原件关联。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    tenant_id: str
+    message_id: str
+    conversation_id: str
+    account_id: str
+    artifact_id: str

@@ -195,3 +195,5 @@ Gateway内Raw.put后bounded实际读回验证，完整候选guard后隔离；led
 Task5b增加email.inbound.raw.read具名LOW/FREE/NONE工具，当前active boss经Conversations公开权限端口授权。
 按精确review读取真实同tenant EMAIL_RAW，最大4MiB有界完整性验证；成功ledger后wrapper再次核当前权限和原件引用，
 一次性task-owned handle才可释放下载字节。禁止任意artifact覆盖、模型读取或在HTTP执行HTML。
+
+ADR0028新增inbox.message.evidence.read，独立LOW/FREE/NONE插件及task-bound snapshot槽位，Message当前归属前后判权。复用原bounded store，不修改email.inbound.raw.read的technical-review权限，不在参数或账本持久正文/actor范围。

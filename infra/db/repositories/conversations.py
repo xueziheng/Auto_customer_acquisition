@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domains.conversations.inbox_access import InboxActor
 from domains.conversations.models import (
     ClassificationCorrection,
     Conversation,
@@ -30,6 +31,7 @@ from domains.conversations.repository import (
     MessageRepository,
     ReplyWorkRepository,
 )
+from infra.db.inbox_access import inbox_predicate
 from infra.db.tables import (
     ConversationClassificationCorrectionRow,
     ConversationClassificationRow,
@@ -416,8 +418,24 @@ class ConversationRepositoryImpl(_ConversationsRepository, ConversationRepositor
         self._require_tenant(TenantId(row.tenant_id), "conversation.find")
         return _row_to_conversation(row)
 
+    async def get_inbox(
+        self, tenant_id: TenantId, conversation_id: ConversationId, *, actor: InboxActor
+    ) -> Conversation | None:
+        """仓储独立拒绝缺actor，并在单SQL语句限定当前员工与归属。"""
+        self._require_tenant(tenant_id, "conversation.get_inbox")
+        row = (
+            await self._session.execute(
+                select(ConversationRow).where(
+                    ConversationRow.tenant_id == tenant_id,
+                    ConversationRow.conversation_id == conversation_id,
+                    inbox_predicate(tenant_id, actor),
+                )
+            )
+        ).scalar_one_or_none()
+        return _row_to_conversation(row) if row else None
+
     async def list_recent(
-        self, tenant_id: TenantId, *, limit: int
+        self, tenant_id: TenantId, *, actor: InboxActor, limit: int
     ) -> list[Conversation]:
         """tenant-bound 最近活动列表；稳定次序便于分页前的 Phase 1 展示。"""
         self._require_tenant(tenant_id, "conversation.list_recent")
@@ -425,7 +443,10 @@ class ConversationRepositoryImpl(_ConversationsRepository, ConversationRepositor
             (
                 await self._session.execute(
                     select(ConversationRow)
-                    .where(ConversationRow.tenant_id == str(tenant_id))
+                    .where(
+                        ConversationRow.tenant_id == str(tenant_id),
+                        inbox_predicate(tenant_id, actor),
+                    )
                     .order_by(
                         func.greatest(
                             ConversationRow.last_inbound_at,

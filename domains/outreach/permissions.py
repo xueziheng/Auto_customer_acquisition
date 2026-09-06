@@ -151,7 +151,9 @@ class OutreachScope:
         ):
             raise ValidationError("MANAGER 作用域必须收窄 campaign 或 account")
         if self.level is ScopeLevel.SELF and (
-            self.allowed_campaign_ids is None and self.allowed_enrollment_ids is None
+            self.allowed_campaign_ids is None
+            and self.allowed_enrollment_ids is None
+            and self.allowed_account_ids is None
         ):
             raise ValidationError("SELF 作用域必须携带 ownership")
         if self.level is ScopeLevel.SYSTEM:
@@ -291,6 +293,7 @@ _BOSS_ACTIONS = frozenset(
 )
 _MANAGER_ACTIONS = frozenset(
     {
+        OutreachAction.REPLY_SOURCE_READ,
         OutreachAction.CAMPAIGN_SUBMIT,
         OutreachAction.CAMPAIGN_REVISE,
         OutreachAction.CAMPAIGN_PAUSE,
@@ -322,6 +325,7 @@ _SYSTEM_ACTIONS = frozenset(
 )
 _SALES_ACTIONS = frozenset(
     {
+        OutreachAction.REPLY_SOURCE_READ,
         OutreachAction.CAMPAIGN_READ,
         OutreachAction.CAMPAIGN_LIST,
         OutreachAction.ENROLLMENT_READ,
@@ -378,6 +382,23 @@ class Phase1OutreachAuthorizer:
             or level is None
             or action not in matrix.get((actor.role, level), frozenset())
             or any(value == frozenset() for value in configured_sets)
+        ):
+            raise PermissionDenied("Phase 1 触达授权拒绝")
+        if (
+            level in {ScopeLevel.SELF, ScopeLevel.MANAGER}
+            and action is OutreachAction.REPLY_SOURCE_READ
+            and (
+                scope.allowed_account_ids is None or len(scope.allowed_account_ids) != 1
+            )
+        ):
+            raise PermissionDenied("Phase 1 触达授权拒绝")
+        if (
+            level is ScopeLevel.SELF
+            and action is not OutreachAction.REPLY_SOURCE_READ
+            and (
+                scope.allowed_campaign_ids is None
+                and scope.allowed_enrollment_ids is None
+            )
         ):
             raise PermissionDenied("Phase 1 触达授权拒绝")
         if level is ScopeLevel.SYSTEM:

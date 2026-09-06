@@ -1,0 +1,13 @@
+# ADR0028：收件箱同事务权限元数据与当前归属
+
+状态：实施；关联Task7子规格。九条全局硬边界不变。
+
+采用Conversations公开typed事实port，由infra/db以当前UoW session实现Employee/OwnershipLock最小metadata投影。它是基础设施对公共读取契约的实现，不是会话域跨域SQL或域间直接import的例外，也不得扩张为任意跨域业务查询框架。现有员工域公共读受system/boss授权且另开session，不能用假boss或独立session冒称事务原子性。
+
+请求snapshot是上界。业务授权矩阵归Conversations；SQL adapter只翻译域scope并落实当前active/role/直属条件，权限过滤先于LIMIT。当前角色与snapshot不同即拒绝，避免请求进行中升权。未知owner仅boss可核对。
+
+写入锁顺序固定：精确当前OwnershipLock FOR SHARE，然后actor与owner Employee按ID升序FOR SHARE；同事务重验后追加纠正。现有transfer只UPDATE归属，员工停用/直属变更只UPDATE员工，均被对应锁串行化，不新增跨域写协议。多连接测试验证两种提交顺序。不存在的ownership不加虚拟锁：仅boss可访问，此时并发分配不改变其tenant权限。
+
+原件新message-scoped工具是独立插件manifest/handler，复用原bounded store与Gateway，不放宽technical-review/system/quotation工具。对象IO期间不持业务锁，返回前重新判权，合法发出后的内容无法撤回，不承诺任意时刻零竞态。附件与长时公链不提供。
+
+实施补充：READ COMMITTED下分次读principal与owner可能组合出任一真实时刻都不存在的权限。列表每个返回项、详情与Message证据最终均用既有get_inbox单SQL predicate重核当前主体/owner/直属及snapshot上界，且比对真实account。此检查定义资源读取的最后授权点；纠正仍保留同事务FOR SHARE锁，不能用单SQL替代写锁。
