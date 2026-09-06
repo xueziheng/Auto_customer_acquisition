@@ -441,6 +441,7 @@ async def test_original_launcher_browser_research_and_independent_reply_chain(
                 "research_external_calls": research_calls.list_calls(),
                 "send_calls": 1,
                 "contact_calls": list(contact_provider.list_calls()),
+                "campaign_approval": runtime["campaign_approval_proof"],
                 "contact_run_id": str(runtime["contact_run_id"]),
                 "contact_point_id": str(runtime["contact_point_id"]),
                 "verification_provider": runtime["verification_provider"],

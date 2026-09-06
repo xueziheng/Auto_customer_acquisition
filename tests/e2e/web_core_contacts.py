@@ -119,21 +119,65 @@ async def prepare_verified_send(runtime, client, eventually):
         ),
         actor=boss,
     )
-    await deps.outreach.submit_campaign(tenant, campaign.campaign_id, actor=boss)
+    submitted = await deps.outreach.submit_campaign(tenant, campaign.campaign_id, actor=boss)
+    assert submitted.created_by == boss_identity.employee_id
+    assert submitted.version == campaign.version
+    change_set_ref = f"campaign:{campaign.campaign_id}:v{submitted.version}"
     approval = await deps.approvals.submit(
         tenant,
         ApprovalType.CAMPAIGN_BOUNDARY_CHANGE,
         "受控独立触达范围",
-        {"version": 1},
+        {"version": submitted.version},
         "核对范围",
         BlastRadius(["Campaign"], "启用", "停止", True),
-        proposed_by_employee=EmployeeId(config.identities[2].employee_id),
-        change_set_ref=f"campaign:{campaign.campaign_id}:v1",
+        proposed_by_employee=EmployeeId(boss_identity.employee_id),
+        change_set_ref=change_set_ref,
     )
-    await deps.approvals.decide(
-        tenant, approval, True, EmployeeId(boss_identity.employee_id)
+    self_decision = await client.post(
+        f"/approvals/{approval}/decide", json={"decision": "approve"},
     )
-    await deps.outreach.activate_campaign(tenant, campaign.campaign_id, actor=boss)
+    assert self_decision.status_code == 400, ("campaign_self_decision", self_decision.status_code)
+    assert self_decision.json()["code"] == "request_rejected"
+    pending_response = await client.get(f"/approvals/{approval}")
+    assert pending_response.status_code == 200
+    pending = pending_response.json()
+    assert pending["state"] == "pending"
+    assert pending["proposed_by"] == submitted.created_by
+    assert pending["decided_by_employee"] is None
+    assert pending["can_current_user_decide"] is False
+    decider = config.identities[1]
+    assert decider.employee_id != submitted.created_by
+    approved_response = await client.post(
+        f"/approvals/{approval}/decide",
+        json={"decision": "approve"},
+        headers={"X-Employee-Id": decider.employee_id},
+    )
+    assert approved_response.status_code == 200
+    approved = approved_response.json()
+    assert approved["approval_id"] == approval
+    assert approved["state"] == "approved"
+    assert approved["proposed_by"] == submitted.created_by
+    assert approved["decided_by_employee"] == decider.employee_id
+    assert approved["change_set_ref"] == change_set_ref
+    activated = await deps.outreach.activate_campaign(tenant, campaign.campaign_id, actor=boss)
+    assert activated.version == submitted.version
+    assert activated.approval_id == approval
+    assert activated.approved_by == decider.employee_id
+    runtime["campaign_approval_proof"] = {
+        "campaign_id": str(activated.campaign_id),
+        "campaign_version": activated.version,
+        "campaign_created_by": str(activated.created_by),
+        "submitter_id": boss.actor_id,
+        "approval_id": approved["approval_id"],
+        "change_set_ref": approved["change_set_ref"],
+        "proposed_by": approved["proposed_by"],
+        "decided_by": approved["decided_by_employee"],
+        "self_decision_status": self_decision.status_code,
+        "self_decision_code": self_decision.json()["code"],
+        "state_after_self_denial": pending["state"],
+        "approval_state": approved["state"],
+        "campaign_approved_by": str(activated.approved_by),
+    }
     assert (
         await deps.prospecting.get_contact_point(tenant, unverified)
     ).verification is VerificationStatus.UNVERIFIED
