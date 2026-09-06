@@ -119,3 +119,33 @@ Owner `4867dcc1d5ab4866bea2285bf1ff5f7e`，Web `http://127.0.0.1:61329`、API613
 5. 报价的indicative/quoted、数量/单位、来源、冻结、审批及PDF授权仍用原组件/服务。聚焦原用例与完整业务链通过，不宣称本批已重新运行全仓所有安全/业务矩阵。
 
 报告提交前后均只对本文执行显式敏感扫描，exit0；17个源码路径与冻结HEAD的diff exit0，报告diff-check exit0。controller自有4个计划文件修改与未跟踪测试产物未纳入提交。
+
+## Fix round 1/5：I1 精确成本入口与当前选择冲突
+
+- FIX_BASE：`023db808303ba24f7ef6649ae076fc97fb2e96d9`。
+- 本轮中间源码提交：`2e8c31c5c1922f8ea90ed440c0411153cf05ff4f`；最终冻结源码：`54a01265029015e51771af05bf2b5d26492102bb`。本节单独报告提交，保留中间历史，不amend源码。
+- 仅修改 `apps/web/src/views/costing-quotes/CostingQuotes.vue` 和 `apps/web/tests/quotation-flow.test.ts`。未改其他页、后端、fixture、CSS、API或schema；未派子代理、未自行review。
+
+I1确由完整Vue组件复现：A深链进入后，真实组件通过受控fetch发送POST并收201创建B，但首次重读把详情切回A。明确选B再重读也复现相同错误。本轮测试的“真实组件POST”指挂载原App/Vue/Router并走原client请求；响应仍是单元测试桩，不冒充真实API/浏览器/PG验收。
+
+最终语义：同scope重读先核对当前已创建/明确选择的目标ID；没有当前选择时才消费route中的精确ID。route/机会/身份真实变化仍走原scope重置。当前目标B不在已授权列表时清空成本数据、coverage/scope/calculation确认并明确报缺失，**仅保留B的目标意图**，后续重读仍核B，不静默退原URL的A。B以相同hash重新出现后不会复用旧确认。原同ID内容hash变化、授权拒绝与迟到结果门保留。URL保留进入目标A，本工作台内显式选择B不改URL；完整页面重新进入/刷新仍以精确URL目标重新授权读取。
+
+新增三个行为测试：A（已锁定）深链→POST201新建B→对B POST204保存7.25 USD及来源→自动/手动重读仍B；明确选B→同对象重读→route改missing不退首项；已选择的B有可用scope确认→B消失→再次重读仍missing→B以相同hash回来仍须重新确认。
+
+所有命令cwd同本报告工作目录；版本仍Node24.15.0、Python3.12.14、Vitest4.1.10、Vite8.2.1。
+
+| 命令与阶段 | 准确输出 / exit |
+| --- | --- |
+| `npm --prefix apps/web test -- tests/quotation-flow.test.ts -t 'Task10 I1'`，生产修复前两项 | 2 failed /62 skipped（64），exit1；收到创建成功提示但item-panel仍A；明确选B重读仍A |
+| 同命令，补B消失确认测试，生产未改 | 3 failed /62 skipped（65），exit1；第三项未报B缺失而退A |
+| 同命令，中间实现 | 3 passed /62 skipped（65），exit0 |
+| `npm --prefix apps/web test -- tests/quotation-flow.test.ts tests/costing-quotes.test.ts`，中间实现 | 2文件66 passed，1.92s，exit0 |
+| `npm --prefix apps/web test -- tests/quotation-flow.test.ts -t 'Task10 I1 已选B消失'`，追加连续刷新反例 | 1 failed /64 skipped（65），exit1；第一次B缺失已清确认，下一次刷新却重新显示A，保留该明确失败，不把前述66项当最终证明 |
+| `npm --prefix apps/web test -- tests/quotation-flow.test.ts tests/costing-quotes.test.ts`，最终实现 | **2文件66 passed，1.85s，exit0**；包含三个新增完整Vue测试及原授权/hash/请求scope/金额确认相关用例 |
+| `npm --prefix apps/web run build`，最终实现 | exit0，vue-tsc --noEmit + Vite157 modules，built461ms（中间480ms亦通过，后续因新增缺失意图修复才重跑） |
+| `./node_modules/.bin/eslint src/views/costing-quotes/CostingQuotes.vue tests/quotation-flow.test.ts`，cwd apps/web | 最终exit0，无输出 |
+| `env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python scripts/check_boundaries.py` | 最终exit0，七组结构自检通过 |
+| `.venv/bin/python scripts/scan_sensitive.py apps/web/src/views/costing-quotes/CostingQuotes.vue apps/web/tests/quotation-flow.test.ts` | 最终exit0；仅两个显式源路径 |
+| `git diff --check -- apps/web/src/views/costing-quotes/CostingQuotes.vue apps/web/tests/quotation-flow.test.ts` | 最终exit0 |
+
+按controller指定范围，本轮不重启stack、不重跑Linux、不新增浏览器截图；原Linux62.99s、Mac截图、Python80项等均是先前源码8cc0419的证据，不宣称已在54a0126重跑。当前修复版本新增证据严格限上表66项及静态/build验证。Mac报价配置/平台限制、混合时钟和原早轮未知根因仍保留，状态仍DONE_WITH_CONCERNS；same reviewer只复审FIX_BASE到本轮最终源码的fixdiff。没有新资源创建或清理操作。
