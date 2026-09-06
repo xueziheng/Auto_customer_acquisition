@@ -268,6 +268,10 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 ### Task 9：错误、暂停与恢复体验
 
+已完成并通过独立复审。初始源码 `ebb8da6`，修复源码 `1810acd`，报告 HEAD `27098ce`。Run/Campaign/Settings/Sourcing 与入站状态区分失败、待核对和既有合法恢复；原 canonical 命令保持不可变。寻源新增有界安全恢复投影（ADR0064），历史随机 HTTP header 不作为耐久权威；仅首次明确请求校验 422 可改输入，业务 400 或已有未知结果仍冻结。入站绑定、读取和 retry 共用请求 generation，旧响应不能覆盖新绑定或版本。
+
+原后端232项、入站4项、Web九文件150项及最后纯类型后64项均分轮记录；Fix1最终六文件88项和真实ASGI有限10项通过，独立复审两项Important均ADDRESSED。真实浏览器与受控响应截图明确分栏，owned资源已清零；未冒称全仓或真实Provider验证。Settings服务内部保存后启动失败留Task12实际故障验证；测试标题Minor M1也在Task12收口。
+
 **Files:**
 - 更新：`apps/web/src/views/runs/RunCenter.vue`、`campaigns/CampaignCenter.vue`、`settings/SettingsCenter.vue`、`sourcing/SourcingRecoveryForm.vue` 中各自的请求状态与恢复操作。
 - 更新对应 API 安全状态投影；没有后端恢复命令时不新增虚假的重试按钮。
@@ -275,10 +279,10 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 **Interfaces:** 保留原始 Idempotency-Key 的重试语义；401/403/404/409/503、不可恢复与待核对状态区分显示，不能把错误投影为空列表。
 
-- [ ] 写状态测试覆盖加载、空数据、权限不足、配置缺失、预算不足、pending、paused、stale、queued、reconciliation_required。
-- [ ] 对确定失败、可重试失败、执行结果未知分别显示已有合法操作；未知发送结果不提供直接再发。
-- [ ] 页面刷新重读 canonical 状态，暂停不抹掉在途事实，历史深链不存在不跳到另一业务对象。
-- [ ] 完成组件与相关 API 回归，提交。
+- [x] 写状态测试覆盖加载、空数据、权限不足、配置缺失、预算不足、pending、paused、stale、queued、reconciliation_required。
+- [x] 对确定失败、可重试失败、执行结果未知分别显示已有合法操作；未知发送结果不提供直接再发。
+- [x] 页面刷新重读 canonical 状态，暂停不抹掉在途事实，历史深链不存在不跳到另一业务对象。
+- [x] 完成组件与相关 API 回归，提交。
 
 **Exit gate:** 合法员工可以独立完成职责内操作；错误、等待和恢复状态可理解且与后端一致。本机角色演练不宣称已有多人登录能力。
 
