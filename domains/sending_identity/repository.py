@@ -178,6 +178,12 @@ class SendingIdentityRepository(Protocol):
 
     async def find_domain_role(self, tenant_id: TenantId, domain: str) -> DomainRole | None: ...
 
+    async def list_for_management(
+        self, tenant_id: TenantId, limit: int
+    ) -> list[SendingIdentity]:
+        """按身份 ID 稳定顺序读取有界管理行，SQL 强制租户过滤。"""
+        ...
+
     async def list_available_for_campaign(
         self, tenant_id: TenantId, scope: SendingIdentityScope, limit: int
     ) -> list[SendingIdentity]: ...

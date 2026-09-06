@@ -117,7 +117,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocumentPointe
         >
           字段来源
         </h2>
-        <p>{{ fieldLabel }} · 已验证事实</p>
+        <p>{{ fieldLabel }} · 来源记录</p>
       </div>
       <button
         ref="closeButton"

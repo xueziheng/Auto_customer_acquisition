@@ -303,9 +303,9 @@ class ControlledDnsResolver:
 
     async def resolve(self, name: str, rdtype: str) -> tuple[ControlledTxt, ...]:
         records = {
-            "tradeos-controlled.test": b"v=spf1 -all",
-            "_dmarc.tradeos-controlled.test": b"v=DMARC1; p=reject",
-            "controlled._domainkey.tradeos-controlled.test": b"v=DKIM1; k=rsa; p="
+            "tradeos-controlled.example.com": b"v=spf1 -all",
+            "_dmarc.tradeos-controlled.example.com": b"v=DMARC1; p=reject",
+            "controlled._domainkey.tradeos-controlled.example.com": b"v=DKIM1; k=rsa; p="
             + b"QUFB" * 100,
         }
         if rdtype != "TXT" or name not in records:

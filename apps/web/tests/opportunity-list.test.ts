@@ -407,7 +407,7 @@ describe("opportunity board", () => {
       expect(document.activeElement?.getAttribute("aria-label")).toBe("关闭来源");
     });
     for (const visibleText of [
-      "客户名称 · 已验证事实",
+      "客户名称 · 来源记录",
       "来源类型",
       "conversation",
       "来源标识",
@@ -432,7 +432,7 @@ describe("opportunity board", () => {
     const dialogs = article.querySelectorAll<HTMLElement>('[role="dialog"]');
     await eventually(() => {
       expect(dialogs[1]?.hidden).toBe(false);
-      expect(dialogs[1]?.textContent).toContain("国家 / 地区 · 已验证事实");
+      expect(dialogs[1]?.textContent).toContain("国家 / 地区 · 来源记录");
       expect(dialogs[1]?.textContent).toContain("e2e-message-country");
     });
     app.unmount();
@@ -1043,7 +1043,7 @@ describe("opportunity board", () => {
     const dialog = amountSection.querySelector('[role="dialog"]') as HTMLElement;
     await eventually(() => {
       expect(dialog.hidden).toBe(false);
-      expect(dialog.textContent).toContain("目标价格 · 已验证事实");
+      expect(dialog.textContent).toContain("目标价格 · 来源记录");
       expect(dialog.textContent).toContain("quote-demo-price");
       expect(dialog.textContent).toContain("employee-demo-one");
     });

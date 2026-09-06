@@ -1122,6 +1122,30 @@ export interface paths {
          */
         get: operations["list_sending_identities_crm_sending_identities_get"];
         put?: never;
+        /**
+         * Register Identity
+         * @description 人工确认登记并读取原域返回的精确 winner，不查询列表猜身份。
+         */
+        post: operations["register_identity_crm_sending_identities_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/crm/sending-identities/management": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Managed Identities
+         * @description 读取全部状态的有界管理列表，保持 Campaign 原列表语义。
+         */
+        get: operations["list_managed_identities_crm_sending_identities_management_get"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -1157,6 +1181,26 @@ export interface paths {
         put?: never;
         /** Request Authentication Check */
         post: operations["request_authentication_check_crm_sending_identities__identity_id__authentication_checks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/crm/sending-identities/{identity_id}/warmup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Identity Warmup
+         * @description 启动固定真实日期曲线；读取失败不撤销服务端已经提交的动作。
+         */
+        post: operations["start_identity_warmup_crm_sending_identities__identity_id__warmup_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4363,6 +4407,26 @@ export interface components {
             validated_need_id?: string | null;
         };
         /**
+         * IdentityRegistrationBody
+         * @description 只接受安全登记字段和本次人工确认；不接受授权断言或认证结果。
+         */
+        IdentityRegistrationBody: {
+            /** Address */
+            address: string;
+            /**
+             * Confirmed
+             * @constant
+             */
+            confirmed: true;
+            /** Connector Ref */
+            connector_ref?: string | null;
+            /** Display Name */
+            display_name?: string | null;
+            /** Domain */
+            domain: string;
+            role: components["schemas"]["DomainRole"];
+        };
+        /**
          * IdentityState
          * @description 发件身份显式状态机。``RETIRED`` 没有后继。
          * @enum {string}
@@ -4414,6 +4478,19 @@ export interface components {
             warmup_complete: boolean;
             /** Warmup Day */
             warmup_day?: number | null;
+        };
+        /**
+         * IdentityWarmupBody
+         * @description 预热目标由原域验证；不开放曲线或日期。
+         */
+        IdentityWarmupBody: {
+            /**
+             * Confirmed
+             * @constant
+             */
+            confirmed: true;
+            /** Target Daily Volume */
+            target_daily_volume: number;
         };
         /** InAppNotificationView */
         InAppNotificationView: {
@@ -11949,6 +12026,70 @@ export interface operations {
             };
         };
     };
+    register_identity_crm_sending_identities_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityRegistrationBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_managed_identities_crm_sending_identities_management_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
     get_sending_identity_crm_sending_identities__identity_id__get: {
         parameters: {
             query?: never;
@@ -12024,6 +12165,41 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    start_identity_warmup_crm_sending_identities__identity_id__warmup_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                identity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityWarmupBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12368,10 +12544,48 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/octet-stream": string;
+                };
             };
             /** @description 请求参数无效 */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description 固定入站错误 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description 固定入站错误 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description 固定入站错误 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description 固定入站错误 */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

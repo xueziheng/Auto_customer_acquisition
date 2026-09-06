@@ -35,6 +35,7 @@ from domains.sending_identity.models import (
 from domains.sending_identity.permissions import (
     Actor,
     AuditLogger,
+    ScopeLevel,
     SendingIdentityAction,
     SendingIdentityAuthorizer,
 )
@@ -1693,6 +1694,28 @@ class SendingIdentityServiceImpl:
             view = await self._build_identity_view(uow, identity, now)
         self._audit_allow(actor, action, tenant_id, rule)
         return view
+
+    async def list_for_management(
+        self, tenant_id: TenantId, *, limit: int, actor: Actor
+    ) -> list[IdentityView]:
+        """冷启动管理包括不可发送身份，仍逐行授权并仅返回安全投影。"""
+        action = SendingIdentityAction.IDENTITY_LIST
+        self._preauthorize(actor, action, tenant_id)
+        if actor.role != "boss" or actor.scope.level is not ScopeLevel.TENANT:
+            self._audit_authorization_deny(actor, action, tenant_id)
+            raise PermissionDenied("仅老板可管理发件身份")
+        if not _is_real_int(limit) or not 1 <= limit <= 200:
+            raise ValidationError("limit 必须为 1 到 200 的整数")
+        now = self._now()
+        async with self._uow_factory(tenant_id) as uow:
+            rule = self._authorize_resource(actor, action, tenant_id)
+            identities = await uow.identities.list_for_management(tenant_id, limit)
+            views = []
+            for identity in identities:
+                self._authorize_identity_row(identity, actor, action, tenant_id)
+                views.append(await self._build_identity_view(uow, identity, now))
+        self._audit_allow(actor, action, tenant_id, rule)
+        return views
 
     async def list_available_for_campaign(
         self,

@@ -2,6 +2,7 @@
 import { computed } from "vue";
 
 import type { components } from "../../api/api";
+import MessageEvidenceDownload from "../../components/MessageEvidenceDownload.vue";
 import ProvenancePopover from "../../components/ProvenancePopover.vue";
 
 type HandoffPacketView = components["schemas"]["HandoffPacketView"];
@@ -12,6 +13,8 @@ const props = defineProps<{
   opportunity: OpportunityView;
   packet: HandoffPacketView;
 }>();
+
+const emit = defineEmits<{ denied: [status: number] }>();
 
 function provenanceFor(fieldName: string): ProvenanceSummary | undefined {
   return props.opportunity.provenance?.find((item) => item.field_name === fieldName);
@@ -35,6 +38,16 @@ const opportunityFacts = computed(() => [
   },
   { fieldName: "can_source", label: "可寻源", value: displayBoolean(props.opportunity.can_source) },
 ]);
+
+function evidenceLabel(provenance: ProvenanceSummary): string {
+  if(provenance.source_type === "agent_inference") return "Agent 推断";
+  if(provenance.confirmed_by) return "人工确认";
+  if(provenance.source_type === "conversation") return "客户会话来源（字段确认见来源）";
+  return "来源记录（尚未人工确认）";
+}
+const messages = computed(() => [...new Set([
+  ...(props.packet.evidence_links ?? []), ...(props.opportunity.provenance ?? []).map(item => item.source_id),
+].filter(value => /^msg_[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value)))]);
 
 const missingInformation = computed(() => props.packet.missing_information ?? []);
 const alreadySent = computed(() => props.packet.already_sent ?? []);
@@ -60,15 +73,15 @@ const evidenceCount = computed(() => props.packet.evidence_links?.length ?? 0);
         <div><dt>请求时间</dt><dd>{{ packet.requested_at }}</dd></div>
         <div><dt>已等待（秒）</dt><dd>{{ packet.wait_seconds ?? "暂不可用" }}</dd></div>
         <div><dt>国家 / 地区</dt><dd>{{ packet.country }}</dd></div>
-        <div><dt>负责人</dt><dd>{{ packet.assigned_to_name ?? "未分配" }}</dd></div>
+        <div><dt>负责人</dt><dd>{{ packet.assigned_to_name ?? "负责人姓名暂不可用" }}</dd></div>
       </dl>
     </header>
 
     <section class="packet-section">
       <p class="section-kicker">
-        VERIFIED RECORD
+        SOURCE RECORD
       </p>
-      <h2>关键事实</h2>
+      <h2>关键字段</h2>
       <dl class="fact-grid">
         <div
           v-for="field in opportunityFacts.filter((item) => item.value !== null)"
@@ -82,7 +95,7 @@ const evidenceCount = computed(() => props.packet.evidence_links?.length ?? 0);
             <span
               v-if="provenanceFor(field.fieldName)"
               class="fact-label"
-            ><span aria-hidden="true">✓</span> 已验证事实</span>
+            ><span aria-hidden="true">✓</span> {{ evidenceLabel(provenanceFor(field.fieldName)!) }}</span>
             <span
               v-else
               class="source-missing"
@@ -128,7 +141,7 @@ const evidenceCount = computed(() => props.packet.evidence_links?.length ?? 0);
       <div>
         <h2>缺失信息</h2>
         <p v-if="missingInformation.length === 0">
-          暂无缺失信息。
+          当前响应未列出缺失信息。
         </p>
         <ul v-else>
           <li
@@ -142,7 +155,7 @@ const evidenceCount = computed(() => props.packet.evidence_links?.length ?? 0);
       <div>
         <h2>已发送内容</h2>
         <p v-if="alreadySent.length === 0">
-          暂无已发送内容。
+          当前响应未列出已发送内容。
         </p>
         <ul v-else>
           <li
@@ -156,7 +169,7 @@ const evidenceCount = computed(() => props.packet.evidence_links?.length ?? 0);
       <div>
         <h2>已作承诺</h2>
         <p v-if="commitmentsMade.length === 0">
-          暂无已作承诺。
+          当前响应未列出承诺。
         </p>
         <ul v-else>
           <li
@@ -170,12 +183,28 @@ const evidenceCount = computed(() => props.packet.evidence_links?.length ?? 0);
       <div class="evidence-entry">
         <h2>证据入口</h2>
         <p>证据入口 {{ evidenceCount }} 项（受权限保护）</p>
+        <RouterLink :to="`/demand/needs/${opportunity.need_id}`">
+          查看精确需求证据链
+        </RouterLink>
+        <RouterLink :to="{path:'/inbox',query:{account_id:opportunity.account_id}}">
+          查看该企业最近已授权会话与邮件原件
+        </RouterLink>
+        <MessageEvidenceDownload
+          v-for="messageId in messages"
+          :key="messageId"
+          :message-id="messageId"
+          @denied="emit('denied', $event)"
+        />
+        <p v-if="!messages.length">
+          当前接管包未提供可直接下载的消息 ID，请进入会话核对。原始资料定位符不可直接下载。
+        </p>
       </div>
     </section>
   </article>
 </template>
 
 <style scoped>
+.evidence-entry {display:grid;gap:8px;}
 .handoff-packet {
   padding: 18px;
 }

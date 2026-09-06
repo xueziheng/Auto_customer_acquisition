@@ -24,6 +24,7 @@ from ..dependencies import (
     get_request_identity,
 )
 from ..identity import RequestIdentity
+from ..middleware import ApiErrorResponse
 
 router = APIRouter(prefix="/email-inbound")
 Identity = Annotated[RequestIdentity, Depends(get_request_identity)]
@@ -114,7 +115,14 @@ async def reviews(
     )
 
 
-@router.get("/reviews/{review_id}/raw", response_class=Response)
+@router.get(
+    "/reviews/{review_id}/raw",
+    response_class=Response,
+    responses={
+        200: {"content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}}},
+        **{status: {"model": ApiErrorResponse, "description": "固定入站错误"} for status in (400, 403, 404, 409, 503)},
+    },
+)
 async def raw(
     review_id: str, request: Request, identity: Identity, dependencies: Dependencies
 ) -> Response:
@@ -136,6 +144,6 @@ async def raw(
             "Content-Disposition": 'attachment; filename="inbound-review.eml"',
             "X-Content-Type-Options": "nosniff",
             "Content-Security-Policy": "sandbox; default-src 'none'",
-            "Cache-Control": "no-store",
+            "Cache-Control": "private, no-store",
         },
     )

@@ -841,3 +841,69 @@ describe("handoff queue", () => {
     app.unmount();
   });
 });
+
+it("通知精确接管深链选择指定对象，路由到失权历史对象不挑第一项", async () => {
+  const base = readFetch();
+  const fetch = vi.fn<typeof globalThis.fetch>(async input => {
+    if (new URL((input as Request).url).pathname.endsWith("handoff-hidden")) return jsonResponse({},404);
+    return base(input);
+  });
+  const {app,root}=await mountQueue(fetch);
+  await router.replace("/crm/handoffs/handoff-demo-two");
+  await eventually(()=>expect(root.textContent).toContain("PACKET-ONLY-CUSTOMER-TWO"));
+  await router.replace("/crm/handoffs/handoff-hidden");
+  await eventually(()=>expect(root.textContent).toContain("不存在或不可见"));
+  expect(root.textContent).not.toContain("PACKET-ONLY-CUSTOMER-ONE");app.unmount();
+});
+
+it("接管来源有Provenance不自动成为已验证事实，证据保留精确需求入口", async()=>{
+  const {app,root}=await mountQueue(readFetch());
+  await eventually(()=>expect(root.textContent).toContain("PACKET-ONLY-CUSTOMER-ONE"));
+  expect(root.textContent).not.toContain("已验证事实");
+  expect(root.querySelector('a[href="/demand/needs/need-demo-one"]')).not.toBeNull();app.unmount();
+});
+
+it("身份切换后旧accept成功不能删除新队列或宣告成功",async()=>{
+ const {configureAuthenticatedIdentity,clearAuthenticatedIdentity}=await import("../src/api/client");
+ configureAuthenticatedIdentity("tenant","boss-old");
+ const old=deferred<Response>();let changed=false;const base=readFetch();
+ const fetch=vi.fn<typeof globalThis.fetch>(async input=>{
+  if((input as Request).method==="POST")return old.promise;
+  if(changed)return jsonResponse({},403);
+  return base(input);
+ });
+ const {app,root}=await mountQueue(fetch);await eventually(()=>expect(buttonNamed(root,"接受接管").disabled).toBe(false));
+ buttonNamed(root,"接受接管").click();await nextTick();changed=true;configureAuthenticatedIdentity("tenant","sales-new");
+ await eventually(()=>expect(root.textContent).toContain("没有权限"));
+ old.resolve(emptyResponse());await nextTick();await new Promise(r=>setTimeout(r,20));
+ expect(root.textContent).not.toContain("已接受接管");expect(root.textContent).not.toContain("PACKET-ONLY-CUSTOMER-ONE");
+ expect(root.querySelectorAll('ol[aria-label="最久等待接管队列"] > li')).toHaveLength(0);app.unmount();clearAuthenticatedIdentity();
+});
+
+it("接管原件403清除当前受保护包，保留仍授权的队列",async()=>{
+ const mid="msg_01K39P9M5D6K4A91YEQ80EJZ0Y",base=readFetch();
+ const fetch=vi.fn<typeof globalThis.fetch>(async input=>{
+  const path=new URL((input as Request).url).pathname;
+  if(path.endsWith("/evidence"))return jsonResponse({},403);
+  if(path==="/crm/handoffs/handoff-demo-one")return jsonResponse({...firstPacket,evidence_links:[mid]});
+  return base(input);
+ });
+ const {app,root}=await mountQueue(fetch);await eventually(()=>expect(root.textContent).toContain("PACKET-ONLY-CUSTOMER-ONE"));
+ buttonNamed(root,"下载邮件原件").click();await eventually(()=>expect(root.textContent).not.toContain("PACKET-ONLY-CUSTOMER-ONE"));
+ expect(root.querySelectorAll('ol[aria-label="最久等待接管队列"] > li')).toHaveLength(2);expect(buttonNamed(root,"接受接管").disabled).toBe(true);app.unmount();
+});
+
+it("精确接管深链接受后保留成功反馈并读取历史accepted对象",async()=>{
+ let accepted=false;const base=readFetch();
+ const fetch=vi.fn<typeof globalThis.fetch>(async input=>{
+  const request=input as Request,path=new URL(request.url).pathname;
+  if(request.method==="POST"){accepted=true;return emptyResponse();}
+  if(path==="/crm/handoffs"&&accepted)return jsonResponse([secondQueueItem]);
+  if(path==="/crm/handoffs/handoff-demo-one"&&accepted)return jsonResponse({...firstPacket,state:"accepted"});
+  return base(input);
+ });
+ const {app,root}=await mountQueue(fetch);await router.replace('/crm/handoffs/handoff-demo-one');
+ await eventually(()=>expect(buttonNamed(root,'接受接管').disabled).toBe(false));buttonNamed(root,'接受接管').click();
+ await eventually(()=>expect(root.querySelector('.live-region')?.textContent).toContain('已接受接管'));
+ expect(root.querySelector('.state-tag')?.textContent).toContain('accepted');expect(buttonNamed(root,'接受接管').disabled).toBe(true);app.unmount();
+});

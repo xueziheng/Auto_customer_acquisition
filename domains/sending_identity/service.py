@@ -192,6 +192,12 @@ class SendingIdentityService(Protocol):
         self, tenant_id: TenantId, identity_id: SendingIdentityId, *, actor: Actor
     ) -> IdentityView: ...
 
+    async def list_for_management(
+        self, tenant_id: TenantId, *, limit: int, actor: Actor
+    ) -> list[IdentityView]:
+        """仅 boss/TENANT 有界读取全部状态；不改变 Campaign 可用列表。"""
+        ...
+
     async def list_available_for_campaign(
         self, tenant_id: TenantId, *, limit: int, actor: Actor
     ) -> list[IdentityView]: ...

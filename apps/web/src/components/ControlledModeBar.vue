@@ -38,7 +38,7 @@ onUnmounted(() => { active = false; if (timer) clearInterval(timer); });
       :value="identity.employeeId"
     >{{ identity.label }}</option></select></label>
     <span role="status">{{ health }}</span>
-    <details><summary>待配置与能力边界</summary><p>先通过设置提案与独立审批配置业务。发件身份登记和预热入口待完成；自动正文入站、完整回复、通知投递 worker、Agent、Browser 未启用。研究、联系人和寻源外部场景未装配。所有邮件仅进入本次受控邮箱。</p></details>
+    <details><summary>待配置与能力边界</summary><p>先通过设置提案与独立审批配置业务，在发件身份中心人工登记、认证与启动预热。入站绑定不证明正在处理，具体可用能力需核对进程状态；站内通知完成不代表邮件已发送。Agent、Browser、研究、联系人和寻源外部场景未启用。所有邮件仅进入本次受控邮箱。</p></details>
   </section>
 </template>
 <style scoped>

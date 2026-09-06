@@ -430,6 +430,19 @@ class SendingIdentityRepositoryImpl(_SendingRepository):
         ).scalar_one_or_none()
         return DomainRole(role) if role is not None else None
 
+    async def list_for_management(
+        self, tenant_id: TenantId, limit: int
+    ) -> list[SendingIdentity]:
+        """管理读取不筛发送状态；tenant 条件与 LIMIT 均在 SQL 层执行。"""
+        if not self._tenant_matches(tenant_id, "sending_identity_management_tenant"):
+            return []
+        if type(limit) is not int or not 1 <= limit <= 200:
+            return []
+        rows = (await self._session.execute(
+            self._joined().order_by(SendingIdentityRow.identity_id.asc()).limit(limit)
+        )).all()
+        return [_row_to_identity(row, role) for row, role in rows]
+
     async def list_available_for_campaign(
         self,
         tenant_id: TenantId,

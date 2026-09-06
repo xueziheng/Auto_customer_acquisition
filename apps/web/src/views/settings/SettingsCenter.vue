@@ -690,6 +690,9 @@ onMounted(() => void refreshSettings());
         <p class="phase-eyebrow">
           COMPANY PLAYBOOK
         </p>
+        <RouterLink to="/crm/sending-identities">
+          管理发件身份与入站绑定
+        </RouterLink>
         <h1>系统设置</h1>
       </div>
       <div class="head-actions">

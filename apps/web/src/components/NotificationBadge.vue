@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /* global window */
 import { computed, inject, onBeforeUnmount, onMounted, ref } from "vue";
+import { useQuoteRequestScope } from "../views/costing-quotes/quote-request-scope";
 import { RouterLink } from "vue-router";
 
 import { apiClient, createApiClient } from "../api/client";
@@ -12,17 +13,24 @@ const unreadCount = ref<number | null>(null);
 const stale = ref(false);
 let requestVersion = 0;
 
+const gate = useQuoteRequestScope(client, () => [], () => {
+  requestVersion++; unreadCount.value = null; stale.value = false;
+  globalThis.queueMicrotask(() => void refresh());
+});
+
 const NOTIFICATIONS_CHANGED = "tradeos:notifications-changed";
 
 async function refresh(): Promise<void> {
+  const op = gate.begin("count"); if (!op?.valid()) return;
   const version = ++requestVersion;
   const previous = unreadCount.value;
   try {
     const { data, response } = await client.GET("/notifications", {
       params: { query: { limit: 100 } },
     });
-    if (version !== requestVersion) return; // stale response 忽略
+    if (!op.valid() || version !== requestVersion) return; // stale response 忽略
     if (response.status !== 200) {
+      if ([401, 403].includes(response.status)) { unreadCount.value = null; stale.value = true; return; }
       // 失败不清零：保留最近可信计数并标记过期
       if (unreadCount.value === null && previous !== null) unreadCount.value = previous;
       stale.value = true;
@@ -32,7 +40,7 @@ async function refresh(): Promise<void> {
     unreadCount.value = items.filter((item) => item.read_at === null).length;
     stale.value = false;
   } catch {
-    if (version !== requestVersion) return;
+    if (!op.valid() || version !== requestVersion) return;
     if (unreadCount.value === null && previous !== null) unreadCount.value = previous;
     stale.value = true;
   }
@@ -52,7 +60,8 @@ function onNotificationsChanged(): void {
 }
 
 const display = computed(() => {
-  const count = unreadCount.value ?? 0;
+  if (unreadCount.value === null) return "未知";
+  const count = unreadCount.value;
   return count > 99 ? "99+" : String(count);
 });
 </script>
@@ -64,9 +73,16 @@ const display = computed(() => {
     :aria-label="`通知，${display} 条未读`"
   >
     <span>通知</span>
-    <span class="badge-num" aria-hidden="true">{{ display }}</span>
+    <span
+      class="badge-num"
+      aria-hidden="true"
+    >{{ display }}</span>
     <span>未读</span>
-    <span v-if="stale" class="badge-stale" role="status">状态可能已过期</span>
+    <span
+      v-if="stale"
+      class="badge-stale"
+      role="status"
+    >状态可能已过期</span>
   </RouterLink>
 </template>
 

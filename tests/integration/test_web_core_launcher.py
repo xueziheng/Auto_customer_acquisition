@@ -83,7 +83,7 @@ async def test_dns_unknown_name_refused_without_resolver_fallback() -> None:
     resolver = ControlledDnsResolver()
     with pytest.raises(ControlledError, match="external_operation_rejected"):
         await resolver.resolve("gmail.com", "TXT")
-    records = await resolver.resolve("tradeos-controlled.test", "TXT")
+    records = await resolver.resolve("tradeos-controlled.example.com", "TXT")
     assert records[0].strings == (b"v=spf1 -all",)
 
 
@@ -530,9 +530,7 @@ def test_migration_failure_keeps_primary_and_cleans_files_when_docker_close_fail
 ) -> None:
     script = """
 import sys
-from pathlib import Path
-sys.path.insert(0, str(Path('scripts').resolve()))
-from controlled_web_supervisor import Supervisor
+from scripts.controlled_web_supervisor import Supervisor
 from infra.controlled.resources import OwnedContainers
 original_run = Supervisor.run_once
 original_close = OwnedContainers.close
@@ -544,7 +542,7 @@ def close_fails(self):
     raise RuntimeError('private-error-marker-must-not-appear')
 Supervisor.run_once = fail_migration
 OwnedContainers.close = close_fails
-from run_web_core_controlled import main
+from scripts.run_web_core_controlled import main
 sys.argv = ['run', '--directory', DIRECTORY]
 raise SystemExit(main())
 """.replace("DIRECTORY", repr(str(tmp_path)))
@@ -563,6 +561,22 @@ raise SystemExit(main())
     assert final["cleanup_errors"]
     assert "private-error-marker" not in result.stdout + result.stderr
     assert not (Path(final["directory"]) / "config.json").exists()
+    state = json.loads((Path(final["directory"]) / "status.json").read_text())
+    from infra.controlled.resources import OWNER_LABEL, OwnedContainers
+    owned = OwnedContainers(state["owner"])
+    try:
+        assert not owned.client.containers.list(all=True, filters={"label": f"{OWNER_LABEL}={state['owner']}"})
+    finally:
+        owned.client.close()
+    import psutil
+    for row in state["processes"]:
+        assert row["exit"] is not None
+        for recorded in (row, row["anchor"], *row["children"]):
+            try:
+                process = psutil.Process(recorded["pid"])
+                assert process.create_time() != recorded["born"] or process.status() == psutil.STATUS_ZOMBIE
+            except psutil.NoSuchProcess:
+                pass
 
 
 def test_leader_exit_before_first_snapshot_cleans_unrecorded_child(
@@ -1001,3 +1015,16 @@ async def test_provider_calls_are_persistent_and_not_hidden_by_message_dedup(
     assert [call.operation for call in await second.list_calls()] == ["send", "send"]
     other = ControlledGmailTransport(tmp_path / "mail.sqlite", tenant_id="tenant-b")
     assert await other.list_calls() == ()
+
+
+async def test_controlled_dns_passes_real_connector_validation_without_public_dns():
+    from datetime import UTC, datetime
+
+    from connectors.dns_auth.client import DnsAuthenticationConnector
+    from infra.controlled.providers import ControlledDnsResolver
+    from shared.schemas.dns_auth import DnsAuthenticationRequest
+
+    connector = DnsAuthenticationConnector(ControlledDnsResolver(), now=lambda: datetime.now(UTC))
+    facts = await connector.check(DnsAuthenticationRequest("tradeos-controlled.example.com", "controlled"))
+    assert facts.spf_passed and facts.dkim_passed and facts.dmarc_passed
+    assert facts.failures == ()

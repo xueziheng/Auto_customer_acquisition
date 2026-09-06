@@ -58,9 +58,9 @@ SENT、Message、Validated Need 或 Opportunity。评分/SLA配置是本地合�
 拒绝，不能把提案当研究成果。修改一处输入不会隐式扩大已支持场景。
 
 Campaign 的正式路径仍是：先登记发件身份→原 DNS 认证工作流→人工启动预热→提交完整 Campaign
-边界→另一老板独立审批→激活。**当前发件身份 Web 登记/预热入口待 Task8**，冷启动在此等待，
+边界→另一老板独立审批→激活。**发件身份中心提供人工登记/认证/预热入口**，每次修改须明确确认；
 不得通过直插身份/认证或虚构 sender ID 强行完成 Campaign。受控 DNS 域为
-`tradeos-controlled.test`、DKIM selector 为 `controlled`；只在后续入口可用时使用。
+`tradeos-controlled.example.com`、DKIM selector 为 `controlled`；仅原受控 Resolver 响应，不查询公网 DNS。
 
 ## 当前能力与后续消费
 
@@ -72,7 +72,7 @@ Campaign 的正式路径仍是：先登记发件身份→原 DNS 认证工作流
 | Campaign / Gmail transport | 原发送 core 已接；先等待发件身份配置；邮件只进本 owner 受控邮箱 |
 | DNS | 受控 Resolver → 原 Connector/Gateway/认证流程，未知域拒绝 |
 | 入站正文、完整回复 | Task5/6接 typed 端口；可消费当前持久受控邮箱，不等Task12 |
-| 发件身份登记/预热 Web | Task8 |
+| 发件身份登记/预热 Web | `/crm/sending-identities`，人工确认并经原域状态机 |
 | 研究、联系人、寻源、报价外部场景 | 本入口 disabled；Task12按原typed ports补合成场景验收 |
 | 通知投递 worker | 当前未启动；Task6接管场景须增加原worker与受控外部端口 |
 | Agent、Browser worker | disabled |

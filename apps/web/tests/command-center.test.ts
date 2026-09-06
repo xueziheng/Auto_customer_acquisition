@@ -163,3 +163,16 @@ describe("Command Center sourcing admission policy", () => {
     expect(requests.map((request) => new URL(request.url).pathname)).not.toContain("/workflow-runs");
   });
 });
+
+it("身份切换后旧提案成功不得恢复旧身份的确认按钮",async()=>{
+ const {configureAuthenticatedIdentity,clearAuthenticatedIdentity}=await import("../src/api/client");
+ configureAuthenticatedIdentity("tenant", "boss-old");
+ let resolve!:(value:Response)=>void;const pending=new Promise<Response>(r=>{resolve=r;});
+ const base=policyFetch({status:"policy_not_configured"});
+ const root=await mount(async input=>(input as Request).method==="POST"?pending:base.fetch(input));
+ await eventually(()=>expect(root.querySelector('button[data-testid="create-admission-proposal"]')??[...root.querySelectorAll("button")].find(b=>b.textContent?.includes("生成准入提案"))).toBeTruthy());
+ const button=[...root.querySelectorAll("button")].find(b=>b.textContent?.includes("生成准入提案"))!;button.click();await nextTick();
+ configureAuthenticatedIdentity("tenant","boss-new");resolve(jsonResponse(proposalFixture()));
+ for(let i=0;i<15;i++){await nextTick();await new Promise(r=>setTimeout(r,0));}
+ expect(root.querySelector(".admission-proposal")).toBeNull();clearAuthenticatedIdentity();
+});
