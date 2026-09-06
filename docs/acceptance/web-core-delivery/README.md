@@ -5,6 +5,8 @@
 最终全分支审查尚待完成，最终裁定由控制者追加，不从历史进度文字推导通过。
 未推送、合并、部署或真实外发。
 
+2026-09-06 用户关机前主动暂停；已保存[续跑交接与审查断点](pause-handoff.md)，等待用户下次明确继续。
+
 本批实施与局部门禁见[Task13报告](task-13-report.md)及[首次源码提交清单](source-commit.json)、[限定修复源码清单](fix1-source-commit.json)；[Task13独立限定复审](task-13-review.md)已双Approved。
 
 ## 当前可核证据
