@@ -249,7 +249,8 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 **Files:**
 - 更新：`apps/web/src/views/command-center/CommandCenter.vue`、`inbox/SmartInbox.vue`、`demand-radar/ValidatedNeedDetail.vue`、`crm/HandoffQueue.vue`、`crm/HandoffPacketView.vue`、`apps/web/src/router.ts`。
-- 更新：`apps/web/src/api/client.ts`、`apps/web/tests/api-client-identity.test.ts`、`apps/web/tests/smart-inbox.test.ts`。
+- 复用：`apps/web/src/api/client.ts` 的现有身份快照/订阅；原 API client 与 Inbox 测试保留回归，新增身份切换、跨通道撤权、原件和登记测试承接实际行为，不为文件清单机械修改已有接口。
+- 更新：既有 `NotificationCenter.vue`、`NotificationBadge.vue` 的本人通知请求失效与未知计数。
 - 补冷启动配置：`apps/api/routers/sending_identities.py`、已有 `apps/web/src/views/SendingIdentityCenter.vue` 及 Settings 入口与生成类型；必要的发件身份公开管理读取和对应真实数据库回归。
 - 复用：`tests/e2e/test_phase1_browser.py`；新增受控核心场景纳入 Task 12。
 
@@ -257,11 +258,13 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 冷启动预检发现：现有发件身份 API 只有列表、详情和认证检查，可用列表仅包含认证通过的可发送身份。要让干净环境能从 Web 完成配置，本批补老板人工确认的登记、预热入口与受限管理读取；不预插认证或可发送结果、不跳过原预热曲线。Task 4 注入受控 DNS Resolver，认证仍由原 Gateway 和工作流执行。
 
-- [ ] 确认每一项主要按钮具有真实 API 动作、明确成功结果和可访问深链；未实现动作不展示成可用按钮。
-- [ ] 写 deferred 请求测试：身份或路由变化后旧请求不能覆盖新页面；权限撤销即时清理受限内容。
-- [ ] 接通提案确认、会话证据、需求详情和接受接管；角色许可由后端决定。
-- [ ] 从网页登记受控发件身份、发起真实认证工作流并人工启动预热；刷新后可管理尚不可发送的身份，未知结果先核对，保留 Campaign 可用列表的原语义。
-- [ ] 验证桌面与 390px 下的长 ID、证据摘要、主要按钮和确认对话框，运行组件测试后提交。
+- [x] 确认每一项主要按钮具有真实 API 动作、明确成功结果和可访问深链；未实现动作不展示成可用按钮。
+- [x] 写 deferred 请求测试：身份或路由变化后旧请求不能覆盖新页面；权限撤销即时清理受限内容，同身份跨通道旧响应也不能恢复数据。
+- [x] 接通提案确认、会话证据、需求详情和接受接管；角色许可由后端决定。
+- [x] 从网页登记受控发件身份、发起真实认证工作流并人工启动预热；刷新后可管理尚不可发送的身份，未知结果先核对，保留 Campaign 可用列表的原语义。
+- [x] 验证桌面与 390px 下的长 ID、证据摘要、主要按钮和确认对话框，运行组件测试后提交。
+
+验收：初始源码96c0c01，Fix1源码85b3def、报告3ae0f1e；独立复审两项403旧响应回填问题均已解决，Spec与质量Approved。真实网页登记、认证、预热、绑定及原回复流程填充后的通知→接管→Need、邮件原件下载、接受接管204已验；390px长证据遮挡已修并实看截图。原受控.test域不兼容本地PSL，仅受控解析器/示例改为tradeos-controlled.example.com，生产校验不变。后端179项组合与修复项单测、Web358项历史全量与最后增量、Fix1最终28项分别记录版本，不合成未跑的最终全量；Task12仍需统一门禁及120条lint warning归属核查。
 
 ### Task 9：错误、暂停与恢复体验
 
