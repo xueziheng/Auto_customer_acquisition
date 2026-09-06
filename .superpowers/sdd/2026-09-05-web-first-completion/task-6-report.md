@@ -182,3 +182,54 @@ exit0，**23 passed in 19.69s**；包括原迅速取消、真实窗口同端口�
 - 未重复所有旧46组/整仓/全部Web测试。旧独立testcontainers组（包括旧scheduler reply trigger等）未全量迁移运行；本批真实5b入口owned组合已覆盖所列业务因果链，原reader组已迁有界owned fixture。全仓同版本门禁、已知4处旧敏感fixture形态命中和172旧Web lint warnings按控制器归Task12；scanner未降级。
 - fresh声明依赖完整复验沿Task4既有证据、本批沿用批准私有runtime；最终全环境复核归Task12。
 - 未改控制器progress、整体plan checkbox、其它brief；未派子代理或替控制器review。所有提交仅本地，无push/merge/deploy。
+
+
+## Fix1（独立审查I1；2026-09-06）
+
+FIX_BASE：`aab51d0decd568b8755cbb2b6526ba4396a68ca6`。
+Fix1源码/spec提交：`2e0afa43db54b67d90613cf005d9b3822e477b4f`。以下GREEN和最终作用组均对应此完全相同源码；执行后只追加本报告，不再改生产/测试源码。报告文档另作提交，最终HEAD见本轮交付消息。
+
+本轮只修Important I1。已核审查描述为真实事实污染：`divRplyFwdMsg`是历史后缀分隔符，原实现却把它当成可闭合的引用容器。头部关闭后，兄弟旧正文重新进入当前片段；原QualificationAgent明确退订override可在模型返回no_current_need时实际产生抑制。
+
+最小修复：`connectors/gmail/inbound_mime.py`在该精确id开始时结束当前连续片段并将单个HTML parser的history_suffix置True。该状态不随闭合或自闭合头恢复，后续HTML不再进入当前证据或模型投影。原quote_stack继续负责blockquote/gmail_quote等容器；完整body、raw HTML guard_body和Raw保留路径均未改变。未增加通用邮件重写器，未改Agent、模型prompt/词表、action或权限。
+
+正式spec明确了历史后缀语义。测试仅扩原三个文件：纯解析的闭合/自闭合头和后续兄弟节点；生产bounded reader的当前投影/完整原文及历史区secret guard；真实5b入口的旧退订、旧数量与保留当前字段。受控模型仍分别返回no_current_need或原候选，没有令模型主动忽略旧字句；原Agent override、Gateway、PG、Outbox、engine与域服务全部真实。
+
+### RED（FIX_BASE生产代码未改，先新增测试）
+
+```sh
+env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest -q tests/unit/test_reply_current_evidence.py tests/unit/test_reply_content_boundary.py tests/integration/test_reply_completion.py -k 'outlook or unreliable_quotes or ordinary_current or real_need_evidence'
+```
+
+exit **1**，**6 failed, 9 passed, 25 deselected in 20.30s**。
+
+六项均为真实产品RED：闭合/自闭合历史头的两项纯解析多出旧片段；bounded reader模型投影包含历史100 units/退订；合法当前采购案例的模型输入夹带旧数量；旧数量候选实际写入1条分类（应零）；当前普通回复+旧退订实际写入1条outreach_suppressions（应零）。不是缺环境/fixture构造错误，也没有修改业务期望绕过失败。
+
+### 定向GREEN与最终同版本作用组
+
+完成最小parser修改，并加强合法当前回复案例的PG断言（原Need product_category.value为hinges、quantity仍None）后，以上完全相同命令：exit **0**，**15 passed, 25 deselected in 20.14s**。
+
+最终精确作用组：
+
+```sh
+env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest -q tests/unit/test_reply_current_evidence.py tests/unit/test_reply_content_boundary.py tests/unit/test_email_inbound.py tests/unit/test_qualification_agent_boundary.py tests/unit/test_reply_evals_integrity.py tests/evals/test_reply_evals_runner.py tests/integration/test_reply_completion.py tests/integration/test_message_content_reader.py
+```
+
+exit **0**，**193 passed in 38.23s**。无skip。覆盖原5a解析、全部当前证据/guard反例、原Agent明确override与160条原eval smoke、全部本批真实reply_completion、实际有界Raw reader集成。旧退订零误抑制且分类仍no_current_need；旧数量候选在任何分类/Need/Opportunity/Handoff持久写之前拒绝；合法当前类别仍进入原Need并产生真实缺项建议，历史数量未落库。原body保留旧内容且历史区真实credential marker依旧被guard拒绝。未重跑364/119整套，未把15与193或前批计数相加。
+
+### Fix1静态作用集与输出
+
+```sh
+.venv/bin/python -m ruff check connectors/gmail/inbound_mime.py tests/unit/test_reply_current_evidence.py tests/unit/test_reply_content_boundary.py tests/integration/test_reply_completion.py
+.venv/bin/python -m mypy connectors/gmail/inbound_mime.py
+.venv/bin/python scripts/check_boundaries.py
+.venv/bin/python scripts/scan_sensitive.py connectors/gmail/inbound_mime.py tests/unit/test_reply_current_evidence.py tests/unit/test_reply_content_boundary.py tests/integration/test_reply_completion.py docs/superpowers/specs/2026-09-06-reply-completion-6.md
+```
+
+上述命令按列序执行，整体exit0；Ruff输出All checks passed，Mypy输出Success: no issues found in 1 source file，boundaries七项通过，scanner无命中。另`git diff --check`独立exit0、stdout空，stderr安全捕获10行既有AppleDouble噪声。没有API/DTO/prompt变化，未重复OpenAPI exporter/generator或Web typecheck；前批记录保留。
+
+### Fix1清理、未运行项和后续登记
+
+所有exec显式在本工作树；无原目录写入、无子代理。沿用原owned Supervisor PG/MinIO及受控SQLite fixture，finally检查cleanup_errors为空、owned config已删除；没有新增迁移、改shared.git、prune或干预其它owner。源码commit exit0、安全捕获332行Git环境stderr噪声；不称输出全净。无新的测试环境阻断。
+
+M1（HTML void集合不完整导致保守误拒）本轮未修，由控制器后续安排；没有借I1顺手扩大白名单。M2（Git AppleDouble stderr）保持透明记录，归Task12/最终环境判断，不维修共享Git。真实模型、Gmail、事务邮件、多渠道、浏览器原件与后续owner/UI矩阵仍not_run/后续批次，不因Fix1提升既有验收声明。
