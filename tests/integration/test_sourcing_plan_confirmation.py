@@ -489,6 +489,12 @@ async def test_plan_replacement_concurrent_run_and_reconciliation_recover_after_
         provider_usage_artifact_ref=evidence_id,
     )
 
+    initial_views = await application.list_uncertain_execution_read_views(
+        tenant_id, case_id, actor=boss
+    )
+    assert initial_views is not None
+    assert initial_views[0].recovery_action == "record_reconciliation"
+
     crashing = SourcingCaseApplication(
         sourcing=service,
         quota=_FailFirstAcknowledgement(quota),  # type: ignore[arg-type]
@@ -501,6 +507,48 @@ async def test_plan_replacement_concurrent_run_and_reconciliation_recover_after_
     assert "token" not in str(failure.value)
     assert (await quota.get(run_id, request_key)).status == "uncertain"  # type: ignore[union-attr]
 
+    pending_views = await application.list_uncertain_execution_read_views(
+        tenant_id, case_id, actor=boss
+    )
+    assert pending_views is not None
+    assert pending_views[0].recovery_action == "resume_reconciliation"
+    assert pending_views[0].can_current_user_reconcile is False
+    other_boss = SourcingActor("other-boss", tenant_id, SourcingScope.TENANT, "boss")
+    wrong_actor_views = await application.list_uncertain_execution_read_views(
+        tenant_id, case_id, actor=other_boss
+    )
+    assert wrong_actor_views is not None
+    assert wrong_actor_views[0].recovery_action == "unavailable"
+
+    class NoActiveRun:
+        def __getattr__(self, name):
+            return getattr(engine, name)
+
+        async def find_active_run(self, *args, **kwargs):
+            return None
+
+    stale_application = SourcingCaseApplication(
+        sourcing=service, quota=quota, engine=NoActiveRun()
+    )
+    stale_views = await stale_application.list_uncertain_execution_read_views(
+        tenant_id, case_id, actor=boss
+    )
+    assert stale_views is not None
+    assert stale_views[0].recovery_action == "unavailable"
+
+    class UnreadableQuota:
+        async def get(self, *args, **kwargs):
+            raise TransientError("controlled quota unavailable")
+
+    unavailable_application = SourcingCaseApplication(
+        sourcing=service, quota=UnreadableQuota(), engine=engine
+    )
+    unavailable_views = await unavailable_application.list_uncertain_execution_read_views(
+        tenant_id, case_id, actor=boss
+    )
+    assert unavailable_views is not None
+    assert unavailable_views[0].recovery_action == "unavailable"
+
     restarted_engine, _ = await _rebuild_engine(factory, run_id)
     restarted_quota = PostgresSearchQuotaRepository(
         factory, tenant_id, now=lambda: NOW + timedelta(minutes=1)
@@ -508,12 +556,36 @@ async def test_plan_replacement_concurrent_run_and_reconciliation_recover_after_
     restarted = SourcingCaseApplication(
         sourcing=make_service(), quota=restarted_quota, engine=restarted_engine
     )
+    class FailDelivery:
+        def __getattr__(self, name):
+            return getattr(restarted_engine, name)
+
+        async def deliver_event(self, *args, **kwargs):
+            raise TransientError("controlled event delivery failure")
+
+    event_crash = SourcingCaseApplication(
+        sourcing=make_service(), quota=restarted_quota, engine=FailDelivery()
+    )
+    with pytest.raises(SourcingPlanDeliveryError):
+        await event_crash.reconcile_uncertain(tenant_id, case_id, command, actor=boss)
+    assert (await restarted_quota.get(run_id, request_key)).status == "consumed"
+    event_pending = await restarted.list_uncertain_execution_read_views(
+        tenant_id, case_id, actor=boss
+    )
+    assert event_pending is not None
+    assert event_pending[0].recovery_action == "resume_reconciliation"
+
     first_recovery = await restarted.reconcile_uncertain(
         tenant_id, case_id, command, actor=boss
     )
     second_recovery = await restarted.reconcile_uncertain(
         tenant_id, case_id, command, actor=boss
     )
+    delivered_views = await restarted.list_uncertain_execution_read_views(
+        tenant_id, case_id, actor=boss
+    )
+    assert delivered_views is not None
+    assert delivered_views[0].recovery_action == "event_delivered"
     assert first_recovery == second_recovery
     assert (await restarted_quota.get(run_id, request_key)).status == "consumed"  # type: ignore[union-attr]
     snapshot = await restarted_quota.snapshot()

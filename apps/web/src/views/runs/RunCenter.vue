@@ -62,6 +62,7 @@ const statusLabels: Readonly<Record<string, string>> = Object.freeze({
 });
 
 function safeError(status: number): string {
+  if (status === 401) return "登录身份已失效，请重新选择有效身份";
   if (status === 403) return "只有老板可以查看 Run 审计记录";
   if (status === 404) return "该 Run 已不存在或不属于当前租户";
   if (status === 503) return "Run 审计服务暂不可用";
@@ -95,6 +96,7 @@ async function loadDetail(runId: string): Promise<void> {
     if (!op.valid() || requestVersion !== detailRequestVersion) return;
     if (result.response.status !== 200 || !result.data) {
       detail.value = null;
+      if ([401,403].includes(result.response.status)) { identityGate.invalidate(); runs.value = []; listLoading.value = false; detailLoading.value = false; }
       detailError.value = safeError(result.response.status);
       return;
     }
@@ -121,6 +123,7 @@ async function loadRuns(): Promise<void> {
     if (!op.valid() || requestVersion !== listRequestVersion) return;
     if (result.response.status !== 200 || !result.data) {
       runs.value = [];
+      if ([401,403,404].includes(result.response.status)) { identityGate.invalidate(); detailRequestVersion += 1; detail.value = null; selectedRunId.value = null; detailLoading.value = false; listLoading.value = false; }
       listError.value = safeError(result.response.status);
       return;
     }
@@ -196,10 +199,10 @@ onBeforeUnmount(() => {
       class="run-metrics"
       aria-label="Run 审计概览"
     >
-      <article><span>最近记录</span><strong>{{ runs.length }}</strong><p>按创建时间倒序，最多 50 条</p></article>
-      <article><span>进行中 / 等待</span><strong>{{ activeCount }}</strong><p>含等待人工与外部事件</p></article>
-      <article><span>失败 / 超时</span><strong>{{ failedCount }}</strong><p>错误只展示脱敏类别</p></article>
-      <article><span>已完成</span><strong>{{ completedCount }}</strong><p>状态机正常到达终态</p></article>
+      <article><span>最近记录</span><strong>{{ listLoading || listError ? "—" : runs.length }}</strong><p>按创建时间倒序，最多 50 条</p></article>
+      <article><span>进行中 / 等待</span><strong>{{ listLoading || listError ? "—" : activeCount }}</strong><p>含等待人工与外部事件</p></article>
+      <article><span>失败 / 超时</span><strong>{{ listLoading || listError ? "—" : failedCount }}</strong><p>错误只展示脱敏类别</p></article>
+      <article><span>已完成</span><strong>{{ listLoading || listError ? "—" : completedCount }}</strong><p>状态机正常到达终态</p></article>
     </section>
 
     <section class="run-layout">
@@ -241,6 +244,12 @@ onBeforeUnmount(() => {
           class="empty"
         >
           正在读取 Run 记录…
+        </div>
+        <div
+          v-else-if="listError"
+          class="empty"
+        >
+          记录读取失败，请刷新核对
         </div>
         <div
           v-else-if="!filteredRuns.length"
@@ -288,6 +297,12 @@ onBeforeUnmount(() => {
           正在读取证据链…
         </div>
         <div
+          v-else-if="detailError"
+          class="empty"
+        >
+          {{ detailError }}
+        </div>
+        <div
           v-else-if="!detail"
           class="empty"
         >
@@ -320,11 +335,23 @@ onBeforeUnmount(() => {
             <header><h3>寻源运行摘要</h3><span>{{ detail.summary.sourcing.case_id }}</span></header>
             <p>计划：{{ detail.summary.sourcing.plan_status ?? "未确认" }} · 候选 {{ detail.summary.sourcing.candidate_count }} · 搜索尝试 {{ detail.summary.sourcing.search_attempt_count }} · 页面尝试 {{ detail.summary.sourcing.page_attempt_count }}</p>
             <p>免费额度：已预留 {{ detail.summary.sourcing.reserved_credits }} / 已消耗 {{ detail.summary.sourcing.consumed_credits }} / 不确定 {{ detail.summary.sourcing.uncertain_credits }}</p>
-            <p v-if="detail.summary.sourcing.stop_reason">停止：{{ detail.summary.sourcing.stop_reason.code }} · {{ detail.summary.sourcing.stop_reason.stage ?? "未知阶段" }}</p>
-            <ul v-if="detail.summary.sourcing.ladder.length" class="sourcing-ladder">
-              <li v-for="item in detail.summary.sourcing.ladder" :key="`${item.rung}-${item.outcome}`">第 {{ item.rung }} 级：{{ item.outcome }}</li>
+            <p v-if="detail.summary.sourcing.stop_reason">
+              停止：{{ detail.summary.sourcing.stop_reason.code }} · {{ detail.summary.sourcing.stop_reason.stage ?? "未知阶段" }}
+            </p>
+            <ul
+              v-if="detail.summary.sourcing.ladder.length"
+              class="sourcing-ladder"
+            >
+              <li
+                v-for="item in detail.summary.sourcing.ladder"
+                :key="`${item.rung}-${item.outcome}`"
+              >
+                第 {{ item.rung }} 级：{{ item.outcome }}
+              </li>
             </ul>
-            <p class="meta">该摘要不包含搜索词、页面正文、供应商联系人、成本或客户报价。</p>
+            <p class="meta">
+              该摘要不包含搜索词、页面正文、供应商联系人、成本或客户报价。
+            </p>
           </section>
 
           <section class="audit-section">

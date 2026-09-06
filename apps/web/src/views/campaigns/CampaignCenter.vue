@@ -4,6 +4,7 @@ import { computed, inject, onMounted, reactive, ref } from "vue";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type Campaign = components["schemas"]["CampaignView"];
@@ -20,7 +21,10 @@ const loading = ref(true);
 const detailLoading = ref(false);
 const actionBusy = ref(false);
 const error = ref<string | null>(null);
+const identityError = ref<string | null>(null), enrollmentError = ref<string | null>(null);
+const identitiesLoading = ref(true), commandUnknown = ref(false);
 const actionMessage = ref("所有边界修改都会形成新版本并重新审批。");
+const pendingTransition = ref<{ campaignId: string; state: string } | null>(null);
 const editorOpen = ref(false);
 const editingCampaignId = ref<string | null>(null);
 const marketsText = ref("");
@@ -44,6 +48,18 @@ const form = reactive<CampaignBody>({
   stop_on_reply: true,
 });
 
+function reset(): void {
+  campaigns.value = []; identities.value = []; enrollments.value = []; selectedId.value = null;
+  loading.value = false; detailLoading.value = false; identitiesLoading.value = false; actionBusy.value = false;
+  error.value = null; identityError.value = null; enrollmentError.value = null; actionMessage.value = "";
+  editorOpen.value = false; editingCampaignId.value = null; commandUnknown.value = false; pendingTransition.value = null;
+  marketsText.value = ""; entityTypesText.value = ""; categoriesText.value = ""; triggersText.value = "";
+  Object.assign(form, { name: "", markets: [], target_entity_types: [], allowed_categories: [], sender_identity_ids: [], steps: [], handoff_triggers: [] });
+}
+const gate = useQuoteRequestScope(client, () => [], reset);
+function protectedFailure(status: number): void {
+  if ([401, 403, 404].includes(status)) { gate.invalidate(); reset(); }
+}
 const selected = computed(
   () => campaigns.value.find((item) => item.campaign_id === selectedId.value) ?? null,
 );
@@ -64,6 +80,8 @@ const enrollmentSummary = computed(() => {
 });
 
 function safeError(status: number): string {
+  if (status === 401) return "登录身份已失效，请重新选择有效身份";
+  if (status === 404) return "Campaign 不存在或当前身份不可见";
   if (status === 403) return "当前身份没有执行此操作的权限";
   if (status === 409) return "Campaign 状态已变化，请刷新后重试";
   if (status === 503) return "服务暂不可用，请稍后重试";
@@ -132,61 +150,64 @@ function removeStep(index: number): void {
 }
 
 async function loadCampaigns(): Promise<void> {
-  loading.value = true;
-  error.value = null;
+  const op = gate.begin("list"); if (!op?.valid()) return;
+  loading.value = true; error.value = null;
   try {
-    const result = await client.GET("/crm/campaigns", {
-      params: { query: { limit: 100 } },
-    });
+    const result = await client.GET("/crm/campaigns", { params: { query: { limit: 100 } }, signal: op.signal });
+    if (!op.valid()) return;
     if (result.response.status !== 200 || !result.data) {
-      error.value = safeError(result.response.status);
-      return;
+      campaigns.value = []; enrollments.value = []; selectedId.value = null;
+      protectedFailure(result.response.status); error.value = safeError(result.response.status); return;
     }
     campaigns.value = result.data;
-    const retained = selectedId.value && result.data.some((item) => item.campaign_id === selectedId.value)
-      ? selectedId.value
-      : result.data[0]?.campaign_id ?? null;
-    selectedId.value = retained;
-    if (retained) await loadEnrollments(retained);
-    else enrollments.value = [];
+    const expected = pendingTransition.value;
+    if (commandUnknown.value && expected && result.data.some(item => item.campaign_id === expected.campaignId && item.state === expected.state)) {
+      commandUnknown.value = false; pendingTransition.value = null; actionMessage.value = "已核对精确 Campaign 当前状态；在途事实与额度保持不变。";
+    }
+    const retained = selectedId.value;
+    if (retained && !result.data.some(item => item.campaign_id === retained)) {
+      selectedId.value = null; enrollments.value = []; enrollmentError.value = "原 Campaign 不存在或当前身份不可见"; return;
+    }
+    const next = retained ?? result.data[0]?.campaign_id;
+    if (next) await loadEnrollments(next); else enrollments.value = [];
   } catch {
-    error.value = "无法连接服务，请稍后重试";
-  } finally {
-    loading.value = false;
-  }
+    if (!op.valid()) return;
+    campaigns.value = []; enrollments.value = []; selectedId.value = null; error.value = "Campaign 读取失败，请刷新核对";
+  } finally { if (op.valid()) loading.value = false; }
 }
-
 async function loadIdentities(): Promise<void> {
+  const op = gate.begin("identities"); if (!op?.valid()) return;
+  identitiesLoading.value = true; identityError.value = null; identities.value = [];
   try {
-    const result = await client.GET("/crm/sending-identities", {
-      params: { query: { limit: 100 } },
-    });
+    const result = await client.GET("/crm/sending-identities", { params: { query: { limit: 100 } }, signal: op.signal });
+    if (!op.valid()) return;
     if (result.response.status === 200 && result.data) identities.value = result.data;
-  } catch {
-    identities.value = [];
-  }
+    else { protectedFailure(result.response.status); form.sender_identity_ids = []; identityError.value = `发件身份读取失败：${safeError(result.response.status)}`; }
+  } catch { if (op.valid()) { form.sender_identity_ids = []; identityError.value = "发件身份读取失败，请刷新核对"; } }
+  finally { if (op.valid()) identitiesLoading.value = false; }
 }
-
 async function loadEnrollments(campaignId: string): Promise<void> {
-  selectedId.value = campaignId;
-  detailLoading.value = true;
+  const op = gate.begin("enrollments"); if (!op?.valid()) return;
+  selectedId.value = campaignId; detailLoading.value = true; enrollments.value = []; enrollmentError.value = null;
   try {
-    const result = await client.GET("/crm/campaigns/{campaign_id}/enrollments", {
-      params: { path: { campaign_id: campaignId }, query: { limit: 200 } },
-    });
-    enrollments.value = result.response.status === 200 && result.data ? result.data : [];
-  } finally {
-    detailLoading.value = false;
-  }
+    const result = await client.GET("/crm/campaigns/{campaign_id}/enrollments", { params: { path: { campaign_id: campaignId }, query: { limit: 200 } }, signal: op.signal });
+    if (!op.valid() || selectedId.value !== campaignId) return;
+    if (result.response.status === 200 && result.data) enrollments.value = result.data;
+    else { protectedFailure(result.response.status); enrollmentError.value = `入组进度读取失败：${safeError(result.response.status)}`; }
+  } catch { if (op.valid() && selectedId.value === campaignId) enrollmentError.value = "入组进度读取失败，请刷新核对"; }
+  finally { if (op.valid() && selectedId.value === campaignId) detailLoading.value = false; }
 }
+async function refresh(): Promise<void> { await Promise.all([loadCampaigns(), loadIdentities()]); }
 
 async function saveBoundary(): Promise<void> {
-  if (actionBusy.value) return;
+  if (actionBusy.value || commandUnknown.value || identityError.value || identitiesLoading.value) return;
   syncFormCollections();
   if (!form.name.trim() || !form.markets.length || !form.allowed_categories.length || !form.sender_identity_ids.length) {
     error.value = "请填写名称、市场、品类并选择至少一个冷开发发件身份";
     return;
   }
+  const op = gate.begin("command"); if (!op?.valid()) return;
+  const editingId = editingCampaignId.value; pendingTransition.value = null;
   actionBusy.value = true;
   error.value = null;
   try {
@@ -195,17 +216,21 @@ async function saveBoundary(): Promise<void> {
         params: { path: { campaign_id: editingCampaignId.value } },
         body: { ...form },
       });
+      if (!op.valid() || editingCampaignId.value !== editingId) return;
       if (result.response.status === 200 && result.data) {
         actionMessage.value = `新版本已提交审批：${result.data.approval_id}`;
         editorOpen.value = false;
         await loadCampaigns();
         return;
       }
-      error.value = safeError(result.response.status);
+      protectedFailure(result.response.status);
+      commandUnknown.value = result.response.status >= 500;
+      error.value = commandUnknown.value ? "提交结果待核对，请刷新当前 Campaign；不自动重新提交" : safeError(result.response.status);
     } else {
       const result = await client.POST("/crm/campaigns", {
         body: { ...form },
       });
+      if (!op.valid() || editingCampaignId.value !== editingId) return;
       if (result.response.status === 200 && result.data) {
         actionMessage.value = "Campaign 草稿已创建；提交审批前不会发送。";
         editorOpen.value = false;
@@ -213,20 +238,24 @@ async function saveBoundary(): Promise<void> {
         await loadCampaigns();
         return;
       }
-      error.value = safeError(result.response.status);
+      protectedFailure(result.response.status);
+      commandUnknown.value = result.response.status >= 500;
+      error.value = commandUnknown.value ? "提交结果待核对，请刷新当前 Campaign；不自动重新提交" : safeError(result.response.status);
     }
   } catch {
-    error.value = "无法连接服务，请稍后重试";
+    if (op.valid()) { commandUnknown.value = true; error.value = "提交结果待核对，请刷新当前 Campaign；不自动重新提交"; }
   } finally {
-    actionBusy.value = false;
+    if (op.valid()) actionBusy.value = false;
   }
 }
 
 async function transition(action: "submit" | "activate" | "pause" | "cancel"): Promise<void> {
-  if (!selected.value || actionBusy.value) return;
+  if (!selected.value || actionBusy.value || commandUnknown.value) return;
+  const op = gate.begin("command"); if (!op?.valid()) return;
   actionBusy.value = true;
   error.value = null;
   const campaignId = selected.value.campaign_id;
+  pendingTransition.value = { campaignId, state: ({ pause: "paused", activate: "active", submit: "pending_approval", cancel: "cancelled" })[action] };
   try {
     if (action === "pause") {
       const reason = window.prompt("填写暂停原因（暂停只阻止新发送，回复仍继续处理）");
@@ -235,32 +264,36 @@ async function transition(action: "submit" | "activate" | "pause" | "cancel"): P
         params: { path: { campaign_id: campaignId } },
         body: { reason: reason.trim() },
       });
-      if (result.response.status !== 200) throw new Error(safeError(result.response.status));
+      if (!op.valid() || selectedId.value !== campaignId) return;
+      if (result.response.status !== 200) { protectedFailure(result.response.status); commandUnknown.value = result.response.status >= 500; error.value = commandUnknown.value ? "操作结果待核对，请刷新当前 Campaign，不自动重发" : safeError(result.response.status); return; }
       actionMessage.value = "Campaign 已暂停新发送；入站回复处理保持运行。";
     } else if (action === "submit") {
       const result = await client.POST("/crm/campaigns/{campaign_id}/submit", {
         params: { path: { campaign_id: campaignId } },
       });
-      if (result.response.status !== 200 || !result.data) throw new Error(safeError(result.response.status));
+      if (!op.valid() || selectedId.value !== campaignId) return;
+      if (result.response.status !== 200 || !result.data) { protectedFailure(result.response.status); commandUnknown.value = result.response.status >= 500; error.value = commandUnknown.value ? "操作结果待核对，请刷新当前 Campaign，不自动重发" : safeError(result.response.status); return; }
       actionMessage.value = `已提交审批：${result.data.approval_id}`;
     } else if (action === "activate") {
       const result = await client.POST("/crm/campaigns/{campaign_id}/activate", {
         params: { path: { campaign_id: campaignId } },
       });
-      if (result.response.status !== 200) throw new Error(safeError(result.response.status));
+      if (!op.valid() || selectedId.value !== campaignId) return;
+      if (result.response.status !== 200) { protectedFailure(result.response.status); commandUnknown.value = result.response.status >= 500; error.value = commandUnknown.value ? "操作结果待核对，请刷新当前 Campaign，不自动重发" : safeError(result.response.status); return; }
       actionMessage.value = "Campaign 精确版本已激活。";
     } else {
       const result = await client.POST("/crm/campaigns/{campaign_id}/cancel", {
         params: { path: { campaign_id: campaignId } },
       });
-      if (result.response.status !== 200) throw new Error(safeError(result.response.status));
+      if (!op.valid() || selectedId.value !== campaignId) return;
+      if (result.response.status !== 200) { protectedFailure(result.response.status); commandUnknown.value = result.response.status >= 500; error.value = commandUnknown.value ? "操作结果待核对，请刷新当前 Campaign，不自动重发" : safeError(result.response.status); return; }
       actionMessage.value = "Campaign 已取消，不能恢复。";
     }
     await loadCampaigns();
-  } catch (caught) {
-    error.value = caught instanceof Error ? caught.message : "操作未完成";
+  } catch {
+    if (op.valid() && selectedId.value === campaignId) { commandUnknown.value = true; error.value = "操作结果待核对，请刷新当前 Campaign；不自动重发"; }
   } finally {
-    actionBusy.value = false;
+    if (op.valid()) actionBusy.value = false;
   }
 }
 
@@ -290,7 +323,7 @@ onMounted(() => {
       <strong>Campaign 是授权书，不是发送队列。</strong><span>边界内自主运行；改边界 = 新版本 + 重新审批。包含价格或承诺的内容仍逐次审批。</span>
     </div>
     <div class="pause-semantics">
-      <strong>暂停语义</strong><span>暂停只阻止新发送；入站回复仍继续处理。</span>
+      <strong>暂停语义</strong><span>暂停只阻止新发送；入站回复仍继续处理。在途发送尝试与已占用额度继续保留，结果未知不得再次发送。</span>
     </div>
     <div
       v-if="error"
@@ -345,7 +378,19 @@ onMounted(() => {
             type="checkbox"
             :value="identity.identity_id"
             :disabled="!identity.usable_for_cold_outreach"
-          ><span>{{ identity.address }}</span><small>{{ identity.state }} · 今日余量 {{ identity.remaining_today }}</small></label><p v-if="!identities.length">
+          ><span>{{ identity.address }}</span><small>{{ identity.state }} · 今日余量 {{ identity.remaining_today }}</small></label><p
+            v-if="identityError"
+            role="alert"
+          >
+            {{ identityError }} <button
+              type="button"
+              @click="loadIdentities"
+            >
+              刷新发件身份
+            </button>
+          </p><p v-else-if="identitiesLoading">
+            正在读取发件身份…
+          </p><p v-else-if="!identities.length">
             没有可用发件身份。请先完成独立域名认证与预热。
           </p>
         </fieldset>
@@ -411,7 +456,7 @@ onMounted(() => {
           </button><button
             class="btn-primary"
             type="submit"
-            :disabled="actionBusy"
+            :disabled="actionBusy || commandUnknown || identitiesLoading || Boolean(identityError)"
           >
             {{ actionBusy ? "保存中…" : editingCampaignId ? "保存新版本并提交审批" : "创建草稿" }}
           </button>
@@ -424,7 +469,7 @@ onMounted(() => {
         <header>
           <h2>Campaign</h2><button
             type="button"
-            @click="loadCampaigns"
+            @click="refresh"
           >
             刷新
           </button>
@@ -447,7 +492,7 @@ onMounted(() => {
           <span><strong>{{ campaign.name }}</strong><small>v{{ campaign.version }} · {{ campaign.boundary.markets.join(" / ") }}</small></span><em :class="`state-${campaign.state}`">{{ stateLabels[campaign.state] }}</em>
         </button>
         <div
-          v-if="!loading && !campaigns.length"
+          v-if="!loading && !error && !campaigns.length"
           class="empty"
         >
           暂无 Campaign
@@ -473,7 +518,7 @@ onMounted(() => {
             <button
               v-if="selected.state === 'draft'"
               type="button"
-              :disabled="actionBusy"
+              :disabled="actionBusy || commandUnknown"
               @click="transition('submit')"
             >
               提交审批
@@ -481,21 +526,21 @@ onMounted(() => {
               v-if="selected.state === 'pending_approval' || selected.state === 'paused'"
               class="btn-primary"
               type="button"
-              :disabled="actionBusy"
+              :disabled="actionBusy || commandUnknown"
               @click="transition('activate')"
             >
               激活已批准版本
             </button><button
               v-if="selected.state === 'active'"
               type="button"
-              :disabled="actionBusy"
+              :disabled="actionBusy || commandUnknown"
               @click="transition('pause')"
             >
               暂停
             </button><button
               v-if="!['completed', 'cancelled'].includes(selected.state)"
               type="button"
-              :disabled="actionBusy"
+              :disabled="actionBusy || commandUnknown"
               @click="reviseCampaign(selected)"
             >
               修订边界
@@ -503,7 +548,7 @@ onMounted(() => {
               v-if="!['completed', 'cancelled'].includes(selected.state)"
               class="danger-button"
               type="button"
-              :disabled="actionBusy"
+              :disabled="actionBusy || commandUnknown"
               @click="transition('cancel')"
             >
               取消
@@ -546,11 +591,21 @@ onMounted(() => {
           </ol><p>Stop on reply：{{ selected.boundary.stop_on_reply ? "开启" : "关闭" }}</p>
         </article>
         <article class="enrollment-panel">
-          <header><h3>入组进度</h3><span>{{ enrollments.length }} 个已验证联系人</span></header><div
+          <header><h3>入组进度</h3><span v-if="!detailLoading && !enrollmentError">{{ enrollments.length }} 个已验证联系人</span></header><div
             v-if="detailLoading"
             class="empty"
           >
             加载中…
+          </div><div
+            v-else-if="enrollmentError"
+            role="alert"
+          >
+            {{ enrollmentError }} <button
+              type="button"
+              @click="loadEnrollments(selected.campaign_id)"
+            >
+              刷新入组进度
+            </button>
           </div><div
             v-else
             class="enrollment-summary"
@@ -569,7 +624,7 @@ onMounted(() => {
               </tr>
             </tbody>
           </table><div
-            v-else-if="!detailLoading"
+            v-else-if="!detailLoading && !enrollmentError"
             class="empty"
           >
             暂无已验证联系人入组
@@ -656,4 +711,5 @@ th, td { border-bottom: 1px solid var(--border); padding: var(--space2); text-al
 td { font-family: ui-monospace, monospace; }
 .empty { display: grid; place-items: center; min-height: 90px; color: var(--text-secondary); }
 @media (max-width: 980px) { .campaign-layout, .boundary-editor form, .quota-grid, .boundary-grid { grid-template-columns: 1fr; } .sender-picker { grid-template-columns: 1fr; } .campaign-list { max-height: 320px; overflow: auto; } }
+@media (max-width: 600px) { .campaign-head > div, .campaign-detail > header, .principle, .pause-semantics { flex-direction: column; } .sequence article, .limit-row { grid-template-columns: 1fr; } .enrollment-panel { overflow-x: auto; } .campaign-detail { overflow-wrap: anywhere; padding: var(--space3); } }
 </style>

@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref } from "vue";
+import { computed, inject, onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
 import SourcingPlanForm from "./SourcingPlanForm.vue";
 import SourcingRecoveryForm from "./SourcingRecoveryForm.vue";
 import SourcingReviewForm from "./SourcingReviewForm.vue";
@@ -50,6 +51,18 @@ const projectionState = ref<Record<SecondaryProjection, ProjectionState>>({
   review: "loading",
   uncertain: "loading",
 });
+const recoveryAttempt = ref<{ command: ReconciliationCommand; key: string; executionId: string } | null>(null);
+function reset(): void {
+  admissionDetail.value = null; sourcingCase.value = null; candidates.value = []; checks.value = []; plan.value = null;
+  review.value = null; currentQuota.value = null; uncertainExecutions.value = []; recoveryAttempt.value = null;
+  loading.value = false; mutating.value = false; hasLoadedCase.value = false; error.value = null; notice.value = null;
+  projectionState.value = { candidates: "unavailable", plan: "unavailable", quota: "unavailable", review: "unavailable", uncertain: "unavailable" };
+}
+const gate = useQuoteRequestScope(client, () => [caseId.value], reset);
+watch(caseId, () => { reset(); void loadEntry(); });
+function protectedFailure(status: number): void {
+  if ([401,403,404].includes(status)) { gate.invalidate(); reset(); }
+}
 const canDraftPlan = computed(() => (
   hasLoadedCase.value
   && projectionState.value.plan === "success"
@@ -138,6 +151,8 @@ function idempotencyKey(prefix: string): string {
 }
 
 function safeError(status: number): string {
+  if (status === 401) return "登录身份已失效";
+  if (status === 409) return "寻源事实已变化，请刷新精确版本；不自动重试";
   if (status === 403) return "当前身份无权执行此寻源操作";
   if (status === 404) return "案例不存在或不属于当前租户";
   if (status === 503) return "寻源服务暂不可用";
@@ -189,6 +204,7 @@ function blockedReasonLabel(reason: AdmissionDetail["admission"]["blocked_reason
 }
 
 async function loadAdmissionDetail(): Promise<boolean> {
+  const op = gate.begin("loadAdmissionDetail"); if (!op?.valid()) return false;
   loading.value = true;
   admissionDetail.value = null;
   error.value = null;
@@ -196,6 +212,8 @@ async function loadAdmissionDetail(): Promise<boolean> {
     const result = await client.GET("/sourcing-admissions/{admission_id}", {
       params: { path: { admission_id: caseId.value } },
     });
+    if (!op.valid()) return false;
+    if ([401,403,404].includes(result.response.status)) { protectedFailure(result.response.status); error.value = safeError(result.response.status); return false; }
     if (result.response.status !== 200 || !result.data) {
       error.value = safeError(result.response.status);
       return false;
@@ -203,10 +221,11 @@ async function loadAdmissionDetail(): Promise<boolean> {
     admissionDetail.value = result.data;
     return true;
   } catch {
+    if (!op.valid()) return false;
     error.value = "无法连接寻源准入服务";
     return false;
   } finally {
-    loading.value = false;
+    if (op.valid()) loading.value = false;
   }
 }
 
@@ -226,12 +245,15 @@ function beginProjection(projection: SecondaryProjection): void {
 }
 
 async function loadCandidates(): Promise<boolean> {
+  const op = gate.begin("loadCandidates"); if (!op?.valid()) return false;
   beginProjection("candidates");
   candidates.value = [];
   try {
     const result = await client.GET("/sourcing-cases/{case_id}/candidates", {
       params: { path: { case_id: caseId.value } },
     });
+    if (!op.valid()) return false;
+    if (result.response.status === 401) { protectedFailure(result.response.status); error.value = safeError(result.response.status); return false; }
     if (result.response.status !== 200) {
       setProjectionState("candidates", result.response.status);
       return false;
@@ -240,18 +262,22 @@ async function loadCandidates(): Promise<boolean> {
     projectionState.value.candidates = "success";
     return true;
   } catch {
+    if (!op.valid()) return false;
     setProjectionState("candidates", null);
     return false;
   }
 }
 
 async function loadPlan(): Promise<boolean> {
+  const op = gate.begin("loadPlan"); if (!op?.valid()) return false;
   beginProjection("plan");
   plan.value = null;
   try {
     const result = await client.GET("/sourcing-cases/{case_id}/public-search-plan", {
       params: { path: { case_id: caseId.value } },
     });
+    if (!op.valid()) return false;
+    if (result.response.status === 401) { protectedFailure(result.response.status); error.value = safeError(result.response.status); return false; }
     if (result.response.status !== 200) {
       setProjectionState("plan", result.response.status);
       return false;
@@ -260,18 +286,22 @@ async function loadPlan(): Promise<boolean> {
     projectionState.value.plan = "success";
     return true;
   } catch {
+    if (!op.valid()) return false;
     setProjectionState("plan", null);
     return false;
   }
 }
 
 async function loadReview(): Promise<boolean> {
+  const op = gate.begin("loadReview"); if (!op?.valid()) return false;
   beginProjection("review");
   review.value = null;
   try {
     const result = await client.GET("/sourcing-cases/{case_id}/review", {
       params: { path: { case_id: caseId.value } },
     });
+    if (!op.valid()) return false;
+    if (result.response.status === 401) { protectedFailure(result.response.status); error.value = safeError(result.response.status); return false; }
     if (result.response.status !== 200) {
       setProjectionState("review", result.response.status);
       return false;
@@ -280,18 +310,22 @@ async function loadReview(): Promise<boolean> {
     projectionState.value.review = "success";
     return true;
   } catch {
+    if (!op.valid()) return false;
     setProjectionState("review", null);
     return false;
   }
 }
 
 async function loadQuota(): Promise<boolean> {
+  const op = gate.begin("loadQuota"); if (!op?.valid()) return false;
   beginProjection("quota");
   currentQuota.value = null;
   try {
     const result = await client.GET("/sourcing-cases/{case_id}/current-quota", {
       params: { path: { case_id: caseId.value } },
     });
+    if (!op.valid()) return false;
+    if (result.response.status === 401) { protectedFailure(result.response.status); error.value = safeError(result.response.status); return false; }
     if (result.response.status !== 200) {
       setProjectionState("quota", result.response.status);
       return false;
@@ -300,18 +334,22 @@ async function loadQuota(): Promise<boolean> {
     projectionState.value.quota = "success";
     return true;
   } catch {
+    if (!op.valid()) return false;
     setProjectionState("quota", null);
     return false;
   }
 }
 
 async function loadUncertainExecutions(): Promise<boolean> {
+  const op = gate.begin("loadUncertainExecutions"); if (!op?.valid()) return false;
   beginProjection("uncertain");
   uncertainExecutions.value = [];
   try {
     const result = await client.GET("/sourcing-cases/{case_id}/uncertain-reconciliations", {
       params: { path: { case_id: caseId.value } },
     });
+    if (!op.valid()) return false;
+    if (result.response.status === 401) { protectedFailure(result.response.status); error.value = safeError(result.response.status); return false; }
     if (result.response.status !== 200) {
       setProjectionState("uncertain", result.response.status);
       return false;
@@ -320,19 +358,24 @@ async function loadUncertainExecutions(): Promise<boolean> {
     projectionState.value.uncertain = "success";
     return true;
   } catch {
+    if (!op.valid()) return false;
     setProjectionState("uncertain", null);
     return false;
   }
 }
 
 async function loadLadderChecks(): Promise<void> {
+  const op = gate.begin("loadLadderChecks"); if (!op?.valid()) return;
   checks.value = [];
   try {
     const result = await client.GET("/sourcing-cases/{case_id}/ladder-checks", {
       params: { path: { case_id: caseId.value } },
     });
+    if (!op.valid()) return;
+    if (result.response.status === 401) { protectedFailure(result.response.status); error.value = safeError(result.response.status); return; }
     if (result.response.status === 200) checks.value = result.data ?? [];
   } catch {
+    if (!op.valid()) return;
     checks.value = [];
   }
 }
@@ -346,14 +389,17 @@ async function retryProjection(projection: SecondaryProjection): Promise<void> {
 }
 
 async function loadCase(preserveStatus = false, includeQuota = true): Promise<boolean> {
+  const op = gate.begin("loadCase"); if (!op?.valid()) return false;
   loading.value = true;
-  hasLoadedCase.value = false;
+  hasLoadedCase.value = false; sourcingCase.value = null;
   error.value = null;
   if (!preserveStatus) notice.value = null;
   try {
     const caseResult = await client.GET("/sourcing-cases/{case_id}", {
       params: { path: { case_id: caseId.value } },
     });
+    if (!op.valid()) return false;
+    if ([401,403,404].includes(caseResult.response.status)) { protectedFailure(caseResult.response.status); error.value = safeError(caseResult.response.status); return false; }
     if (caseResult.response.status !== 200 || !caseResult.data) {
       error.value = safeError(caseResult.response.status);
       return false;
@@ -369,13 +415,15 @@ async function loadCase(preserveStatus = false, includeQuota = true): Promise<bo
       includeQuota ? loadQuota() : Promise.resolve(true),
       loadUncertainExecutions(),
     ]);
+    if (!op.valid()) return false;
     return candidatesLoaded && planLoaded && reviewLoaded && quotaLoaded && uncertainLoaded;
   } catch {
-    hasLoadedCase.value = false;
+    if (!op.valid()) return false;
+    hasLoadedCase.value = false; sourcingCase.value = null;
     error.value = "无法连接寻源服务";
     return false;
   } finally {
-    loading.value = false;
+    if (op.valid()) loading.value = false;
   }
 }
 
@@ -421,14 +469,45 @@ async function submitReview(command: ReviewCommand): Promise<void> {
 }
 
 async function reconcileUncertain(command: ReconciliationCommand): Promise<void> {
-  if (!canReconcile.value) return;
-  await mutate(async () => client.POST("/sourcing-cases/{case_id}/reconcile-uncertain-request", {
-    body: command,
-    params: {
-      header: { "Idempotency-Key": idempotencyKey("sourcing-reconcile") },
-      path: { case_id: caseId.value },
-    },
-  }), "已保存人工核对事实；系统只会按精确不确定请求恢复，未显示任何 Provider 原文。");
+  if (!canReconcile.value || mutating.value) return;
+  const op = gate.begin("reconciliation"); if (!op?.valid()) return;
+  const existing = recoveryAttempt.value;
+  if (existing && JSON.stringify(existing.command) !== JSON.stringify(command)) { error.value = "原核对命令尚待核对，不能更换目标或内容"; return; }
+  const execution = uncertainExecutions.value.find(item => item.run_id === command.run_id && item.request_key === command.request_key);
+  const canonical = execution?.reconciliation;
+  const matchesCanonical = canonical?.reconciliation_id === command.reconciliation_id
+    && canonical.execution_id === execution?.execution_id
+    && canonical.reason === command.reason && canonical.provider_usage_artifact_ref === command.provider_usage_artifact_ref
+    && canonical.status === "confirmed_consumed" && canonical.reconciled_by === client.identitySnapshot().identity?.employeeId;
+  if (!existing && !execution?.can_current_user_reconcile && !(execution?.recovery_action === "resume_reconciliation" && matchesCanonical)) return;
+  const attempt = existing ?? { command: Object.freeze({ ...command }), key: `sourcing-reconcile-${command.reconciliation_id}`, executionId: execution!.execution_id };
+  recoveryAttempt.value = attempt; mutating.value = true; error.value = null; notice.value = null;
+  try {
+    if (existing) {
+      const loaded = await loadUncertainExecutions(); if (!op.valid()) return;
+      if (!loaded) { error.value = "原核对结果未知；精确状态读取失败，保留原命令"; return; }
+      const current = uncertainExecutions.value.find(item => item.execution_id === attempt.executionId && item.run_id === command.run_id && item.request_key === command.request_key);
+      if (!current) { error.value = "原执行已不可见，核对结果仍待确认；不会切换到另一执行"; return; }
+      if (current.reconciliation) {
+        const fact = current.reconciliation;
+        const same = fact.reconciliation_id === command.reconciliation_id && fact.reason === command.reason && fact.provider_usage_artifact_ref === command.provider_usage_artifact_ref && fact.status === "confirmed_consumed" && fact.execution_id === attempt.executionId && fact.reconciled_by === client.identitySnapshot().identity?.employeeId;
+        if (!same) { error.value = "当前已有不同核对事实；原请求存在冲突，不能重发"; return; }
+        if (current.recovery_action === "event_delivered") { notice.value = "精确恢复事件已送达，业务进度仍须刷新 Case 与 Run 核对"; return; }
+        if (current.recovery_action !== "resume_reconciliation") { error.value = "核对事实已记录，当前不可恢复；请刷新 Case 与 Run 核对"; return; }
+      }
+      if (!current.reconciliation && !current.can_current_user_reconcile) { error.value = "原执行当前不可恢复；保留原命令供核对"; return; }
+    }
+    const result = await client.POST("/sourcing-cases/{case_id}/reconcile-uncertain-request", { body: attempt.command, params: { path: { case_id: caseId.value }, header: { "Idempotency-Key": attempt.key } }, signal: op.signal });
+    if (!op.valid()) return;
+    if (result.response.status !== 200) {
+      protectedFailure(result.response.status);
+      error.value = result.response.status >= 500 ? "核对结果未知；保留原命令，先读取精确执行事实" : safeError(result.response.status); return;
+    }
+    recoveryAttempt.value = null;
+    const refreshed = await loadCase(true); if (!op.valid()) return;
+    notice.value = refreshed ? "核对请求已被接受；恢复进度以最新 Case 与 Run 为准，不代表搜索已完成" : "核对请求已被接受；最新状态暂不可读，请刷新核对";
+  } catch { if (op.valid()) error.value = "核对结果未知；保留原命令与原键，先读取精确执行事实"; }
+  finally { if (op.valid()) mutating.value = false; }
 }
 
 async function mutate(
@@ -436,25 +515,28 @@ async function mutate(
   success: string,
   includeQuota = true,
 ): Promise<void> {
+  const op = gate.begin("mutation"); if (!op?.valid()) return;
   mutating.value = true;
   error.value = null;
   notice.value = null;
   try {
     const result = await operation();
+    if (!op.valid()) return;
     if (result.response.status !== 200) {
-      error.value = safeError(result.response.status);
+      protectedFailure(result.response.status); error.value = safeError(result.response.status);
       return;
     }
     const refreshed = await loadCase(true, includeQuota);
+    if (!op.valid()) return;
     if (!refreshed) {
       error.value = "操作已被服务器接受，但最新安全投影暂不可用；请重试受影响区块。";
       return;
     }
     notice.value = success;
   } catch {
-    error.value = "无法连接寻源服务";
+    if (op.valid()) error.value = "操作结果待核对，请刷新当前 Case，不自动重发";
   } finally {
-    mutating.value = false;
+    if (op.valid()) mutating.value = false;
   }
 }
 
@@ -812,6 +894,7 @@ onMounted(() => void loadEntry());
         v-if="projectionState.uncertain === 'success'"
         :disabled="mutating || !canReconcile"
         :executions="uncertainExecutions"
+        :pending-command="recoveryAttempt?.command"
         @reconcile="reconcileUncertain"
       />
       <section

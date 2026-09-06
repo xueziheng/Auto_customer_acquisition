@@ -7484,6 +7484,12 @@ export interface components {
             /** Execution Id */
             execution_id: string;
             reconciliation?: components["schemas"]["SourcingReconciliationReadView"] | null;
+            /**
+             * Recovery Action
+             * @default unavailable
+             * @enum {string}
+             */
+            recovery_action: "unavailable" | "record_reconciliation" | "resume_reconciliation" | "event_delivered";
             /** Request Key */
             request_key: string;
             /** Run Id */

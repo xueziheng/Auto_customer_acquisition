@@ -24,7 +24,7 @@ it("登记先确认，响应丢失后冻结原payload并以原域幂等核对win
 
 it("预热响应丢失仅核对精确sid，目标相同不能宣称本次成功或自动重启",async()=>{
  const sid="sid-exact",paths:string[]=[];let writes=0;
- const identity={identity_id:sid,address:"sales@example.test",domain:"example.test",state:"auth_pending",role:"cold_outreach",remaining_today:0};
+ const identity={identity_id:sid,address:"sales@example.test",domain:"example.test",state:"auth_pending",auth:{checked_at:"2026-09-06T00:00:00Z",spf_passed:true,dkim_passed:true,dmarc_passed:true,failures:[]},role:"cold_outreach",remaining_today:0};
  const fetch=vi.fn<typeof globalThis.fetch>(async input=>{
   const req=input as Request,path=new URL(req.url).pathname;paths.push(req.method+" "+path);
   if(req.method==="POST"){writes++;expect(await req.json()).toEqual({target_daily_volume:15,confirmed:true});throw new Error("lost");}

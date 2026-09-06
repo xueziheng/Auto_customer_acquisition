@@ -43,7 +43,7 @@ it('会话列表403后旧详情不得恢复受限原件',async()=>{
  old.resolve(json(detail('second')));await flush();expect(root.textContent).not.toContain('protected-second');expect(root.textContent).not.toContain('second-account');expect(root.textContent).not.toContain('下载邮件原件');
 });
 
-const sender=(id:string)=>({identity_id:id,address:id+'@example.test',domain:'example.test',state:'auth_pending',role:'cold_outreach',remaining_today:0});
+const sender=(id:string)=>({identity_id:id,address:id+'@example.test',domain:'example.test',state:'auth_pending',auth:{checked_at:'2026-09-06T00:00:00Z',spf_passed:true,dkim_passed:true,dmarc_passed:true,failures:[]},role:'cold_outreach',remaining_today:0});
 async function warmup(root:HTMLElement){
  const target=root.querySelector<HTMLInputElement>('[aria-label="预热目标日量"]')!;target.value='15';target.dispatchEvent(new Event('input'));await nextTick();
  expect(button(root,'启动预热').disabled).toBe(false);button(root,'启动预热').click();await nextTick();button(root,'确认启动预热').click();await flush();

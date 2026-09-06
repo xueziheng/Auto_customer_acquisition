@@ -812,6 +812,9 @@ describe("Sourcing and Product centers", () => {
     await eventually(() => expect(root.textContent).toContain("已由 emp_boss 确认"));
 
     const recoveryPanel = root.querySelector(".recovery-panel")!;
+    const recoverySelect = recoveryPanel.querySelector<HTMLSelectElement>("select")!;
+    recoverySelect.value = recoverySelect.options[1]!.value;
+    recoverySelect.dispatchEvent(new Event("change", { bubbles: true }));
     const recoveryInput = recoveryPanel.querySelector<HTMLInputElement>("input")!;
     recoveryInput.value = "art_01K39P9M5D6K4A91YEQ80EJZ0X";
     recoveryInput.dispatchEvent(new Event("input", { bubbles: true }));

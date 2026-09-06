@@ -11,6 +11,7 @@ type Review = components["schemas"]["InboundReviewView"];
 const client = inject<ReturnType<typeof createApiClient>>("tradeos-api-client", apiClient);
 const identities = ref<IdentityView[]>([]), listLoading = ref(true), listError = ref<string | null>(null);
 const checkFeedback = ref<string | null>(null), checkBusyId = ref<string | null>(null);
+const retryBusy = ref(false), retryUnknown = ref(false), retryMessage = ref<string | null>(null);
 const binding = ref<InboundStatus | null>(null), bindingError = ref<string | null>(null);
 const pendingRegistration = ref<Registration | null>(null), registrationUnknown = ref(false);
 const warmupUnknown = ref<string | null>(null), busy = ref(false);
@@ -21,6 +22,7 @@ const target = ref<number | null>(null);
 const dialog = ref<{ kind: "register" } | { kind: "warmup"; identity: IdentityView; target: number } | { kind: "bind"; identity: IdentityView } | null>(null);
 const requestKeys = new Map<string, string>();
 function reset(): void {
+  retryBusy.value = false; retryUnknown.value = false; retryMessage.value = null;
   identities.value = []; selectedIdentity.value = null; binding.value = null; reviews.value = null;
   listError.value = null; checkFeedback.value = null; bindingError.value = null; reviewError.value = null;
   pendingRegistration.value = null; registrationUnknown.value = false; warmupUnknown.value = null;
@@ -58,7 +60,7 @@ async function loadBinding(): Promise<void> {
  const op=gate.begin("binding-read");if(!op?.valid())return;
  binding.value=null;bindingError.value=null;
  try {const result=await client.GET("/email-inbound/status",{signal:op.signal});if(!op.valid())return;
-  if(result.response.status===200 && result.data)binding.value=result.data;
+  if(result.response.status===200 && result.data){binding.value=result.data;retryUnknown.value=false;}
   else {protectedFailure(result.response.status);bindingError.value="入站绑定状态暂不可读取";}
  }catch {if(op.valid())bindingError.value="入站绑定状态暂不可读取";}
 }
@@ -97,7 +99,9 @@ async function readExact(identityId:string): Promise<void> {
  }catch {if(op.valid())checkFeedback.value="精确身份状态暂不可读取；原请求仍待核对";}
 }
 async function confirmCommand(): Promise<void> {
- const intent=dialog.value;if(!intent||busy.value)return;if(intent.kind==="register"){await register();return;}
+ const intent=dialog.value;if(!intent||busy.value)return;
+ if(intent.kind==="warmup"&&!canStartWarmup(identities.value.find(item=>item.identity_id===intent.identity.identity_id)??intent.identity))return;
+ if(intent.kind==="register"){await register();return;}
  const op=gate.begin("command");if(!op?.valid())return;busy.value=true;dialog.value=null;checkFeedback.value=null;
  try {
   if(intent.kind==="warmup") {
@@ -127,7 +131,38 @@ async function downloadReview(reviewId:string):Promise<void>{
   else{protectedFailure(r.response.status);reviewError.value="复核原件暂不可用";}
  }catch{if(op.valid())reviewError.value="复核原件暂不可用";}
 }
-function warmupLabel(identity:IdentityView):string {return identity.warmup_day===null||identity.warmup_day===undefined?"尚未启动":`第 ${identity.warmup_day} / 28 天 · ${identity.warmup_complete?"已完成":"未完成"}`;}
+function canStartWarmup(identity: IdentityView): boolean {
+  return identity.state === "auth_pending" && identity.auth?.spf_passed === true
+    && identity.auth.dkim_passed === true && identity.auth.dmarc_passed === true;
+}
+const retryBlocked = computed(() => {
+  const status = binding.value;
+  if (!status || !["blocked", "waiting"].includes(status.state) || !Number.isInteger(status.version)) return true;
+  if (status.next_retry_at) {
+    const at = Date.parse(status.next_retry_at);
+    if (!Number.isFinite(at) || at > Date.now()) return true;
+  }
+  return retryBusy.value || retryUnknown.value;
+});
+const inboundReasons: Readonly<Record<NonNullable<InboundStatus["reason"]>, string>> = {
+  provider_transient: "服务暂态失败", rate_limited: "服务限流，等待期限结束", provider_permanent: "服务永久阻断（历史位置可能已过期），原位重试仍可能阻断",
+  provider_auth_required: "需修复服务认证", page_integrity: "入站页面完整性检查未通过", receipt_conflict: "入站回执冲突", domain_rejected: "域拒绝处理", storage_unavailable: "原件存储暂不可用",
+};
+async function retryInbound(): Promise<void> {
+  if (retryBlocked.value || !binding.value || binding.value.version == null) return;
+  const op = gate.begin("inbound-retry"); if (!op?.valid()) return;
+  const version = binding.value.version;
+  retryBusy.value = true; retryMessage.value = null;
+  try {
+    const result = await client.POST("/email-inbound/retry", { body: { expected_version: version }, signal: op.signal });
+    if (!op.valid()) return;
+    if (result.response.status === 200 && result.data) { binding.value = result.data; retryMessage.value = "原位重试请求已处理；请刷新核对后续处理状态，未跳过历史邮件"; }
+    else if (result.response.status === 409) { retryMessage.value = "入站状态已变化，已重新读取当前版本；请核对后再决定"; await loadBinding(); }
+    else { protectedFailure(result.response.status); retryMessage.value = "重试结果待核对，请刷新当前绑定状态"; if (op.valid()) retryUnknown.value = true; }
+  } catch { if (op.valid()) { retryUnknown.value = true; retryMessage.value = "重试结果未知；请先刷新当前绑定状态，不直接再次提交"; } }
+  finally { if (op.valid()) retryBusy.value = false; }
+}
+function warmupLabel(identity:IdentityView):string {return identity.warmup_complete?"预热已完成":identity.warmup_day===null||identity.warmup_day===undefined?"尚未启动":`第 ${identity.warmup_day} / 28 天 · ${identity.warmup_complete?"已完成":"未完成"}`;}
 function reputationLabel(identity:IdentityView):string {const r=identity.reputation;return r?`硬退信率 ${r.hard_bounce_rate} · 投诉率 ${r.complaint_rate}（代码确定性计算）`:"暂无样本";}
 onMounted(()=>void loadIdentities());
 </script>
@@ -279,11 +314,14 @@ onMounted(()=>void loadIdentities());
         </button>
         <button
           v-if="identity.state==='auth_pending'"
-          :disabled="busy||warmupUnknown===identity.identity_id||!Number.isInteger(target)||Number(target)<5||Number(target)>100"
+          :disabled="busy||!canStartWarmup(identity)||warmupUnknown===identity.identity_id||!Number.isInteger(target)||Number(target)<5||Number(target)>100"
           @click="dialog={kind:'warmup',identity,target:Number(target)}"
         >
           启动预热
         </button>
+        <p v-if="identity.state==='auth_pending' && !canStartWarmup(identity)">
+          需先通过 SPF、DKIM 与 DMARC 认证，再启动预热。
+        </p>
         <button
           :disabled="busy||binding?.identity_id===identity.identity_id"
           @click="dialog={kind:'bind',identity}"
@@ -303,9 +341,33 @@ onMounted(()=>void loadIdentities());
         {{ bindingError }}
       </p><template v-else-if="binding">
         <p>{{ binding.identity_id?`当前绑定：${binding.identity_id}`:"未绑定" }}</p><p>{{ binding.state==='active'?"已绑定，处理状态待核对":binding.state==='waiting'?"暂态等待":binding.state==='blocked'?"处理已阻断":"尚未启用" }}</p><p v-if="binding.reason">
-          固定原因：{{ binding.reason }}
+          固定原因：{{ inboundReasons[binding.reason] }}
         </p><p>最近完成：{{ binding.last_succeeded_at??"暂不可用" }}</p>
+        <p v-if="binding.next_retry_at">
+          下次可核对时间：{{ binding.next_retry_at }}。期限未到只等待，不提前解除。
+        </p>
+        <button
+          v-if="binding.state==='blocked'||binding.state==='waiting'"
+          type="button"
+          :disabled="retryBlocked"
+          @click="retryInbound"
+        >
+          原位重试
+        </button>
       </template>
+      <p
+        v-if="retryMessage"
+        role="status"
+      >
+        {{ retryMessage }}
+      </p>
+      <button
+        type="button"
+        :disabled="retryBusy"
+        @click="loadBinding"
+      >
+        刷新入站状态
+      </button>
     </section>
     <section
       id="inbound-reviews"

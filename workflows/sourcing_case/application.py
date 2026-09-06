@@ -800,29 +800,58 @@ class SourcingCaseApplication:
             return None
         current: list[SourcingUncertainExecutionReadView] = []
         for view in views:
-            can_reconcile = False
-            if actor.role == "boss" and view.reconciliation is None:
+            action = "unavailable"
+            if actor.role == "boss" and actor.tenant_id == tenant_id:
                 try:
-                    await self._sourcing.get_uncertain_search_execution(
-                        tenant_id,
-                        case_id,
-                        view.run_id,
-                        view.request_key,
-                        actor=actor,
+                    execution = await self._sourcing.get_uncertain_search_execution(
+                        tenant_id, case_id, view.run_id, view.request_key, actor=actor
                     )
                     reservation = await self._quota.get(view.run_id, view.request_key)
-                    can_reconcile = (
-                        reservation is not None
-                        and reservation.tenant_id == tenant_id
-                        and reservation.run_id == view.run_id
-                        and reservation.request_key == view.request_key
-                        and reservation.status == "uncertain"
-                    )
-                except Exception:  # noqa: BLE001 -- 不确定时保持不可恢复。
-                    can_reconcile = False
-            current.append(
-                view.model_copy(update={"can_current_user_reconcile": can_reconcile})
-            )
+                    if (
+                        execution.execution_id != view.execution_id
+                        or reservation is None
+                        or reservation.tenant_id != tenant_id
+                        or reservation.run_id != view.run_id
+                        or reservation.request_key != view.request_key
+                    ):
+                        current.append(view.model_copy(update={"recovery_action": action}))
+                        continue
+                    fact = view.reconciliation
+                    if fact is not None and (
+                        fact.execution_id != view.execution_id
+                        or fact.status != "confirmed_consumed"
+                        or fact.reconciled_by != actor.actor_id
+                        or reservation.status not in {"uncertain", "consumed"}
+                    ):
+                        current.append(view.model_copy(update={"recovery_action": action}))
+                        continue
+                    delivered = False
+                    if fact is not None:
+                        delivered = await self._engine.has_delivered_event(
+                            tenant_id, _WORKFLOW_TYPE, str(case_id),
+                            "SourcingSearchRetryRequested",
+                            {"reconciliation_id": fact.reconciliation_id,
+                             "execution_id": view.execution_id},
+                            workflow_version=_WORKFLOW_VERSION,
+                            required_context={"case_id": str(case_id)},
+                        )
+                        if type(delivered) is not bool:
+                            raise ValidationError("恢复事件读取结果无效")
+                    if delivered:
+                        action = "event_delivered"
+                    else:
+                        run = await self._active_run(tenant_id, case_id)
+                        if run.run_id == view.run_id and run.current_step == "public_search":
+                            if fact is not None:
+                                action = "resume_reconciliation"
+                            elif reservation.status == "uncertain":
+                                action = "record_reconciliation"
+                except Exception:  # noqa: BLE001 -- 读取失败不推断可恢复，不回显异常。
+                    action = "unavailable"
+            current.append(view.model_copy(update={
+                "can_current_user_reconcile": action == "record_reconciliation",
+                "recovery_action": action,
+            }))
         return tuple(current)
 
     @staticmethod

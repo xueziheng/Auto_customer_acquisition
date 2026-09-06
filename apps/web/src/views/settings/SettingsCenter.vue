@@ -3,6 +3,7 @@ import { computed, inject, onMounted, reactive, ref, type CSSProperties } from "
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
 import ResearchAccessCard from "../../components/ResearchAccessCard.vue";
 
 type ApiClient = ReturnType<typeof createApiClient>;
@@ -49,6 +50,8 @@ interface PlaybookForm {
 }
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
+const researchError = ref<string | null>(null), researchLoading = ref(true);
+const playbookAttemptBody = ref<PlaybookProposalCreate | null>(null);
 const researchAccess = ref<components["schemas"]["ResearchAccessView"] | null>(null);
 const overview = ref<PlaybookOverview | null>(null);
 const versions = ref<PlaybookVersionStatus[]>([]);
@@ -144,6 +147,32 @@ const form = reactive<PlaybookForm>({
   supplyCapabilitiesNote: "",
 });
 
+function reset(): void {
+  overview.value = null; versions.value = []; researchAccess.value = null; researchError.value = null;
+  countryOverview.value = null; countryVersions.value = []; revisionBase.value = null; selectedCountry.value = null;
+  accepted.value = null; countryAccepted.value = null; idempotencyKey.value = null; countryIdempotencyKey.value = null;
+  playbookAttemptBody.value = null; countryAttemptBody.value = null;
+  loading.value = false; countryLoading.value = false; countryHistoryLoading.value = false; researchLoading.value = false;
+  submitting.value = false; countrySubmitting.value = false; countryHistoryGeneration += 1;
+  loadError.value = null; countryLoadError.value = null; countryHistoryError.value = null; submitError.value = null; countrySubmitError.value = null;
+  for (const key of Object.keys(form) as (keyof PlaybookForm)[]) form[key] = "";
+  formTouched.value = false; countryHistoryQuery.value = ""; resetCountryForm();
+}
+const gate = useQuoteRequestScope(client, () => [], () => { reset(); globalThis.queueMicrotask(() => void refreshSettings()); });
+function protectedFailure(status: number): void {
+  if ([401, 403, 404].includes(status)) {
+    gate.invalidate(); reset();
+    loadError.value = safeLoadError(status); countryLoadError.value = stateError(status); researchError.value = `研究配置读取失败：${stateError(status)}`;
+  }
+}
+function stateError(status: number): string {
+  if (status === 401) return "登录身份已失效";
+  if (status === 403) return "当前身份无权读取或提交";
+  if (status === 404) return "记录不存在或当前身份不可见";
+  if (status === 409) return "当前事实已变化，请核对当前版本";
+  if (status === 503) return "服务未配置或暂不可用，不能判断为未配置数据";
+  return "请求未完成，请刷新核对";
+}
 const statusLabels: Readonly<Record<PlaybookVersionStatus["approval_state"], string>> = Object.freeze({
   applied: "已生效",
   apply_failed: "应用失败",
@@ -400,28 +429,30 @@ function newCountryIdempotencyKey(): string {
 }
 
 async function loadCountryHistory(country: string): Promise<void> {
+  const op = gate.begin("country-history"); if (!op?.valid()) return;
   const generation = ++countryHistoryGeneration;
+  countryVersions.value = [];
   countryHistoryLoading.value = true;
   countryHistoryError.value = null;
   try {
     const result = await client.GET("/settings/country-policies/versions", {
       params: { query: { country, limit: 50 } },
     });
-    if (generation !== countryHistoryGeneration || selectedCountry.value !== country) return;
+    if (!op.valid() || generation !== countryHistoryGeneration || selectedCountry.value !== country) return;
     if (result.response.status === 200 && result.data) {
       countryVersions.value = result.data;
       return;
     }
     countryVersions.value = [];
-    countryHistoryError.value = result.response.status === 403
-      ? "国家政策历史暂不可用"
-      : "国家政策历史读取失败，请稍后重试";
+    protectedFailure(result.response.status);
+    countryHistoryQuery.value = country;
+    countryHistoryError.value = result.response.status === 403 ? "国家政策历史暂不可用" : `国家政策历史读取失败，请稍后重试：${stateError(result.response.status)}`;
   } catch {
-    if (generation !== countryHistoryGeneration || selectedCountry.value !== country) return;
+    if (!op.valid() || generation !== countryHistoryGeneration || selectedCountry.value !== country) return;
     countryVersions.value = [];
     countryHistoryError.value = "国家政策历史读取失败，请稍后重试";
   } finally {
-    if (generation === countryHistoryGeneration && selectedCountry.value === country) {
+    if (op.valid() && generation === countryHistoryGeneration && selectedCountry.value === country) {
       countryHistoryLoading.value = false;
     }
   }
@@ -443,11 +474,14 @@ async function loadCountryPolicies(
   preferredCountry?: string,
   refreshHistory = true,
 ): Promise<void> {
+  const op = gate.begin("country-overview"); if (!op?.valid()) return;
   countryLoading.value = true;
-  countryLoadError.value = null;
+  countryLoadError.value = null; countryOverview.value = null;
   try {
     const result = await client.GET("/settings/country-policies");
+    if (!op.valid()) return;
     if (result.response.status !== 200 || !result.data) {
+      protectedFailure(result.response.status);
       countryLoadError.value = result.response.status === 403
         ? "只有老板可以查看或提交国家政策包"
         : "国家政策包读取失败，请稍后重试";
@@ -464,9 +498,9 @@ async function loadCountryPolicies(
       countryVersions.value = [];
     }
   } catch {
-    countryLoadError.value = "无法连接国家政策包服务";
+    if (op.valid()) { countryOverview.value = null; countryLoadError.value = "无法连接国家政策包服务"; }
   } finally {
-    countryLoading.value = false;
+    if (op.valid()) countryLoading.value = false;
   }
 }
 
@@ -501,36 +535,33 @@ function countryProposalBody(): CountryPolicyProposal | null {
 
 async function submitCountryProposal(): Promise<void> {
   if (countrySubmitting.value) return;
+  const op = gate.begin("country-command"); if (!op?.valid()) return;
+  const wasUnknown = countryAttemptBody.value !== null;
   countrySubmitError.value = null;
-  const body = countryAttemptBody.value ?? countryProposalBody();
-  if (!body) return;
+  const body = countryAttemptBody.value ?? countryProposalBody(); if (!body) return;
   const key = countryIdempotencyKey.value ?? newCountryIdempotencyKey();
-  countryIdempotencyKey.value = key;
-  countryAttemptBody.value = body;
-  countrySubmitting.value = true;
+  countryIdempotencyKey.value = key; countryAttemptBody.value = body; countrySubmitting.value = true;
   try {
-    const result = await client.POST("/settings/country-policies/proposals", {
-      body,
-      params: { header: { "Idempotency-Key": key } },
-    });
-    countryIdempotencyKey.value = null;
-    countryAttemptBody.value = null;
-    if (result.response.status === 202 && result.data) {
-      countryAccepted.value = result.data;
-      void Promise.allSettled([
-        loadCountryPolicies(undefined, false),
-        selectCountry(body.country),
-      ]);
-      return;
+    if (wasUnknown) {
+      await selectCountry(body.country);
+      if (!op.valid()) return;
+      if (countryHistoryError.value) { countrySubmitError.value = "原提交结果待核对；历史读取失败，保留原内容与原键"; return; }
     }
-    countrySubmitError.value = result.response.status === 422
-      ? "候选内容未通过严格校验，请核对九项来源"
-      : "国家政策候选提交失败，请稍后重试";
-  } catch {
-    countrySubmitError.value = "网络结果未知；再次提交将复用本次幂等键";
-  } finally {
-    countrySubmitting.value = false;
-  }
+    const result = await client.POST("/settings/country-policies/proposals", { body, params: { header: { "Idempotency-Key": key } }, signal: op.signal });
+    if (!op.valid()) return;
+    if (result.response.status === 202 && result.data) {
+      countryAccepted.value = result.data; countryIdempotencyKey.value = null; countryAttemptBody.value = null;
+      void Promise.allSettled([loadCountryPolicies(undefined, false), selectCountry(body.country)]); return;
+    }
+    protectedFailure(result.response.status);
+    if (!op.valid()) { countrySubmitError.value = stateError(result.response.status); return; }
+    if (!wasUnknown && [400,422].includes(result.response.status)) {
+      countryIdempotencyKey.value = null; countryAttemptBody.value = null;
+      countrySubmitError.value = "候选内容未通过严格校验，请核对九项来源"; return;
+    }
+    countrySubmitError.value = "提交结果待核对；候选可能已持久保存，Run 尚未确认。核对历史后按原内容与原键恢复";
+  } catch { if (op.valid()) countrySubmitError.value = "网络结果未知；保留原内容与原幂等键，先核对历史再恢复"; }
+  finally { if (op.valid()) countrySubmitting.value = false; }
 }
 
 function copyActiveToForm(version: PlaybookVersion): void {
@@ -546,12 +577,14 @@ function copyActiveToForm(version: PlaybookVersion): void {
 }
 
 function safeLoadError(status: number): string {
+  if (status === 401 || status === 404 || status === 409) return stateError(status);
   if (status === 403) return "只有老板可以查看或提交 Company Playbook";
   if (status === 503) return "Company Playbook 服务暂不可用，请稍后刷新";
   return "Company Playbook 读取失败，请稍后重试";
 }
 
 function editForm(): void {
+  if (playbookAttemptBody.value || submitting.value) return;
   formTouched.value = true;
   idempotencyKey.value = null;
   accepted.value = null;
@@ -563,18 +596,26 @@ function newIdempotencyKey(): string {
 }
 
 async function loadSettings(): Promise<void> {
+  const op = gate.begin("playbook-read"); if (!op?.valid()) return;
   loading.value = true;
-  loadError.value = null;
+  loadError.value = null; overview.value = null; versions.value = [];
   try {
+    const inspectAccess = <T extends { response: { status: number } }>(result: T): T => {
+      if (op.valid() && [401,403,404].includes(result.response.status)) protectedFailure(result.response.status);
+      return result;
+    };
     const [overviewResult, versionsResult] = await Promise.all([
-      client.GET("/settings/playbook"),
-      client.GET("/settings/playbook/versions"),
+      client.GET("/settings/playbook", { signal: op.signal }).then(inspectAccess),
+      client.GET("/settings/playbook/versions", { signal: op.signal }).then(inspectAccess),
     ]);
+    if (!op.valid()) return;
     if (overviewResult.response.status !== 200 || !overviewResult.data) {
+      protectedFailure(overviewResult.response.status !== 200 ? overviewResult.response.status : versionsResult.response.status);
       loadError.value = safeLoadError(overviewResult.response.status);
       return;
     }
     if (versionsResult.response.status !== 200 || !versionsResult.data) {
+      protectedFailure(overviewResult.response.status !== 200 ? overviewResult.response.status : versionsResult.response.status);
       loadError.value = safeLoadError(versionsResult.response.status);
       return;
     }
@@ -584,9 +625,9 @@ async function loadSettings(): Promise<void> {
       copyActiveToForm(overviewResult.data.active_version.version);
     }
   } catch {
-    loadError.value = "无法连接 Company Playbook 服务";
+    if (op.valid()) { overview.value = null; versions.value = []; loadError.value = "无法连接 Company Playbook 服务"; }
   } finally {
-    loading.value = false;
+    if (op.valid()) loading.value = false;
   }
 }
 
@@ -625,42 +666,32 @@ function proposalBody(): PlaybookProposalCreate | null {
 }
 
 async function submitProposal(): Promise<void> {
+  if (submitting.value) return;
+  const op = gate.begin("playbook-command"); if (!op?.valid()) return;
+  const wasUnknown = playbookAttemptBody.value !== null;
   submitError.value = null;
-  const body = proposalBody();
-  if (!body) return;
+  const body = playbookAttemptBody.value ?? proposalBody(); if (!body) return;
   const key = idempotencyKey.value ?? newIdempotencyKey();
-  idempotencyKey.value = key;
-  submitting.value = true;
+  idempotencyKey.value = key; playbookAttemptBody.value = body; submitting.value = true;
   try {
-    const result = await client.POST("/settings/playbook/proposals", {
-      body,
-      params: { header: { "Idempotency-Key": key } },
-    });
-    if (result.response.status === 202 && result.data) {
-      accepted.value = result.data;
-      idempotencyKey.value = null;
+    if (wasUnknown) {
       await loadSettings();
-      return;
+      if (!op.valid()) return;
+      if (loadError.value) { submitError.value = "原提交结果待核对；历史读取失败，保留原内容与原键"; return; }
     }
-    if (result.response.status === 403) {
-      submitError.value = "只有老板可以查看或提交 Company Playbook";
-      return;
+    const result = await client.POST("/settings/playbook/proposals", { body, params: { header: { "Idempotency-Key": key } }, signal: op.signal });
+    if (!op.valid()) return;
+    if (result.response.status === 202 && result.data) {
+      accepted.value = result.data; idempotencyKey.value = null; playbookAttemptBody.value = null; await loadSettings(); return;
     }
-    if (result.response.status === 503) {
-      const retryAfter = result.response.headers.get("Retry-After");
-      submitError.value = retryAfter && /^\d+$/.test(retryAfter)
-        ? `服务暂不可用，${retryAfter} 秒后可重试`
-        : "服务暂不可用，请稍后重试";
-      return;
+    protectedFailure(result.response.status);
+    if (!op.valid()) { submitError.value = stateError(result.response.status); return; }
+    if (!wasUnknown && [400,422].includes(result.response.status)) {
+      idempotencyKey.value = null; playbookAttemptBody.value = null; submitError.value = "候选内容未通过校验，请检查各字段"; return;
     }
-    submitError.value = result.response.status === 400
-      ? "候选内容未通过校验，请检查各字段"
-      : "候选提交失败，请稍后重试";
-  } catch {
-    submitError.value = "网络连接失败；未编辑字段时重试会复用本次幂等键";
-  } finally {
-    submitting.value = false;
-  }
+    submitError.value = "提交结果待核对；候选可能已持久保存，Run 尚未确认。核对历史后按原内容与原键恢复";
+  } catch { if (op.valid()) submitError.value = "网络结果未知；保留原内容与原幂等键，先核对历史再恢复"; }
+  finally { if (op.valid()) submitting.value = false; }
 }
 
 async function refreshSettings(): Promise<void> {
@@ -668,10 +699,15 @@ async function refreshSettings(): Promise<void> {
 }
 
 async function loadResearchAccess(): Promise<void> {
+  const op = gate.begin("research"); if (!op?.valid()) return;
+  researchLoading.value = true; researchError.value = null; researchAccess.value = null;
   try {
-    const result = await client.GET("/settings/research");
-    researchAccess.value = result.response.status === 200 ? result.data ?? null : null;
-  } catch { researchAccess.value = null; }
+    const result = await client.GET("/settings/research", { signal: op.signal });
+    if (!op.valid()) return;
+    if (result.response.status === 200 && result.data) researchAccess.value = result.data;
+    else { protectedFailure(result.response.status); researchError.value = `研究配置读取失败：${stateError(result.response.status)}`; }
+  } catch { if (op.valid()) researchError.value = "研究配置读取失败，请刷新核对"; }
+  finally { if (op.valid()) researchLoading.value = false; }
 }
 
 onMounted(() => void refreshSettings());
@@ -707,7 +743,21 @@ onMounted(() => void refreshSettings());
       </div>
     </div>
 
+    <p
+      v-if="researchError"
+      role="alert"
+      :style="settingsFlowItemLayout"
+    >
+      {{ researchError }}
+    </p>
+    <p
+      v-else-if="researchLoading"
+      :style="settingsFlowItemLayout"
+    >
+      正在读取研究配置…
+    </p>
     <ResearchAccessCard
+      v-else-if="researchAccess"
       :status="researchAccess"
       :style="settingsFlowItemLayout"
     />
@@ -765,6 +815,12 @@ onMounted(() => void refreshSettings());
           正在读取生效版本…
         </div>
         <div
+          v-else-if="loadError"
+          class="empty"
+        >
+          生效版本读取失败，请刷新核对
+        </div>
+        <div
           v-else-if="!activeVersion"
           class="empty compact-empty"
         >
@@ -801,7 +857,7 @@ onMounted(() => void refreshSettings());
           <div>
             <p class="card-kicker">
               CANDIDATE
-            </p><h2>{{ activeVersion ? "修订经营边界" : "首次配置" }}</h2>
+            </p><h2>{{ loadError ? "候选提交暂不可用" : activeVersion ? "修订经营边界" : "首次配置" }}</h2>
           </div><span>只创建候选</span>
         </header>
         <form @submit.prevent="submitProposal">
@@ -811,6 +867,7 @@ onMounted(() => void refreshSettings());
             name="company_type"
             autocomplete="off"
             required
+            :disabled="submitting || Boolean(playbookAttemptBody)"
             @input="editForm"
           ></label>
           <div class="field-row">
@@ -822,6 +879,7 @@ onMounted(() => void refreshSettings());
               pattern="(?:0|[1-9][0-9]*)(?:\.[0-9]+)?"
               autocomplete="off"
               required
+              :disabled="submitting || Boolean(playbookAttemptBody)"
               @input="editForm"
             ></label>
             <label for="currency">币种<input
@@ -832,6 +890,7 @@ onMounted(() => void refreshSettings());
               pattern="[A-Za-z]{3}"
               autocomplete="off"
               required
+              :disabled="submitting || Boolean(playbookAttemptBody)"
               @input="editForm"
             ></label>
           </div>
@@ -842,6 +901,7 @@ onMounted(() => void refreshSettings());
             inputmode="numeric"
             pattern="(?:0|[1-9][0-9]*)"
             autocomplete="off"
+            :disabled="submitting || Boolean(playbookAttemptBody)"
             @input="editForm"
           ></label>
           <label for="excluded-categories">排除类别<textarea
@@ -850,6 +910,7 @@ onMounted(() => void refreshSettings());
             name="excluded_categories"
             rows="2"
             placeholder="用逗号或换行分隔"
+            :disabled="submitting || Boolean(playbookAttemptBody)"
             @input="editForm"
           /></label>
           <label for="sourcing-regions">寻源区域<textarea
@@ -858,6 +919,7 @@ onMounted(() => void refreshSettings());
             name="sourcing_regions"
             rows="2"
             placeholder="用逗号或换行分隔"
+            :disabled="submitting || Boolean(playbookAttemptBody)"
             @input="editForm"
           /></label>
           <label for="excluded-countries">排除国家<textarea
@@ -866,6 +928,7 @@ onMounted(() => void refreshSettings());
             name="excluded_countries"
             rows="2"
             placeholder="用逗号或换行分隔"
+            :disabled="submitting || Boolean(playbookAttemptBody)"
             @input="editForm"
           /></label>
           <label for="approval-requirements">额外审批动作<textarea
@@ -874,6 +937,7 @@ onMounted(() => void refreshSettings());
             name="approval_requirements"
             rows="2"
             placeholder="只允许加严的 action ID"
+            :disabled="submitting || Boolean(playbookAttemptBody)"
             @input="editForm"
           /></label>
           <label for="supply-note">供应能力说明<textarea
@@ -882,6 +946,7 @@ onMounted(() => void refreshSettings());
             name="supply_capabilities_note"
             rows="3"
             maxlength="4000"
+            :disabled="submitting || Boolean(playbookAttemptBody)"
             @input="editForm"
           /></label>
 
@@ -922,7 +987,7 @@ onMounted(() => void refreshSettings());
             type="submit"
             :disabled="loading || submitting || Boolean(loadError)"
           >
-            {{ submitting ? "正在创建候选…" : "提交审批候选" }}
+            {{ submitting ? "正在核对候选…" : playbookAttemptBody ? "核对历史并按原请求恢复" : "提交审批候选" }}
           </button>
         </form>
       </article>
@@ -1037,6 +1102,7 @@ onMounted(() => void refreshSettings());
       </div>
 
       <div
+        v-if="countryOverview && !countryLoadError"
         class="coverage-grid"
         aria-label="国家政策覆盖统计"
       >
@@ -1055,13 +1121,19 @@ onMounted(() => void refreshSettings());
         >
           <header>
             <h3>当前生效政策</h3>
-            <span>{{ activeCountryPolicies.length }} 个国家</span>
+            <span v-if="countryOverview && !countryLoadError">{{ activeCountryPolicies.length }} 个国家</span>
           </header>
           <div
             v-if="countryLoading"
             class="empty compact-empty"
           >
             正在读取国家政策…
+          </div>
+          <div
+            v-else-if="countryLoadError"
+            class="empty compact-empty"
+          >
+            国家政策读取失败，请刷新核对
           </div>
           <div
             v-else-if="!activeCountryPolicies.length"
@@ -1337,12 +1409,12 @@ onMounted(() => void refreshSettings());
             <button
               class="btn-primary submit-button"
               type="submit"
-              :disabled="countrySubmitting || (!countryAttemptBody && !countryFormValid)"
+              :disabled="countrySubmitting || (countryLoading && !countryAccepted) || Boolean(countryLoadError) || (!countryAttemptBody && !countryFormValid)"
             >
               {{ countrySubmitting
                 ? "正在提交候选…"
                 : countryAttemptBody
-                  ? "以同一内容与幂等键重试"
+                  ? "核对历史并按原内容恢复"
                   : "提交国家政策审批候选" }}
             </button>
           </form>
