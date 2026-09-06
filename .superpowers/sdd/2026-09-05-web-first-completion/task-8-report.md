@@ -139,3 +139,27 @@ Controller批准窄修测试canonical `scripts` import，移除顶层路径alias
 owned Supervisor按status的owner+PID/born核对发送TERM，原会话exit0，最终status=stopped/reason=requested_stop/cleanup_errors=[]。后续只读核验见`/tmp/task8-browser-evidence/cleanup-qa.json`：owned活进程0、容器0、原5个临时私有文件已清。未用泛kill/prune或清其他owner。QA harness只关自己engine/lifecycle句柄，不删除借用资源；最后由原Supervisor统一关闭。
 
 Git命令stderr均捕获计数不打印：最终源码diff-check5148 bytes、add4862、commit86086、rev-parse0；命令exit均0。未修共享.git或改全局Git身份。报告另做文档提交，不变更源码；证据临时目录由Task13持久化。
+
+## 冻结后补充验证证据（仅报告变更）
+
+源码继续冻结于`96c0c01ddf42cfbea79fb10c9fa349b79be4f325`。未重跑pytest或Web suite，未改源码、生成文件或生产配置。
+
+### 本批显式路径敏感扫描
+
+此前未执行该增量扫描，本次补跑。workdir同本worktree，外层命令使用`env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python`执行确定性subprocess编排：
+
+1. `git diff --name-only 31922c4d266260a9016a4641ce4ca8afe04f008e 96c0c01ddf42cfbea79fb10c9fa349b79be4f325`发现恰好34个本批源码、测试、spec、ADR和当前操作guide文件；exit0，git stderr仅计数8866 bytes。
+2. `.venv/bin/python scripts/scan_sensitive.py`显式传入上述34个路径（完整参数清单归档`/tmp/task8-sensitive-paths.json`），没有调用默认全仓发现、没有读取`.env`。原scanner只会输出path/line/kind，本次stdout为0行、stderr为0 bytes，**exit0，零命中**。未输出任何匹配值。
+3. 原始安全结果摘要`/tmp/task8-sensitive-result.json`，编排总exit0。此为扫描完整变更文件的增量范围，不声称扫描所有历史文件或忽略文件。
+
+### exporter与generator独立退出码及无漂移
+
+核实原npm `gen:api`脚本为`bash -o pipefail -c 'python3 scripts/export_openapi.py | openapi-typescript -o src/api/api.d.ts'`：pipefail会传播exporter失败，但历史报告仅保留了管线总退出码，没有分别归档二者状态。本次不重写仓库api.d.ts，顺序执行：
+
+- `.venv/bin/python apps/web/scripts/export_openapi.py`，stdout由subprocess文件句柄写`/tmp/task8-openapi-final.json`：**exit0**，stderr0 bytes，导出353824 bytes。
+- `apps/web/node_modules/.bin/openapi-typescript /tmp/task8-openapi-final.json -o /tmp/task8-api-final.d.ts`：**exit0**，stderr0 bytes。
+- Python按字节比较临时生成文件与`apps/web/src/api/api.d.ts`：**完全一致**，两者SHA256均`fce331a4c5ad459bdcf82c5b5b17541b51a7a7505bbf0c22574e9a81ac7253ff`；编排总exit0。安全摘要`/tmp/task8-openapi-verification.json`。
+
+本次没有发现真实drift或敏感扫描问题，只有本报告新增证据；临时证据仍交Task13持久化。
+
+本轮首次报告`git add -- [report]`返回exit1（stderr379 bytes，未打印），随后核对HEAD仍47772bd、索引仅本报告已修改，未改源码；对同一明确报告路径用`git add -f`完成文档暂存，不修共享Git元数据。
