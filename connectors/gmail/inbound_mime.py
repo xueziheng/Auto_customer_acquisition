@@ -209,6 +209,7 @@ class _HTMLText(HTMLParser):
         self.values: list[str] = []
         self.hidden = 0
         self.quote_stack: list[str] = []
+        self.history_suffix = False
         self.current: list[str] = []
         self.segments: list[str] = []
 
@@ -220,13 +221,16 @@ class _HTMLText(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
+        if attributes.get("id") == "divRplyFwdMsg":
+            # Outlook历史头是后缀分隔符；关闭头容器不恢复当前表达。
+            self._boundary()
+            self.history_suffix = True
         quoted = (
             tag == "blockquote"
             or bool(
                 {"gmail_quote", "yahoo_quoted"}
                 & set((attributes.get("class") or "").split())
             )
-            or attributes.get("id") == "divRplyFwdMsg"
         )
         if quoted or self.quote_stack:
             self._boundary()
@@ -237,7 +241,7 @@ class _HTMLText(HTMLParser):
             self.hidden += 1
         if tag in {"p", "br", "div"} and not self.hidden:
             self.values.append("\n")
-            if not self.quote_stack:
+            if not self.quote_stack and not self.history_suffix:
                 self.current.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
@@ -249,7 +253,7 @@ class _HTMLText(HTMLParser):
     def handle_data(self, data: str) -> None:
         if not self.hidden:
             self.values.append(data)
-            if not self.quote_stack:
+            if not self.quote_stack and not self.history_suffix:
                 self.current.append(data)
 
     def current_segments(self) -> tuple[str, ...]:

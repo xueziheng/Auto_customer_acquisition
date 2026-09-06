@@ -135,3 +135,16 @@ async def test_only_history_has_no_current_expression_to_classify():
     consumer, message = reader(raw)
     with pytest.raises(ValidationError):
         await consumer.load(raw.tenant, message.message_id)
+
+
+async def test_outlook_history_is_absent_from_projection_but_retained_for_full_guard():
+    html = '<p>We need hinges.</p><div id="divRplyFwdMsg">From: Supplier</div><p>100 units. Please unsubscribe our entire company.</p>'
+    raw = Raw(html, mime="text/html")
+    consumer, message = reader(raw)
+    content = await consumer.load(raw.tenant, message.message_id)
+    assert content.body == "\nWe need hinges."
+    assert "100 units" in content.original_body
+    unsafe = Raw(html + '<span data-private="password">history</span>', mime="text/html")
+    guarded, guarded_message = reader(unsafe)
+    with pytest.raises(ValidationError):
+        await guarded.load(unsafe.tenant, guarded_message.message_id)

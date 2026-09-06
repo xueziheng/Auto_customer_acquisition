@@ -32,7 +32,7 @@ ArtifactMessageContentReader只接受BoundedRawArtifactStore，按真实tenant/m
 
 5a纯解析新增仅内存且序列化排除的evidence_segments，完整body/guard_body保持不变先guard。
 明确排除plain的>引用行及On…wrote/Original Message/Forwarded分隔后历史，HTML的blockquote、
-gmail_quote/yahoo_quoted及divRplyFwdMsg。每个片段连续、不跨删除区拼接；最终quote必须完全落在
+gmail_quote/yahoo_quoted引用容器；divRplyFwdMsg是历史后缀分隔符，其后所有HTML兄弟内容均排除，关闭或自闭合头容器不能恢复当前表达。完整body/guard_body仍保留后缀。每个片段连续、不跨删除区拼接；最终quote必须完全落在
 同一当前片段且在完整原文精确出现。生产主题固定占位；原主题不进入模型，也不作为本次采购字段证据。片段超过200或
 引用结构未闭合固定待人工，不将空缺当新事实。仅支持这些明确格式，不宣称所有邮件客户端历史均已识别。
 

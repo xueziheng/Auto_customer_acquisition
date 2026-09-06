@@ -59,3 +59,13 @@ def test_unclosed_quotes_and_segment_budget_never_become_current_evidence():
     )
     assert many.evidence_available is False and many.evidence_segments == ()
     assert "history" in many.body
+
+
+@pytest.mark.parametrize("marker", ['<div id="divRplyFwdMsg">From: Supplier</div>', '<div id="divRplyFwdMsg"/>'])
+def test_outlook_history_separator_excludes_all_later_siblings(marker):
+    html = '<p>We need hinges.</p>' + marker + '<p>100 units. Please unsubscribe our entire company.</p><p>More history.</p>'
+    parsed = parse_inbound_content(('Content-Type: text/html\r\n\r\n' + html).encode())
+    assert parsed.evidence_available is True
+    assert parsed.evidence_segments == ("\nWe need hinges.",)
+    assert "100 units" in parsed.body and "More history." in parsed.body
+    assert parsed.guard_body == html

@@ -250,8 +250,8 @@ async def configure_playbook(runtime, worker):
         assert (await client.get("/settings/playbook")).json()["configured"] is True
 
 
-@pytest.mark.parametrize("complete", [False, True])
-async def test_real_need_evidence_questions_and_handoff(page_runtime, complete):
+@pytest.mark.parametrize("complete,outlook", [(False, False), (True, False), (False, True)])
+async def test_real_need_evidence_questions_and_handoff(page_runtime, complete, outlook):
     runtime = page_runtime
     await prepare_sent(runtime, reply_source=True)
     tenant = runtime["route"].tenant_id
@@ -278,6 +278,8 @@ async def test_real_need_evidence_questions_and_handoff(page_runtime, complete):
             ]
         )
     body += "\nContact buyer@example.test at https://example.test."
+    if outlook:
+        body = '<p>' + body + '</p><div id="divRplyFwdMsg">From: Supplier</div><p>We offered 100 units.</p>'
     model = Model("provides_specification", fields)
     try:
         await inbound.management.bind(
@@ -290,6 +292,7 @@ async def test_real_need_evidence_questions_and_handoff(page_runtime, complete):
             await runtime["provider"].receive_inbound(
                 mime(
                     body=body,
+                    headers="Content-Type: text/html; charset=utf-8" if outlook else "",
                     message_id="<real-need@example.test>",
                     reply=runtime["outbound"],
                 ),
@@ -319,6 +322,13 @@ async def test_real_need_evidence_questions_and_handoff(page_runtime, complete):
                 .all()
             )
             assert len(needs) == 1
+            if outlook:
+                stored = (await session.execute(
+                    text("SELECT product_category,quantity FROM validated_needs WHERE tenant_id=:t AND need_id=:n"),
+                    {"t": tenant, "n": needs[0]},
+                )).one()
+                assert stored.product_category["value"] == "hinges"
+                assert stored.quantity is None
             message = (
                 await session.execute(
                     text(
@@ -382,6 +392,8 @@ async def test_real_need_evidence_questions_and_handoff(page_runtime, complete):
         assert len(model.calls) == 1
         assert "buyer@example.test" not in json.dumps(model.calls)
         assert "https://" not in json.dumps(model.calls)
+        if outlook:
+            assert "We offered 100 units" not in model.calls[0]["body"]
     finally:
         await inbound.aclose()
 
@@ -397,6 +409,11 @@ async def test_real_need_evidence_questions_and_handoff(page_runtime, complete):
         ),
         (
             '<p>Thanks.</p><div class="gmail_quote">We offered 100 units.</div>',
+            "text/html",
+            "100 units",
+        ),
+        (
+            '<p>Thanks. We have no current need.</p><div id="divRplyFwdMsg"><b>From:</b> Supplier<br><b>Subject:</b> Previous message</div><p>We offered 100 units.</p>',
             "text/html",
             "100 units",
         ),
@@ -463,8 +480,9 @@ async def test_unreliable_quotes_fail_before_classification_or_need(
         await inbound.aclose()
 
 
+@pytest.mark.parametrize("outlook", [False, True])
 async def test_ordinary_current_reply_does_not_inherit_historical_unsubscribe(
-    page_runtime,
+    page_runtime, outlook,
 ):
     runtime = page_runtime
     await prepare_sent(runtime, reply_source=True)
@@ -479,7 +497,11 @@ async def test_ordinary_current_reply_does_not_inherit_historical_unsubscribe(
         )
         await runtime["provider"].receive_inbound(
             mime(
-                body="Thanks. We have no current need.\n> Please unsubscribe our entire company.",
+                body=(
+                    '<p>Thanks. We have no current need.</p><div id="divRplyFwdMsg"><b>From:</b> Supplier<br><b>Subject:</b> Previous message</div><p>Please unsubscribe our entire company.</p>'
+                    if outlook else "Thanks. We have no current need.\n> Please unsubscribe our entire company."
+                ),
+                headers="Content-Type: text/html; charset=utf-8" if outlook else "",
                 message_id="<ordinary@example.test>",
                 reply=runtime["outbound"],
             ),
@@ -489,9 +511,6 @@ async def test_ordinary_current_reply_does_not_inherit_historical_unsubscribe(
             await worker.inbound_driver.scan_once()
             await worker.inbound_driver.scan_once()
             await advance(worker, tenant)
-        assert model.calls == [
-            {"subject": "(current reply)", "body": "Thanks. We have no current need.\n"}
-        ]
         async with runtime["factory"]() as session:
             assert (
                 await session.scalar(
@@ -511,6 +530,10 @@ async def test_ordinary_current_reply_does_not_inherit_historical_unsubscribe(
                 )
                 == "no_current_need"
             )
+        assert model.calls == [{
+            "subject": "(current reply)",
+            "body": "\nThanks. We have no current need." if outlook else "Thanks. We have no current need.\n",
+        }]
     finally:
         await inbound.aclose()
 
