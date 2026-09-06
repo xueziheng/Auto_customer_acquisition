@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Select, func, select
@@ -31,10 +32,13 @@ from workflows.engine.audit import (
     RunSummaryView,
     RunToolCallView,
 )
+from workflows.engine.observability import RunObservation, WebCoreObservation
 
 from .tables import (
     ApprovalPackageRow,
     GeneratedArtifactRow,
+    HandoffRow,
+    OpportunityRow,
     SearchQuotaReservationRow,
     SearchQuotaRunRow,
     SourcingCandidateRow,
@@ -44,9 +48,11 @@ from .tables import (
     SourcingPublicPlanRow,
     SourcingReviewRow,
     ToolCallRow,
+    ValidatedNeedRow,
     WorkflowRunRow,
     WorkflowStepRow,
 )
+from .web_core_observability import read_web_core_observation
 
 SessionScope = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
@@ -56,6 +62,14 @@ class PostgresRunAuditRepository:
 
     def __init__(self, session_scope: SessionScope) -> None:
         self._session_scope = session_scope
+
+    async def get_observability(
+        self, tenant_id: TenantId, *, start: datetime, end: datetime, observed_at: datetime,
+    ) -> WebCoreObservation:
+        """只读取已有事实的观测投影，不写历史账本。"""
+        return await read_web_core_observation(
+            self._session_scope, tenant_id, start=start, end=end, observed_at=observed_at,
+        )
 
     @staticmethod
     def _summary_statement(tenant_id: TenantId) -> Select[Any]:
@@ -346,6 +360,63 @@ class PostgresRunAuditRepository:
             rows = (await session.execute(statement)).all()
         return [self._summary(row) for row in rows]
 
+    @staticmethod
+    async def _run_binding(
+        session: AsyncSession, tenant_id: TenantId, run_id: RunId,
+    ) -> Any:
+        """绑定必须由流程类型和同租户持久化关系证明，禁止subject前缀猜链。"""
+        handoff = select(
+            HandoffRow.handoff_id, HandoffRow.opportunity_id,
+            ValidatedNeedRow.need_id, HandoffRow.assigned_to.label("responsible_employee_id"),
+        ).join(WorkflowRunRow, (WorkflowRunRow.tenant_id == HandoffRow.tenant_id)
+            & (WorkflowRunRow.subject_ref == HandoffRow.handoff_id)).join(
+            OpportunityRow, (OpportunityRow.tenant_id == HandoffRow.tenant_id)
+            & (OpportunityRow.opportunity_id == HandoffRow.opportunity_id),
+        ).outerjoin(ValidatedNeedRow, (ValidatedNeedRow.tenant_id == OpportunityRow.tenant_id)
+            & (ValidatedNeedRow.need_id == OpportunityRow.need_id)).where(
+            WorkflowRunRow.tenant_id == tenant_id, WorkflowRunRow.run_id == run_id,
+            WorkflowRunRow.workflow_type == "human_handoff",
+            HandoffRow.tenant_id == tenant_id, OpportunityRow.tenant_id == tenant_id,
+        )
+        # 没有可信已分配人时保持null；不把老板审计权限误作任务归属。
+        from sqlalchemy import null
+        sourcing = select(
+            null().label("handoff_id"), OpportunityRow.opportunity_id,
+            ValidatedNeedRow.need_id, OpportunityRow.owner.label("responsible_employee_id"),
+        ).select_from(SourcingCaseRow).join(WorkflowRunRow,
+            (WorkflowRunRow.tenant_id == SourcingCaseRow.tenant_id)
+            & (WorkflowRunRow.subject_ref == SourcingCaseRow.case_id)
+            & (WorkflowRunRow.workflow_version == SourcingCaseRow.workflow_version),
+        ).join(ValidatedNeedRow, (ValidatedNeedRow.tenant_id == SourcingCaseRow.tenant_id)
+            & (ValidatedNeedRow.need_id == SourcingCaseRow.need_id)).outerjoin(
+            OpportunityRow, (OpportunityRow.tenant_id == SourcingCaseRow.tenant_id)
+            & (OpportunityRow.opportunity_id == SourcingCaseRow.opportunity_id)
+            & (OpportunityRow.need_id == SourcingCaseRow.need_id),
+        ).where(WorkflowRunRow.tenant_id == tenant_id, WorkflowRunRow.run_id == run_id,
+            WorkflowRunRow.workflow_type == "sourcing_case",
+            SourcingCaseRow.tenant_id == tenant_id, ValidatedNeedRow.tenant_id == tenant_id)
+        return (await session.execute(handoff.union_all(sourcing))).first()
+
+    @staticmethod
+    def _run_observation(summary: Any, steps: Any, calls: Any, binding: Any) -> RunObservation:
+        """只计算记录时间跨度；异序时钟明确未知，等待不冒充人工耗时。"""
+        invalid = sum(1 for step in steps if step.updated_at < step.created_at
+                      or step.created_at < summary.created_at)
+        invalid += sum(1 for call in calls if call.created_at < summary.created_at
+                       or (call.completed_at is not None and call.completed_at < call.created_at))
+        elapsed = max(step.updated_at for step in steps) - summary.created_at if steps and not invalid else None
+        return RunObservation(
+            call_count=len({call.tool_call_id for call in calls if call.status != "duplicate"}),
+            attempt_count=sum(call.attempt_count for call in calls if call.status != "duplicate"),
+            duplicate_receipt_count=sum(1 for call in calls if call.status == "duplicate"),
+            recorded_span_seconds=elapsed.days * 86400 + elapsed.seconds if elapsed is not None else None,
+            invalid_time_count=invalid,
+            handoff_id=binding.handoff_id if binding else None,
+            opportunity_id=binding.opportunity_id if binding else None,
+            need_id=binding.need_id if binding else None,
+            responsible_employee_id=binding.responsible_employee_id if binding else None,
+        )
+
     async def get_run(self, tenant_id: TenantId, run_id: RunId) -> RunDetailView | None:
         summary_statement = self._summary_statement(tenant_id).where(
             WorkflowRunRow.run_id == run_id
@@ -424,8 +495,10 @@ class PostgresRunAuditRepository:
             tool_calls = (await session.execute(tool_calls_statement)).all()
             artifacts = (await session.execute(artifacts_statement)).all()
             approvals = (await session.execute(approvals_statement)).all()
+            binding = await self._run_binding(session, tenant_id, run_id)
         return RunDetailView(
             summary=self._summary(summary_row),
+            observation=self._run_observation(summary_row, steps, tool_calls, binding),
             steps=tuple(
                 RunStepView(
                     step_id=StepId(row.step_id),

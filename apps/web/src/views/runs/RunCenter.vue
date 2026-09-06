@@ -4,6 +4,7 @@ import { RouterLink, useRoute } from "vue-router";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import WebCoreObservationPanel from "../../components/WebCoreObservationPanel.vue";
 import ResearchRunSummary from "../../components/ResearchRunSummary.vue";
 import { stopLabel } from "../../components/researchLabels";
 import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
@@ -16,6 +17,9 @@ const client = inject<ApiClient>("tradeos-api-client", apiClient);
 const route = useRoute();
 const runs = ref<RunSummary[]>([]);
 const detail = ref<RunDetail | null>(null);
+const observation = ref<components["schemas"]["WebCoreObservation"] | null>(null);
+const observationError = ref<string | null>(null);
+const observationLoading = ref(false);
 const selectedRunId = ref<string | null>(null);
 const statusFilter = ref("");
 const workflowFilter = ref("");
@@ -29,6 +33,7 @@ let detailRequestVersion = 0;
 const identityGate = useQuoteRequestScope(client, () => [], () => {
   listRequestVersion += 1; detailRequestVersion += 1;
   runs.value = []; detail.value = null; selectedRunId.value = null;
+  observation.value = null; observationError.value = null; observationLoading.value = false;
   listLoading.value = false; detailLoading.value = false; listError.value = null; detailError.value = null;
   statusFilter.value = ""; workflowFilter.value = "";
 });
@@ -69,6 +74,14 @@ function safeError(status: number): string {
   return "Run 审计记录读取失败，请稍后重试";
 }
 
+function revokeRead(status: number): void {
+  identityGate.invalidate(); listRequestVersion++; detailRequestVersion++;
+  runs.value = []; detail.value = null; selectedRunId.value = null;
+  observation.value = null; observationLoading.value = false;
+  listLoading.value = false; detailLoading.value = false;
+  observationError.value = safeError(status); listError.value = safeError(status); detailError.value = safeError(status);
+}
+
 function formatTime(value: string | null): string {
   if (!value) return "—";
   const parsed = new Date(value);
@@ -96,7 +109,7 @@ async function loadDetail(runId: string): Promise<void> {
     if (!op.valid() || requestVersion !== detailRequestVersion) return;
     if (result.response.status !== 200 || !result.data) {
       detail.value = null;
-      if ([401,403].includes(result.response.status)) { identityGate.invalidate(); runs.value = []; listLoading.value = false; detailLoading.value = false; }
+      if ([401,403].includes(result.response.status)) revokeRead(result.response.status);
       detailError.value = safeError(result.response.status);
       return;
     }
@@ -123,7 +136,7 @@ async function loadRuns(): Promise<void> {
     if (!op.valid() || requestVersion !== listRequestVersion) return;
     if (result.response.status !== 200 || !result.data) {
       runs.value = [];
-      if ([401,403,404].includes(result.response.status)) { identityGate.invalidate(); detailRequestVersion += 1; detail.value = null; selectedRunId.value = null; detailLoading.value = false; listLoading.value = false; }
+      if ([401,403,404].includes(result.response.status)) revokeRead(result.response.status);
       listError.value = safeError(result.response.status);
       return;
     }
@@ -140,9 +153,29 @@ async function loadRuns(): Promise<void> {
   }
 }
 
+async function loadObservation(): Promise<void> {
+  const op = identityGate.begin("observation"); if (!op?.valid()) return;
+  observation.value = null; observationError.value = null; observationLoading.value = true;
+  try {
+    const result = await client.GET("/runs/observability", { signal: op.signal });
+    if (!op.valid()) return;
+    if (result.response.status !== 200 || !result.data || !Array.isArray(result.data.stages) || !result.data.handoffs) {
+      if ([401, 403].includes(result.response.status)) revokeRead(result.response.status);
+      observationError.value = safeError(result.response.status);
+      return;
+    }
+    observation.value = result.data;
+  } catch {
+    if (op.valid()) observationError.value = "无法连接观测服务";
+  } finally {
+    if (op.valid()) observationLoading.value = false;
+  }
+}
+
 async function refreshRuns(): Promise<void> {
   await Promise.all([
     loadRuns(),
+    loadObservation(),
     selectedRunId.value ? loadDetail(selectedRunId.value) : Promise.resolve(),
   ]);
 }
@@ -158,7 +191,7 @@ watch(() => route.query.run, (runId) => {
   else if (runs.value[0]) void loadDetail(runs.value[0].run_id);
 }, { immediate: true });
 
-onMounted(() => void loadRuns());
+onMounted(() => { void loadRuns(); void loadObservation(); });
 onBeforeUnmount(() => {
   listRequestVersion += 1;
   detailRequestVersion += 1;
@@ -204,6 +237,12 @@ onBeforeUnmount(() => {
       <article><span>失败 / 超时</span><strong>{{ listLoading || listError ? "—" : failedCount }}</strong><p>错误只展示脱敏类别</p></article>
       <article><span>已完成</span><strong>{{ listLoading || listError ? "—" : completedCount }}</strong><p>状态机正常到达终态</p></article>
     </section>
+
+    <WebCoreObservationPanel
+      :observation="observation"
+      :error="observationError"
+      :loading="observationLoading"
+    />
 
     <section class="run-layout">
       <article class="run-panel run-index">
@@ -321,6 +360,30 @@ onBeforeUnmount(() => {
             <div><span>下次调度</span><strong>{{ formatTime(detail.summary.next_poll_at) }}</strong></div>
             <div><span>重试次数</span><strong>{{ detail.summary.retry_count }}</strong></div>
             <div><span>脱敏错误</span><strong>{{ detail.summary.last_error ?? "无" }}</strong></div>
+          </section>
+
+          <section
+            v-if="detail.observation"
+            class="audit-section run-observation"
+          >
+            <h3>停留位置与可追溯输入</h3>
+            <p>当前步骤：{{ detail.summary.current_step }} · 处理责任：{{ detail.observation.responsible_employee_id ?? '未知，需老板核对分工' }}</p>
+            <p>记录时间跨度：{{ detail.observation.recorded_span_seconds === null ? '未知' : `${detail.observation.recorded_span_seconds} 秒` }} · 时间异常 {{ detail.observation.invalid_time_count }}。这是记录时钟跨度，不是执行或人工工作耗时。</p>
+            <p>工具调用 {{ detail.observation.call_count }} · 尝试 {{ detail.observation.attempt_count }} · 重放回执 {{ detail.observation.duplicate_receipt_count }}；模型 token、人工工时和费用未知，缺少实际 usage、计时和费率。</p>
+            <p>关联机会：{{ detail.observation.opportunity_id ?? '未知' }}</p>
+            <p v-if="detail.observation.handoff_id">
+              <RouterLink :to="`/crm/handoffs/${detail.observation.handoff_id}`">
+                打开关联接管与机会
+              </RouterLink>
+            </p>
+            <p v-if="detail.observation.need_id">
+              <RouterLink :to="`/demand/needs/${detail.observation.need_id}`">
+                打开关联已验证需求
+              </RouterLink>
+            </p>
+            <p v-if="!detail.observation.handoff_id && !detail.observation.need_id">
+              没有可核实的业务对象绑定；使用下方已有审批引用核对。
+            </p>
           </section>
 
           <ResearchRunSummary

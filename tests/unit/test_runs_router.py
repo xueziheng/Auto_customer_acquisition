@@ -223,3 +223,10 @@ def test_sourcing_summary_exposes_only_the_safe_whitelist() -> None:
             "secret_ref",
         )
     )
+
+
+def test_observation_endpoint_is_not_consumed_as_run_id_and_rejects_sales() -> None:
+    app, audit = _app('sales')
+    result = _get(app, '/runs/observability')
+    assert result.status_code == 403
+    assert audit.calls == []

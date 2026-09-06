@@ -547,6 +547,7 @@ onMounted(() => {
           </div>
           <div class="fairness-rule">
             <strong>等待最久优先</strong>
+            <span>当前可见 {{ visibleQueue.length }} 项（最多50项，按当前授权范围）；等待不是人工工作耗时。</span>
             <span>requested_at 升序 / wait_seconds 降序；不按分数排序</span>
           </div>
           <p

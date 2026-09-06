@@ -1846,6 +1846,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/observability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Observability
+         * @description 当前身份读取独立租户窗口；不接受客户端actor、tenant或成本输入。
+         */
+        get: operations["get_observability_runs_observability_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{run_id}": {
         parameters: {
             query?: never;
@@ -3259,6 +3279,30 @@ export interface components {
             };
         };
         /**
+         * CostInputObservation
+         * @description 无可信usage和费率时未知；费用只允许原Money/Decimal契约。
+         */
+        CostInputObservation: {
+            cost_per_qualified_opportunity?: components["schemas"]["Money"] | null;
+            /** Human Work Seconds */
+            human_work_seconds?: number | null;
+            /**
+             * Missing Inputs
+             * @default [
+             *       "provider_token_usage_missing",
+             *       "human_time_records_missing",
+             *       "rate_card_missing",
+             *       "qualification_evidence_missing"
+             *     ]
+             */
+            missing_inputs: string[];
+            /** Model Input Tokens */
+            model_input_tokens?: number | null;
+            /** Model Output Tokens */
+            model_output_tokens?: number | null;
+            total_cost?: components["schemas"]["Money"] | null;
+        };
+        /**
          * CostItemBinding
          * @description 绑定持久明细身份与原文费用行，不能按浏览器数组位置猜测。
          */
@@ -4253,6 +4297,36 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** HandoffObservation */
+        HandoffObservation: {
+            /** By Employee */
+            by_employee: components["schemas"]["HandoffOwnerObservation"][];
+            /** Invalid Time Count */
+            invalid_time_count: number;
+            /** Oldest Wait Seconds */
+            oldest_wait_seconds: number | null;
+            /** Queue Depth */
+            queue_depth: number;
+            /**
+             * Scope
+             * @default tenant_current
+             * @constant
+             */
+            scope: "tenant_current";
+            /**
+             * Source
+             * @default handoffs.requested
+             * @constant
+             */
+            source: "handoffs.requested";
+        };
+        /** HandoffOwnerObservation */
+        HandoffOwnerObservation: {
+            /** Employee Id */
+            employee_id: string | null;
+            /** Queue Depth */
+            queue_depth: number;
         };
         /**
          * HandoffPacketView
@@ -6658,11 +6732,55 @@ export interface components {
             approvals: components["schemas"]["RunApprovalView"][];
             /** Artifacts */
             artifacts: components["schemas"]["RunArtifactView"][];
+            observation?: components["schemas"]["RunObservation"] | null;
             /** Steps */
             steps: components["schemas"]["RunStepView"][];
             summary: components["schemas"]["RunSummaryView"];
             /** Tool Calls */
             tool_calls: components["schemas"]["RunToolCallView"][];
+        };
+        /**
+         * RunObservation
+         * @description 单Run的安全关联与记录时间；无可信绑定不得用文本猜业务对象。
+         */
+        RunObservation: {
+            /** Attempt Count */
+            attempt_count: number;
+            /** Call Count */
+            call_count: number;
+            /**
+             * Completeness
+             * @default partial
+             * @constant
+             */
+            completeness: "partial";
+            /** Duplicate Receipt Count */
+            duplicate_receipt_count: number;
+            /** Handoff Id */
+            handoff_id?: string | null;
+            inputs?: components["schemas"]["CostInputObservation"];
+            /** Invalid Time Count */
+            invalid_time_count: number;
+            /** Need Id */
+            need_id?: string | null;
+            /** Opportunity Id */
+            opportunity_id?: string | null;
+            /** Recorded Span Seconds */
+            recorded_span_seconds: number | null;
+            /** Responsible Employee Id */
+            responsible_employee_id?: string | null;
+            /**
+             * Scope
+             * @default run
+             * @constant
+             */
+            scope: "run";
+            /**
+             * Source
+             * @default workflow_steps_and_tool_calls
+             * @constant
+             */
+            source: "workflow_steps_and_tool_calls";
         };
         /**
          * RunResearchView
@@ -7009,6 +7127,17 @@ export interface components {
             supply_rank: number;
             /** Value Band */
             value_band: number;
+        };
+        /** SourceCallObservation */
+        SourceCallObservation: {
+            /** Attempt Count */
+            attempt_count: number;
+            /** Call Count */
+            call_count: number;
+            /** Duplicate Receipt Count */
+            duplicate_receipt_count: number;
+            /** Tool Id */
+            tool_id: string;
         };
         /**
          * SourceType
@@ -7545,6 +7674,25 @@ export interface components {
             /** Substitution Impact */
             substitution_impact?: string | null;
         };
+        /** StageObservation */
+        StageObservation: {
+            /** Count */
+            count: number | null;
+            /**
+             * Missing Inputs
+             * @default []
+             */
+            missing_inputs: string[];
+            /** Source */
+            source: string;
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "demand_signal" | "need_hypothesis" | "validated_need" | "opportunity_record" | "supply_match" | "quote_record" | "human_execution" | "deal_outcome";
+            /** Time Field */
+            time_field: string | null;
+        };
         /**
          * StepIntent
          * @enum {string}
@@ -7795,6 +7943,59 @@ export interface components {
          * @enum {string}
          */
         VerificationStatus: "unverified" | "verified" | "risky" | "invalid";
+        /** WebCoreObservation */
+        WebCoreObservation: {
+            /**
+             * Completeness
+             * @default partial
+             * @constant
+             */
+            completeness: "partial";
+            /** Consumed Credits */
+            consumed_credits: number;
+            handoffs: components["schemas"]["HandoffObservation"];
+            inputs?: components["schemas"]["CostInputObservation"];
+            /**
+             * Missing Inputs
+             * @default [
+             *       "qualification_evidence_missing",
+             *       "run_entity_attribution_missing",
+             *       "supply_match_source_missing"
+             *     ]
+             */
+            missing_inputs: string[];
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Qualified Opportunity Count */
+            qualified_opportunity_count?: number | null;
+            /** Reserved Credits */
+            reserved_credits: number;
+            /**
+             * Scope
+             * @default tenant_window
+             * @constant
+             */
+            scope: "tenant_window";
+            /** Source Calls */
+            source_calls: components["schemas"]["SourceCallObservation"][];
+            /** Stages */
+            stages: components["schemas"]["StageObservation"][];
+            /** Uncertain Credits */
+            uncertain_credits: number;
+            /**
+             * Window End
+             * Format: date-time
+             */
+            window_end: string;
+            /**
+             * Window Start
+             * Format: date-time
+             */
+            window_start: string;
+        };
         /** WorkExtractionView */
         WorkExtractionView: {
             confirmation: components["schemas"]["EmployeeConfirmationView"] | null;
@@ -13868,6 +14069,47 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunSummaryView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_observability_runs_observability_get: {
+        parameters: {
+            query?: {
+                start?: string | null;
+                end?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebCoreObservation"];
                 };
             };
             /** @description 请求参数无效 */
