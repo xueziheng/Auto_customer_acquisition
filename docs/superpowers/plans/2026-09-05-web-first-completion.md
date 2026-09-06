@@ -290,16 +290,20 @@ python3 -m pytest tests/unit/test_context_builder.py tests/unit/test_agent_worke
 
 ### Task 10：寻源、成本、审批、报价跨页面连接
 
+已完成并通过独立复审。初始源码 `8cc0419`，最终修复源码 `0890ae9`，报告 HEAD `a5a59d9`。机会→需求/成本、报价→精确成本/Run、Run→审批沿用真实ID，保留老板审计权限；来源记录不冒称已验证事实，390布局裁切已修。两轮限定修复解决从A深链新建/选择B后被重读跳回A：成功、目标缺失、503及网络失败均保留同scope目标意图，失败清数据与确认，权限/对象变化仍完整撤销。
+
+初始122/77前端、80Python及真实Linux浏览器1项分别通过；最终修复68组件及静态通过，未冒称最终源码重跑全部旧环境。当前Mac主入口实际回复产生Need/Opportunity并验证链接，报价仍受配置与Linux解析器平台限制；另一隔离Linux owner完成公开回复前置→来源/单位/成本/两版报价/独立审批/PDF与新增链接。两套环境与实体明确分栏，不宣称统一Mac入口报价可用。Task12须同版本集中核验，13保留可运行说明与平台限制；早轮未知根因/混合测试时钟不作真实耗时或完成证明。
+
 **Files:**
 - 核对/修复：`apps/web/src/views/sourcing/`、`costing-quotes/`、`products/`、`approvals/`、`runs/` 和对应 API 路由。
 - 复用：`docs/acceptance/2026-08-28-phase2-costing-quotation.md`、`2026-08-30-phase2-sourcing-case-product-cards.md`、`2026-09-02-phase2-need-cluster-sourcing-admission.md`、`2026-09-04-phase2-catalog-product-proposal.md` 中已有验收入口。
 
 **Interfaces:** 保留现有 Need、Case、Opportunity、Cost Sheet、Quote 与 Approval ID 和状态；不得为了联调新建简化业务对象。
 
-- [ ] 从真实受控回复生成的 Need/Opportunity 开始验证既有链；价格证据走已实现的来源确认端口，不能生成虚构供应商报价。
-- [ ] 校验寻源准入、独立审批、indicative/quoted 边界、单位/数量变更、成本冻结和 PDF 当前授权。
-- [ ] 修复实际发现的断链与页面缺口；Catalog queued/stale 如实展示，未有下游消费者不显示“培养成功”。
-- [ ] 运行受影响子项目的现有聚焦回归，提交。本任务不重写已验收域服务。
+- [x] 从真实受控回复生成的 Need/Opportunity 开始验证既有链；价格证据走已实现的来源确认端口，不能生成虚构供应商报价。
+- [x] 校验寻源准入、独立审批、indicative/quoted 边界、单位/数量变更、成本冻结和 PDF 当前授权。
+- [x] 修复实际发现的断链与页面缺口；Catalog queued/stale 如实展示，未有下游消费者不显示“培养成功”。
+- [x] 运行受影响子项目的现有聚焦回归，提交。本任务不重写已验收域服务。
 
 ### Task 11：Run、接管和成本输入
 

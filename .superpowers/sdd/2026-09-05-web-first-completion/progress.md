@@ -70,7 +70,7 @@ Task 8: fix round1/5 complete (2 addressed, 0 open — SendingIdentity与Inbox�
 Task 8: ⚠️ resolved by controller — 原register耐久winner/预热原子状态机已在preflight具名核过，7当前后端权限已Approved，本批窄API与179后端证据/生成类型支持增量，无全域重审宣称。填充浏览器与cleanup采完整report及controller已视截图，Fix1纯请求生命周期用28项作用组/最终build验证；12仍最终全量/120warnings实际归属，13正式持久化。未跑的最终180/359不补造。
 Task 5b: minor M1 addressed by Task8 — 原件octet-stream binary schema及生成类型已补，初始RED无content→API组通过，独立exporter/generator0且无漂移，真实binary下载有浏览器证据，8独立Spec✅。最终全分支核保留此解决记录。
 Task 9: complete — BASE91c77754e295f5eb9754bd87e4e4f920985ae2fe，初始ebb8da6，Fix1源码1810acd、report HEAD27098ce3ed637fd85df722b1a9e997fe972ef4a9；same review_task9 Spec✅/Approved，I1/I2均ADDRESSED，无新增Important。最终Web88/API10有限组分别通过，完整证据task-9-report/review；M1留12。恢复action/稳定canonical header/安全请求422的裁定均持久化，角色演练与真实/受控浏览器界限保留。
-Task 10: pending
+Task 10: complete — BASEeec91eaf4c4356c3ff7a8b24f137056e3de5c28a；初始8cc0419，Fix2源码0890ae99dd1fe340247024991d200eecf72efb91，report HEADa5a59d9d44d208081a53c912b22612ad78d180f9；review_task10 Spec✅/Approved，I1经两轮修复ADDRESSED，无Minor。最终68组件及静态通过；原Mac/Linux分栏证据和平台限制保留给12/13。
 Task 11: pending
 Task 12: pending
 Task 13: pending
@@ -274,3 +274,34 @@ Ruling: 后续独立审查把controller此前“域外总共只一次”收紧�
 - Task9 Fix1中间证据：I1四个真实deferred反例RED4failed/15skipped，共享inbound generation与写期间读门禁后相关5passed；I2真实HTTP原400 RED→请求坏字段422/application0 GREEN，业务ValidationError及运行时Pydantic仍400；前端首次422可修改新命令、先503后422仍原命令冻结2passed。最终六文件Web/原Settings422与新HTTP有限组/静态仍进行中，无CSS/stack变更，未验收。
 
 - Task9 Fix1源码1810acd2072888f8378de3dfd3ed306c60d393fd，report HEAD27098ce3ed637fd85df722b1a9e997fe972ef4a9；controller已读完整Fix1命令输出，核HEAD匹配/status空。最终六文件88passed/4.40s，真实ASGI有限10passed/52deselected/3.10s；独立schema生成、mypy3、lint/build、7boundaries及显式11路径scan通过；无CSS/stack重跑。Fix包ffdbb0e..27098ce为53639bytes/2commits（Git stderr206行噪音）。same review_task9正在限定复审I1/I2；M1留12，10尚未开始。
+
+Ruling: Task10只依据现有具名强类型ID补Quote→Run→Approval及Opportunity→Need/精确成本单的真实链；不从ApprovalView的affected_entities字符串或proposed_change_display字典猜反向报价路由。— 实施者核quote submit已有quote_id/run_id，RunApprovalView已有approval_id，但审批投影无具名quote_id/resource route；现有契约足够补前向断链。— 代价是审批页暂不新增无可靠ID的反向捷径，正式spec保留限制；精确成本query仍须API授权和对象一致性，若后续确有必要再定义有证据的安全投影，不为拟议文件映射机械改后端。
+
+Ruling: Task10以两套明确分栏、同源码的owned环境验证：当前Mac owner真实回复→Need/Opportunity→新链接及成本503状态；原隔离internal-network Linux owner原样完成其公开回复→Need/Opportunity→来源确认/单位/成本/独立审批/PDF。不得声称同一Need或当前Mac统一入口报价可用，不追加launcher模式/跨网络桥接/绕过Linux parser probe。— 原linux_stack固定新owner独立网络与公开前置，不支持借loopback PG/MinIO；主ControlledConfig缺报价技术配置，LinuxEvidenceTextParser在Mac固定不可用。规格允许受控核心与既有报价工作台回归，独立owner不改变原完整链真实性；仅503页面不能算A7，必须实际跑Linux整链。— 代价是统一Mac入口尚不能完整报价，正式report DONE_WITH_CONCERNS，Task12同版本验收与13能力矩阵/可运行说明必须突出此环境限制；若后续需要统一Mac运营入口，另行做有界运行环境装配，不能靠临时QA配置伪称已交付。
+Ruling: Task10窄修OpportunityList全局body min-width:1080px和页面固定双列，Detail长Need链接换行。— 实际填充浏览器390在CRM出现document overflow且全局样式污染后续成本页，属于本批真实联动路径断点。— 增加两处局部布局变更及实际RED/GREEN截图/受影响组件与build，保持全站框架、已验业务/权限语义，不扩全站重构。
+
+Ruling: Task10原Linux browser失败后的诊断只可在原测试server安全异常边界输出本仓测试相对文件名/行号或固定阶段标签；不输出异常消息、locals、配置/请求体/凭证。— 首轮1failed/53.34s无manifest，现有只有t10_fixture_error=AssertionError，不足以判断parser/probe还是其他公开前置；不能凭候选行猜原因。— 增加有限测试诊断代码及精确owner清理核验，原预算与parser资源/平台检查不变；owner d027f849c3ab434aabe309c1cee2be9b初报cleanup unknown，先核事实，失败历史保留，不提升为已清理。
+
+Ruling: Task10修OpportunityDetail两处“provenance存在即已验证事实”及“客户确认信息”总标题，改为关键字段/来源记录，保留实际ProvenancePopover等级与证据。— 实施者具名核BASE源220/291，Task8 SOURCE RECORD实际在HandoffPacketView，controller旧brief误写为OpportunityDetail已修；不得以“不要重做Task8”阻止修本批真实暴露的断言错误。— 增加该页窄文案/RED与视觉验证，不能改变域验证事实或把所有来源降成同一证据等级；原brief前提明确更正。
+
+Ruling: Task10仅在原quote_evidence_linux_support的quotation=True源码白名单增加email_inbound、campaign_approval_reader、delivery_material_reader、employee_readers、outreach_fact_readers五个composition_support文件，补原tar-build RED/GREEN。— 第四轮安全frames明确ModuleNotFoundError在costing_quote_case→apps.api.runtime；controller核_source_paths171–202仅含__init__/quotations，与当前api runtime16/composition21–41和scheduler的五个真实导入不符，是本计划装配变更对旧验收包的兼容缺口。— 增加有限测试打包维护成本；不泛目录、不改A-only包、真实runtime/parser/网络/预算。前三轮早期AssertionError根因仍未独立证明，不能全部倒推同因；旧失败owner核0不改写历史cleanup_unknown。
+
+Ruling: Task10旧HistoricalEligibility.get_reply_status测试adapter改委托现有CurrentReplyStatusReader，复用canonical服务与固定NOW；不补假InboxActor、不保留list_inbox的200条扫描。— 第五轮已通过原Linux parser probe，公开前置明确TypeError；controller核costing_quote_case136缺当前actor契约，现reader136–181精确tenant/contact/account并将unknown判暂态失败，符合当前生产语义。— 增加最小fixture兼容与必要调用/错对象/unknown RED-GREEN，不复制原reader完整测试矩阵，不改权限。后续同类旧fixture仅适配已批准公共契约可继续具名报告，不逐处等待确认；若涉及生产语义、预算/probe/平台或结果seed仍先裁定。
+
+- Task10第7轮Linux31.31s已到真实两版成本/报价/submit及新Quote→Run点击，员工按原boss-only403；测试strict locator两同文案导致失败，未全链通过。四文件组件121passed/1failed暴露初始undefined route重置currency默认值，正在修不跳过。主Mac390原1080横溢RED/GREEN及真实Need/成本链接完成；controller实看actual-opportunity-390/actual-cost-390：来源记录及精确链接完整，成本当前对象准确且如实dependency_unavailable。截图属于Mac主owner，不冒称Linux整链。
+
+- Task10 Linux第8轮ownere157fae06cbd40a787bf5ebedeb2ebcd完整1passed/62.99s：原来源/单位/两版报价/独立审批/PDF及新Quote→精确成本ID/刷新、boss Run→Approval真实点击；员工Run403保留。worker23/forbidden0，cleanup verified。四组件122passed；Python三文件实际80passed/35.71s（原-k未匹配排除名，完整Linux integration实际跑了，待report精确范围）。controller实看最终Linux quote-390与run-approval-390；批准V2/长ID和精确审批链接可见。固定fixture结束2026/8/29与DB开始2026/9/6混合，不作真实耗时证据，11/12须留口径；尚未源冻结/独立review。
+
+- Task10源码8cc0419c04334681ca6918a2fa9e662872d3dd6b，report44049d8后更正“15日预热”为目标15封/日（非15天），最终report-only HEAD023db808303ba24f7ef6649ae076fc97fb2e96d9。controller完整读report/更正句，4个未提交controller文档与9owner未跟踪测试产物保留，无生产源码待改。122/77Web（77在最后成本watch前，122覆盖后改）/80Python含原Linux完整integration/1Linux browser各组及静态通过，按版本分栏；主Mac owner4867dcc1d5ab4866bea2285bf1ff5f7e已清零。review-eec91ea..023db80.diff101332bytes/3commits（stderr271行），fresh review_task10 Astra high开始；11尚未开始。
+
+Task 10: fix round1/5 in_progress — review_task10 Spec❌/Needs fixes，仅I1 CostingQuotes.loadVersions每次用cost_sheet_id query覆写新建/显式选择的版本，创建B或保存后回A；原SFC函数定向转译反例证明，未重跑既有套件。原web_task10已接原文/完整Vue创建B→保存B→仍B与精确失踪不回退回归，FIX_BASE023db808303ba24f7ef6649ae076fc97fb2e96d9；仅CostingQuotes/对应测试，不重启stack/Linux。无Minor，11未开始。
+- Task10 reviewer具名核必要外部契约、实际安全cleanup/PDF hash与三张图，符合每风险一次规则。Cannot verify的全仓/完整寻源矩阵仍属12；Mac报价不可用与独立Linux公开服务前置（非Mac Gmail/UI同链）为已披露平台裁定；早1/2/6失败根因未知保留。不把122/77/80/1累加或用同源码成功倒推未知故障。
+
+- Task10 Fix1 I1完整Vue反例初2failed/62skipped，加选择消失确认边界后3failed/62skipped，窄修同scope选择优先后3passed。覆盖A深链→POST201 B→B items204→刷新仍B、明确B重读/换missing query拒绝、B消失旧scope清除同hash不复用；最终quotation-flow/costing-quotes与静态在跑，只有1Vue/1测试，无CSS/stack/Linux重跑。controller提醒B消失不能静默回URL旧A冒充当前选择，待最终报告精确说明。
+
+- Task10 Fix1中间提交2e8c31c后，追加B消失再次刷新明确RED（原实现回旧A），最终54a01265029015e51771af05bf2b5d26492102bb仅保留缺失B目标意图/清数据确认，报告HEAD40f751c4951fad160839a61f082af5d8f99d5a7e。controller读完整追加节，最终66组件/1.85s、build/类型/lint/7边界/2显式路径scan/diff通过；无CSS/stack/Linux重跑。URL仍A，工作台同scope明确选择B保留，完整重进则依URL，报告明确。包023db80..40f751c 20031bytes/3commits（Git stderr109行），same review_task10限定复审I1，11未开始。
+
+Task 10: fix round1/5 (0完全addressed, 1open — I1成功/200缺失已修，但503或网络异常仍清selectedSheetId，下一次成功回URL A；commits023db80..40f751c)。same reviewer原函数503→200定向复现，无其他新增Critical/Important。
+Task 10: fix round2/5 in_progress — 原web_task10收到复审原文，FIX_BASE40f751c4951fad160839a61f082af5d8f99d5a7e；仅非授权成本读取失败保留B目标意图但清数据/确认，权限/身份/机会/route撤销不放宽；完整Vue503/网络参数化RED/GREEN、两文件作用组/静态，不stack/Linux。11未开始。
+
+- Task10 Fix2源码0890ae99dd1fe340247024991d200eecf72efb91，report HEADa5a59d9d44d208081a53c912b22612ad78d180f9；controller读完整新增报告。原完整Vue missing/503/network RED2failed/1passed，最终两文件68passed/1.90s，build/类型/lint/7边界/2路径scan/diff通过；仅非200/catch保留目标意图并清数据确认，401/403及scope重置不变。包40f751c..a5a59d9为14528bytes/2commits（stderr106行），same review_task10限定复审，无stack/Linux重跑，11未开始。

@@ -1,5 +1,15 @@
 # Task10 独立审查上下文
 
+Linux既有验收兼容裁定：允许在原测试安全日志边界增加严格测试相对文件/正整数行号的固定frame输出，绝不输出异常消息/locals/raw日志；实际定位后仅在quotation=True tar源码白名单补5个当前composition_support导入（email_inbound及四个当前事实reader），不泛目录、不改A-only包。旧HistoricalEligibility无actor调用list_inbox不再合法，改委托现行CurrentReplyStatusReader精确tenant/account/contact与unknown失败语义，不伪造actor或退回200窗口扫描。这些为本计划新增装配/权限契约导致的旧测试兼容缺口，预算、internal网络、真实parser/probe/业务域不变；原失败历史与cleanup_unknown必须保留。允许在原LinuxE2E增加新链接实际点击/精确ID断言，不放宽boss-only Run审计。
+
+第8轮Linux已报告完整PASS，controller实看批准quote及Run审批390图；固定NOW与DB真实开始时间混合造成结束早于开始，该合成截图不是耗时证据，不本任务扩改业务时钟。正式报告与最终源码版本范围仍由review独立核对，不能仅依本段认定通过。
+
+具名前提更正：Task8的SOURCE RECORD修正在HandoffPacketView，不是OpportunityDetail；本批BASE的OpportunityDetail仍在有Provenance时写已验证事实/客户确认信息。controller允许本批窄修为关键字段/来源记录，保留Popover实际来源等级与证据，不提升或重写域事实。以实际BASE与diff审查，不以旧brief“已经修过”否定当前缺陷。
+
+实施裁定：主Mac controlled入口无报价运行配置且原Linux解析器平台不可用；原Linux报价E2E仅支持独立owner/internal网络和其公开reply→Need/Opportunity前置。允许同源码两套证据分栏：Mac新reply对象/新链接/成本503诚实状态，独立Linux原完整来源/单位/成本/审批/PDF链；不能声称同一Need、同一Mac入口报价可用，不能只验503替代A7。report以DONE_WITH_CONCERNS突出平台限制，12/13保留核验与交付边界；不添加launcher模式或绕过parser probe。独立owner不是结果seed，仍须检查原公开业务路径与实际证据。controller已具名核ControlledConfig/runtime配置与Linux parser平台限制。
+
+实际390发现OpportunityList全局body min-width:1080px污染后续成本页面；controller允许窄修其全局最小宽度/本页布局及OpportunityDetail长链接换行，需实际前后视觉证据。此为跨页可用性要求，不扩大到全站框架重构。
+
 本文件是需求上下文，不是审查结论。具体BASE/HEAD及diff由controller在Task10完成后提供。读取task-10-brief.md、该批正式规格与task-10-report.md，核精确对象ID、路由刷新/身份切换的请求作用域，以及保留原审批、报价证据和金额边界。拟议文件映射按实际行为核验。
 
 浏览器演示从真实受控回复生成的Need/Opportunity起步；原公开前置端口与合成外部系统必须区分，禁止seed下游结果来证明链路。跨页面链接不是授权，也不证明供应价quoted或报价已批准。原单位/数量、scope/evidence/hash/有效期和PDF当前授权仍生效。Catalog queued/stale不得显示培养完成。

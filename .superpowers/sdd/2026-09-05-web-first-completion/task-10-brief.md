@@ -21,7 +21,7 @@ Task9现在已有精确Run深链、Sourcing父子同canonical恢复、身份/rou
 - 当前 `OpportunityDetail.vue` 仅以文本显示 `need_id`，未提供进入当前机会成本报价的直接入口；`CostingQuotes.vue` 的 `opportunityId` 起始为空，只读 `quoteId` 路由参数，用户需手工输入机会ID。补精确对象链接和可刷新/直开的输入消费，不把query参数当已授权对象或已验证事实；API读取失败不能回退到列表首项或留下上一个机会的报价。
 - `CostingQuotes.vue` 已有 `useQuoteRequestScope`、输入变更失效、scope/evidence/hash/有效期确认关系和原幂等确认组件，应扩展现成scope覆盖新增路由输入，不另建第二套请求门。无证据的供应商价格不能通过跳转自动确认。
 - `SourcingCaseDetail.vue` 已有真实Need链接；`ApprovalCenter.vue` 已按 `approval_id` query读取，`RunCenter.vue` 按 `run` query读取。沿用这些实际路由契约，先查后补，不重造近义query或直接字符串拼接猜关联ID。
-- Task8会修OpportunityDetail现有“有Provenance就显示已验证事实”的语义错误；本任务从其最终代码继续，不重复实现或把该旧文案带回。
+- 更正早期预检：Task8的SOURCE RECORD修正在HandoffPacketView，Task10 BASE的OpportunityDetail仍把有Provenance显示为已验证事实。controller已接受本批窄修为关键字段/来源记录，保留实际来源等级与证据并补RED；不重做已完成任务不代表保留当前真实缺陷。
 
 - [ ] 从真实受控回复生成的 Need/Opportunity 开始验证既有链；价格证据走已实现的来源确认端口，不能生成虚构供应商报价。
 - [ ] 校验寻源准入、独立审批、indicative/quoted 边界、单位/数量变更、成本冻结和 PDF 当前授权。

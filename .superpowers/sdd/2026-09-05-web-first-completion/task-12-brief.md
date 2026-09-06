@@ -56,6 +56,8 @@ git diff --check
 测试命令在已核验 Python 3.12+/Node 24 环境内运行；使用项目自建隔离数据库，禁止读取生产连接。新增 E2E 必须执行，不能以 skip 的绿色退出当作通过。已有 lint warning 如仍存在，记录实际数和来源，不宣称零告警。
 ## Task9 验证范围交接
 
+Task10平台裁定：Mac原ControlledConfig未装配quotation，且LinuxEvidenceTextParser在Mac平台不可用；Task10以主owner真实reply生成的Need/Opportunity/精确链接/成本503诚实状态，加原独立internal-network Linux报价E2E的公开reply→Need/Opportunity→来源/单位/成本/独立审批/PDF完整链分栏验证。不把独立owner/不同Need说成同一入口；A7必须有实际Linux完整链，不能以503页面替代。本任务按最终相同源码核验两套环境与准确命令；不得假称Mac统一入口报价可用，不为通过测试绕parser/probe/网络隔离。统一入口的环境限制由13交付说明明确。
+
 Task9独立review Minor M1：`apps/web/tests/web-core-state-recovery.test.ts:40` 测试标题声称“拒绝后旧研究响应不能复活”，实际仅503读取失败文案断言。根据实际测试语义收窄标题；如本任务需要该延迟场景则写有意义断言，不能将旧标题本身当已有覆盖证明。此项不混入Task9 I1/I2修复。
 
 Task9真实Settings浏览器恢复是在原服务器202之后丢失响应并替换为503，原key/payload再次202；不等于服务内部候选持久化后启动Run失败。本任务在原已授权故障验证中核查该内部中间状态与重启恢复是否已有精确证据；缺失则补最小故障注入，沿原公开端口和同key/payload，不按同内容或最新历史判定自己的提交成功。Task9 Sourcing已在真实PG覆盖canonical保存后ack失败、ack后event失败及原命令恢复。当前每批分组不累加为最终全仓通过。
