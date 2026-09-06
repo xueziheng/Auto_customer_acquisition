@@ -142,7 +142,12 @@ async function loadItems(): Promise<void> {
     });
     if (!op.valid() || version !== listVersion) return;
     if (result.response.status !== 200 || !result.data) {
-      items.value = []; detail.value = null; nextQuestions.value = null;
+      if ([401,403,404].includes(result.response.status)) {
+        // 列表撤权同时失效详情、建议与纠正写回，旧 finally 不得结束恢复请求。
+        gate.invalidate(); clearProtected(); loading.value = false;
+      } else {
+        items.value = []; detail.value = null; nextQuestions.value = null;
+      }
       error.value = safeError(result.response.status);
       return;
     }

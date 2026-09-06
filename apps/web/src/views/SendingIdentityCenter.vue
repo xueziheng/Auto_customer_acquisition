@@ -31,7 +31,10 @@ const gate = useQuoteRequestScope(client, () => [], () => { reset(); globalThis.
 const formLocked = computed(() => busy.value || pendingRegistration.value !== null);
 const stateLabels: Record<string,string> = {created:"已创建",auth_pending:"认证待修复",warming:"预热中",active:"活跃",throttled:"已限流",suspended:"已暂停",retired:"已退役"};
 function protectedFailure(status: number): void {
-  if ([401,403,404].includes(status)) { identities.value = []; selectedIdentity.value = null; binding.value = null; reviews.value = null; dialog.value = null; }
+  if ([401,403,404].includes(status)) {
+    // 同身份的跨通道拒绝也撤销所有旧响应；恢复读取必须使用新的 generation。
+    gate.invalidate(); reset(); listLoading.value = false;
+  }
 }
 function putIdentity(value: IdentityView): void {
   selectedIdentity.value = value;
@@ -56,7 +59,7 @@ async function loadBinding(): Promise<void> {
  binding.value=null;bindingError.value=null;
  try {const result=await client.GET("/email-inbound/status",{signal:op.signal});if(!op.valid())return;
   if(result.response.status===200 && result.data)binding.value=result.data;
-  else {bindingError.value="入站绑定状态暂不可读取";protectedFailure(result.response.status);}
+  else {protectedFailure(result.response.status);bindingError.value="入站绑定状态暂不可读取";}
  }catch {if(op.valid())bindingError.value="入站绑定状态暂不可读取";}
 }
 function prepareRegistration(): void {
@@ -114,7 +117,7 @@ async function confirmCommand(): Promise<void> {
 async function loadReviews():Promise<void>{
  const op=gate.begin("reviews");if(!op?.valid())return;reviews.value=null;reviewError.value=null;
  try {const r=await client.GET("/email-inbound/reviews",{params:{query:{limit:50}},signal:op.signal});if(!op.valid())return;
-  if(r.response.status===200&&r.data)reviews.value=r.data;else{reviewError.value="未关联邮件复核暂不可用";protectedFailure(r.response.status);}
+  if(r.response.status===200&&r.data)reviews.value=r.data;else{protectedFailure(r.response.status);reviewError.value="未关联邮件复核暂不可用";}
  }catch {if(op.valid())reviewError.value="未关联邮件复核暂不可用";}
 }
 async function downloadReview(reviewId:string):Promise<void>{
