@@ -73,7 +73,7 @@ Task 9: complete — BASE91c77754e295f5eb9754bd87e4e4f920985ae2fe，初始ebb8da
 Task 10: complete — BASEeec91eaf4c4356c3ff7a8b24f137056e3de5c28a；初始8cc0419，Fix2源码0890ae99dd1fe340247024991d200eecf72efb91，report HEADa5a59d9d44d208081a53c912b22612ad78d180f9；review_task10 Spec✅/Approved，I1经两轮修复ADDRESSED，无Minor。最终68组件及静态通过；原Mac/Linux分栏证据和平台限制保留给12/13。
 Task 11: complete — BASE940db7c86249aaaa85c3b18df710a804ffd1c398；源码4be8753e5b46442244e9dfe110bd4c308a367c25，report a3390b5144c32fa72fd1e7f2a9c8ed882343ef43；review_task11 Spec✅/Approved，无Critical/Important。Minor sourcing绑定覆盖及旧launcher清理缺口交12；成本/资格unknown与受控限制保留。
 Task 12: complete (commits 6cdb40d..5b63744, review clean) — 实现者web_task12，审查者review_task12；SOURCE48e4465全量9318通过，I1源码7e10383主链1passed；Spec/Quality Approved，0未关闭问题。
-Task 13: in_progress — Task12已独立Approved，controller完成交接提交后派fresh实施者。
+Task 13: complete (commits aa24508..febf7e0, review clean) — 实施web_task13、审查review_task13；I1/M1/M2在round1关闭，双Approved。
 
 ## W1 实施前裁定
 Ruling: Task2复审Minor适配器内挂起点取消测试暂不新增。— 新链只捕获Exception，CancelledError按语言语义传播；原Worker取消与资源清理已有行为覆盖且审查无缺陷。— 内部await取消的直接回归覆盖有限，后续接生产provider/改变异常分类时必须补对应测试；最终审查可见。
@@ -414,3 +414,24 @@ Ruling: 若 I1 fix 确实只改测试审批 actor 编排和绑定断言，未改
 
 
 Task 12: fix round 1/5 complete — I1 addressed，0 open；7e10383 source /5b63744 report；同review_task12限定复审双Approved。root已完整读最终报告/新增review，实读安全proof/audit并看最终Mac Need1440/Handoff390及Linuxquote390/exactcost1440。Task6 void/Task9标题/Task11 sourcing覆盖/私有文件清理等本批闭合；Task7纯文档Minor交13。早期warning未知、平台/恢复/真实外部未运行、内存限流边界仍保留。
+
+
+Task 13: in_progress — fresh实施者 /root/web_task13（Astra high、fork none、无子代理），BASE aa24508dc77fac1e6cc2e21225cb3dcd21dd240b。此controller验收提交5文件，stderr142行保留；原6张tracked Catalog截图与历史output未混入。要求最终交付/桌面契约/owned备份恢复/文档Minor/正式裁定证据，之后独立审查和唯一全分支review。
+
+
+### Task13 备份恢复演练范围裁定
+
+Ruling: 允许新增仅测试演练 test_web_core_backup_restore.py，复用原Supervisor.start_infrastructure/migrate和OwnedContainers，source PG+MinIO无四应用写入，经原RawArtifact公开接口保存合成原件/metadata；源owned库dump恢复至另一全新owned空PG，原件复制至另一owned bucket，精确tenant元数据摘要与原件SHA256一致。连接/客户端先收口，finally精确owner+ID清理，配置/dump/DSN只在脚本受信内存或私有临时文件，不到模型/日志。理由：原入口无备份脚手架，Task13要求隔离数据实际恢复验证，不需要新增业务launcher。成本：这仅证明静止owned数据/原件恢复，不是运行中跨PG/对象/外部邮箱状态的一致性备份产品，不证明PITR、任意生产恢复或自动恢复launcher；文档必须给准确演练命令并保留这些后续门禁，新空owner不能称旧业务恢复。禁止关闭不可变约束、目标覆盖已有业务库或读取用户生产dump。
+
+
+Task13实现交付：SOURCE0bfb4d11a8e3e8eb7678d48be091736bd399870b，report fe6f7dc2622391c9359866dd90fafbf3573ebdb5。root已完整读task-13-report及safe backup JSON，静止owned恢复1passed/9.31s，hash一致/source不变/不同owner/清理无错误；边界/ruff/scan/189当前链接和64报告链接通过。唯一新验收测试、两处纯docstring，未变生产行为。已派fresh review_task13 Astra high/fork none；包aa24508..fe6f7dc 774532bytes，stderr500行保留。Task13仍待独立审查。
+
+Ruling: Task13中32份历史报告/审查/spec/ledger字节复制用manifest source/archive SHA逐项核一致，无须再次审原实现或把原文读两遍；所有新增文档、恢复测试、docstring差异完整审一次。理由：这是精确归档复制，不是重做已Approved任务；成本：既有历史结论本身的限制保留，新的导航/截止说明/当前状态和最终全分支语义仍须独立审查，hash不能替代这些检查。
+
+
+Task 13: fix round 1/5 — 初审Spec/Quality Changes requested，1 Important/P2、2 Minor/P3，0Critical。I1：新恢复测试transport.close异常跳过engine.dispose、第二client构造/first.close异常跳过其它client关闭；M1：证据写失败跳过logging全局状态恢复；M2：正式索引空行拆出8行表格。root完整读report后正式followup同web_task13，BASE fe6f7dc，待fix提交。
+
+Ruling: 接受I1，独立登记/释放每项资源，保留固定安全主失败并补受控异常清理覆盖；M1同一资源收口文件且影响后续测试诊断，M2纯一处格式，均在既有I1同次修复完成，不开启额外Minor循环。理由：正常1passed不能证明关闭异常路径，外层容器删除不能替代engine/client释放；成本：新增聚焦失败覆盖及正常owned恢复新版本复验，旧正常成功保留，不重跑未变Task12全量，不改生产connector或新增备份产品。
+
+
+Task13 fix round1/5 complete：SOURCE041bc741e0cd57dc9ed942d3a53f116b4fdffcbd、REPORTfebf7e0eeb20282b511b9e5bc48c760a0a325ad6；同review_task13限定复审双Approved，0 open，I1/M1/M2全关闭。root完整读新增报告/review并核新safe backup：4项无资源异常unit GREEN、正常owned恢复1passed9.67s、source/target hash一致且源不变/清理无错。保证关闭尝试及失败记账，不宣称真实SDK永久阻塞也必可释放。Task0–13均完成，下一步唯一全分支review，尚未通过。

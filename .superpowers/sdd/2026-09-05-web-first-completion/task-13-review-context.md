@@ -19,3 +19,6 @@ Task10已确认原Mac入口无报价运行配置且证据解析器要求Linux。
 - 凭证不进入模型/日志；外部业务动作只走Gateway；金额Decimal，事实和推断结构分离；不造最终金额/概率/业务成绩。
 - tenant、actor、scope、Provenance和审批权限不能由客户端自报或测试绕过。
 - 中文内部文档，API类型从schema生成；不维护平行Agent规则入口。
+
+
+备份恢复具名Ruling：原入口无备份脚手架，Task13允许仅测试使用Supervisor/OwnedContainers建立静止source与全新owned空target，原RawArtifact合成原件/metadata，owned PG dump/restore及对象复制，tenant摘要/hash一致。不是运行中一致性备份/PITR/真实生产恢复/自动重启恢复launcher，不保证外部邮箱状态。核目标确为独占新空库、无关闭不可变约束、dump/config不泄露、连接/客户端/finally精确owner清理，运维命令及能力描述不得扩张。详细成本与原因在ledger。
