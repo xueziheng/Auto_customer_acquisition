@@ -1212,3 +1212,22 @@ describe("opportunity board", () => {
     app.unmount();
   });
 });
+
+it("Task10 机会详情链接精确Need和当前机会成本", async () => {
+  const { app, root } = await mountBoard(makeReadFetch());
+  await eventually(() => expect(root.querySelector('.opportunity-record')).not.toBeNull());
+  expect(root.querySelector(`a[href="/demand/needs/${firstOpportunity.need_id}"]`)).not.toBeNull();
+  expect(root.querySelector(`a[href="/costing-quotes?opportunity_id=${firstOpportunity.opportunity_id}"]`)).not.toBeNull();
+  app.unmount();
+});
+
+it("Task10 关键字段和金额有来源不代表已验证事实", async () => {
+  const { app, root } = await mountBoard(makeReadFetch());
+  await eventually(() => expect(root.querySelector('.opportunity-record')).not.toBeNull());
+  const record = root.querySelector('.opportunity-record')!;
+  expect(record.textContent).toContain("关键字段");
+  expect([...record.querySelectorAll('.fact-label')].length).toBeGreaterThan(0);
+  expect([...record.querySelectorAll('.fact-label')].every((label) => label.textContent?.includes("来源记录"))).toBe(true);
+  expect(record.textContent).not.toContain("已验证事实");
+  app.unmount();
+});

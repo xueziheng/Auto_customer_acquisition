@@ -402,7 +402,11 @@ def test_server_runtime_cleanup_failure_has_no_success_receipt(monkeypatch, caps
     monkeypatch.setattr(server, "serve", fail)
     monkeypatch.setattr(sys, "argv", ["server", "--mode", "browser"])
     assert server.main() == 2
-    assert capsys.readouterr() == ("t10_fixture_error=AssertionError\n", "")
+    output = capsys.readouterr()
+    assert output.out.endswith("t10_fixture_error=AssertionError\n")
+    assert "private-runtime-cleanup" not in output.out
+    assert "t10_runtime_exit=verified" not in output.out
+    assert output.err == ""
 
 
 def test_server_success_receipt_is_after_runtime_cleanup(monkeypatch, capsys):
@@ -430,3 +434,74 @@ def test_unit_action_diagnostics_allow_only_fixed_numeric_fields():
     forbidden.extend(["t10_unit_probe_body=private", "t10_unit_probe_response=2",
                       "t10_unit_probe_response=https://private.invalid"])
     assert stack_module.safe_output("\n".join([*allowed, *forbidden]).encode()) == "\n".join(allowed)
+
+
+def test_server_reports_only_repository_test_frames_for_fixture_failure(monkeypatch, capsys):
+    async def fail(*_args):
+        raise AssertionError("private-fixture-message-never-output")
+
+    monkeypatch.setenv("TEST_DATABASE_URL", "controlled-test-connection")
+    monkeypatch.setattr(server, "migrate", lambda _: None)
+    monkeypatch.setattr(server, "serve", fail)
+    monkeypatch.setattr(sys, "argv", ["server", "--mode", "browser"])
+    assert server.main() == 2
+    output = capsys.readouterr()
+    assert "tests/unit/test_costing_quote_transport.py:" in output.out
+    assert "tests/e2e/costing_quote_server.py:" in output.out
+    assert "private-fixture-message" not in output.out
+    assert "controlled-test-connection" not in output.out
+    assert output.err == ""
+    assert stack_module.safe_output(output.out.encode()) == output.out.strip()
+
+
+async def test_browser_startup_forwards_only_safe_container_diagnostics(monkeypatch, capsys, tmp_path):
+    import time
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from tests.e2e import costing_quote_lifecycle
+
+    runner = SimpleNamespace(status="exited", reload=lambda: None, logs=lambda: (
+        b"tests/integration/costing_quote_case.py:349: in runtime_case\n"
+        b"t10_fixture_error=AssertionError\nprivate-body-must-not-leak\n"
+    ))
+
+    @contextmanager
+    def controlled_stack(**_kwargs):
+        yield SimpleNamespace(manifest=lambda: None, runner=runner)
+
+    monkeypatch.setattr(costing_quote_lifecycle, "active_run", lambda: SimpleNamespace(
+        artifacts=tmp_path, work_deadline=time.monotonic() + 5,
+    ))
+    monkeypatch.setattr(stack_module, "linux_stack", controlled_stack)
+    with pytest.raises(AssertionError):
+        async with stack_module.browser_stack(tmp_path):
+            raise AssertionError("must not start browser")
+    output = capsys.readouterr()
+    assert "tests/integration/costing_quote_case.py:349: in runtime_case" in output.out
+    assert "private-body" not in output.out
+    assert output.err == ""
+
+
+
+def test_server_keeps_import_module_frame_without_import_error_message(monkeypatch, capsys):
+    from pathlib import Path
+
+    async def fail(*_args):
+        path = Path(server.__file__).resolve().parents[2] / "tests/integration/costing_quote_case.py"
+        def module_failure():
+            raise ImportError("private-module-name")
+
+        module_failure.__code__ = module_failure.__code__.replace(
+            co_filename=str(path), co_name="<module>", co_firstlineno=0,
+        )
+        module_failure()
+
+    monkeypatch.setenv("TEST_DATABASE_URL", "controlled-test-connection")
+    monkeypatch.setattr(server, "migrate", lambda _: None)
+    monkeypatch.setattr(server, "serve", fail)
+    monkeypatch.setattr(sys, "argv", ["server", "--mode", "browser"])
+    assert server.main() == 2
+    output = capsys.readouterr()
+    assert "tests/integration/costing_quote_case.py:1: in module" in output.out
+    assert "private-module-name" not in output.out

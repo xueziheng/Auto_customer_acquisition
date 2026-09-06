@@ -259,7 +259,8 @@ async def browser_stack(artifacts: Path, *, mode="browser"):
                 break
             stack.runner.reload()
             if stack.runner.status == "exited" or time.monotonic() > deadline:
-                raise AssertionError("T10公开前置未就绪：" + safe_output(stack.runner.logs()))
+                print(safe_output(stack.runner.logs()), flush=True)
+                raise AssertionError("T10公开前置未就绪")
             await asyncio.sleep(0.1)
         try:
             stack.api_origin = files.enter_context(http_bridge(stack.runner))

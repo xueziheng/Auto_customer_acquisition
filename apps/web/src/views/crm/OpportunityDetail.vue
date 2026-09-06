@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { RouterLink } from "vue-router";
 
 import ProvenancePopover from "../../components/ProvenancePopover.vue";
 import type { components } from "../../api/api";
@@ -174,13 +175,20 @@ function submitMarkLost(): void {
           <strong>{{ opportunity.next_action ?? "待确认" }} · {{ opportunity.next_action_due ?? "未设置" }}</strong>
         </div>
         <div><span>账户 ID</span><strong>{{ opportunity.account_id }}</strong></div>
-        <div><span>需求 ID</span><strong>{{ opportunity.need_id }}</strong></div>
+        <div>
+          <span>需求 ID</span><RouterLink :to="{ name: 'validated-need-detail', params: { needId: opportunity.need_id } }">
+            {{ opportunity.need_id }}
+          </RouterLink>
+        </div>
         <div><span>创建时间</span><strong>{{ opportunity.created_at }}</strong></div>
         <div>
           <span>待处理接管</span>
           <strong>{{ opportunity.has_pending_handoff ? "有待处理接管" : "无待处理接管" }}</strong>
         </div>
       </div>
+      <RouterLink :to="{ path: '/costing-quotes', query: { opportunity_id: opportunity.opportunity_id } }">
+        查看此机会的成本与报价
+      </RouterLink>
     </header>
 
     <section
@@ -190,9 +198,9 @@ function submitMarkLost(): void {
       <div class="section-heading">
         <div>
           <p class="section-kicker">
-            VERIFIED RECORD
+            SOURCE RECORD
           </p><h2 id="facts-title">
-            客户确认信息
+            关键字段
           </h2>
         </div>
       </div>
@@ -209,7 +217,7 @@ function submitMarkLost(): void {
             <span
               v-if="provenanceFor(field.fieldName)"
               class="fact-label"
-            ><span aria-hidden="true">✓</span> 已验证事实</span>
+            ><span aria-hidden="true">✓</span> 来源记录</span>
             <span
               v-else
               class="source-missing"
@@ -280,7 +288,7 @@ function submitMarkLost(): void {
             <span
               v-if="provenanceFor(field.fieldName)"
               class="fact-label"
-            ><span aria-hidden="true">✓</span> 已验证事实</span>
+            ><span aria-hidden="true">✓</span> 来源记录</span>
             <span
               v-else
               class="source-missing"
@@ -485,6 +493,7 @@ function submitMarkLost(): void {
   font-size: 11px;
 }
 
+.summary-grid a,
 .summary-grid strong {
   display: block;
   margin-top: 2px;
@@ -733,6 +742,12 @@ summary:focus-visible {
   .amount-grid {
     grid-template-columns: 1fr;
   }
+}
+
+@media (max-width: 700px) {
+  .summary-grid { grid-template-columns: minmax(0, 1fr); }
+  .opportunity-record:has(.source-trigger[aria-expanded="true"]) { margin-right: 0; }
+  .record-header h1, .record-id { overflow-wrap: anywhere; }
 }
 
 @media (prefers-reduced-motion: reduce) {

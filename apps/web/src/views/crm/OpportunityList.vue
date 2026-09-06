@@ -539,7 +539,6 @@ onMounted(() => void loadList());
 }
 
 :global(body) {
-  min-width: 1080px;
   color: #172323;
   background: #f5f7f7;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -550,7 +549,9 @@ onMounted(() => void loadList());
 .board-shell {
   display: grid;
   grid-template-rows: 68px minmax(0, 1fr);
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
+  height: auto;
   overflow: hidden;
   color: #172323;
   background: #f5f7f7;
@@ -915,6 +916,16 @@ h1 {
   .detail-layout {
     padding: 10px;
   }
+}
+
+@media (max-width: 700px) {
+  .board-shell { display: flex; flex-direction: column; overflow-y: auto; }
+  .board-shell > .topbar { display: none; }
+  .workspace { display: flex; flex-direction: column; flex-shrink: 0; overflow: visible; }
+  .list-pane, .detail-pane { flex-shrink: 0; overflow: visible; }
+  .opportunity-list { max-height: 320px; }
+  .detail-layout { min-height: 0; padding: 10px; }
+  .metadata, .account-name, .next-action { overflow-wrap: anywhere; }
 }
 
 @media (prefers-reduced-motion: reduce) {

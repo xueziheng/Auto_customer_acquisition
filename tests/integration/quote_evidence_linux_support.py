@@ -192,6 +192,11 @@ def _source_paths(
         for name in (
             "apps/composition_support/__init__.py",
             "apps/composition_support/quotations.py",
+            "apps/composition_support/email_inbound.py",
+            "apps/composition_support/campaign_approval_reader.py",
+            "apps/composition_support/delivery_material_reader.py",
+            "apps/composition_support/employee_readers.py",
+            "apps/composition_support/outreach_fact_readers.py",
             "connectors/search_contracts.py",
             "tests/integration/test_quote_runtime.py",
             "tests/integration/test_api_runtime.py",

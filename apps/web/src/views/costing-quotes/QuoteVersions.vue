@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /* global URL, document */
 import { computed, inject, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { RouterLink, useRouter } from "vue-router";
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
 import { quoteError, useQuoteRequestScope } from "./quote-request-scope";
@@ -18,6 +18,7 @@ const next = ref<number | null>(null);
 const internalError = ref(""); const fileError = ref(""); const notice = ref("");
 const originalCall = ref(""); const working = ref(false); const blobUrl = ref(""); const previewing = ref(false);
 const recoveryCall = ref("");
+const submittedRunId = ref("");
 let recoveryGeneration = 0;
 let recovering = false;
 watch(originalCall, () => {
@@ -26,7 +27,7 @@ watch(originalCall, () => {
   if (recovering) { working.value = false; recovering = false; notice.value = "原恢复操作结果待核对；调用引用已变化，不自动重发"; }
 }, { flush: "sync" });
 function revoke(): void { if (blobUrl.value) URL.revokeObjectURL(blobUrl.value); blobUrl.value = ""; previewing.value = false; }
-function reset(): void { recovering = false; internal.value = []; customer.value = []; current.value = null; files.value = []; next.value = null; internalError.value = ""; fileError.value = ""; notice.value = ""; originalCall.value = ""; recoveryCall.value = ""; working.value = false; revoke(); }
+function reset(): void { submittedRunId.value = ""; recovering = false; internal.value = []; customer.value = []; current.value = null; files.value = []; next.value = null; internalError.value = ""; fileError.value = ""; notice.value = ""; originalCall.value = ""; recoveryCall.value = ""; working.value = false; revoke(); }
 const { begin, hasIdentity } = useQuoteRequestScope(client, () => [props.opportunityId, props.quoteId], reset);
 const stateLabels: Record<components["schemas"]["QuoteState"], string> = { draft: "草稿", pending_approval: "等待审批", approved: "已批准", expired: "已过期", superseded: "已被新版替代", rejected: "已否决", sent: "历史已发送", accepted: "历史已接受" };
 const selectedCustomer = computed(() => customer.value.find((item) => item.quote_id === props.quoteId));
@@ -121,7 +122,7 @@ async function submit(): Promise<void> {
   try {
     const result = await client.POST("/costing-quotes/quotes/{quote_id}/submit", { params: { path: { quote_id: props.quoteId } }, body: {}, signal: op.signal });
     if (!op.valid()) return;
-    if (result.data) { notice.value = `已提交审批，尚未批准、更未发送。Run ${result.data.run_id}`; void loadQuote(); }
+    if (result.data) { submittedRunId.value = result.data.run_id; notice.value = `已提交审批，尚未批准、更未发送。Run ${result.data.run_id}`; void loadQuote(); }
     else internalError.value = quoteError(result.response.status, result.error);
   } catch { if (op.valid()) internalError.value = "审批提交结果未知，待核对指定版本与 Run"; }
   finally { if (op.valid()) working.value = false; }
@@ -146,6 +147,12 @@ watch(() => [props.opportunityId, props.quoteId], () => { reset(); emit("selecte
     </p><p role="status">
       {{ notice }}
     </p>
+    <RouterLink
+      v-if="submittedRunId"
+      :to="{ path: '/runs', query: { run: submittedRunId } }"
+    >
+      查看本次报价审批 Run
+    </RouterLink>
     <p v-if="!internal.length && !current && !internalError">
       暂无已加载内部报价
     </p>
@@ -163,6 +170,9 @@ watch(() => [props.opportunityId, props.quoteId], () => { reset(); emit("selecte
       <h3>指定版本 V{{ current.version }} · {{ stateLabels[current.state] }}</h3><p>{{ current.quote_id }} · {{ current.content_hash }}</p><p>贸易机会 {{ current.opportunity_id }} · 成本 {{ current.cost_sheet_id }} · basis {{ current.basis_id }} / {{ current.basis_hash }}</p><p>有效期 {{ current.valid_until }} · 起草 {{ current.prepared_by }} · 负责人 {{ current.owner_id }}</p><p v-if="current.replaces_quote_id">
         替代前版 {{ current.replaces_quote_id }} / V{{ current.replaced_quote_version }}；前版停用，不覆盖成本引用
       </p>
+      <RouterLink :to="{ path: '/costing-quotes', query: { opportunity_id: current.opportunity_id, cost_sheet_id: current.cost_sheet_id } }">
+        核对此报价的成本表与需求依据
+      </RouterLink>
       <dl>
         <div><dt>客户单价 / 整单</dt><dd>{{ current.calculation.displayed_unit_price.amount }} {{ current.calculation.displayed_unit_price.currency }} / {{ current.calculation.displayed_total.amount }} {{ current.calculation.displayed_total.currency }}</dd></div><div><dt>核算有效单价</dt><dd>{{ current.calculation.effective_unit_revenue.amount }} {{ current.calculation.effective_unit_revenue.currency }}</dd></div><div
           v-for="(value, name) in current.calculation.metrics"

@@ -23,6 +23,7 @@ from apps.api import runtime as api
 from apps.api.composition.demand_radar import ProspectingDemandAccountNames
 from apps.api.composition.runtime import _ServiceBackedCampaignApprovalProvider
 from apps.api.dependencies import get_api_dependencies
+from apps.composition_support.outreach_fact_readers import CurrentReplyStatusReader
 from apps.scheduler_worker import runtime as worker
 from apps.scheduler_worker.adapters.reply_customer_evidence import (
     TenantBoundCustomerReplyEvidenceVerifier,
@@ -133,13 +134,11 @@ class HistoricalEligibility:
         raise AssertionError("受控Campaign必须已有真实审批，不得回退")
 
     async def get_reply_status(self, tenant, contact_point, account):
-        conversations = await self.case.dependencies.conversations.list_inbox(tenant, category=None, limit=200)
-        replied = any(item.account_id == account and item.latest_message_id is not None for item in conversations)
-        return outreach_schema.ReplyStatusSnapshot(
-            tenant, contact_point, account,
-            outreach_schema.ReplyState.REPLIED if replied else outreach_schema.ReplyState.NO_REPLY,
-            NOW if replied else None, NOW,
+        reader = CurrentReplyStatusReader(
+            self.case.tenant, self.case.dependencies.prospecting,
+            self.case.dependencies.conversations, now=lambda: NOW,
         )
+        return await reader.get_reply_status(tenant, contact_point, account)
 
 
 async def initialize_public_case(case):

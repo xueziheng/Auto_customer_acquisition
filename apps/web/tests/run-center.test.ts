@@ -424,3 +424,9 @@ describe("RunCenter", () => {
     });
   });
 });
+
+it("Task10 Run审批链接只使用该Run返回的精确approval_id", async () => {
+  const { root } = await mountRuns(vi.fn(async (raw) => jsonResponse(new URL((raw as Request).url).pathname === '/runs' ? [firstRun] : firstDetail)), `/runs?run=${firstRun.run_id}`);
+  await eventually(() => expect(root.textContent).toContain(firstDetail.approvals[0]!.approval_id));
+  expect(root.querySelector(`a[href="/approvals?approval_id=${firstDetail.approvals[0]!.approval_id}"]`)).not.toBeNull();
+});

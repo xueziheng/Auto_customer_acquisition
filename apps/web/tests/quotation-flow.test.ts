@@ -840,3 +840,89 @@ it("maps UTF-16 selection without changing evidence text", () => {
     expect(() => utf16SelectionToCodepoints("A😀B", start!, end!)).toThrow();
   }
 });
+
+it("Task10 直开机会与指定成本深链只消费当前授权对象", async () => {
+  const seen: Request[] = [];
+  const root = await mount(async (raw) => { const request = raw as Request; seen.push(request); return basic(request); }, `/costing-quotes?opportunity_id=${opp}&cost_sheet_id=${sheetId}`);
+  await eventually(() => expect(root.textContent).toContain(sheetId));
+  expect((root.querySelector('[name="opportunity-id"]') as HTMLInputElement).value).toBe(opp);
+  expect(seen.some((request) => request.method !== "GET")).toBe(false);
+  expect(root.querySelector(`a[href="/demand/needs/${need}"]`)).not.toBeNull();
+});
+
+it("Task10 指定成本不在授权列表时不选择首项，重复机会query拒绝读取", async () => {
+  const seen: string[] = [];
+  const root = await mount(async (raw) => { const request = raw as Request; seen.push(new URL(request.url).pathname); return basic(request); }, `/costing-quotes?opportunity_id=${opp}&cost_sheet_id=cost_missing`);
+  await eventually(() => expect(root.textContent).toContain("指定成本表不存在或不属于当前机会"));
+  expect(root.textContent).not.toContain(sheetId);
+  seen.length = 0;
+  await router.replace(`/costing-quotes?opportunity_id=${opp}&opportunity_id=${opp}`);
+  await eventually(() => expect(root.textContent).toContain("路由中的机会或成本引用无效"));
+  expect(seen.some((path) => path.includes(`/opportunities/${opp}/`))).toBe(false);
+});
+
+it.each(["route", "identity"])("Task10 %s变化清理成本与旧并行报价响应", async (change) => {
+  const pending = deferred(); let started = false;
+  const root = await mount(async (raw) => {
+    const request = raw as Request; const path = new URL(request.url).pathname;
+    if (path === `/costing-quotes/opportunities/${opp}/quotes`) { started = true; return pending.promise; }
+    if (path.includes("opp_01M0PWRX23T9DP9ENM9PW5GFC9")) return json({ code: "not_found", message: "未找到" }, 404);
+    return basic(request);
+  }, `/costing-quotes?opportunity_id=${opp}`);
+  await eventually(() => { expect(started).toBe(true); expect(root.textContent).toContain(sheetId); });
+  if (change === "route") await router.replace("/costing-quotes?opportunity_id=opp_01M0PWRX23T9DP9ENM9PW5GFC9");
+  else configureAuthenticatedIdentity("tenant-b", "employee-b");
+  await nextTick();
+  pending.resolve(json([quote]));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(root.textContent).not.toContain(sheetId);
+  expect(root.textContent).not.toContain("quote-1");
+});
+
+it("Task10 成本读取403后晚到的准备事实不复活", async () => {
+  const pending = deferred(); const denied = deferred(); let started = false;
+  const root = await mount(async (raw) => {
+    const request = raw as Request; const path = new URL(request.url).pathname;
+    if (path.endsWith("/quote-context")) { started = true; return pending.promise; }
+    if (path.endsWith("/cost-sheets")) return denied.promise;
+    return basic(request);
+  }, `/costing-quotes?opportunity_id=${opp}`);
+  await eventually(() => expect(started).toBe(true));
+  denied.resolve(json({ code: "forbidden", message: "拒绝" }, 403));
+  await eventually(() => expect(root.textContent).toContain("当前角色无权"));
+  pending.resolve(json(context)); await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(root.textContent).not.toContain("context-hash");
+  expect(root.querySelector('[name="price-amount"]')).toBeNull();
+});
+
+it("Task10 报价提供精确成本链接与真实提交Run链接，切换报价即清除", async () => {
+  const root = await mount(async (raw) => {
+    const request = raw as Request; const path = new URL(request.url).pathname;
+    if (path === "/costing-quotes/quotes/quote-1") return json(quote);
+    if (path.endsWith("/submit")) return json({ quote_id: "quote-1", run_id: "run_exact" });
+    if (path === "/costing-quotes/quotes/quote-missing") return json({ code: "not_found", message: "未找到" }, 404);
+    return basic(request);
+  }, "/costing-quotes/quotes/quote-1");
+  await eventually(() => expect(root.textContent).toContain("指定版本 V1"));
+  expect(root.querySelector(`a[href="/costing-quotes?opportunity_id=${opp}&cost_sheet_id=${sheetId}"]`)).not.toBeNull();
+  click(root, "提交此版本审批");
+  await eventually(() => expect(root.querySelector('a[href="/runs?run=run_exact"]')).not.toBeNull());
+  expect(root.textContent).toContain("尚未批准、更未发送");
+  await router.replace("/costing-quotes/quotes/quote-missing");
+  await nextTick();
+  expect(root.querySelector('a[href="/runs?run=run_exact"]')).toBeNull();
+});
+
+it("Task10 手工机会工作台进入报价详情仍保留可继续修订的机会输入", async () => {
+  const root = await mount(async (raw) => {
+    const request = raw as Request;
+    if (new URL(request.url).pathname === "/costing-quotes/quotes/quote-1") return json(quote);
+    return basic(request);
+  });
+  field(root, "opportunity-id", opp);
+  click(root, "读取成本版本");
+  await eventually(() => expect(root.textContent).toContain(sheetId));
+  await router.push("/costing-quotes/quotes/quote-1");
+  await eventually(() => expect(root.textContent).toContain("指定版本 V1"));
+  expect((root.querySelector('[name="opportunity-id"]') as HTMLInputElement).value).toBe(opp);
+});

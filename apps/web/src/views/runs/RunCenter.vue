@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { RouterLink, useRoute } from "vue-router";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
@@ -439,7 +439,11 @@ onBeforeUnmount(() => {
                   v-for="approval in detail.approvals"
                   :key="approval.approval_id"
                 >
-                  <header><strong>{{ approval.approval_type }}</strong><span>{{ approval.state }}</span></header><p>{{ approval.approval_id }}</p><small>创建于 {{ formatTime(approval.created_at) }}</small>
+                  <header><strong>{{ approval.approval_type }}</strong><span>{{ approval.state }}</span></header><p>
+                    <RouterLink :to="{ path: '/approvals', query: { approval_id: approval.approval_id } }">
+                      {{ approval.approval_id }}
+                    </RouterLink>
+                  </p><small>创建于 {{ formatTime(approval.created_at) }}</small>
                 </article>
               </div>
             </section>
