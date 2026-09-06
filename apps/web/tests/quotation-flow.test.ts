@@ -997,15 +997,24 @@ it("Task10 I1 显式选择B后同对象重读保持B，路由改为缺失版本�
   expect(root.querySelector(".version-row.selected")).toBeNull();
 });
 
-it("Task10 I1 已选B消失时清除确认，B以相同hash再出现也不复用旧确认", async () => {
+it.each(["missing", "503", "network"] as const)("Task10 I1 %s失败后同scope仍核B，恢复同hash也不复用旧确认", async (failure) => {
   const other = { ...sheet, cost_sheet_id: "cost_selected", version_number: 2 };
-  let available = [sheet, other];
+  let failing = false;
   let reads = 0;
   const root = await mount(async (raw) => {
     const request = raw as Request; const path = new URL(request.url).pathname;
-    if (path.endsWith("/cost-sheets")) { reads += 1; return json(available); }
+    if (path.endsWith("/cost-sheets")) {
+      reads += 1;
+      if (failing) {
+        if (failure === "503") return json({ code: "dependency_unavailable", message: "暂不可用" }, 503);
+        if (failure === "network") throw new Error("controlled network failure");
+        return json([sheet]);
+      }
+      return json([sheet, other]);
+    }
     if (path === `/costing-quotes/cost-sheets/${other.cost_sheet_id}/coverage`) return json({ acquisition_mode: "summary", confirmed_at: "2026-08-28T00:00:00Z", confirmed_by: "employee-a", content_hash: "coverage-hash", cost_sheet_id: other.cost_sheet_id, coverage_id: "coverage-selected", decisions: [], expected_sheet_hash: other.content_hash, field_provenance: {} });
     if (path === `/costing-quotes/cost-sheets/${other.cost_sheet_id}/scope-confirmations`) return json([{ confirmation_id: "scope-selected", content_hash: "scope-hash", cost_sheet_id: other.cost_sheet_id, coverage_hash: "coverage-hash", coverage_id: "coverage-selected", evidence_bindings: [], need_facts_hash: "need-hash", need_id: need, opportunity_id: opp, provenance, sheet_hash: other.content_hash, specification: "M8 steel", specification_hash: "spec-hash", terms: [], terms_hash: "terms-hash", valid_until: "2026-10-01T00:00:00Z" }]);
+    if (path === `/costing-quotes/cost-sheets/${other.cost_sheet_id}/calculate`) return json({ ...calculation, cost_sheet_id: other.cost_sheet_id, inputs_hash: "calculation-selected" });
     return basic(request);
   }, `/costing-quotes?opportunity_id=${opp}&cost_sheet_id=${sheetId}`);
   await eventually(() => expect(root.querySelectorAll(".version-row")).toHaveLength(2));
@@ -1020,20 +1029,26 @@ it("Task10 I1 已选B消失时清除确认，B以相同hash再出现也不复用
   click(root, "使用此已保存确认");
   const quoteButton = () => [...root.querySelectorAll("button")].find((button) => button.textContent?.includes("确认创建新报价"));
   await eventually(() => expect(quoteButton()?.disabled).toBe(false));
-  available = [sheet]; click(root, "读取成本版本");
-  await eventually(() => expect(root.textContent).toContain("指定成本表不存在或不属于当前机会"));
+  click(root, "计算实际报价收益");
+  await eventually(() => expect(root.textContent).toContain("calculation-selected"));
+  const expectedError = failure === "missing" ? "指定成本表不存在或不属于当前机会" : failure === "503" ? "成本服务暂不可用" : "无法连接成本服务";
+  failing = true; click(root, "读取成本版本");
+  await eventually(() => expect(root.textContent).toContain(expectedError));
   expect(root.querySelector(".item-panel")).toBeNull();
   expect(root.textContent).not.toContain("scope-selected");
+  expect(root.textContent).not.toContain("calculation-selected");
+  expect(quoteButton()).toBeUndefined();
   click(root, "读取成本版本");
   await eventually(() => {
     expect(reads).toBe(3);
-    expect(root.textContent).toContain("指定成本表不存在或不属于当前机会");
+    expect(root.textContent).toContain(expectedError);
   });
   expect(root.querySelector(".item-panel")).toBeNull();
   expect(root.querySelector(".version-row.selected")).toBeNull();
-  available = [sheet, other]; click(root, "读取成本版本");
+  failing = false; click(root, "读取成本版本");
   await eventually(() => expect(root.querySelectorAll(".version-row")).toHaveLength(2));
-  (root.querySelectorAll(".version-row")[1] as HTMLButtonElement).click();
   await eventually(() => expect(root.querySelector(".item-panel")?.textContent).toContain(other.cost_sheet_id));
   expect(quoteButton()?.disabled).toBe(true);
+  expect(root.textContent).not.toContain("scope-selected");
+  expect(root.textContent).not.toContain("calculation-selected");
 });

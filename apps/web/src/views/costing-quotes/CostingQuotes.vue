@@ -186,7 +186,7 @@ async function loadVersions(): Promise<void> {
     );
     if (!op.valid()) return;
     if (result.response.status !== 200 || !result.data) {
-      sheets.value = []; selectedSheetId.value = "";
+      sheets.value = []; clearCostConfirmation();
       if (result.response.status === 401 || result.response.status === 403) revokeBusiness();
       error.value = safeError(result.response.status);
       return;
@@ -207,7 +207,7 @@ async function loadVersions(): Promise<void> {
       selectedSheetId.value = sheets.value[0]?.cost_sheet_id ?? "";
     }
   } catch {
-    if (op.valid()) { sheets.value = []; selectedSheetId.value = ""; error.value = "无法连接成本服务"; }
+    if (op.valid()) { sheets.value = []; clearCostConfirmation(); error.value = "无法连接成本服务"; }
   } finally {
     if (op.valid()) loading.value = false;
   }
