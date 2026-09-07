@@ -228,37 +228,35 @@ async def database_marker(profile: PilotProfile) -> str:
     engine = create_engine_from(profile.config.database_url.get_secret_value())
     try:
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:
-            employees = list(
-                (
-                    await session.execute(
-                        select(
-                            EmployeeRow.employee_id,
-                            EmployeeRow.name,
-                            EmployeeRow.role,
-                            EmployeeRow.manager_id,
-                        )
-                        .where(EmployeeRow.tenant_id == profile.config.tenant_id)
-                        .order_by(EmployeeRow.employee_id)
+            employees = [
+                tuple(row)
+                for row in await session.execute(
+                    select(
+                        EmployeeRow.employee_id,
+                        EmployeeRow.name,
+                        EmployeeRow.role,
+                        EmployeeRow.manager_id,
                     )
-                ).tuples()
-            )
-            territories = list(
-                (
-                    await session.execute(
-                        select(
-                            TerritoryAssignmentRow.assignment_id,
-                            TerritoryAssignmentRow.employee_id,
-                            TerritoryAssignmentRow.countries,
-                            TerritoryAssignmentRow.need_categories,
-                        )
-                        .where(
-                            TerritoryAssignmentRow.tenant_id
-                            == profile.config.tenant_id
-                        )
-                        .order_by(TerritoryAssignmentRow.assignment_id)
+                    .where(EmployeeRow.tenant_id == profile.config.tenant_id)
+                    .order_by(EmployeeRow.employee_id)
+                )
+            ]
+            territories = [
+                tuple(row)
+                for row in await session.execute(
+                    select(
+                        TerritoryAssignmentRow.assignment_id,
+                        TerritoryAssignmentRow.employee_id,
+                        TerritoryAssignmentRow.countries,
+                        TerritoryAssignmentRow.need_categories,
                     )
-                ).tuples()
-            )
+                    .where(
+                        TerritoryAssignmentRow.tenant_id
+                        == profile.config.tenant_id
+                    )
+                    .order_by(TerritoryAssignmentRow.assignment_id)
+                )
+            ]
     finally:
         await engine.dispose()
     canonical = json.dumps(
