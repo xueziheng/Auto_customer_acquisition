@@ -43,32 +43,38 @@ async def test_login_digest_csrf_restart_logout(integration_engine):
 
     auth, factory, tenant, employee, password = await setup_auth(integration_engine)
     issued = await auth.login("synthetic", password)
-    assert (await auth.authenticate(issued.token)).employee_id == employee
-    assert (
-        await auth.authenticate(issued.token, csrf_token=issued.csrf_token)
-    ).employee_id == employee
+    principal = await auth.authenticate(issued.token)
+    assert principal.employee_id == employee
+    csrf_principal = await auth.authenticate(issued.token, csrf_token=issued.csrf_token)
+    assert csrf_principal.employee_id == employee
     with pytest.raises(AuthenticationDenied):
         await auth.authenticate(
             issued.token, csrf_token=SecretStr(secrets.token_urlsafe(32))
         )
     restarted = PostgresAuthentication(factory, tenant)
     restored = await restarted.get_session(issued.token)
-    assert restored.csrf_token == issued.csrf_token
-    assert restored.expires_at == issued.expires_at
-    assert (
+    restored_csrf_matches = restored.csrf_token == issued.csrf_token
+    assert restored_csrf_matches, "AUTH_RESTORED_CSRF_MISMATCH"
+    expiry_unchanged = restored.expires_at == issued.expires_at
+    absolute_lifetime_valid = (
         timedelta(hours=7, minutes=59)
         < issued.expires_at - datetime.now(UTC)
         <= timedelta(hours=8)
     )
+    assert expiry_unchanged, "AUTH_SESSION_EXPIRY_CHANGED"
+    assert absolute_lifetime_valid, "AUTH_SESSION_LIFETIME_INVALID"
     async with factory() as session:
         row = (
             await session.scalars(
                 select(AuthSessionRow).where(AuthSessionRow.tenant_id == tenant)
             )
         ).one()
-        assert row.token_digest != issued.token.get_secret_value()
-        assert row.csrf_digest != issued.csrf_token.get_secret_value()
-    assert issued.token.get_secret_value() not in repr(issued)
+        session_digest_only = row.token_digest != issued.token.get_secret_value()
+        csrf_digest_only = row.csrf_digest != issued.csrf_token.get_secret_value()
+        assert session_digest_only, "AUTH_SESSION_PLAINTEXT_STORED"
+        assert csrf_digest_only, "AUTH_CSRF_PLAINTEXT_STORED"
+    session_repr_safe = issued.token.get_secret_value() not in repr(issued)
+    assert session_repr_safe, "AUTH_SESSION_REPR_EXPOSED"
     await restarted.logout(issued.token)
     await restarted.logout(issued.token)
     with pytest.raises(AuthenticationDenied):
@@ -96,7 +102,8 @@ async def test_same_failure_account_limit_persists(integration_engine):
     await second.set_enabled("synthetic", False)
     with pytest.raises(AuthenticationDenied) as disabled:
         await second.login("synthetic", second_password)
-    assert len(set(errors + [str(unknown.value), str(disabled.value)])) == 1
+    failures_match = len(set(errors + [str(unknown.value), str(disabled.value)])) == 1
+    assert failures_match, "AUTH_FAILURE_MESSAGES_DIFFER"
 
 
 async def test_unknown_buckets_bounded_and_tenant_limit(integration_engine):
@@ -129,7 +136,8 @@ async def test_expiry_cap_employee_and_tenant_fail_closed(integration_engine):
     issued = [await auth.login("synthetic", password) for _ in range(6)]
     with pytest.raises(AuthenticationDenied):
         await auth.authenticate(issued[0].token)
-    assert (await auth.authenticate(issued[-1].token)).employee_id == employee
+    principal = await auth.authenticate(issued[-1].token)
+    assert principal.employee_id == employee
     other = PostgresAuthentication(factory, TenantId(new_id("tn")))
     with pytest.raises(AuthenticationDenied):
         await other.authenticate(issued[-1].token)
@@ -178,16 +186,17 @@ async def test_concurrent_account_changes_revoke_prior_sessions(
     outcomes = await asyncio.gather(
         auth.login("synthetic", password), change(), return_exceptions=True
     )
-    assert outcomes[1] is None
+    change_succeeded = outcomes[1] is None
+    assert change_succeeded, "AUTH_ACCOUNT_CHANGE_FAILED"
     with pytest.raises(AuthenticationDenied):
         await auth.authenticate(old.token)
     if action in ("reset", "disable") and not isinstance(outcomes[0], Exception):
         with pytest.raises(AuthenticationDenied):
             await auth.authenticate(outcomes[0].token)
     if action == "reset":
-        assert await auth.authenticate(
-            (await auth.login("synthetic", new_password)).token
-        )
+        issued = await auth.login("synthetic", new_password)
+        authenticated = bool(await auth.authenticate(issued.token))
+        assert authenticated, "AUTH_RESET_LOGIN_FAILED"
 
 
 async def test_concurrent_failures_and_window_expiry(integration_engine):
@@ -212,7 +221,9 @@ async def test_concurrent_failures_and_window_expiry(integration_engine):
             .where(AuthRateLimitRow.tenant_id == tenant)
             .values(count=30, started_at=datetime.now(UTC) - timedelta(minutes=2))
         )
-    assert await auth.authenticate((await auth.login("synthetic", password)).token)
+    issued = await auth.login("synthetic", password)
+    authenticated = bool(await auth.authenticate(issued.token))
+    assert authenticated, "AUTH_WINDOW_RECOVERY_FAILED"
 
 
 async def test_atomic_account_binding_and_raw_tenant_fk(integration_engine):
@@ -238,15 +249,15 @@ async def test_atomic_account_binding_and_raw_tenant_fk(integration_engine):
         await auth.create_account("atomic", password, next_employee, session=session)
         await transaction.rollback()
     async with factory() as session:
-        assert (
+        account_absent = (
             await session.scalar(
                 select(AuthAccountRow).where(
                     AuthAccountRow.tenant_id == tenant,
                     AuthAccountRow.username == "atomic",
                 )
             )
-            is None
-        )
+        ) is None
+        assert account_absent, "AUTH_ACCOUNT_ROLLBACK_FAILED"
         with pytest.raises(AuthenticationInputInvalid):
             await auth.create_account("duplicate", password, employee)
     async with factory.begin() as session:
@@ -261,9 +272,9 @@ async def test_atomic_account_binding_and_raw_tenant_fk(integration_engine):
             )
         )
         await auth.create_account("atomic", password, next_employee, session=session)
-    assert (
-        await auth.authenticate((await auth.login("atomic", password)).token)
-    ).employee_id == next_employee
+    issued = await auth.login("atomic", password)
+    principal = await auth.authenticate(issued.token)
+    assert principal.employee_id == next_employee
     async with factory.begin() as session:
         existing = await session.scalar(
             select(AuthAccountRow).where(
@@ -308,7 +319,8 @@ async def test_disable_reenable_and_tenant_revoke(integration_engine):
     await auth.revoke_all()
     with pytest.raises(AuthenticationDenied):
         await auth.authenticate(fresh.token)
-    assert await other.authenticate(separate.token)
+    other_authenticated = bool(await other.authenticate(separate.token))
+    assert other_authenticated, "AUTH_OTHER_TENANT_REVOKED"
     fresh = await auth.login("synthetic", password)
     async with factory.begin() as session:
         await session.execute(
@@ -371,7 +383,8 @@ async def test_authentication_migration_roundtrip(db_url):
             capture_output=True,
             check=False,
         )
-        assert result.returncode == 0, "认证迁移失败（隐藏底层输出）"
+        migration_succeeded = result.returncode == 0
+        assert migration_succeeded, "AUTH_MIGRATION_FAILED"
 
     def inspect_schema(connection):
         inspector = inspect(connection)
@@ -452,3 +465,119 @@ async def test_account_requires_active_employee_user_mapping(
         )
     with pytest.raises(AuthenticationInputInvalid):
         await auth.create_account("no-mapping", password, employee)
+
+
+@pytest.mark.parametrize("fault", ["csrf", "password_repr", "session_repr"])
+def test_authentication_failures_do_not_render_materials(tmp_path, fault):
+    """真实 pytest 重写路径故障注入；子进程诊断仅用于进程内泄漏布尔检查。"""
+    import base64
+    import hmac
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    raw = secrets.token_bytes(32)
+    session_canary = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    csrf_canary = (
+        base64.urlsafe_b64encode(hmac.digest(raw, b"tradeos:csrf:v1", "sha256"))
+        .decode()
+        .rstrip("=")
+    )
+    password_canary = secrets.token_urlsafe(24)
+    wrong_csrf_canary = secrets.token_urlsafe(32)
+    plugin = tmp_path / "auth_fault_plugin.py"
+    plugin.write_text("""import os
+import secrets
+from pydantic import SecretStr
+from infra.authentication import passwords
+from shared.authentication import IssuedSession
+
+
+def pytest_configure():
+    fault = os.environ["AUTH_TEST_FAULT"]
+    original_urlsafe = secrets.token_urlsafe
+    if fault == "csrf":
+        original_bytes = secrets.token_bytes
+        secrets.token_bytes = lambda size: bytes.fromhex(os.environ["AUTH_TEST_RAW"]) if size == 32 else original_bytes(size)
+        passwords.csrf_for = lambda token: SecretStr(os.environ["AUTH_TEST_WRONG_CSRF"])
+    elif fault == "password_repr":
+        first = True
+        def password(size):
+            nonlocal first
+            if first:
+                first = False
+                return os.environ["AUTH_TEST_PASSWORD"]
+            return original_urlsafe(size)
+        secrets.token_urlsafe = password
+        original_hash = passwords.hash_password
+        class ExposedRecord(SecretStr):
+            def __repr__(self):
+                return os.environ["AUTH_TEST_PASSWORD"]
+        passwords.hash_password = lambda password: ExposedRecord(original_hash(password).get_secret_value())
+    else:
+        secrets.token_urlsafe = lambda size: os.environ["AUTH_TEST_SESSION"] if size == 32 else original_urlsafe(size)
+        IssuedSession.__repr__ = lambda self: self.token.get_secret_value()
+""")
+    root = Path(__file__).resolve().parents[2]
+    targets = {
+        "csrf": "tests/unit/test_authentication_passwords.py::test_csrf_derivation_and_token_encoding_are_canonical",
+        "password_repr": "tests/unit/test_authentication_passwords.py::test_password_roundtrip_and_strict_records",
+        "session_repr": "tests/integration/test_web_authentication.py::test_login_digest_csrf_restart_logout",
+    }
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join([str(tmp_path), str(root)]),
+        "PYTEST_ADDOPTS": "",
+        "AUTH_TEST_FAULT": fault,
+        "AUTH_TEST_RAW": raw.hex(),
+        "AUTH_TEST_PASSWORD": password_canary,
+        "AUTH_TEST_SESSION": session_canary,
+        "AUTH_TEST_WRONG_CSRF": wrong_csrf_canary,
+    }
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-p",
+                "auth_fault_plugin",
+                targets[fault],
+                "-q",
+                "--tb=long",
+                "--color=no",
+            ],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=45,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pytest.fail("AUTH_FAULT_PROCESS_FAILED", pytrace=False)
+    captured = completed.stdout + completed.stderr
+    expected_guard = {
+        "csrf": "AUTH_CSRF_DERIVATION_MISMATCH",
+        "password_repr": "AUTH_PASSWORD_REPR_EXPOSED",
+        "session_repr": "AUTH_SESSION_REPR_EXPOSED",
+    }[fault]
+    failed_as_expected = (
+        completed.returncode == 1
+        and "1 failed" in completed.stdout
+        and expected_guard in captured
+    )
+    materials_absent = all(
+        material not in captured
+        for material in (
+            password_canary,
+            session_canary,
+            csrf_canary,
+            wrong_csrf_canary,
+            raw.hex(),
+        )
+    )
+    del completed, captured, env
+    assert failed_as_expected, "AUTH_FAULT_NOT_EXERCISED"
+    assert materials_absent, "AUTH_FAILURE_DIAGNOSTIC_LEAK"

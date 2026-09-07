@@ -11,16 +11,20 @@ def test_password_roundtrip_and_strict_records():
 
     password = SecretStr(secrets.token_urlsafe(24))
     record = hash_password(password)
-    assert verify_password(password, record)
-    assert not verify_password(SecretStr(secrets.token_urlsafe(24)), record)
+    verified = verify_password(password, record)
+    assert verified, "AUTH_PASSWORD_VERIFY_FAILED"
+    wrong_rejected = not verify_password(SecretStr(secrets.token_urlsafe(24)), record)
+    assert wrong_rejected, "AUTH_WRONG_PASSWORD_ACCEPTED"
     for malformed in (
         "",
         "scrypt$999999999$8$1$a$b",
         record.get_secret_value().replace("131072", "2"),
         record.get_secret_value() + "x",
     ):
-        assert not verify_password(password, SecretStr(malformed))
-    assert password.get_secret_value() not in repr(record)
+        malformed_rejected = not verify_password(password, SecretStr(malformed))
+        assert malformed_rejected, "AUTH_MALFORMED_RECORD_ACCEPTED"
+    password_repr_safe = password.get_secret_value() not in repr(record)
+    assert password_repr_safe, "AUTH_PASSWORD_REPR_EXPOSED"
 
 
 @pytest.mark.parametrize("length", [0, 14, 129])
@@ -37,10 +41,17 @@ def test_unicode_and_spaces_are_not_trimmed():
 
     password = SecretStr(" " + secrets.token_urlsafe(16) + " ")
     record = hash_password(password)
-    assert verify_password(password, record)
-    assert not verify_password(SecretStr(password.get_secret_value().strip()), record)
+    verified = verify_password(password, record)
+    assert verified, "AUTH_PASSWORD_VERIFY_FAILED"
+    trimmed_rejected = not verify_password(
+        SecretStr(password.get_secret_value().strip()), record
+    )
+    assert trimmed_rejected, "AUTH_PASSWORD_WAS_TRIMMED"
     unicode_password = SecretStr(chr(0x1F600) * 128)
-    assert verify_password(unicode_password, hash_password(unicode_password))
+    unicode_verified = verify_password(
+        unicode_password, hash_password(unicode_password)
+    )
+    assert unicode_verified, "AUTH_UNICODE_PASSWORD_REJECTED"
 
 
 def test_minimum_length_and_distinct_salts():
@@ -48,9 +59,12 @@ def test_minimum_length_and_distinct_salts():
 
     password = SecretStr(secrets.token_urlsafe(16)[:15])
     first, second = hash_password(password), hash_password(password)
-    assert first != second
-    assert verify_password(password, first)
-    assert verify_password(password, second)
+    salts_differ = first != second
+    first_verified = verify_password(password, first)
+    second_verified = verify_password(password, second)
+    assert salts_differ, "AUTH_PASSWORD_SALT_REUSED"
+    assert first_verified, "AUTH_FIRST_RECORD_INVALID"
+    assert second_verified, "AUTH_SECOND_RECORD_INVALID"
 
 
 async def test_worker_slots_remain_bounded_after_cancellation():
@@ -107,11 +121,13 @@ def test_csrf_derivation_and_token_encoding_are_canonical():
         .decode()
         .rstrip("=")
     )
-    assert csrf_for(token).get_secret_value() == expected
-    assert (
+    csrf_matches = csrf_for(token).get_secret_value() == expected
+    assert csrf_matches, "AUTH_CSRF_DERIVATION_MISMATCH"
+    digest_matches = (
         token_digest(token)
         == hashlib.sha256(token.get_secret_value().encode()).hexdigest()
     )
+    assert digest_matches, "AUTH_TOKEN_DIGEST_MISMATCH"
     for malformed in ("", "a" * 42, "!" * 43, "a" * 44, "a" * 42 + "B"):
         with pytest.raises(AuthenticationInputInvalid):
             token_digest(SecretStr(malformed))
