@@ -461,3 +461,9 @@ Ruling: 恢复先完成未读范围与具名疑点，历史相同副本按hash�
 
 
 最终审查恢复中新增已确认Important（审查者初报，完整报告待）：CurrentEmployeeReplyFactory将BoundedRawArtifactStore直接交ArtifactMessageContentReader，ClassifyStep先load/S3/模型，当前active boss检查在后续CurrentEmployeeReplyActions._run才做；已排队分类在员工停用/降权后可能仍读原件/交模型并保存分类，读取也无Gateway ledger。旧ArtifactStore设计仍要求调用前actor授权，不构成豁免。已要求最终完整清单附精确位置及最小修复面，尚未提前派fix，仍保持唯一统一波次。
+
+
+Final review complete（审查本身完成，交付未通过）：root已全文读final-review.md，固定ec801a8→b2c64db，Spec/Quality Needs fixes；0Critical、1Important R1、3Minor M1/M2/M3。原手写diff/测试/契约均完成，历史32副本、1630源码快照及安全证据已核，详见正式报告，不重跑原验收。
+Ruling: 接受R1，按现有当前active boss qualify资格在Raw读取、模型调用和分类写入前执行实际当前检查；Raw读取经真实Gateway授权/执行账本/有界一次交付，不凭旧受信Artifact设计豁免；同波处理M1四处SQLite显式close。理由：撤权员工仍读内容/调用模型是实际授权缺口，M1是独立确定资源释放缺口且可窄改；成本：需新的真实领域/PG/Gateway撤权与失败顺序回归和完整受控主链，原9318/411不得改称新源码full，不修改Gateway核心或扩大角色权利。
+Ruling: M2技能64/10000精确阈值、M3adapter内部await取消直接测试继续parked，保留最终review独立意见。理由：未发现实现错误，现有危险结构/取消传播与外层清理已有覆盖，通用Agent生产消费者仍disabled，二者不阻断当前本机受控范围；成本：阈值off-by-one与未来异常包装的直接回归保护有限，技能加载规则变更时补M2，生产provider/任务来源启用或异常分类变更前补M3，不静默删除。
+仅派一个fresh最终fixer，完整清单/精确BASE/brief/report随派发；之后同final_review_resumed仅限定一次复审。root不改生产实现。
