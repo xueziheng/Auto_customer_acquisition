@@ -389,14 +389,18 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             expected_network_fault = False
 
             def observe(created: Page) -> None:
+                def console(message: object) -> None:
+                    if getattr(message, "type", "") not in {"warning", "error"}:
+                        return
+                    value = str(getattr(message, "text", ""))
+                    expected_rejection = "Failed to load resource" in value and (
+                        "401" in value or "403" in value
+                    )
+                    if not expected_rejection and not expected_network_fault:
+                        browser_errors.append("console_warning_or_error")
+
                 created.on("pageerror", lambda _: browser_errors.append("pageerror"))
-                created.on(
-                    "console",
-                    lambda message: browser_errors.append("console_warning_or_error")
-                    if message.type in {"warning", "error"}
-                    and not expected_network_fault
-                    else None,
-                )
+                created.on("console", console)
 
             context.on("page", observe)
             page = await context.new_page()
