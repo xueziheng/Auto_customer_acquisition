@@ -14,7 +14,14 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from playwright.async_api import BrowserContext, Page, Route, async_playwright, expect
+from playwright.async_api import (
+    BrowserContext,
+    Page,
+    Playwright,
+    Route,
+    async_playwright,
+    expect,
+)
 from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -325,6 +332,80 @@ async def safe_status(context: BrowserContext, url: str) -> int:
     return (await context.request.get(url, fail_on_status_code=False)).status
 
 
+async def session_token(context: BrowserContext, origin: str) -> SecretStr:
+    """仅在进程内保留当前端口对应的 session token。"""
+    name = session_cookie_name(origin)
+    matches = [
+        item
+        for item in await context.cookies(origin + "/api/auth/session")
+        if item["name"] == name and item["path"] == "/api"
+    ]
+    require(len(matches) == 1, "SESSION_COOKIE_MISSING")
+    return SecretStr(matches[0]["value"])
+
+
+async def assert_cookie_cleared_and_token_revoked(
+    playwright: Playwright,
+    context: BrowserContext,
+    origin: str,
+    old_token: SecretStr,
+    *,
+    reason: str,
+) -> None:
+    """分别证明正常 jar 已清除，且隔离请求重放旧 token 仍被服务端拒绝。"""
+    name = session_cookie_name(origin)
+    remaining = [
+        item
+        for item in await context.cookies(origin + "/api/auth/session")
+        if item["name"] == name and item["path"] == "/api"
+    ]
+    require(remaining == [], "LOGOUT_COOKIE_NOT_CLEARED")
+    replay = await playwright.request.new_context(
+        storage_state={
+            "cookies": [
+                {
+                    "name": name,
+                    "value": old_token.get_secret_value(),
+                    "domain": "127.0.0.1",
+                    "path": "/api",
+                    "expires": -1,
+                    "httpOnly": True,
+                    "secure": False,
+                    "sameSite": "Strict",
+                }
+            ],
+            "origins": [],
+        }
+    )
+    try:
+        response = await replay.get(
+            origin + "/api/auth/session", fail_on_status_code=False
+        )
+        try:
+            require(response.status == 401, reason)
+        finally:
+            await response.dispose()
+    finally:
+        await replay.dispose()
+
+
+async def wait_for_authentication_lock_queue(page: Page) -> None:
+    """轮询浏览器锁状态，证明一个会话变更持锁且另一个已实际排队。"""
+    deadline = asyncio.get_running_loop().time() + 10
+    while asyncio.get_running_loop().time() < deadline:
+        queued = await page.evaluate(
+            """async () => {
+              const state = await navigator.locks.query();
+              return state.held.some((item) => item.name === "tradeos-authentication")
+                && state.pending.some((item) => item.name === "tradeos-authentication");
+            }"""
+        )
+        if queued:
+            return
+        await asyncio.sleep(0.05)
+    require(False, "AUTHENTICATION_LOCK_WAS_NOT_QUEUED")
+
+
 async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
     owned_pilot: tuple[Path, list[OwnedProfile]],
 ) -> None:
@@ -454,6 +535,7 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             )
 
             failed_once = False
+            retry_session = await session_token(context, source_origin)
 
             async def fail_first_logout(route: Route) -> None:
                 nonlocal expected_network_fault, failed_once
@@ -475,9 +557,12 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             await page.unroute("**/api/auth/logout", fail_first_logout)
             await page.get_by_role("button", name="重试退出", exact=True).click()
             await expect(page.get_by_role("button", name="登录", exact=True)).to_be_visible()
-            require(
-                await safe_status(context, source_origin + "/api/auth/session") == 401,
-                "LOGOUT_RETRY_DID_NOT_REVOKE_SESSION",
+            await assert_cookie_cleared_and_token_revoked(
+                playwright,
+                context,
+                source_origin,
+                retry_session,
+                reason="LOGOUT_RETRY_DID_NOT_REVOKE_SESSION",
             )
 
             second = await context.new_page()
@@ -487,47 +572,122 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             await expect(page.get_by_text(sales.name, exact=True).first).to_be_visible()
             await expect(second.get_by_role("button", name="登录", exact=True)).to_be_visible()
 
-            held = asyncio.Event()
-            release = asyncio.Event()
+            # B 不先退出 A，直接轮换共享 Cookie；A 必须立即卸载老板业务视图。
+            await sign_in(second, sales)
+            await expect(page.get_by_role("button", name="登录", exact=True)).to_be_visible()
+            await expect(page.get_by_text(sales.name, exact=True)).to_have_count(0)
+            await expect(
+                page.get_by_text("TradeOS 内部运营台", exact=True)
+            ).to_have_count(0)
+            require(
+                await safe_session(second)
+                == {
+                    "status": 200,
+                    "employee_id": sales.employee_id,
+                    "role": "sales",
+                    "active": True,
+                },
+                "DIRECT_SWITCH_CURRENT_AUTHORIZATION_MISMATCH",
+            )
+            require(
+                await safe_status(context, source_origin + "/api/team/employees")
+                == 403,
+                "DIRECT_SWITCH_TEAM_AUTHORIZATION_NOT_ENFORCED",
+            )
+
+            # 两个标签都用同一有效 sales 会话挂载业务壳；只在 B 退出，A 也必须清空。
+            await page.reload()
+            await expect(page.get_by_role("button", name="退出", exact=True)).to_be_visible()
+            await expect(second.get_by_role("button", name="退出", exact=True)).to_be_visible()
+            await expect(
+                page.get_by_text("TradeOS 内部运营台", exact=True)
+            ).to_be_visible()
+            shared_session = await session_token(context, source_origin)
+            await second.get_by_role("button", name="退出", exact=True).click()
+            await expect(second.get_by_role("button", name="登录", exact=True)).to_be_visible()
+            await expect(page.get_by_role("button", name="登录", exact=True)).to_be_visible()
+            await expect(
+                page.get_by_text("TradeOS 内部运营台", exact=True)
+            ).to_have_count(0)
+            await assert_cookie_cleared_and_token_revoked(
+                playwright,
+                context,
+                source_origin,
+                shared_session,
+                reason="CROSS_TAB_LOGOUT_DID_NOT_REVOKE_SESSION",
+            )
+
+            # A 再登录 boss，B 保持登录表单；真实退出响应交付前，B 登录应在 Web Lock 排队。
+            await sign_in(page, boss)
+            await expect(page.get_by_text(sales.name, exact=True).first).to_be_visible()
+            await expect(second.get_by_role("button", name="登录", exact=True)).to_be_visible()
+
+            server_response_ready = asyncio.Event()
+            release_response = asyncio.Event()
+            logout_response_seen = asyncio.Event()
+            login_request_seen = asyncio.Event()
             order: list[str] = []
 
-            async def hold_logout(route: Route) -> None:
+            async def hold_logout_response(route: Route) -> None:
                 if route.request.method != "POST":
                     await route.continue_()
                     return
-                order.append("logout_headers")
-                held.set()
-                await release.wait()
-                await route.continue_()
+                response = await route.fetch()
+                try:
+                    require(response.status == 204, "REAL_LOGOUT_RESPONSE_INVALID")
+                    server_response_ready.set()
+                    await release_response.wait()
+                    await route.fulfill(response=response)
+                finally:
+                    await response.dispose()
+
+            def record_logout_response(response: object) -> None:
+                request = getattr(response, "request", None)
+                if (
+                    getattr(request, "method", None) == "POST"
+                    and str(getattr(response, "url", "")).endswith("/api/auth/logout")
+                ):
+                    if getattr(response, "status", None) != 204:
+                        browser_errors.append("logout_response_status")
+                    order.append("logout_response")
+                    logout_response_seen.set()
 
             def record_login(request: object) -> None:
                 if getattr(request, "method", None) == "POST" and str(
                     getattr(request, "url", "")
                 ).endswith("/api/auth/login"):
                     order.append("login_request")
+                    login_request_seen.set()
 
-            await page.route("**/api/auth/logout", hold_logout)
+            await page.route("**/api/auth/logout", hold_logout_response)
+            page.on("response", record_logout_response)
             second.on("request", record_login)
             await page.get_by_role("button", name="退出", exact=True).click()
-            await asyncio.wait_for(held.wait(), timeout=10)
+            await asyncio.wait_for(server_response_ready.wait(), timeout=10)
             await second.get_by_label("账号", exact=True).fill(sales.username)
             await second.get_by_label("密码", exact=True).fill(
                 sales.password.get_secret_value()
             )
             await second.get_by_role("button", name="登录", exact=True).click()
-            await asyncio.sleep(0.3)
-            require(order == ["logout_headers"], "AUTHENTICATION_LOCK_ORDER_INVALID")
-            release.set()
+            await wait_for_authentication_lock_queue(second)
+            require(order == [], "LOGIN_REQUEST_ESCAPED_AUTHENTICATION_LOCK")
+            release_response.set()
             await expect(
                 second.get_by_role("button", name="退出", exact=True)
             ).to_be_visible(timeout=20_000)
+            await asyncio.wait_for(logout_response_seen.wait(), timeout=10)
+            await asyncio.wait_for(login_request_seen.wait(), timeout=10)
             require(
-                order == ["logout_headers", "login_request"],
+                order == ["logout_response", "login_request"],
                 "AUTHENTICATION_LOCK_ORDER_INVALID",
             )
-            await page.unroute("**/api/auth/logout", hold_logout)
+            await page.unroute("**/api/auth/logout", hold_logout_response)
             await expect(page.get_by_role("button", name="登录", exact=True)).to_be_visible()
             await expect(page.get_by_text(sales.name, exact=True)).to_have_count(0)
+            await second.reload()
+            await expect(
+                second.get_by_role("button", name="退出", exact=True)
+            ).to_be_visible(timeout=20_000)
             require(
                 await safe_session(second)
                 == {
@@ -576,22 +736,21 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             await second.reload()
             await rejected_sign_in(second, sales)
             await sign_in(second, replacement)
+            final_session = await session_token(context, source_origin)
             await second.get_by_role("button", name="退出", exact=True).click()
             await expect(second.get_by_role("button", name="登录", exact=True)).to_be_visible()
-            require(
-                await safe_status(context, source_origin + "/api/auth/session") == 401,
-                "FINAL_LOGOUT_DID_NOT_REVOKE_SESSION",
+            await assert_cookie_cleared_and_token_revoked(
+                playwright,
+                context,
+                source_origin,
+                final_session,
+                reason="FINAL_LOGOUT_DID_NOT_REVOKE_SESSION",
             )
 
             await sign_in(page, boss)
-            cookie_name = session_cookie_name(source_origin)
-            matches = [
-                item
-                for item in await context.cookies(source_origin + "/api")
-                if item["name"] == cookie_name
-            ]
-            require(len(matches) == 1, "SOURCE_SESSION_COOKIE_MISSING")
-            source_session = matches[0]["value"]
+            source_session = (
+                await session_token(context, source_origin)
+            ).get_secret_value()
 
             await asyncio.to_thread(source.stop)
             backup_path = tmp_path / "pilot-backup"
