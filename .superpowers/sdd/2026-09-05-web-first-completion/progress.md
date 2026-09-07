@@ -452,3 +452,12 @@ Ruling: 用户明确要求先收尾、马上关机，后续另行通知继续；
 Ruling: 暂停保留本计划scratch、worktree和分支，将暂停完整ledger、审查progress/paused报告、diff定位map与SHA清单归档到docs/acceptance/web-core-delivery；原历史快照不覆写。理由：最终门禁未结束，提前清理会破坏断点；成本：保留381个output历史未跟踪文件，后续恢复需先读pause-handoff，不重做完整任务。没有合并/推送/部署或新增后台自动任务。
 
 关机只读核验：ps命令指向本工作树的已知pytest/Web/worker运行进程0；Docker running filter tradeos.controlled.owner结果0，两命令exit0。只核本轮范围，不声称其他项目停机，无清理别人进程/容器。本次仅metadata暂停提交，敏感扫描与diff-check后本地保存；不运行新的业务验收。
+
+
+## 2026-09-07 恢复最终收尾
+
+用户明确继续web收尾。已核HEAD068eed58e0b12e38e3d87e5c89f593b07c617ace，分支codex/web-core-completion，tracked无改动，381个untracked全在output；暂停未遗留新的业务改动。原final_review代理不在当前live tree，按pause-handoff由/root/final_review_resumed（Astra high/fork none/无子代理）接续同一审查职责与已读断点；固定ec801a8→b2c64db范围不变，068eed58仅暂停metadata。不是重开Task0–13或重复全分支审查。
+Ruling: 恢复先完成未读范围与具名疑点，历史相同副本按hash去重；仍只一统一fix波+一次限定复审，最后归档全部裁定并清本计划scratch。理由：用户恢复执行且前轮审查未完成；成本：最终结论仍待实际审查，既有9318/411及局部修复结果按版本保留，不自动重跑全仓，不据暂停metadata将其冒称最终HEAD全量。
+
+
+最终审查恢复中新增已确认Important（审查者初报，完整报告待）：CurrentEmployeeReplyFactory将BoundedRawArtifactStore直接交ArtifactMessageContentReader，ClassifyStep先load/S3/模型，当前active boss检查在后续CurrentEmployeeReplyActions._run才做；已排队分类在员工停用/降权后可能仍读原件/交模型并保存分类，读取也无Gateway ledger。旧ArtifactStore设计仍要求调用前actor授权，不构成豁免。已要求最终完整清单附精确位置及最小修复面，尚未提前派fix，仍保持唯一统一波次。
