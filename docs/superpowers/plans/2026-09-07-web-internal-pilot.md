@@ -77,7 +77,7 @@ response = await client.post('/auth/login', json=credentials, headers=trusted_he
 assert response.status_code == 200
 assert 'httponly' in response.headers['set-cookie'].lower()
 assert (await client.get('/auth/session')).status_code == 200
-assert (await client.post('/auth/logout', headers=csrf_headers)).status_code == 200
+assert (await client.post('/auth/logout', headers=csrf_headers)).status_code == 204
 assert (await client.get('/auth/session')).status_code == 401
 ```
 对老板/经理/员工从当前Employee重新取权限，测试改角色/归属/停用后下一次请求不可沿旧授权；保留dev头模式与未配置nondev回归。CLI验证跨tenantmanager、错误role、重复username都原子拒绝，密码不进输出。
