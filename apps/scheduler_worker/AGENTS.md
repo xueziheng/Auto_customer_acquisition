@@ -131,3 +131,7 @@ driver不持有锁、不建循环，opaque游标只从tenant账本读取；永�
 reply工厂只借用本进程显式typed session/BoundedRaw及canonical服务；不挖private或另建engine。
 Demand的客户证据委托每runtime独立，仅允许绑定一次真实verifier，未绑定拒绝，ready前完成。
 内容复用5a纯解析，完整subject+原HTML候选及subject+文本各先guard再预算，超限拒绝不裁剪。
+
+ADR0066：canonical reply 必须注入当前分类资格端口，Raw 前/模型前/模型后重新核对受托员工。
+Raw 读取复用本进程独立 inbox.message.evidence.read Gateway；qualify 与原 Inbox 权限取交集，
+不扩 manager/sales 或技术 review 权限。分类写入传入当前 actor，由原领域事务持员工访问锁到提交。

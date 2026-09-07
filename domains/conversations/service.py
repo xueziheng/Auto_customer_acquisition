@@ -111,11 +111,14 @@ class ConversationService(Protocol):
         outbound_message_id: OutboundMessageId | None = None,
         candidate_fields: tuple[ReplyFieldEvidence, ...] = (),
         suppress_scope: ReplySuppressScope | None = None,
+        actor: InboxActor | None = None,
     ) -> tuple[str, ...]:
         """落分类结果，返回 ``REPLY_ACTIONS`` 对应的动作序列。
 
         动作的**执行**在工作流（reply_qualification），本域只返回
-        「该做什么」。发布 ``ReplyReceived``（AUTO_REPLY 除外——
+        「该做什么」。受托分类传入 actor 时，在同一事务持有原员工访问锁，
+        重核当前 qualify、真实入站与出站关联，直到分类/事件提交；旧幂等结果
+        不能跳过该授权。发布 ``ReplyReceived``（AUTO_REPLY 除外——
         自动回复不算回复）。``outbound_message_id`` 是被回复出站消息的
         RFC Message-ID（In-Reply-To/References 关联）；无关联传 None，
         订阅方 fail-closed。每个候选 quote 必须是最多 500 个 Unicode

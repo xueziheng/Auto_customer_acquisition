@@ -40,6 +40,7 @@ from workflows.reply_qualification.ports import (
     InputContentGuard,
     MessageContentReader,
     ReplyActionPorts,
+    ReplyClassificationAccess,
 )
 from workflows.reply_qualification.steps import ApplyActionsStep, ClassifyStep
 
@@ -72,6 +73,7 @@ def build_reply_qualification_handlers(
     tenant_id: TenantId,
     now: Callable[[], datetime],
     action_ports: ReplyActionPorts | None = None,
+    classification_access: ReplyClassificationAccess | None = None,
 ) -> dict[str, StepHandler]:
     """按 handler_ref 装配步骤 handler；定义与 handler 由调用方同步注册。
 
@@ -81,7 +83,11 @@ def build_reply_qualification_handlers(
     """
     return {
         "reply_qualification.classify": ClassifyStep(
-            classifier, content_reader, input_guard, conversations
+            classifier,
+            content_reader,
+            input_guard,
+            conversations,
+            classification_access,
         ),
         "reply_qualification.apply_actions": ApplyActionsStep(
             outreach, tenant_id, now, action_ports

@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 from collections.abc import Mapping
+from contextlib import closing
 from pathlib import Path
 
 from .config import ControlledError
@@ -18,7 +19,7 @@ class ControlledReplyModelClient:
         if not path.exists():
             descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             os.close(descriptor)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS responses (tenant TEXT, fingerprint TEXT, response TEXT, PRIMARY KEY(tenant,fingerprint))"
             )
@@ -44,7 +45,7 @@ class ControlledReplyModelClient:
         fingerprint = self._fingerprint(payload)
         if not isinstance(response, str) or not response.strip():
             raise ControlledError("controlled_model_input_rejected")
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 "INSERT OR REPLACE INTO responses VALUES (?,?,?)",
                 (self.tenant_id, fingerprint, response),
@@ -59,7 +60,7 @@ class ControlledReplyModelClient:
         max_output_tokens: int,
     ) -> str:
         fingerprint = self._fingerprint(payload)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 "INSERT INTO calls VALUES (?,?)", (self.tenant_id, fingerprint)
             )
@@ -72,7 +73,7 @@ class ControlledReplyModelClient:
         return str(row[0])
 
     def call_count(self) -> int:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             return int(
                 connection.execute(
                     "SELECT count(*) FROM calls WHERE tenant=?", (self.tenant_id,)

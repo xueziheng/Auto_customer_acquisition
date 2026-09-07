@@ -278,6 +278,7 @@ from workflows.reply_qualification.ports import (
     InputContentGuard,
     MessageContentReader,
     ReplyActionPorts,
+    ReplyClassificationAccess,
 )
 from workflows.sending_identity_auth.flow import (
     DnsAuthenticationStep,
@@ -528,6 +529,7 @@ class ReplyQualificationComposition:
     conversations: ConversationService
     outreach: OutreachService
     action_ports: ReplyActionPorts
+    classification_access: ReplyClassificationAccess | None = None
 
     def __post_init__(self) -> None:
         # 浅域实现可能只实现部分 Protocol 方法；按 reply 链实际消费的
@@ -1564,6 +1566,7 @@ class SchedulerRuntimeFactory:
                     tenant_id=config.tenant_id,
                     now=self._now,
                     action_ports=reply_composition.action_ports,
+                    classification_access=reply_composition.classification_access,
                 )
             account_handlers: dict[str, StepHandler] = {}
             runtime_activation: RuntimeActivation | None = None

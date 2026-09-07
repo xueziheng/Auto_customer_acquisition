@@ -106,27 +106,38 @@ class ArtifactMessageContentReader:
             or meta.mime_type != "message/rfc822"
         ):
             raise ValidationError(_NOT_EMAIL)
-        view = parse_inbound_content(raw)
-        if view.disposition is not InboundDisposition.CANDIDATE:
-            raise ValidationError(_BODY_INVALID)
-        guard = CredentialMarkerGuard()
-        guard.check(subject=view.subject, body=view.guard_body)
-        guard.check(subject=view.subject, body=view.body)
-        if (
-            len(view.subject or "") > self._max_subject_chars
-            or len(view.body) > self._max_body_chars
-        ):
-            raise ValidationError("回复内容超过模型读取预算，需人工核对")
-        if not view.evidence_available or not view.evidence_segments:
-            raise ValidationError("回复当前表达无法可靠区分，需人工核对")
-        return ReplyMessageContent(
-            subject="(current reply)",
-            body="\n[current expression boundary]\n".join(
-                _PRIVATE_REFERENCE.sub(_PROJECTION_MARKER, segment)
-                for segment in view.evidence_segments
-            ),
-            projected=True,
-            original_subject=view.subject or None,
-            original_body=view.body,
-            evidence_segments=view.evidence_segments,
+        return project_reply_content(
+            raw,
+            max_subject_chars=self._max_subject_chars,
+            max_body_chars=self._max_body_chars,
         )
+
+
+def project_reply_content(
+    raw: bytes,
+    *,
+    max_subject_chars: int,
+    max_body_chars: int,
+) -> ReplyMessageContent:
+    """完整 MIME 候选先护栏及预算，再投影当前表达；无 IO 或身份授权。"""
+    view = parse_inbound_content(raw)
+    if view.disposition is not InboundDisposition.CANDIDATE:
+        raise ValidationError(_BODY_INVALID)
+    guard = CredentialMarkerGuard()
+    guard.check(subject=view.subject, body=view.guard_body)
+    guard.check(subject=view.subject, body=view.body)
+    if len(view.subject or "") > max_subject_chars or len(view.body) > max_body_chars:
+        raise ValidationError("回复内容超过模型读取预算，需人工核对")
+    if not view.evidence_available or not view.evidence_segments:
+        raise ValidationError("回复当前表达无法可靠区分，需人工核对")
+    return ReplyMessageContent(
+        subject="(current reply)",
+        body="\n[current expression boundary]\n".join(
+            _PRIVATE_REFERENCE.sub(_PROJECTION_MARKER, segment)
+            for segment in view.evidence_segments
+        ),
+        projected=True,
+        original_subject=view.subject or None,
+        original_body=view.body,
+        evidence_segments=view.evidence_segments,
+    )

@@ -48,6 +48,7 @@ from domains.conversations.schemas import (
     ReplyWorkActionRequest,
     ReplyWorkActionView,
 )
+from domains.conversations.source_access import require_reply_internal_access
 from shared.errors import PermissionDenied, ValidationError
 from shared.events.catalog import InboundMessageStored, ReplyReceived
 from shared.schemas.identifiers import (
@@ -58,6 +59,7 @@ from shared.schemas.identifiers import (
     TenantId,
     new_id,
 )
+from shared.schemas.quote_facts import QuoteEmployeeFact
 
 
 class ConversationServiceImpl:
@@ -284,6 +286,7 @@ class ConversationServiceImpl:
         outbound_message_id: OutboundMessageId | None = None,
         candidate_fields: tuple[ReplyFieldEvidence, ...] = (),
         suppress_scope: ReplySuppressScope | None = None,
+        actor: InboxActor | None = None,
     ) -> tuple[str, ...]:
         """落分类留痕并返回 ``REPLY_ACTIONS`` 动作序列（幂等契约见 docstring）。
 
@@ -321,6 +324,42 @@ class ConversationServiceImpl:
             raise ValidationError("非退订分类不得携带抑制范围")
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
+            if actor is not None:
+                await self._message_access(
+                    uow,
+                    tenant_id,
+                    message_id,
+                    actor,
+                    InboxAction.EVIDENCE_READ,
+                    lock=True,
+                )
+                current = await uow.inbox_facts.read_employee(
+                    tenant_id, actor.employee_id
+                )
+                if current is None:
+                    raise PermissionDenied("回复内部操作权限拒绝")
+                require_reply_internal_access(
+                    tenant_id,
+                    QuoteEmployeeFact.model_validate(
+                        {
+                            "tenant_id": tenant_id,
+                            "employee_id": current.employee_id,
+                            "role": current.role,
+                            "is_active": current.is_active,
+                            "manager_id": current.manager_id,
+                            "team_id": None,
+                        }
+                    ),
+                    action="qualify",
+                )
+                message = await uow.messages.get(tenant_id, message_id)
+                if (
+                    message is None
+                    or message.direction is not MessageDirection.INBOUND
+                    or message.outbound_message_id is None
+                    or message.outbound_message_id != outbound_message_id
+                ):
+                    raise PermissionDenied("回复消息绑定拒绝")
             # 同 message 事务级串行化：并发双写/双发布由锁 + 唯一约束兜底
             await uow.lock_message(tenant_id, message_id)
             classifications: ClassificationRepository = uow.classifications

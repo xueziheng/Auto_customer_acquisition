@@ -27,11 +27,12 @@ from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
 from shared.errors import TenantIsolationViolation
 from shared.schemas.identifiers import EmployeeId, TenantId
 from shared.schemas.quote_facts import QuoteEmployeeFact
-from workflows.reply_qualification.ports import ReplyActionContext
+from workflows.reply_qualification.ports import MessageContentReader, ReplyActionContext
 
-from .adapters.message_content_reader import ArtifactMessageContentReader
 from .adapters.reply_business_facts import TenantBoundReplyBusinessFactsReader
+from .adapters.reply_current_access import CurrentReplyAccess
 from .adapters.reply_evidence_reader import ConversationReplyEvidenceReader
+from .adapters.reply_gateway_content import GatewayReplyContentReader
 from .adapters.reply_opportunity_intake import DurableReplyOpportunityIntake
 from .reply_actions import ComposedReplyActionPorts
 from .reply_binding import ReplyRuntimeResources
@@ -61,12 +62,16 @@ class CurrentEmployeeReplyFactory:
                 ),
             )
 
-        content = ArtifactMessageContentReader(
-            uow,
+        access = CurrentReplyAccess(
+            self.tenant_id, self.employee_id, core.employee_scope, uow
+        )
+        content = GatewayReplyContentReader(
+            self.tenant_id,
+            resources.sessions,
+            core.conversations,
             resources.bounded_raw_store,
-            max_raw_bytes=4 * 1024 * 1024,
-            max_subject_chars=4096,
-            max_body_chars=65536,
+            access,
+            now=resources.now,
         )
         evidence = ConversationReplyEvidenceReader(uow)
         actions = CurrentEmployeeReplyActions(
@@ -90,6 +95,7 @@ class CurrentEmployeeReplyFactory:
             core.conversations,
             outreach,
             actions,
+            access,
         )
 
 
@@ -102,7 +108,7 @@ class CurrentEmployeeReplyActions:
     core: SchedulerCoreServices
     outreach: OutreachService
     resources: ReplyRuntimeResources
-    content: ArtifactMessageContentReader
+    content: MessageContentReader
     evidence: ConversationReplyEvidenceReader
 
     async def _run(

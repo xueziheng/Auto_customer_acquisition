@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+from domains.conversations.service import InboxActor
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ContactPointId,
@@ -135,3 +136,16 @@ class ReplyActionPorts(Protocol):
     async def intake_new_contact(
         self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
     ) -> None: ...
+
+
+class ReplyClassificationAccess(Protocol):
+    """受托分类的当前资格与真实 Message 检查；每个异步边界重新查询。"""
+
+    async def require(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+        outbound_message_id: OutboundMessageId | None,
+    ) -> InboxActor:
+        """仅返回通过当前 qualify 检查的身份；不返回原件或凭证。"""
+        ...

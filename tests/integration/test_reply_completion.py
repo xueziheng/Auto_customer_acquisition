@@ -45,7 +45,7 @@ class Model:
         )
 
 
-def factory_for(runtime, model):
+def factory_for(runtime, model, *, observe_reply=None):
     try:
         builder = importlib.import_module(
             "apps.scheduler_worker.reply_composition"
@@ -57,6 +57,18 @@ def factory_for(runtime, model):
     env = config.runtime_environment()
     env["TRADEOS_TENANT_ID"] = tenant
     env["TRADEOS_SCHEDULER_HEALTH_PORT"] = str(config.scheduler_port)
+
+    def reply_factory(core, outreach, resources):
+        result = builder(
+            tenant,
+            EmployeeId(runtime["staff"][0].employee_id),
+            model,
+            "controlled-reply-v1",
+        )(core, outreach, resources)
+        if observe_reply is not None:
+            observe_reply(result)
+        return result
+
     return SchedulerRuntimeFactory(
         env,
         bootstrap=CanonicalSchedulerBootstrap(
@@ -69,12 +81,7 @@ def factory_for(runtime, model):
             campaign_enabled=True,
             gmail_transport=runtime["provider"],
             secret_resolver=config,
-            reply_factory=builder(
-                tenant,
-                EmployeeId(runtime["staff"][0].employee_id),
-                model,
-                "controlled-reply-v1",
-            ),
+            reply_factory=reply_factory,
         ),
         inbound_ports=InboundRuntimePorts(
             profile=InboundMailbox(
@@ -1092,4 +1099,245 @@ async def test_raw_secret_is_rejected_before_model_at_real_inbound_entry(page_ru
                 == 0
             )
     finally:
+        await inbound.aclose()
+
+
+@pytest.mark.parametrize(
+    "window",
+    [
+        "inactive",
+        "sales",
+        "missing",
+        "foreign_employee",
+        "after_raw",
+        "during_model",
+        "authorized",
+        "subject_mismatch",
+        "outbound_mismatch",
+        "run_tenant",
+        "audit_executing",
+        "audit_succeeded",
+        "persist_wait",
+    ],
+)
+async def test_current_reply_authority_guards_raw_model_and_new_classification(
+    page_runtime, monkeypatch, window
+):
+    import asyncio
+
+    from connectors.object_store.bounded import S3BoundedObjectBlobTransport
+    from shared.schemas.identifiers import new_id
+
+    runtime = page_runtime
+    await prepare_sent(runtime, reply_source=True)
+    inbound = await composition(runtime)
+    tenant = runtime["route"].tenant_id
+    boss = EmployeeId(runtime["staff"][0].employee_id)
+    replies = []
+    reads = []
+    pending = []
+    locker = None
+    execution_tenant = tenant
+    audit_trigger = "reply_audit_" + new_id("tst")[4:].lower()
+    original_read = S3BoundedObjectBlobTransport.get_bounded
+
+    async def revoke(kind="inactive"):
+        async with runtime["factory"]() as session:
+            if kind == "missing":
+                query = "DELETE FROM employees WHERE tenant_id=:t AND employee_id=:e"
+            elif kind == "foreign_employee":
+                query = "UPDATE employees SET tenant_id=:other WHERE tenant_id=:t AND employee_id=:e"
+            elif kind == "sales":
+                query = "UPDATE employees SET role='sales' WHERE tenant_id=:t AND employee_id=:e"
+            else:
+                query = "UPDATE employees SET is_active=false WHERE tenant_id=:t AND employee_id=:e"
+            await session.execute(
+                text(query), {"t": tenant, "e": boss, "other": new_id("tn")}
+            )
+            await session.commit()
+
+    async def counted_read(self, object_key, *, maximum_bytes):
+        reads.append(1)
+        content = await original_read(self, object_key, maximum_bytes=maximum_bytes)
+        if window == "after_raw":
+            await revoke()
+        return content
+
+    class RevokingModel(Model):
+        async def complete_json(self, **kwargs):
+            nonlocal locker
+            result = await super().complete_json(**kwargs)
+            if window == "persist_wait":
+                locker = runtime["factory"]()
+                await locker.execute(
+                    text(
+                        "SELECT employee_id FROM employees WHERE tenant_id=:t AND employee_id=:e FOR UPDATE"
+                    ),
+                    {"t": tenant, "e": boss},
+                )
+                blocker = await locker.scalar(text("SELECT pg_backend_pid()"))
+
+                async def revoke_waiting_write():
+                    async with runtime["factory"]() as observer:
+                        for _ in range(300):
+                            blocked = await observer.scalar(
+                                text(
+                                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND :pid=ANY(pg_blocking_pids(pid)))"
+                                ),
+                                {"pid": blocker},
+                            )
+                            if blocked:
+                                await locker.execute(
+                                    text(
+                                        "UPDATE employees SET is_active=false WHERE tenant_id=:t AND employee_id=:e"
+                                    ),
+                                    {"t": tenant, "e": boss},
+                                )
+                                await locker.commit()
+                                return
+                            await asyncio.sleep(0.01)
+                    raise AssertionError("分类写入没有等待当前员工锁")
+
+                pending.append(asyncio.create_task(revoke_waiting_write()))
+            if window == "during_model":
+                await revoke()
+            return result
+
+    model = RevokingModel("auto_reply")
+    try:
+        await inbound.management.bind(
+            tenant, boss, runtime["route"].configured_identity_id
+        )
+        await runtime["provider"].receive_inbound(
+            mime(
+                body="I am out of office.",
+                message_id="<authority@example.test>",
+                reply=runtime["outbound"],
+            ),
+            internal_date=NOW,
+        )
+        async with factory_for(
+            runtime, model, observe_reply=replies.append
+        )() as worker:
+            await worker.inbound_driver.scan_once()
+            await worker.inbound_driver.scan_once()
+            await worker.outbox.drain()
+            async with runtime["factory"]() as session:
+                assert (
+                    await session.scalar(
+                        text(
+                            "SELECT count(*) FROM conversation_classifications WHERE tenant_id=:t"
+                        ),
+                        {"t": tenant},
+                    )
+                    == 0
+                )
+                assert (
+                    await session.scalar(
+                        text(
+                            "SELECT count(*) FROM workflow_runs WHERE tenant_id=:t AND workflow_type='reply_qualification'"
+                        ),
+                        {"t": tenant},
+                    )
+                    == 1
+                )
+            if window in {"subject_mismatch", "outbound_mismatch"}:
+                async with runtime["factory"]() as session:
+                    if window == "subject_mismatch":
+                        query = "UPDATE workflow_runs SET subject_ref=:other WHERE tenant_id=:t AND workflow_type='reply_qualification'"
+                    elif window == "outbound_mismatch":
+                        query = "UPDATE workflow_runs SET context=jsonb_set(context, '{outbound_message_id}', to_jsonb(CAST(:other AS text))) WHERE tenant_id=:t AND workflow_type='reply_qualification'"
+                    await session.execute(
+                        text(query), {"t": tenant, "other": new_id("msg")}
+                    )
+                    await session.commit()
+            if window.startswith("audit_"):
+                outcome = window.removeprefix("audit_")
+                async with runtime["factory"]() as session:
+                    # 本 owner 隔离 PG 中的真实审计写故障；仅精确 tenant/tool/status。
+                    await session.execute(
+                        text(
+                            f"CREATE FUNCTION {audit_trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.tenant_id = '{tenant}' AND NEW.tool_id = 'inbox.message.evidence.read' AND NEW.status = '{outcome}' THEN RAISE EXCEPTION 'controlled_audit_failure'; END IF; RETURN NEW; END $$"
+                        )
+                    )
+                    await session.execute(
+                        text(
+                            f"CREATE TRIGGER {audit_trigger} BEFORE UPDATE ON tool_calls FOR EACH ROW EXECUTE FUNCTION {audit_trigger}()"
+                        )
+                    )
+                    await session.commit()
+            monkeypatch.setattr(
+                S3BoundedObjectBlobTransport, "get_bounded", counted_read
+            )
+            if window in {"inactive", "sales", "missing", "foreign_employee"}:
+                await revoke(window)
+            if window == "run_tenant":
+                from shared.errors import PermissionDenied
+
+                async with runtime["factory"]() as session:
+                    message_id = await session.scalar(
+                        text("SELECT message_id FROM messages WHERE tenant_id=:t"),
+                        {"t": tenant},
+                    )
+                with pytest.raises(PermissionDenied):
+                    await replies[0].classification_access.require(
+                        new_id("tn"), message_id, runtime["outbound"]
+                    )
+            else:
+                await worker.workflow.poll_due(execution_tenant, 20)
+        if pending:
+            await asyncio.gather(*pending)
+        assert len(reads) == int(
+            window
+            in {
+                "after_raw",
+                "during_model",
+                "authorized",
+                "audit_succeeded",
+                "persist_wait",
+            }
+        )
+        assert len(model.calls) == int(
+            window in {"during_model", "authorized", "persist_wait"}
+        )
+        async with runtime["factory"]() as session:
+            assert await session.scalar(
+                text(
+                    "SELECT count(*) FROM conversation_classifications WHERE tenant_id=:t"
+                ),
+                {"t": tenant},
+            ) == int(window == "authorized")
+            calls = (
+                (
+                    await session.execute(
+                        text(
+                            "SELECT status FROM tool_calls WHERE tenant_id=:t AND tool_id='inbox.message.evidence.read'"
+                        ),
+                        {"t": tenant},
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if window == "authorized":
+                assert calls == ["succeeded"]
+            if window in {"inactive", "sales", "missing", "foreign_employee"}:
+                assert calls == []
+    finally:
+        for task in pending:
+            if not task.done():
+                task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        if locker is not None:
+            await locker.close()
+        if window.startswith("audit_"):
+            async with runtime["factory"]() as session:
+                await session.execute(
+                    text(f"DROP TRIGGER IF EXISTS {audit_trigger} ON tool_calls")
+                )
+                await session.execute(
+                    text(f"DROP FUNCTION IF EXISTS {audit_trigger}()")
+                )
+                await session.commit()
         await inbound.aclose()

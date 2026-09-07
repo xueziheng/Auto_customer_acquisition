@@ -60,3 +60,6 @@ ADR0027新增独立next_questions/qualify纯action权限，仅可信当前active
 读取权限。缺项来自真实Message精确关联的Demand，不收客户端自报完整度。Task7再纳入owner矩阵。
 
 ADR0028将员工Inbox的list/detail/correct/evidence/next_questions绑定Conversations自身actor与当前OwnershipLock。仅infra通过公开事务facts port映射安全metadata；域不导入employees。原qualify、technical-review/retry、quotation source权限不变；旧boss helper不作为Inbox下一问路径。
+
+ADR0066：受托 record_classification 必须在原事务内按 Inbox 的 ownership/员工锁顺序，
+重核当前 active boss qualify 与真实入站/出站绑定，再持消息幂等锁写分类；授权也先于既有分类 no-op。
