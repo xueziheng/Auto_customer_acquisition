@@ -1,6 +1,6 @@
 # ADR0066：受托回复的当前权限与原件 Gateway 读取
 
-日期：2026-09-07。状态：本机受控修复，待限定复审。
+日期：2026-09-07。状态：本机受控修复已通过[限定复审](../acceptance/web-core-delivery/final-fix-review.md)。
 
 ## 问题
 

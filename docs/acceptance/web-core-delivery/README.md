@@ -1,17 +1,38 @@
 # Web 核心正式证据与裁定索引
 
-日期：2026-09-06。当前工程行为以[正式A1–A10验收](../2026-09-05-web-core-completion.md)及
-[主能力矩阵](../../operations/web-core-capability-matrix.md)为准。Task0–13独立审查已完成；
-最终全分支审查尚待完成，最终裁定由控制者追加，不从历史进度文字推导通过。
+最终交付日期：2026-09-07。**本机受控 Web 核心收口完成。** Task0–13 独立审查、全分支审查及
+唯一修复波的[限定复审](final-fix-review.md)已完成，Spec/Quality 均 Approved。
+当前源码 `02506e44`；当前工程行为以[正式A1–A10验收](../2026-09-05-web-core-completion.md)、
+[本波修复验证](final-fix-report.md)及[主能力矩阵](../../operations/web-core-capability-matrix.md)共同界定。
 未推送、合并、部署或真实外发。
 
 2026-09-06 用户关机前主动暂停，已保存[续跑交接与审查断点](pause-handoff.md)。
-2026-09-07 用户明确继续，最终审查已从该断点恢复；暂停记录保留为历史，尚未出具最终通过结论。
+2026-09-07 用户明确继续后，从断点完成剩余审查及必要修复；暂停记录保留为历史。
+
+[完整最终裁定账本](final-ledger.md)保存全部 Ruling、理由、成本和失败历史；
+[最终归档清单](final-manifest.json)记录精确副本与安全证据哈希。本计划临时审查目录在这些副本核验后清理，
+工作树和本地分支保留，历史 output 不批量删除。启动方式见[本机操作说明](../../operations/web-core-local.md)。
+
+仍保留两项非阻断测试覆盖缺口：技能目录精确阈值、尚未启用的 Agent adapter 内部取消挂起点；
+后续补测触发条件见初审 M2/M3。真实 Provider、共享登录/部署及桌面未验收；Mac 完整报价未配置，
+Linux 独立报价和静态隔离备份的范围不变。
 
 本批实施与局部门禁见[Task13报告](task-13-report.md)及[首次源码提交清单](source-commit.json)、[限定修复源码清单](fix1-source-commit.json)；[Task13独立限定复审](task-13-review.md)已双Approved。
 
 ## 当前可核证据
 
+- [最终全分支初审](initial-final-review.md)发现受托回复授权/原件审计缺口及受控模型连接关闭问题；
+  [统一修复报告](final-fix-report.md)记录源码 `02506e44` 的 216 项受影响回归与 1 项原完整受控主链通过。
+  这两项新结果不与历史 9318/411 累加，不代表新源码执行了全仓全量。
+  [修复范围](final-fix-spec.md)和[全分支审查上下文](final-review-context.md)保留本次决定的依据；
+  [限定复审](final-fix-review.md)确认 R1/M1 关闭，无新增缺陷。
+- 本波安全证据：[源码冻结核验](../../../output/acceptance/final-fix-20260907/source-commit-verification.json)、
+  [静态门禁](../../../output/acceptance/final-fix-20260907/static-gates.json)、
+  [主链 proof](../../../output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/proof.json)、
+  [主链精确清理](../../../output/acceptance/final-fix-20260907/cleanup-verification.json)、
+  [隔离基础设施清理](../../../output/acceptance/final-fix-20260907/integration-owner-cleanup.json)。
+  基础设施 fixture 的旧状态字段仍为 starting；清理依精确容器不存在与 config 已删除核验，不冒称 stopped。
+  本波没有 UI 改动，新截图仅本地保存，未重复视觉验收；正式视觉结论仍取下述对应历史版本。
 - [Task12最终独立双Approved](task-12-review.md)与[实施报告原文](task-12-report.md)：
   48e4465完整9318通过；7e10383仅两测试I1修复后完整Mac主链1通过，不累计。
   报告原文顶部“等待复审”是当时快照，由最终review替代；历史失败不删除。
@@ -106,5 +127,5 @@ Cookie、SQLite、dump或完整原始敏感日志。旧报告中/tmp路径是历
 
 Task10原DONE_WITH_CONCERNS及双环境成本保留。Task12漏接typed研究、实际验证替代直接seed可达性、
 DB stop/start换端点失败、首轮98失败与第二完整门禁、I1真实actor修复等裁定理由和验证成本全部在
-上述原报告/ledger中；未知token/人工工时不写0。控制者将在最终门禁后追加Task13和最终review裁定，
-本文件没有预写通过或清理其他plan目录的授权。
+上述原报告/ledger中；未知token/人工工时不写0。Task13 与最终审查的后续裁定均已收进
+[完整最终账本](final-ledger.md)。原87行历史快照保持原样；本次清理仅限本计划专属临时目录。

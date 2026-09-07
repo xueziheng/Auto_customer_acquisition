@@ -1,0 +1,104 @@
+{
+  "updated_at": 1788746154.582701,
+  "supervisor": {
+    "pid": 16736,
+    "born": 1788746119.17128
+  },
+  "owner": "5be45c31379045a798f96f93226841b5",
+  "status": "stopped",
+  "reason": "requested_stop",
+  "processes": [
+    {
+      "name": "api",
+      "pid": 16817,
+      "born": 1788746142.551028,
+      "exit": -15,
+      "anchor": {
+        "pid": 16818,
+        "born": 1788746142.572983
+      },
+      "children": []
+    },
+    {
+      "name": "scheduler",
+      "pid": 16819,
+      "born": 1788746142.590912,
+      "exit": 0,
+      "anchor": {
+        "pid": 16820,
+        "born": 1788746142.607873
+      },
+      "children": []
+    },
+    {
+      "name": "notification",
+      "pid": 16821,
+      "born": 1788746142.624963,
+      "exit": 0,
+      "anchor": {
+        "pid": 16822,
+        "born": 1788746142.640914
+      },
+      "children": []
+    },
+    {
+      "name": "web",
+      "pid": 16823,
+      "born": 1788746142.657875,
+      "exit": 143,
+      "anchor": {
+        "pid": 16824,
+        "born": 1788746142.676718
+      },
+      "children": []
+    }
+  ],
+  "container_ids": [
+    "18640b36ca3b8b573cf56c8cbb20011f6ae25397f429587653adb9f86fac6555",
+    "1cfbc55f857bf24bca81a8345b90d3f7f4ce3900f43ea45ccf817523516c8798"
+  ],
+  "cleanup_errors": [],
+  "tenant_id": "tn_01M1WS7FKAZP080SZMGW202NH7",
+  "identities": [
+    {
+      "employee_id": "emp_01M1WS7FKAMTZTHPZGV5S5QA3Z",
+      "user_id": "usr_01M1WS7FKAED5JPD2NY31K5ZDR",
+      "role": "boss",
+      "label": "演练老板甲（提案）"
+    },
+    {
+      "employee_id": "emp_01M1WS7FKAR0DVHJ2NZD8391A3",
+      "user_id": "usr_01M1WS7FKA6Z6NJZG8PT1AKW0E",
+      "role": "boss",
+      "label": "演练老板乙（独立审批）"
+    },
+    {
+      "employee_id": "emp_01M1WS7FKABJNZAATXXPSBYWRQ",
+      "user_id": "usr_01M1WS7FKAWZZ468MD5QXQZXB5",
+      "role": "manager",
+      "label": "演练经理"
+    },
+    {
+      "employee_id": "emp_01M1WS7FKA625D1H8HGP7TDP8D",
+      "user_id": "usr_01M1WS7FKAP17F4FEM0A55KCFZ",
+      "role": "sales",
+      "label": "演练销售"
+    },
+    {
+      "employee_id": "emp_01M1WS7FKASZ0Z6RQHF72GTW7T",
+      "user_id": "usr_01M1WS7FKACJA1PNAR9EXB53V7",
+      "role": "sourcing",
+      "label": "演练寻源"
+    },
+    {
+      "employee_id": "emp_01M1WS7FKAYZJEG9ZRAJBZNMWS",
+      "user_id": "usr_01M1WS7FKA3TJGSRTJAAC866GE",
+      "role": "product",
+      "label": "演练产品"
+    }
+  ],
+  "api_url": "http://127.0.0.1:57307",
+  "web_url": "http://127.0.0.1:57308",
+  "scheduler_url": "http://127.0.0.1:57309",
+  "notification_url": "http://127.0.0.1:57313"
+}

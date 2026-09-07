@@ -1,0 +1,38 @@
+[
+  {
+    "fixture": "inbound-owned0",
+    "owner": "57ae2214344e4828839e6ba5a715b840",
+    "status": "starting",
+    "cleanup_errors": [],
+    "all_owned_container_ids_absent": true,
+    "container_count": 2,
+    "config_absent": true
+  },
+  {
+    "fixture": "inbound-owned1",
+    "owner": "911339cd6c10479f94eb13bad0e02d5c",
+    "status": "starting",
+    "cleanup_errors": [],
+    "all_owned_container_ids_absent": true,
+    "container_count": 2,
+    "config_absent": true
+  },
+  {
+    "fixture": "inbound-owned2",
+    "owner": "bf5320d7c51442ed97c43eca60dbb0a8",
+    "status": "starting",
+    "cleanup_errors": [],
+    "all_owned_container_ids_absent": true,
+    "container_count": 2,
+    "config_absent": true
+  },
+  {
+    "fixture": "inbound-owned3",
+    "owner": "f1f0da2c05b1407ba4f758bff2516462",
+    "status": "starting",
+    "cleanup_errors": [],
+    "all_owned_container_ids_absent": true,
+    "container_count": 2,
+    "config_absent": true
+  }
+]

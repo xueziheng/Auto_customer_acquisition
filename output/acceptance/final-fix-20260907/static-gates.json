@@ -1,0 +1,80 @@
+[
+  {
+    "name": "ruff",
+    "command": [
+      ".venv/bin/python",
+      "-m",
+      "ruff",
+      "check",
+      "apps/scheduler_worker/adapters/reply_current_access.py",
+      "apps/scheduler_worker/adapters/reply_gateway_content.py",
+      "apps/scheduler_worker/adapters/message_content_reader.py",
+      "apps/scheduler_worker/reply_composition.py",
+      "apps/scheduler_worker/runtime.py",
+      "domains/conversations/service.py",
+      "domains/conversations/service_impl.py",
+      "workflows/reply_qualification/ports.py",
+      "workflows/reply_qualification/steps.py",
+      "workflows/reply_qualification/flow.py",
+      "infra/controlled/reply_model.py",
+      "tests/unit/test_controlled_reply_model.py",
+      "tests/integration/test_reply_completion.py"
+    ],
+    "exit_code": 0,
+    "seconds": 0.094,
+    "stderr_lines": 0,
+    "stdout": "All checks passed!\n"
+  },
+  {
+    "name": "mypy",
+    "command": [
+      ".venv/bin/python",
+      "-m",
+      "mypy",
+      "apps/scheduler_worker",
+      "domains/conversations",
+      "workflows/reply_qualification",
+      "infra/controlled/reply_model.py"
+    ],
+    "exit_code": 0,
+    "seconds": 0.673,
+    "stderr_lines": 0,
+    "stdout": "Success: no issues found in 62 source files\n"
+  },
+  {
+    "name": "boundary",
+    "command": [
+      ".venv/bin/python",
+      "scripts/check_boundaries.py"
+    ],
+    "exit_code": 0,
+    "seconds": 4.266,
+    "stderr_lines": 0,
+    "stdout": "✓ 分层与依赖方向\n✓ 金额 float\n✓ 置信度数值\n✓ 事件注册\n✓ 租户过滤\n✓ AGENTS.md 覆盖\n✓ 域结构完整\n\n结构自检通过。\n"
+  },
+  {
+    "name": "sensitive_staged",
+    "command": [
+      ".venv/bin/python",
+      "scripts/scan_sensitive.py",
+      "--staged"
+    ],
+    "exit_code": 0,
+    "seconds": 0.235,
+    "stderr_lines": 0,
+    "stdout": ""
+  },
+  {
+    "name": "diff_check",
+    "command": [
+      "git",
+      "diff",
+      "--cached",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 0.04,
+    "stderr_lines": 30,
+    "stdout": ""
+  }
+]

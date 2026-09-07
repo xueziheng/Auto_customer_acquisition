@@ -1,13 +1,14 @@
 # Web 核心能力与执行边界清单
 
-实际验收日期：2026-09-06。**本机受控 Web 核心完成；多人共享部署未验收。**
-当前结论依据[Task12正式验收](../acceptance/2026-09-05-web-core-completion.md)及独立双Approved审查，
-不代表Task13或最终全分支审查已经通过。所有业务输入/外部响应为合成演练，不作为真实采购意愿或效率成绩。
+集中验收日期：2026-09-06；最终收口日期：2026-09-07。**本机受控 Web 核心完成；多人共享部署未验收。**
+当前结论依据[Task12正式验收](../acceptance/2026-09-05-web-core-completion.md)及
+[最终修复与独立限定复审](../acceptance/web-core-delivery/README.md)。所有业务输入/外部响应为合成演练，不作为真实采购意愿或效率成绩。
 
 ## 版本、门禁与环境
 
 | 项目 | 精确事实 |
 | --- | --- |
+| 最终权限与资源修复 | `02506e44b52392879ea7b8a5b350da435a9f827f`：当前资格/Gateway 原件读取/分类事务授权与 SQLite 关闭；受影响13文件216 passed/73.69s、原主链1 passed/35.93s，限定复审双Approved；未再跑全仓 |
 | 后端全量 | `48e4465fc307212e794d6ed87501cb418f74d245`：9318 passed/0 failed/0 skipped，2132.64s；源码1630文件整轮hash差异0 |
 | 最终主链修复 | `7e10383c253df4a98cd224fb7ee526d721476f9a`：仅两测试文件修复真实Campaign审批actor，完整Mac主链1 passed/34.97s；生产仍与48e4465一致，未再全量 |
 | Web | 同Task12未变Web源码，411 passed（32文件），typecheck/build/gen:api通过且API生成无diff；lint112 warnings/0 errors，均历史归属 |

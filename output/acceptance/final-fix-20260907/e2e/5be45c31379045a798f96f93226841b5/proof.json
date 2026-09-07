@@ -1,0 +1,138 @@
+{
+  "owner": "5be45c31379045a798f96f93226841b5",
+  "need_id": "need_01M1WS83FEDN57G73X4TTB242T",
+  "opportunity_id": "opp_01M1WS83G9YNYBAXV1KB32GW09",
+  "handoff_id": "hand_01M1WS83JZ35GBCR8K5V57SAKQ",
+  "conversation_id": "con_01M1WS82A72D0X4QX7ZM9FNV5K",
+  "message_id": "msg_01M1WS82AB4H1G29W4D9JY1FHC",
+  "research_ready": true,
+  "research_signals": 3,
+  "research_hypotheses": 3,
+  "research_external_calls": [
+    "research.usage",
+    "research.search",
+    "research.page",
+    "research.usage",
+    "research.search",
+    "research.page",
+    "research.usage",
+    "research.search",
+    "research.page",
+    "research.model"
+  ],
+  "send_calls": 1,
+  "contact_calls": [
+    "contact.enrich",
+    "contact.verify"
+  ],
+  "campaign_approval": {
+    "campaign_id": "cmp_01M1WS807TCA4SAYDVAB9A80FM",
+    "campaign_version": 1,
+    "campaign_created_by": "emp_01M1WS7FKAMTZTHPZGV5S5QA3Z",
+    "submitter_id": "emp_01M1WS7FKAMTZTHPZGV5S5QA3Z",
+    "approval_id": "apr_01M1WS808W9C1C6A1VC74WNK2S",
+    "change_set_ref": "campaign:cmp_01M1WS807TCA4SAYDVAB9A80FM:v1",
+    "proposed_by": "emp_01M1WS7FKAMTZTHPZGV5S5QA3Z",
+    "decided_by": "emp_01M1WS7FKAR0DVHJ2NZD8391A3",
+    "self_decision_status": 400,
+    "self_decision_code": "request_rejected",
+    "state_after_self_denial": "pending",
+    "approval_state": "approved",
+    "campaign_approved_by": "emp_01M1WS7FKAR0DVHJ2NZD8391A3"
+  },
+  "contact_run_id": "run_01M1WS80AE51VDEEJTC8MAN26A",
+  "contact_point_id": "cp_01M1WS814WPWFHTVYAGA8EQR3V",
+  "verification_provider": "controlled-single-provider",
+  "verification_status": "verified",
+  "unverified_enrollment_denied": true,
+  "model_calls": 1,
+  "quotation": "not_configured_on_mac",
+  "handoff_accepted": true,
+  "pages": [
+    {
+      "name": "settings-empty-1440",
+      "path": "/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion/output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/settings-empty-1440.png",
+      "url": "http://127.0.0.1:57308/settings",
+      "width": 1440
+    },
+    {
+      "name": "research-state-1440",
+      "path": "/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion/output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/research-state-1440.png",
+      "url": "http://127.0.0.1:57308/commands",
+      "width": 1440
+    },
+    {
+      "name": "need-1440",
+      "path": "/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion/output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/need-1440.png",
+      "url": "http://127.0.0.1:57308/demand/needs/need_01M1WS83FEDN57G73X4TTB242T",
+      "width": 1440
+    },
+    {
+      "name": "handoff-1440",
+      "path": "/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion/output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/handoff-1440.png",
+      "url": "http://127.0.0.1:57308/crm/handoffs/hand_01M1WS83JZ35GBCR8K5V57SAKQ",
+      "width": 1440
+    },
+    {
+      "name": "opportunity-1440",
+      "path": "/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion/output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/opportunity-1440.png",
+      "url": "http://127.0.0.1:57308/crm/opportunities?opportunity_id=opp_01M1WS83G9YNYBAXV1KB32GW09",
+      "width": 1440
+    },
+    {
+      "name": "cost-1440",
+      "path": "/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion/output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/cost-1440.png",
+      "url": "http://127.0.0.1:57308/costing-quotes?opportunity_id=opp_01M1WS83G9YNYBAXV1KB32GW09",
+      "width": 1440
+    },
+    {
+      "name": "runs-1440",
+      "path": "/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion/output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/runs-1440.png",
+      "url": "http://127.0.0.1:57308/runs",
+      "width": 1440
+    },
+    {
+      "name": "need-390",
+      "path": "/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion/output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/need-390.png",
+      "url": "http://127.0.0.1:57308/demand/needs/need_01M1WS83FEDN57G73X4TTB242T",
+      "width": 390
+    },
+    {
+      "name": "handoff-390",
+      "path": "/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion/output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/handoff-390.png",
+      "url": "http://127.0.0.1:57308/crm/handoffs/hand_01M1WS83JZ35GBCR8K5V57SAKQ",
+      "width": 390
+    },
+    {
+      "name": "opportunity-390",
+      "path": "/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion/output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/opportunity-390.png",
+      "url": "http://127.0.0.1:57308/crm/opportunities?opportunity_id=opp_01M1WS83G9YNYBAXV1KB32GW09",
+      "width": 390
+    },
+    {
+      "name": "cost-390",
+      "path": "/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion/output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/cost-390.png",
+      "url": "http://127.0.0.1:57308/costing-quotes?opportunity_id=opp_01M1WS83G9YNYBAXV1KB32GW09",
+      "width": 390
+    },
+    {
+      "name": "runs-390",
+      "path": "/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion/output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/runs-390.png",
+      "url": "http://127.0.0.1:57308/runs",
+      "width": 390
+    },
+    {
+      "name": "handoff-accepted-390",
+      "path": "/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion/output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/handoff-accepted-390.png",
+      "url": "http://127.0.0.1:57308/crm/handoffs/hand_01M1WS83JZ35GBCR8K5V57SAKQ",
+      "width": 390
+    },
+    {
+      "name": "need-sales-denied-390",
+      "path": "/Volumes/T7/Company/Auto_customer_acquisition/.worktrees/web-core-completion/output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/need-sales-denied-390.png",
+      "url": "http://127.0.0.1:57308/crm/handoffs/hand_01M1WS83JZ35GBCR8K5V57SAKQ",
+      "width": 390
+    }
+  ],
+  "pageerrors": []
+}

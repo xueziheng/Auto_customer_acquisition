@@ -467,3 +467,33 @@ Final review complete（审查本身完成，交付未通过）：root已全文�
 Ruling: 接受R1，按现有当前active boss qualify资格在Raw读取、模型调用和分类写入前执行实际当前检查；Raw读取经真实Gateway授权/执行账本/有界一次交付，不凭旧受信Artifact设计豁免；同波处理M1四处SQLite显式close。理由：撤权员工仍读内容/调用模型是实际授权缺口，M1是独立确定资源释放缺口且可窄改；成本：需新的真实领域/PG/Gateway撤权与失败顺序回归和完整受控主链，原9318/411不得改称新源码full，不修改Gateway核心或扩大角色权利。
 Ruling: M2技能64/10000精确阈值、M3adapter内部await取消直接测试继续parked，保留最终review独立意见。理由：未发现实现错误，现有危险结构/取消传播与外层清理已有覆盖，通用Agent生产消费者仍disabled，二者不阻断当前本机受控范围；成本：阈值off-by-one与未来异常包装的直接回归保护有限，技能加载规则变更时补M2，生产provider/任务来源启用或异常分类变更前补M3，不静默删除。
 仅派一个fresh最终fixer，完整清单/精确BASE/brief/report随派发；之后同final_review_resumed仅限定一次复审。root不改生产实现。
+
+
+Final fix wave 1/1: in_progress — fresh实施者/root/final_fix，Astra high/fork none/无子代理，BASE21d3a3bb31f2419957668cb65f9eedce613686be。已派final-fix-brief及完整final-review，限R1+M1；M2/M3保留。环境Python3.12.14/Docker29.5.3可用，原Node24.15.0在/Users/xueziheng/.nvm/versions/node/v24.15.0/bin，默认PATH缺node，按子进程临时前置不改shell。修后受影响回归+完整原主链，源码与report分开提交，再同reviewer一次限定复审。
+
+
+Final fix阶段事实：ADR0066已留；M1 RED8failed/1passed/0.22s（close=0），R1真实PG/Gateway7场景RED全failed/15.62s（停用仍Raw/model、正常无ledger）。初轮未前置已声明Node PATH有7setup errors/3.22s，随后用原Node24.15.0纠正子进程环境，历史保留。实施者已写CurrentReplyAccess、原Inbox Gateway复用、workflow三次重核与record_classification受托actor原事务ownership/员工锁持有至commit；开始GREEN及具名审计/Message/事务等待场景。未通过最终复审、不扩第二波。
+
+
+Ruling: root已读ADR0066，接受复用Inbox evidence工具作为qualify与当前Inbox证据权限交集，canonical factory必注入ReplyClassificationAccess；原件前/模型前/返回后重核，并在原record_classification事务ownership/员工锁内重核、持锁至commit。理由：仅workflow wrapper检查不能保护检查后DB await的撤权窗口，原锁顺序可界定先后；成本：已获准开始的模型输入无法撤回，授权不是外部IO分布式fencing；既有无受托actor显式组合兼容不成为canonical fallback，不扩角色、不改Gateway核心。待真实PG并发/审计和最终限定复审验证，不以ADR文字代替实现。
+
+
+Final fix wave1/1 implementation complete：SOURCE02506e44b52392879ea7b8a5b350da435a9f827f（17文件），REPORTab5eee46eaee6f0c4395cb08a64d4874658a8978。root全文读最终report，受影响13完整文件216passed/73.69s，原主链1passed/35.93s；static全通过，13Python源hash冻结并核源码Git对象。root已读proof+cleanup：新owner5be45c31379045a798f96f93226841b5，研究3/3、enrich/verify/send各1、真实提案人自批400→pending→另一boss审批、handoff accepted/pageerrors[]，stopped/errors[]/同出生进程无存活/精确容器不存，历史381保留。其他4基础设施owner状态仍starting，清理依精确容器不存/config已删，不冒称stopped。新UI未改，root不从截图文件名推测视觉验收。
+
+Final scoped re-review1/1: in_progress — 同final_review_resumed，FIX_BASE21d3a3b→HEADab5eee4，包2commit/74959bytes/Git stderr268行，只核R1/M1及fix新breakage，M2/M3原parked保留；尚未Approved。report里run_tenant初稿失败只保存summary，FK结构导致设置不合法是判断而非已读异常全文，保留此区分。
+
+
+## 最终验收与交付裁定 — 2026-09-07
+
+Final scoped re-review1/1 complete：同final_review_resumed完整审1526行限定diff，R1/M1全部ADDRESSED，0新Critical/Important/Minor，Spec/Quality双Approved，无第二fix波。root全文读final-fix-review.md；分类ownership/employee原锁序与UoW提交、Gateway领取时机、canonical必注入access/actor及13源码hash均经复审确认。
+
+Ruling: 本机受控Web核心按已批准范围交付，Task0–13、完整全分支审查及唯一修复/限定复审全部完成；M2/M3按上述独立parked理由保留。理由：所有已确认阻断项已修且受影响216回归与原主链1项通过，独立复审无新问题；成本：当前SOURCE02506e44未再跑完整后端/前端全量，历史9318/411只归48e4465，已授权开始的外部模型输入不能事后撤回，不承诺分布式fencing；真实Provider/共享登录部署/桌面及未启用消费者、Mac完整quotation等原边界均不扩大。没有新组合疑点，不为版本数字整齐重复full。
+
+Ruling: 保留本地分支与工作树，不合并、推送、发布或启动常驻演练；最终元数据和安全证据本地提交后交付。理由：用户授权是Web本机受控收口，不含共享集成与真实运营；成本：主目录/其他分支不会自动得到这些改动，需按工作树路径使用，后续整合另按明确指令执行。此前finishing技能菜单不重复索取已限定范围内的权限。
+
+Ruling: 将完整本ledger、新旧最终review、fix报告/规格/审查上下文及本波安全JSON/runner精确归档，验证副本SHA与链接后仅移除本计划专属scratch；旧87行历史快照和暂停档案不覆写。理由：scratch是本计划临时工作区，所有裁定/失败/代价必须先在正式仓库可追溯；成本：历史source路径会成为历史定位，不是活的文件链接，正式索引给当前入口；本波原始.eml/新截图和额外场景JSON仅本地保留，不读取邮件原文、不声称新视觉验收，历史381 output不删除。最终答复以完整final-ledger链接提供全部裁定，避免把所有历史长文重复粘贴。
+
+最终controller交付元数据已同步计划总勾选、主能力矩阵/Task12截止说明/操作入口及ADR0066通过状态；这些只是已验收实现的记录，不改变生产行为。下面由归档manifest的精确副本/安全证据SHA和本地提交记录证明保存与清理，最终提交ID不写进自身文件。
+
+
+最终归档后首次scratch清理遇到FileNotFoundError：文件系统已同步移除._progress.md，Python3.9的rmtree随后重复unlink，导致清理中断；正式7份副本/10份安全证据已经先核SHA与链接，没有丢失业务源码或裁定。Ruling: 从已验证正式副本重建必要7份scratch文本以追加此记录，重新核验；仅对精确本计划目录rmtree中已不存在的条目忽略FileNotFoundError，其余错误仍抛出。理由：AppleDouble侧文件与主文件联动删除属于缺失项竞争，不是删除失败或共享.git问题；成本：仍保留文件系统历史错误事实，不对其它路径/异常宽泛忽略、不维修共享元数据。

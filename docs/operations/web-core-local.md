@@ -3,6 +3,7 @@
 这个入口启动本机合成演练环境。它不连接既有业务库，不解析真实 Provider 密钥，
 不部署、不发送真实邮件。2026-09-06 的 A1–A10 受控验收已完成，精确版本及 Mac/Linux
 边界见[正式验收](../acceptance/2026-09-05-web-core-completion.md)。多人共享部署未验收。
+2026-09-07 最终收口修复与独立复审已完成，新增回归及全部裁定见[交付索引](../acceptance/web-core-delivery/README.md)。
 
 ## 首次准备
 
