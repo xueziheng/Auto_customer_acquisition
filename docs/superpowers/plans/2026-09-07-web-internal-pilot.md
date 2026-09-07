@@ -33,7 +33,7 @@
 
 **Interfaces:**
 - Produces `shared.authentication.AuthPrincipal(tenant_id, employee_id, user_id)`、`IssuedSession(principal, token, csrf_token, expires_at)`及AuthenticationService Protocol，签名与Spec一致。
-- Produces `infra.authentication.service.PostgresAuthentication(session_factory, tenant_id)`，实现login/authenticate/logout；管理方法create_account/reset_password/set_enabled/revoke_all精确类型在报告列出，供Task2可信CLI使用。
+- Produces `infra.authentication.service.PostgresAuthentication(session_factory, tenant_id)`，实现login/authenticate/logout/get_session；管理方法create_account/reset_password/set_enabled/revoke_all精确类型在报告列出，供Task2可信CLI使用。
 - Consumes `EmployeeRow`当前tenant/employee/user映射；不负责创造Employee、不新增业务角色逻辑。
 
 - [ ] **Step 1: 写行为失败测试。** 用现有真实PG fixture种两个租户Employee，密码为测试进程随机生成且不打印；验证正确密码可登录、错误/未知/停用同类失败、摘要不等于原token、到期与撤销失败关闭。核心断言形状：
@@ -80,7 +80,7 @@ assert (await client.get('/auth/session')).status_code == 401
 ```
 对老板/经理/员工从当前Employee重新取权限，测试改角色/归属/停用后下一次请求不可沿旧授权；保留dev头模式与未配置nondev回归。CLI验证跨tenantmanager、错误role、重复username都原子拒绝，密码不进输出。
 - [ ] **Step 2: 运行新测试记录RED。** 不输出HTTP原始Set-Cookie或登录JSON。
-- [ ] **Step 3: 实现同源认证中间件与路由。** 明确session/dev/unconfigured三状态互斥，安装时验证origin为`http://127.0.0.1:<port>`且dev_mode=False。中间件在业务router之前验证session并设置可信Principal/tenant；identity复用当前Employee公共服务推导actor；禁止信浏览器role或header。原匿名unsubscribe使用原matcher，不能扩大匿名路径。登录4KiB流式上限、安全固定验证错误、响应no-store；sessionToken不进入JSON，CSRF只进会话私有响应。用户名校验与secret字段避免422回显。
+- [ ] **Step 3: 实现同源认证中间件与路由。** 明确session/dev/unconfigured三状态互斥，安装时验证origin为`http://127.0.0.1:<port>`且dev_mode=False。中间件在业务router之前验证session并设置可信Principal/tenant；identity复用当前Employee公共服务推导actor；禁止信浏览器role或header。原匿名unsubscribe使用原matcher，不得扩大退订的匿名匹配。会话模式额外仅允许无身份GET `/health/live`和`/health/ready`原固定安全探针，仍检查精确Host；`/health/capabilities`保留认证。不建监控默认账号，不允许任意health子路径绕过。登录4KiB流式上限、安全固定验证错误、响应no-store；sessionToken不进入JSON，CSRF只进会话私有响应。用户名校验与secret字段避免422回显。
 ```python
 if authentication is not None and resolved_settings.dev_mode:
     raise ValueError('authentication_configuration_invalid')
@@ -124,9 +124,11 @@ with exclusive_profile_lock(profile_path):
 
 **Files:**
 - Create: `apps/api/pilot.py`, `apps/scheduler_worker/pilot.py`, `apps/notification_worker/pilot.py`
+- Modify: `apps/notification_worker/runtime.py`, `apps/notification_worker/AGENTS.md`
+- Create: `docs/adr/0068-local-in-app-notifications.md`, `tests/integration/test_pilot_notifications.py`
 - Modify: `scripts/run_web_pilot.py`, `apps/api/runtime_config.py`（仅明确pilot配置接线需要时）
 - Create: `apps/web/src/api/authentication.ts`, `apps/web/src/components/LoginPanel.vue`
-- Modify: `apps/web/src/api/client.ts`, `apps/web/src/App.vue`, `apps/web/src/env.d.ts`（实际类型入口如不同按现有文件定位）
+- Modify: `apps/web/src/api/client.ts`, `apps/web/src/App.vue`
 - Create: `apps/web/src/api/authentication.spec.ts`, `apps/web/src/components/LoginPanel.spec.ts`, `tests/integration/test_pilot_runtime.py`
 - Modify: `apps/web/src/api/api.d.ts`（仅重新生成）
 
@@ -145,7 +147,7 @@ await logout()
 expect(currentIdentity()).toBeNull()
 ```
 - [ ] **Step 2: 运行RED。** 按Task2实际导出的命名实现测试；不手写重复API响应类型。
-- [ ] **Step 3: 实现运行组合与Web。** API同一进程挂静态SPA，`/api`挂原业务app并正确运行lifespan；API/worker不互相import。各入口消费profile显式政策与独立技术配置，认证API最终dev_mode=False。没有真实外部客户端，也没有ControlledModelClient伪成功；拒绝适配器与网络限制同时生效，公开能力矩阵准确标未配置。worker保持原canonical消费与关闭。CLI start检查build/schema并更新当前端口/安全status，stop保留数据，账号CLIgetpass接profile。Web中文登录、加载/失败/退出状态，应用根监听所有identity generation，卸载通知、隔离迟到结果；多标签只广播注销事件。生产构建不能开启受控选择器。
+- [ ] **Step 3: 实现运行组合与Web。** API同一进程挂静态SPA，`/api`挂原业务app并正确运行lifespan；API/worker不互相import。各入口消费profile显式政策与独立技术配置，认证API最终dev_mode=False。没有真实外部客户端，也没有ControlledModelClient伪成功；拒绝适配器与网络限制同时生效，公开能力矩阵准确标未配置。worker保持原canonical消费与关闭。通知新增显式`NotificationRuntimeMode.LOCAL_IN_APP`，仅pilot入口使用；默认PRODUCTION无邮件仍拒绝，旧CONTROLLED_IN_APP保留。复用同一站内持久投递策略，健康披露email disabled，完成仅代表站内；不创建邮件client、不把fake adapter称作真实投递。以ADR0068记录并更新就近AGENTS，新增该mode回归。CLI start检查build/schema并更新当前端口/安全status，stop保留数据，账号CLIgetpass接profile。Web中文登录、加载/失败/退出状态，应用根监听所有identity generation，卸载通知、隔离迟到结果；多标签只广播注销事件。生产构建不能开启受控选择器。
 - [ ] **Step 4: 运行GREEN。** Web测试/typecheck/lint/build、受影响API/runtime/client测试、结构自检。实际三进程启动并验证健康和安全能力；不要接外网或实际用户密码。
 - [ ] **Step 5: 自审并提交。** 报告运行命令与后续Task5合成fixture的窄接口。
 

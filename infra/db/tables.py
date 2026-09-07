@@ -5839,3 +5839,60 @@ class EmailInboundReviewRow(Base):
     raw_artifact_id: Mapped[str | None] = mapped_column(String(32))
     reason: Mapped[str] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AuthAccountRow(Base):
+    """认证账号；员工复合外键保证绑定不能跨租户。"""
+
+    __tablename__ = "auth_accounts"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "username", name="pk_auth_accounts"),
+        UniqueConstraint("tenant_id", "employee_id", name="uq_auth_accounts_employee"),
+        ForeignKeyConstraint(["tenant_id", "employee_id"], ["employees.tenant_id", "employees.employee_id"], name="fk_auth_accounts_employee", ondelete="RESTRICT"),
+        CheckConstraint("version >= 1 AND failed_count BETWEEN 0 AND 5", name="ck_auth_accounts_counters"),
+        CheckConstraint("username ~ '^[a-z0-9][a-z0-9_.-]{0,63}$'", name="ck_auth_accounts_username"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    username: Mapped[str] = mapped_column(String(64))
+    employee_id: Mapped[str] = mapped_column(String(32))
+    password_hash: Mapped[str] = mapped_column(String(160))
+    enabled: Mapped[bool] = mapped_column(Boolean)
+    version: Mapped[int] = mapped_column(Integer)
+    failed_count: Mapped[int] = mapped_column(Integer)
+    failure_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuthSessionRow(Base):
+    """只持久化会话与 CSRF 摘要，并保留发行时员工用户映射。"""
+
+    __tablename__ = "auth_sessions"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "token_digest", name="pk_auth_sessions"),
+        ForeignKeyConstraint(["tenant_id", "username"], ["auth_accounts.tenant_id", "auth_accounts.username"], name="fk_auth_sessions_account", ondelete="RESTRICT"),
+        CheckConstraint("token_digest ~ '^[0-9a-f]{64}$' AND csrf_digest ~ '^[0-9a-f]{64}$'", name="ck_auth_sessions_digest"),
+        CheckConstraint("account_version >= 1 AND expires_at > created_at", name="ck_auth_sessions_validity"),
+        Index("ix_auth_sessions_account", "tenant_id", "username", "created_at"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    token_digest: Mapped[str] = mapped_column(String(64))
+    csrf_digest: Mapped[str] = mapped_column(String(64))
+    username: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[str] = mapped_column(String(32))
+    account_version: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuthRateLimitRow(Base):
+    """每租户固定两个桶；任意未知用户名不能使表无限增长。"""
+
+    __tablename__ = "auth_rate_limits"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "bucket", name="pk_auth_rate_limits"),
+        CheckConstraint("bucket IN ('attempts', 'unknown') AND count BETWEEN 0 AND 30", name="ck_auth_rate_limits_bucket"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    bucket: Mapped[str] = mapped_column(String(16))
+    count: Mapped[int] = mapped_column(Integer)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
