@@ -335,8 +335,6 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
     source_path = tmp_path / "pilot-source"
     PilotConfig.create(source_path, policy)
     source = PilotProfile(source_path)
-    browser = None
-    context = None
     target: PilotProfile | None = None
     try:
         await asyncio.to_thread(source.provision_storage)
@@ -674,10 +672,6 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             ).to_be_visible()
             require(browser_errors == [], "BROWSER_PAGE_ERROR")
     finally:
-        if context is not None:
-            await context.close()
-        if browser is not None:
-            await browser.close()
         for profile in (target, source):
             if profile is not None:
                 stop_failed = False
