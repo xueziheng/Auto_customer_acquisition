@@ -403,7 +403,7 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             await page.goto(source_origin + "/team")
             await sign_in(page, boss)
             await expect(page.get_by_text(boss.name, exact=True)).to_be_visible()
-            await expect(page.get_by_text(sales.name, exact=True)).to_be_visible()
+            await expect(page.get_by_text(sales.name, exact=True).first).to_be_visible()
             require(
                 await safe_session(page)
                 == {
@@ -421,7 +421,7 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             )
 
             await page.reload()
-            await expect(page.get_by_text(sales.name, exact=True)).to_be_visible()
+            await expect(page.get_by_text(sales.name, exact=True).first).to_be_visible()
             require(await safe_session(page).get("status") == 200, "REFRESH_LOST_SESSION")
 
             await asyncio.to_thread(source.stop)
@@ -434,7 +434,7 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             await asyncio.to_thread(start_profile, source.path)
             source.reload()
             await page.reload()
-            await expect(page.get_by_text(sales.name, exact=True)).to_be_visible(
+            await expect(page.get_by_text(sales.name, exact=True).first).to_be_visible(
                 timeout=20_000
             )
             require(
@@ -477,7 +477,7 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             await second.goto(source_origin + "/team")
             await expect(second.get_by_role("button", name="登录", exact=True)).to_be_visible()
             await sign_in(page, boss)
-            await expect(page.get_by_text(sales.name, exact=True)).to_be_visible()
+            await expect(page.get_by_text(sales.name, exact=True).first).to_be_visible()
             await expect(second.get_by_role("button", name="登录", exact=True)).to_be_visible()
 
             held = asyncio.Event()
@@ -647,7 +647,9 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             await restored_page.set_viewport_size({"width": 390, "height": 844})
             await restored_page.goto(target_origin + "/team")
             await sign_in(restored_page, boss)
-            await expect(restored_page.get_by_text(sales.name, exact=True)).to_be_visible()
+            await expect(
+                restored_page.get_by_text(sales.name, exact=True).first
+            ).to_be_visible()
             require(
                 await database_marker(target) == expected_database,
                 "RESTORE_DATABASE_HASH_MISMATCH",
