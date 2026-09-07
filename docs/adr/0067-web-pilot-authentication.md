@@ -30,3 +30,12 @@
 同租户登录和管理串行化，哈希期间持锁，换取可审计撤销语义；这适用于低并发本机内测，不能据此宣称共享服务器吞吐达标。失败窗口采用固定的首次失败/首次尝试窗口，不实施分布式IP策略；不信任转发头。会话历史保留，只有活动数量有界，本轮不增加后台历史清理政策。数据库连接池、可信调用方与 API 的请求体限额仍需装配层正确配置。
 
 Cookie、Origin、Host、CSRF路由、账号CLI、备份恢复和浏览器状态清理在后续任务消费此接口；本 ADR 不代表已完成这些验收。无真实 Provider、消息外发或真实凭证加载。
+
+
+## Task 2 补充：可信员工初始化的领域边界
+
+`domains.employees.service.validate_employee_provisioning(tenant_id: TenantId, *, name: str, role: str, manager: EmployeeView | None) -> None` 是公开纯校验契约。角色集合只从员工域 `Role` 推导，姓名非空且长度不超过200；指定经理必须是当前同租户活跃 boss/manager。此函数没有 IO、不授予权限、不更新既有员工，原运行时员工服务的 actor 判权保持不变。非法资料抛域 `ValidationError`，可信 CLI 映射为固定账号输入错误。
+
+账号 CLI 显式生成全新 Employee/User ID，在外部事务中插入新员工后调用已有公开 `create_account(..., session=session)`。后者取得并持有租户→账号锁直到调用方提交；CLI 随后读取并锁定指定经理，将数据库行机械映射为 EmployeeView 交给领域校验，通过才写入 manager_id 并原子提交。指定经理查无当前租户记录时拒绝，不能当作未指定。全流程失败回滚员工与账号；不新增认证私有调用或锁定约定。停用账号只撤销可登录状态与会话，不改变业务员工活跃状态或历史归属。
+
+API 以显式 AuthenticationService 和精确 loopback origin 启用会话模式；开发与会话模式互斥。所有不安全浏览器请求要求精确 Origin、自定义请求头，已登录写入再校验 CSRF。现有业务 MIME/空命令协议和独立匿名退订契约保持；health 只放行精确 GET live/ready。会话每次使用当前 Employee 的 tenant/employee/user 映射和当前角色，登录成功轮换并撤销当前旧 cookie，退出仅在服务端撤销成功后清 cookie。私有错误 no-store，异常只记录类型。

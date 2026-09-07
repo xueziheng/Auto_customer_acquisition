@@ -1,4 +1,4 @@
-"""开发模式身份断言：只信员工域 public DTO，不信 role/scope header。"""
+"""会话或开发断言的当前身份：只信员工域 public DTO，不信角色头。"""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from domains.opportunities.permissions import (
     OpportunityScope,
     ScopeLevel,
 )
+from shared.authentication import AuthenticationDenied, AuthPrincipal
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import EmployeeId, TenantId
 
@@ -136,17 +137,31 @@ async def resolve_request_identity(
     dependencies: ConfiguredApiDependencies,
 ) -> RequestIdentity:
     """在同一个 employee service request scope 内完成查询与身份推导。"""
-    if not settings.dev_mode:
-        raise HTTPException(status_code=403)
-
-    header_values = _single_header(request, b"x-employee-id")
-    if not header_values:
-        raise HTTPException(status_code=401)
-    if len(header_values) != 1 or not header_values[0] or not header_values[0].strip():
-        raise PermissionDenied("员工身份不可用")
-
+    principal = getattr(request.state, "auth_principal", None)
+    session_mode = getattr(request.app.state, "authentication", None) is not None
     tenant_id = settings.tenant
-    employee_id = EmployeeId(header_values[0])
+    if session_mode:
+        if (
+            not isinstance(principal, AuthPrincipal)
+            or principal.tenant_id != tenant_id
+            or not principal.employee_id
+            or not principal.user_id
+        ):
+            raise AuthenticationDenied()
+        employee_id = principal.employee_id
+    else:
+        if not settings.dev_mode:
+            raise HTTPException(status_code=403)
+        header_values = _single_header(request, b"x-employee-id")
+        if not header_values:
+            raise HTTPException(status_code=401)
+        if (
+            len(header_values) != 1
+            or not header_values[0]
+            or not header_values[0].strip()
+        ):
+            raise PermissionDenied("员工身份不可用")
+        employee_id = EmployeeId(header_values[0])
     try:
         async with dependencies.employees(tenant_id) as service:
             employee = await service.get_employee(
@@ -159,6 +174,11 @@ async def resolve_request_identity(
                 expected_tenant=tenant_id,
                 expected_employee=employee_id,
             )
+            if session_mode and (
+                not isinstance(principal, AuthPrincipal)
+                or employee.user_id != principal.user_id
+            ):
+                raise AuthenticationDenied()
             active_employees = (
                 await service.list_active(
                     tenant_id, actor=dependencies.employee_lookup_actor
@@ -166,7 +186,9 @@ async def resolve_request_identity(
                 if employee.role == "manager"
                 else []
             )
-    except EmployeeNotFoundError:
+    except (EmployeeNotFoundError, PermissionDenied):
+        if session_mode:
+            raise AuthenticationDenied() from None
         raise PermissionDenied("员工身份不可用") from None
 
     return RequestIdentity(

@@ -59,6 +59,8 @@ digest = hashlib.scrypt(password.get_secret_value().encode('utf-8'),
 
 **Files:**
 - Create: `apps/api/authentication.py`, `apps/api/routers/authentication.py`, `apps/api/pilot_accounts.py`
+- Modify: `domains/employees/service.py`, `docs/adr/0067-web-pilot-authentication.md`
+- Create: `tests/unit/test_employee_provisioning.py`
 - Modify: `apps/api/identity.py`, `apps/api/middleware.py`, `apps/api/main.py`, `apps/api/runtime.py`
 - Create: `tests/integration/test_api_session_authentication.py`, `tests/integration/test_pilot_accounts.py`
 - Modify: `apps/web/src/api/api.d.ts`（生成）
@@ -85,7 +87,7 @@ assert (await client.get('/auth/session')).status_code == 401
 if authentication is not None and resolved_settings.dev_mode:
     raise ValueError('authentication_configuration_invalid')
 ```
-可信管理入口只在本机操作者运行；创建Employee与账号原子，不写业务审批。停用/重置撤销会话；必要时失效Employee由显式选项明确区分账号可登录状态和员工业务活跃。
+可信管理入口只在本机操作者运行；创建Employee与账号原子，不写业务审批。员工域公开纯`validate_employee_provisioning(tenant_id, *, name, role, manager: EmployeeView | None) -> None`负责角色/姓名及同租户活跃boss或manager关系检查；纯校验不授予权限或写数据。CLI在外部事务插入随机新ID员工，再调用公开`create_account(session=...)`取得并保留tenant锁，然后锁读当前经理事实、调用域校验并设置关系，最后一起提交；任何拒绝都回滚员工与账号。请求了经理但查不到必须拒绝。CLI不得访问认证私有方法或复制attempts桶SQL。停用/重置撤销会话；必要时失效Employee由显式选项明确区分账号可登录状态和员工业务活跃。
 - [ ] **Step 4: 运行GREEN、受影响身份/租户API回归、生成OpenAPI类型、结构自检。** 精确记录命令、测试数。Task4再验证运行profile接线。
 - [ ] **Step 5: 自审并提交。** 报告cookie名、CSRF头名、DTO名称和CLI函数签名，后续任务严格消费。
 

@@ -24,9 +24,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from starlette.types import Lifespan
 
+from shared.authentication import AuthenticationService
 from shared.schemas.runtime_capabilities import CapabilityName, RuntimeCapability
 from workflows.email_feedback.unsubscribe import UnsubscribeService
 
+from .authentication import (
+    LoginRequest,
+    SessionAuthenticationMiddleware,
+    session_cookie_name,
+    validate_authentication_configuration,
+)
 from .dependencies import (
     ApiDependencies,
     ConfiguredApiDependencies,
@@ -40,6 +47,8 @@ from .middleware import (
     install_error_handlers,
 )
 from .routers.approvals import router as approvals_router
+from .routers.authentication import install_authentication_errors
+from .routers.authentication import router as authentication_router
 from .routers.campaigns import router as campaigns_router
 from .routers.command_center import router as command_center_router
 from .routers.commitments import router as commitments_router
@@ -85,6 +94,7 @@ def _install_openapi_contract(app: FastAPI) -> None:
         definitions = intake_schema.pop("$defs", {})
         components.update(definitions)
         components["OpportunityIntakeBody"] = intake_schema
+        components["LoginRequest"] = LoginRequest.model_json_schema()
         components["ApiErrorResponse"] = ApiErrorResponse.model_json_schema(
             ref_template="#/components/schemas/{model}"
         )
@@ -121,6 +131,8 @@ def create_app(
     cors_allowed_origins: tuple[str, ...] = (),
     readiness_probe: ReadinessProbe | None = None,
     unsubscribe_service: UnsubscribeService | None = None,
+    authentication: AuthenticationService | None = None,
+    authentication_origin: str | None = None,
 ) -> FastAPI:
     """构造互相隔离的 API app。
 
@@ -131,6 +143,9 @@ def create_app(
         tenant_id=_UNCONFIGURED_TENANT,
         dev_mode=False,
         retry_after_seconds=_DEFAULT_RETRY_AFTER_SECONDS,
+    )
+    validate_authentication_configuration(
+        resolved_settings, authentication, authentication_origin
     )
     resolved_dependencies = dependencies or UnconfiguredApiDependencies()
     resolved_unsubscribe_service = unsubscribe_service
@@ -143,13 +158,31 @@ def create_app(
     app.state.settings = resolved_settings
     app.state.dependencies = resolved_dependencies
     app.state.unsubscribe_service = resolved_unsubscribe_service
-    install_error_handlers(app, resolved_settings)
-    app.add_middleware(
-        TenantAssertionMiddleware,
-        settings=resolved_settings,
-        anonymous_route_matcher=is_anonymous_unsubscribe_route,
+    app.state.authentication = authentication
+    app.state.authentication_cookie_name = (
+        session_cookie_name(authentication_origin)
+        if authentication_origin is not None
+        else None
     )
-    if cors_allowed_origins:
+    install_error_handlers(app, resolved_settings)
+    install_authentication_errors(app)
+    app.include_router(authentication_router)
+    if authentication is not None:
+        assert authentication_origin is not None
+        app.add_middleware(
+            SessionAuthenticationMiddleware,
+            settings=resolved_settings,
+            authentication=authentication,
+            origin=authentication_origin,
+            anonymous_route_matcher=is_anonymous_unsubscribe_route,
+        )
+    else:
+        app.add_middleware(
+            TenantAssertionMiddleware,
+            settings=resolved_settings,
+            anonymous_route_matcher=is_anonymous_unsubscribe_route,
+        )
+    if cors_allowed_origins and authentication is None:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=list(cors_allowed_origins),

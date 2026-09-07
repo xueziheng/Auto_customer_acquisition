@@ -62,6 +62,9 @@ _SALES_READ_GATE = Depends(
     )
 )
 _EXPECTED_API_PATHS = {
+    "/auth/login",
+    "/auth/session",
+    "/auth/logout",
     "/crm/sending-identities/management",
     "/crm/sending-identities/{identity_id}/warmup",
     "/email-inbound/binding",

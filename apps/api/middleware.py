@@ -75,7 +75,7 @@ def _error_response(
     return JSONResponse(
         status_code=status_code,
         content=payload.model_dump(mode="json"),
-        headers=headers,
+        headers={"Cache-Control": "no-store", **(headers or {})},
     )
 
 

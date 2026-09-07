@@ -25,6 +25,7 @@ from infra.db.schema import (
 )
 from infra.db.session import create_engine_from
 from infra.secrets import EnvironmentSecretResolver
+from shared.authentication import AuthenticationService
 
 from .composition.runtime import ManualSendComposition, build_phase1_dependencies
 from .main import create_app
@@ -107,6 +108,8 @@ def create_runtime_app_from_settings(
     manual_send: ManualSendComposition | None = None,
     gmail_transport: GmailHttpTransport | None = None,
     inbound_mailbox: InboundMailbox | None = None,
+    authentication: AuthenticationService | None = None,
+    authentication_origin: str | None = None,
 ) -> FastAPI:
     """按显式配置与端口装配；借用注入模型，自有资源只在 lifespan 关闭。
 
@@ -189,6 +192,8 @@ def create_runtime_app_from_settings(
         lifespan=lifespan,
         cors_allowed_origins=settings.cors_allowed_origins,
         readiness_probe=probe,
+        authentication=authentication,
+        authentication_origin=authentication_origin,
     )
     app.state.runtime_engine = engine
     app.state.readiness_probe = probe

@@ -120,3 +120,33 @@ class EmployeeService(Protocol):
     ) -> list[TerritoryAssignmentView]:
         """列出当前活跃员工的完整分配矩阵，过滤停用员工遗留规则并稳定排序。"""
         ...
+
+
+def validate_employee_provisioning(
+    tenant_id: TenantId,
+    *,
+    name: str,
+    role: str,
+    manager: EmployeeView | None,
+) -> None:
+    """校验可信初始化的员工资料；纯函数，不进行 IO 或授予运行时权限。
+
+    经理必须是当前同租户活跃老板/经理；调用方负责在原子事务中读取锁定事实。
+    不用于更新已有员工，也不替代所有运行时服务的 actor 判权。
+    """
+    from shared.errors import ValidationError
+
+    from .models import Role
+
+    if (
+        not name.strip()
+        or len(name) > 200
+        or role not in {value.value for value in Role}
+    ):
+        raise ValidationError("员工初始化资料无效")
+    if manager is not None and (
+        manager.tenant_id != tenant_id
+        or not manager.is_active
+        or manager.role not in {Role.BOSS.value, Role.MANAGER.value}
+    ):
+        raise ValidationError("员工初始化经理无效")
