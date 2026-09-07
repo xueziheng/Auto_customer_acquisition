@@ -422,7 +422,10 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
 
             await page.reload()
             await expect(page.get_by_text(sales.name, exact=True).first).to_be_visible()
-            require(await safe_session(page).get("status") == 200, "REFRESH_LOST_SESSION")
+            require(
+                (await safe_session(page)).get("status") == 200,
+                "REFRESH_LOST_SESSION",
+            )
 
             await asyncio.to_thread(source.stop)
             stopped = await asyncio.to_thread(source.status)
