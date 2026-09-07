@@ -129,6 +129,7 @@ with exclusive_profile_lock(profile_path):
 - Modify: `apps/notification_worker/runtime.py`, `apps/notification_worker/AGENTS.md`
 - Create: `docs/adr/0068-local-in-app-notifications.md`, `tests/integration/test_pilot_notifications.py`
 - Modify: `scripts/run_web_pilot.py`, `apps/api/runtime_config.py`（仅明确pilot配置接线需要时）
+- Create: `scripts/pilot_web_supervisor.py`（三应用生命周期与健康检查；CLI只解析/派发）
 - Create: `apps/web/src/api/authentication.ts`, `apps/web/src/components/LoginPanel.vue`
 - Modify: `apps/web/src/api/client.ts`, `apps/web/src/App.vue`
 - Create: `apps/web/src/api/authentication.spec.ts`, `apps/web/src/components/LoginPanel.spec.ts`, `tests/integration/test_pilot_runtime.py`
