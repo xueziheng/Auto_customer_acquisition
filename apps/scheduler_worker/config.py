@@ -273,13 +273,13 @@ class SchedulerWorkerConfig:
     outbox_max_attempts: int
     handoff_t1_seconds: int
     handoff_t2_seconds: int
-    dkim_selector: str
+    dkim_selector: str | None
     health_port: int
     tool_lease_seconds: int
     fingerprint_key_ref: str = field(repr=False)
     fingerprint_key_version: str = field(repr=False)
     campaign_retry_interval_seconds: int
-    gmail_oauth_token_ref: str = field(repr=False)
+    gmail_oauth_token_ref: str | None = field(repr=False)
     email_feedback_route_id: str
     unsubscribe_base_url: str
     unsubscribe_active_key_id: str
@@ -289,8 +289,40 @@ class SchedulerWorkerConfig:
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> SchedulerWorkerConfig:
+        return cls._parse(environ, pilot=False)
+
+    @classmethod
+    def from_pilot_environ(cls, environ: Mapping[str, str]) -> SchedulerWorkerConfig:
+        """显式本机模式省略 DNS/邮件配置；原生产 parser 仍要求完整字段。"""
+        if (
+            environ.get("TRADEOS_DEV_MODE") != "false"
+            or any(
+                name in environ
+                for name in (
+                    "GMAIL_OAUTH_TOKEN_REF",
+                    "TRADEOS_DKIM_SELECTOR",
+                    "TRADEOS_SOURCING_SETTINGS_JSON",
+                    "TAVILY_API_KEY_REF",
+                    "OPENAI_API_KEY_REF",
+                )
+            )
+            or environ.get("TRADEOS_HUNTER_CONTACTS_ENABLED") != "false"
+        ):
+            raise ValidationError("本机 scheduler 外部能力必须未配置")
+        return cls._parse(environ, pilot=True)
+
+    @classmethod
+    def _parse(
+        cls, environ: Mapping[str, str], *, pilot: bool
+    ) -> SchedulerWorkerConfig:
+        required = tuple(
+            name
+            for name in _REQUIRED
+            if not pilot
+            or name not in {"GMAIL_OAUTH_TOKEN_REF", "TRADEOS_DKIM_SELECTOR"}
+        )
         if not isinstance(environ, Mapping) or any(
-            name not in environ for name in _REQUIRED
+            name not in environ for name in required
         ):
             raise ValidationError("scheduler worker 配置无效")
         hunter_contacts = HunterContactsSettings.from_environ(environ)
@@ -301,10 +333,10 @@ class SchedulerWorkerConfig:
         )
         database_url = environ["DATABASE_URL"]
         tenant = environ["TRADEOS_TENANT_ID"]
-        selector = environ["TRADEOS_DKIM_SELECTOR"]
+        selector = None if pilot else environ["TRADEOS_DKIM_SELECTOR"]
         key_ref = environ["TOOL_CALL_FINGERPRINT_KEY_REF"]
         key_version = environ["TOOL_CALL_FINGERPRINT_KEY_VERSION"]
-        gmail_ref = environ["GMAIL_OAUTH_TOKEN_REF"]
+        gmail_ref = None if pilot else environ["GMAIL_OAUTH_TOKEN_REF"]
         route_id = environ["TRADEOS_EMAIL_FEEDBACK_ROUTE_ID"]
         unsubscribe_url = _unsubscribe_origin(environ["TRADEOS_UNSUBSCRIBE_BASE_URL"])
         active_key_id = environ["TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID"]
@@ -321,8 +353,13 @@ class SchedulerWorkerConfig:
             or re.fullmatch(r"[A-Z][A-Z0-9_]{2,99}", key_ref) is None
             or not isinstance(key_version, str)
             or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,31}", key_version) is None
-            or not isinstance(gmail_ref, str)
-            or _REFERENCE.fullmatch(gmail_ref) is None
+            or (
+                not pilot
+                and (
+                    not isinstance(gmail_ref, str)
+                    or _REFERENCE.fullmatch(gmail_ref) is None
+                )
+            )
             or not isinstance(route_id, str)
             or _ROUTE_ID.fullmatch(route_id) is None
             or any(marker in route_id for marker in _CREDENTIAL_MARKERS)
@@ -332,7 +369,8 @@ class SchedulerWorkerConfig:
             raise ValidationError("scheduler worker 配置无效")
         if active_key_id not in {reference.key_id for reference in key_references}:
             raise ValidationError("scheduler worker 配置无效")
-        DnsAuthenticationRequest("validation.example", selector)
+        if selector is not None:
+            DnsAuthenticationRequest("validation.example", selector)
         lock_key = _integer(environ, "TRADEOS_SCHEDULER_LOCK_KEY", minimum=-(2**63))
         health_port = _integer(environ, "TRADEOS_SCHEDULER_HEALTH_PORT", minimum=1)
         tool_lease_seconds = _integer(environ, "TRADEOS_TOOL_LEASE_SECONDS", minimum=1)

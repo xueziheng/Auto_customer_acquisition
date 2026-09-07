@@ -51,6 +51,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def reserve_port(port: int) -> socket.socket:
     """保留精确 loopback 端口供应用继承；占用时拒绝而不漂移入口。"""
     listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         listener.bind(("127.0.0.1", port))
         listener.listen(128)

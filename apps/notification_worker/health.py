@@ -81,7 +81,7 @@ def create_notification_health_app(state: NotificationHealthState) -> FastAPI:
             "mode": state.delivery_mode,
             "in_app": "enabled" if state.is_ready else "disabled",
             "email": "disabled"
-            if state.delivery_mode == "controlled_in_app"
+            if state.delivery_mode in {"controlled_in_app", "local_in_app"}
             else "enabled"
             if state.is_ready
             else "disabled",

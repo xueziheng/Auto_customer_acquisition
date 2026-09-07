@@ -191,14 +191,20 @@ def test_atomic_publish_refuses_even_empty_existing_directory(tmp_path):
     assert (source / "marker").exists()
 
 
-def test_cli_start_does_not_claim_application_ready(tmp_path, capsys):
+def test_cli_start_launch_failure_never_claims_ready(tmp_path, capsys, monkeypatch):
+    from infra.pilot.config import PilotError
+    from scripts import pilot_web_supervisor
     from scripts.run_web_pilot import main
 
+    def rejected(path):
+        raise PilotError("application_start_failed")
+
+    monkeypatch.setattr(pilot_web_supervisor, "launch", rejected)
     result = main(["start", "--profile", str(tmp_path / "not-created")])
     assert result == 2
     assert json.loads(capsys.readouterr().out) == {
         "status": "failed",
-        "reason": "application_launch_not_configured",
+        "reason": "application_start_failed",
     }
     assert not (tmp_path / "not-created").exists()
 

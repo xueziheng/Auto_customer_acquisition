@@ -38,7 +38,7 @@ function response(): Response {
 }
 
 describe("API request identity", () => {
-  it("injects one central authenticated identity and overwrites caller assertions", async () => {
+  it("uses session authentication and removes caller identity assertions", async () => {
     const requests: Request[] = [];
     const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
       if (!(input instanceof Request)) throw new TypeError("Request required");
@@ -66,8 +66,8 @@ describe("API request identity", () => {
       },
     });
 
-    expect(requests[0]?.headers.get("X-Tenant-Id")).toBe("tn-authenticated");
-    expect(requests[0]?.headers.get("X-Employee-Id")).toBe("emp-authenticated");
+    expect(requests[0]?.headers.get("X-Tenant-Id")).toBeNull();
+    expect(requests[0]?.headers.get("X-Employee-Id")).toBeNull();
   });
 
   it("fails before fetch when a production identity provider has no session", async () => {
@@ -151,8 +151,8 @@ describe("API raw work upload", () => {
     const request = captured as unknown as Request;
     expect(request.method).toBe("POST");
     expect(request.headers.get("content-type")).toBe("application/pdf");
-    expect(request.headers.get("x-tenant-id")).toBe(uploadView.tenant_id);
-    expect(request.headers.get("x-employee-id")).toBe(uploadView.employee_id);
+    expect(request.headers.get("x-tenant-id")).toBeNull();
+    expect(request.headers.get("x-employee-id")).toBeNull();
     expect(await request.text()).toBe("pdf-bytes");
     const url = new URL(request.url);
     expect(url.pathname).toBe("/work-uploads");
@@ -237,8 +237,8 @@ describe("identity snapshots and invalidation", () => {
       params: { path: { quote_id: "q", file_id: "f" } }, parseAs: "blob",
       headers: { "X-Tenant-Id": "forged", "X-Employee-Id": "forged" },
     });
-    expect(requests[0]?.headers.get("X-Tenant-Id")).toBe("t");
-    expect(requests[0]?.headers.get("X-Employee-Id")).toBe("e");
+    expect(requests[0]?.headers.get("X-Tenant-Id")).toBeNull();
+    expect(requests[0]?.headers.get("X-Employee-Id")).toBeNull();
     expect(result.error).toEqual({ detail: { code: "file_expired", message: "已过期" } });
   });
 });

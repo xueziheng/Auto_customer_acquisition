@@ -21,9 +21,7 @@ def _invalid() -> PolicyViolation:
     return PolicyViolation("Artifact Store 配置无效")
 
 
-def _read[T](
-    environ: Mapping[str, str], name: str, parser: Callable[[str], T]
-) -> T:
+def _read[T](environ: Mapping[str, str], name: str, parser: Callable[[str], T]) -> T:
     try:
         value = environ[name]
         if not isinstance(value, str):
@@ -130,24 +128,35 @@ class S3ObjectStoreSettings:
     generated_max_bytes: int
 
     @classmethod
-    def from_environ(
-        cls, environ: Mapping[str, str]
-    ) -> S3ObjectStoreSettings:
+    def from_environ(cls, environ: Mapping[str, str]) -> S3ObjectStoreSettings:
         """仅读取八个必填变量；任何错误固定脱敏。"""
+        return cls._parse(environ, pilot=False)
+
+    @classmethod
+    def from_pilot_environ(cls, environ: Mapping[str, str]) -> S3ObjectStoreSettings:
+        """显式真实本机内测：认证非 dev，仅开放精确 IPv4 loopback HTTP。"""
+        if environ.get("TRADEOS_DEV_MODE") != "false":
+            raise _invalid()
+        return cls._parse(environ, pilot=True)
+
+    @classmethod
+    def _parse(
+        cls, environ: Mapping[str, str], *, pilot: bool
+    ) -> S3ObjectStoreSettings:
         dev_mode = _read(environ, "TRADEOS_DEV_MODE", _boolean)
         endpoint = _read(
             environ,
             "S3_ENDPOINT",
-            lambda value: _endpoint(value, dev_mode=dev_mode),
+            lambda value: _endpoint(value, dev_mode=dev_mode or pilot),
         )
+        if pilot and re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]*", endpoint) is None:
+            raise _invalid()
         bucket = _read(environ, "S3_BUCKET_ARTIFACTS", _bucket)
         access_ref = _read(environ, "S3_ACCESS_KEY_REF", _secret_ref)
         secret_ref = _read(environ, "S3_SECRET_KEY_REF", _secret_ref)
         region = _read(environ, "S3_REGION", _region)
         raw_max = _read(environ, "RAW_ARTIFACT_MAX_BYTES", _positive_int)
-        generated_max = _read(
-            environ, "GENERATED_ARTIFACT_MAX_BYTES", _positive_int
-        )
+        generated_max = _read(environ, "GENERATED_ARTIFACT_MAX_BYTES", _positive_int)
         return cls(
             dev_mode,
             endpoint,

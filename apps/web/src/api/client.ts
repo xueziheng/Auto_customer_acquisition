@@ -48,6 +48,13 @@ export interface ApiIdentityReader {
 
 let authenticatedIdentity: WebRequestIdentity | null = null;
 let identityGeneration = 0;
+let csrfToken: string | null = null;
+export function configureSessionCsrf(value: string | null): void { csrfToken = value; }
+export function sessionCsrf(): string | null { return csrfToken; }
+export function currentIdentity(): WebRequestIdentity | null { return runtimeIdentityProvider.current(); }
+export function apiBaseUrl(): string {
+  return import.meta.env.PROD ? "/api" : import.meta.env.VITE_API_BASE_URL || "";
+}
 const identityListeners = new Set<() => void>();
 
 function publishIdentity(identity: WebRequestIdentity | null): void {
@@ -80,6 +87,7 @@ export function configureAuthenticatedIdentity(
 }
 
 export function clearAuthenticatedIdentity(): void {
+  csrfToken = null;
   publishIdentity(null);
 }
 
@@ -132,17 +140,22 @@ const runtimeIdentityProvider: WebIdentityProvider = {
     if (tenantId || employeeId) {
       throw new WebIdentityError("partial_dev_identity_rejected");
     }
-    if (import.meta.env.PROD) {
-      throw new WebIdentityError("authenticated_identity_missing");
-    }
     return null;
   },
 };
 
 function identityMiddleware(provider: WebIdentityProvider): Middleware {
+  const generations = new WeakMap<Request, number>();
   return {
     onRequest({ request }): Request {
-      return bindIdentity(request, provider);
+      const bound = bindIdentity(request, provider);
+      generations.set(request, provider.generation());
+      generations.set(bound, provider.generation());
+      return bound;
+    },
+    onResponse({ request, response }): Response {
+      checkResponse(response, generations.get(request) ?? -1, provider);
+      return response;
     },
   };
 }
@@ -152,11 +165,20 @@ function bindIdentity(request: Request, provider: WebIdentityProvider): Request 
   const headers = new Headers(request.headers);
   headers.delete("X-Tenant-Id");
   headers.delete("X-Employee-Id");
-  if (identity) {
+  if (identity?.mode === "fixed-dev") {
     headers.set("X-Tenant-Id", identity.tenantId);
     headers.set("X-Employee-Id", identity.employeeId);
   }
-  return new Request(request, { headers });
+  if (identity?.mode === "authenticated") {
+    headers.set("X-TradeOS-Request", "1");
+    if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && csrfToken) headers.set("X-CSRF-Token", csrfToken);
+  }
+  return new Request(request, { headers, credentials: "same-origin" });
+}
+
+function checkResponse(response: Response, generation: number, provider: WebIdentityProvider): void {
+  if (generation !== provider.generation()) throw new WebIdentityError("stale_identity_response");
+  if (response.status === 401 && provider === runtimeIdentityProvider) clearAuthenticatedIdentity();
 }
 
 export function createApiClient(
@@ -164,12 +186,13 @@ export function createApiClient(
   identityProvider: WebIdentityProvider = runtimeIdentityProvider,
 ) {
   const client = createClient<paths>({
-    baseUrl: import.meta.env.VITE_API_BASE_URL ?? "",
+    baseUrl: apiBaseUrl(),
+    credentials: "same-origin",
     ...options,
   });
   client.use(identityMiddleware(identityProvider));
-  const baseUrl = options.baseUrl ?? import.meta.env.VITE_API_BASE_URL ?? globalThis.location.origin;
-  const transport = options.fetch ?? globalThis.fetch;
+  const baseUrl = options.baseUrl ?? (apiBaseUrl() || globalThis.location.origin);
+  const transport = options.fetch ?? ((request: Request) => globalThis.fetch(request));
   const RequestConstructor = options.Request ?? Request;
 
   async function uploadWorkArtifact(
@@ -181,6 +204,7 @@ export function createApiClient(
       occurred_at: upload.occurredAt,
       source_kind: upload.sourceKind,
     });
+    const generation = identityProvider.generation();
     const request = bindIdentity(
       new RequestConstructor(
         `${baseUrl.replace(/\/$/, "")}/work-uploads?${query.toString()}`,
@@ -195,9 +219,11 @@ export function createApiClient(
       identityProvider,
     );
     const response = await transport(request);
+    checkResponse(response, generation, identityProvider);
     const data = response.status === 201
       ? await response.json() as WorkUploadView
       : undefined;
+    if (data && generation !== identityProvider.generation()) throw new WebIdentityError("stale_identity_response");
     return { data, response };
   }
 

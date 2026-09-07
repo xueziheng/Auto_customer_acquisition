@@ -3,27 +3,49 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Never
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from infra.pilot.backup import backup_profile, restore_profile
-from infra.pilot.config import PilotConfig, PilotError
+from infra.pilot.config import PilotConfig, PilotError, exclusive_profile_lock
 from infra.pilot.resources import PilotProfile
 
 
+class SafeParser(argparse.ArgumentParser):
+    """未知参数只返回固定错误，不回显误传密码。"""
+
+    def error(self, message: str) -> Never:
+        raise PilotError("pilot_input_invalid")
+
+
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(
-        description="持久化本机 Web 内测；不读取 .env 或外部凭证"
+    result = SafeParser(
+        allow_abbrev=False, description="持久化本机 Web 内测；不读取 .env 或外部凭证"
     )
-    commands = result.add_subparsers(dest="command", required=True)
-    for name in ("init", "migrate", "start", "stop", "status", "backup", "restore"):
-        command = commands.add_parser(name)
+    commands = result.add_subparsers(
+        dest="command", required=True, parser_class=SafeParser
+    )
+    for name in (
+        "init",
+        "migrate",
+        "start",
+        "stop",
+        "status",
+        "backup",
+        "restore",
+        "accounts",
+    ):
+        command = commands.add_parser(name, allow_abbrev=False)
         command.add_argument("--profile", type=Path, required=True)
-        if name == "init":
+        if name == "accounts":
+            command.add_argument("account_args", nargs=argparse.REMAINDER)
+        elif name == "init":
             command.add_argument("--policy-file", type=Path, required=True)
         elif name == "backup":
             command.add_argument("--destination", type=Path, required=True)
@@ -33,15 +55,59 @@ def parser() -> argparse.ArgumentParser:
 
 
 def start_profile(path: Path) -> None:
-    """Task 4 接线点：完整三进程 supervisor 完成前不能宣称 start 成功。"""
-    raise PilotError("application_launch_not_configured")
+    """交给独立 supervisor，三个真实健康检查通过后返回。"""
+    from scripts.pilot_web_supervisor import launch
+
+    launch(path.absolute())
+
+
+def account_profile(path: Path, argv: list[str]) -> None:
+    """只用本 profile 的 tenant/当前 DB，getpass 不接受密码参数。"""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from apps.api.pilot_accounts import (
+        parse_command,
+        read_password,
+        run_account_command,
+    )
+    from infra.db.session import create_engine_from
+    from shared.schemas.identifiers import TenantId
+
+    command = parse_command(argv)
+    password = (
+        read_password() if command.action in {"create", "reset-password"} else None
+    )
+    profile = PilotProfile(path)
+
+    async def execute() -> None:
+        engine = create_engine_from(profile.config.database_url.get_secret_value())
+        try:
+            await run_account_command(
+                async_sessionmaker(engine, expire_on_commit=False),
+                TenantId(profile.config.tenant_id),
+                command,
+                password=password,
+            )
+        finally:
+            await engine.dispose()
+
+    try:
+        with exclusive_profile_lock(path):
+            profile.reload()
+            profile.verify_all()
+            profile.check_schema_locked()
+            asyncio.run(execute())
+    finally:
+        profile.client.close()
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(argv)
     profile: PilotProfile | None = None
     try:
-        if args.command == "init":
+        args = parser().parse_args(argv)
+        if args.command == "accounts":
+            account_profile(args.profile, args.account_args)
+        elif args.command == "init":
             PilotConfig.create(args.profile, args.policy_file)
             profile = PilotProfile(args.profile)
             profile.provision_storage()

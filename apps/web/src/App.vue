@@ -1,15 +1,40 @@
 <script setup lang="ts">
 /* global HTMLDetailsElement */
-import { onUnmounted, ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { apiClient, controlledWebConfig } from "./api/client";
 import { RouterLink, RouterView } from "vue-router";
 import ControlledModeBar from "./components/ControlledModeBar.vue";
 import NotificationBadge from "./components/NotificationBadge.vue";
+import LoginPanel from "./components/LoginPanel.vue";
+import { listenForSessionInvalidation, logout, restoreSession } from "./api/authentication";
 
 const isControlled = controlledWebConfig() !== null;
-const identityGeneration = ref(isControlled ? apiClient.identitySnapshot().generation : 0);
-const unsubscribeIdentity = isControlled ? apiClient.subscribeIdentity(() => { identityGeneration.value = apiClient.identitySnapshot().generation; }) : () => {};
-onUnmounted(unsubscribeIdentity);
+const isIsolatedDevelopment = import.meta.env.DEV && !import.meta.env.PROD;
+const snapshot = ref(apiClient.identitySnapshot());
+const identityGeneration = ref(snapshot.value.generation);
+const loading = ref(!snapshot.value.identity && !isControlled && !isIsolatedDevelopment);
+const sessionError = ref("");
+const exiting = ref(false);
+const unsubscribeIdentity = apiClient.subscribeIdentity(() => {
+  snapshot.value = apiClient.identitySnapshot();
+  identityGeneration.value = snapshot.value.generation;
+});
+const stopListening = isControlled || isIsolatedDevelopment ? () => {} : listenForSessionInvalidation();
+onUnmounted(() => { unsubscribeIdentity(); stopListening(); });
+async function restore(): Promise<void> {
+  loading.value = true; sessionError.value = "";
+  try { await restoreSession(); }
+  catch { sessionError.value = "无法恢复会话，请检查本机服务后重试。"; }
+  finally { loading.value = false; }
+}
+async function exit(): Promise<void> {
+  if (exiting.value) return;
+  exiting.value = true; sessionError.value = "";
+  try { await logout(); }
+  catch { sessionError.value = "退出未完成：无法确认服务器会话已撤销，请恢复服务后重试退出。"; }
+  finally { exiting.value = false; }
+}
+onMounted(() => { if (loading.value) void restore(); });
 
 const appName: string = "TradeOS";
 const navMore = ref<HTMLDetailsElement | null>(null);
@@ -21,55 +46,130 @@ function closeMore(): void {
 
 <template>
   <main :aria-label="appName">
-    <header class="topbar">
-      <span class="brand">TradeOS 内部运营台</span>
-      <nav aria-label="主导航">
-        <RouterLink to="/commands">
-          指挥中心
-        </RouterLink>
-        <RouterLink to="/demand">
-          需求雷达
-        </RouterLink>
-        <RouterLink to="/prospects/accounts">
-          客户发现
-        </RouterLink>
-        <RouterLink to="/campaigns">
-          Campaign
-        </RouterLink>
-        <RouterLink to="/inbox">
-          智能收件箱
-        </RouterLink>
-        <RouterLink to="/approvals">
-          审批
-        </RouterLink>
-        <RouterLink to="/crm/opportunities">
-          CRM
-        </RouterLink>
-        <RouterLink to="/products">
-          供应能力
-        </RouterLink>
-        <RouterLink to="/sourcing">
-          寻源中心
-        </RouterLink>
-      </nav>
-      <span class="spacer" />
-      <details ref="navMore" class="nav-more">
-        <summary>更多</summary>
-        <div class="nav-more-panel">
-          <RouterLink to="/crm/outreach" @click="closeMore">触达工作台</RouterLink>
-          <RouterLink to="/crm/sending-identities" @click="closeMore">发件身份</RouterLink>
-          <RouterLink to="/team" @click="closeMore">团队与归属</RouterLink>
-          <RouterLink to="/work-uploads" @click="closeMore">工作上传</RouterLink>
-          <RouterLink to="/commitments" @click="closeMore">承诺中心</RouterLink>
-          <RouterLink to="/runs" @click="closeMore">Run 全景</RouterLink>
-          <RouterLink to="/settings" @click="closeMore">系统设置</RouterLink>
-          <RouterLink to="/billing" @click="closeMore">订阅与计费</RouterLink>
-        </div>
-      </details>
-      <NotificationBadge />
-    </header>
-    <ControlledModeBar />
-    <RouterView :key="identityGeneration" />
+    <p
+      v-if="loading"
+      role="status"
+      class="session-status"
+    >
+      正在恢复会话…
+    </p>
+    <section
+      v-if="sessionError"
+      class="session-status"
+      role="alert"
+    >
+      <p>{{ sessionError }}</p><button @click="restore">
+        重试恢复
+      </button>
+      <button
+        :disabled="exiting"
+        @click="exit"
+      >
+        重试退出
+      </button>
+    </section>
+    <LoginPanel v-if="!loading && !snapshot.identity && !isControlled && !isIsolatedDevelopment" />
+    <template v-if="!loading && (snapshot.identity || isControlled || isIsolatedDevelopment)">
+      <header class="topbar">
+        <span class="brand">TradeOS 内部运营台</span>
+        <nav aria-label="主导航">
+          <RouterLink to="/commands">
+            指挥中心
+          </RouterLink>
+          <RouterLink to="/demand">
+            需求雷达
+          </RouterLink>
+          <RouterLink to="/prospects/accounts">
+            客户发现
+          </RouterLink>
+          <RouterLink to="/campaigns">
+            Campaign
+          </RouterLink>
+          <RouterLink to="/inbox">
+            智能收件箱
+          </RouterLink>
+          <RouterLink to="/approvals">
+            审批
+          </RouterLink>
+          <RouterLink to="/crm/opportunities">
+            CRM
+          </RouterLink>
+          <RouterLink to="/products">
+            供应能力
+          </RouterLink>
+          <RouterLink to="/sourcing">
+            寻源中心
+          </RouterLink>
+        </nav>
+        <span class="spacer" />
+        <details
+          ref="navMore"
+          class="nav-more"
+        >
+          <summary>更多</summary>
+          <div class="nav-more-panel">
+            <RouterLink
+              to="/crm/outreach"
+              @click="closeMore"
+            >
+              触达工作台
+            </RouterLink>
+            <RouterLink
+              to="/crm/sending-identities"
+              @click="closeMore"
+            >
+              发件身份
+            </RouterLink>
+            <RouterLink
+              to="/team"
+              @click="closeMore"
+            >
+              团队与归属
+            </RouterLink>
+            <RouterLink
+              to="/work-uploads"
+              @click="closeMore"
+            >
+              工作上传
+            </RouterLink>
+            <RouterLink
+              to="/commitments"
+              @click="closeMore"
+            >
+              承诺中心
+            </RouterLink>
+            <RouterLink
+              to="/runs"
+              @click="closeMore"
+            >
+              Run 全景
+            </RouterLink>
+            <RouterLink
+              to="/settings"
+              @click="closeMore"
+            >
+              系统设置
+            </RouterLink>
+            <RouterLink
+              to="/billing"
+              @click="closeMore"
+            >
+              订阅与计费
+            </RouterLink>
+          </div>
+        </details>
+        <NotificationBadge :key="identityGeneration" />
+        <button
+          v-if="snapshot.identity?.mode === 'authenticated'"
+          :disabled="exiting"
+          @click="exit"
+        >
+          {{ exiting ? '正在退出…' : '退出' }}
+        </button>
+      </header>
+      <ControlledModeBar />
+      <RouterView :key="isIsolatedDevelopment && !isControlled ? 0 : identityGeneration" />
+    </template>
   </main>
 </template>
 
@@ -113,6 +213,7 @@ body,
   height: 100%;
   overflow: hidden;
 }
+.session-status { padding: 24px; }
 main[aria-label="TradeOS"] { display:flex; flex-direction:column; height:100%; }
 main[aria-label="TradeOS"] > .shell { flex:1; min-height:0; width:100%; height:auto; }
 main[aria-label="TradeOS"] > .topbar { flex-shrink:0; }
@@ -364,7 +465,8 @@ nav a.router-link-active {
 }
 @media (max-width: 700px) {
   .topbar {
-    height: 104px;
+    height: auto;
+    min-height: 104px;
     flex-wrap: wrap;
     gap: var(--space2);
     padding: var(--space2) var(--gutter);

@@ -1037,6 +1037,9 @@ class SchedulerRuntimeFactory:
         bootstrap: SchedulerBootstrap | None = None,
         inbound_ports: InboundRuntimePorts | None = None,
         resolver_factory: Callable[[], AsyncTxtResolver] = DnsPythonAsyncResolver,
+        pilot_config: SchedulerWorkerConfig | None = None,
+        secret_resolver: SecretResolver | None = None,
+        unconfigured_dns_step: StepHandler | None = None,
         health_server_factory: Callable[
             [SchedulerHealthState, int], SchedulerHealthServer
         ] = SchedulerHealthServer,
@@ -1054,6 +1057,27 @@ class SchedulerRuntimeFactory:
             )
         ):
             raise ValidationError("scheduler runtime factory 依赖无效")
+        if pilot_config is not None and (
+            pilot_config.dkim_selector is not None
+            or pilot_config.gmail_oauth_token_ref is not None
+            or secret_resolver is None
+            or unconfigured_dns_step is None
+            or inbound_ports is not None
+            or dependencies is not None
+            or bootstrap is None
+            or any(
+                getattr(bootstrap, name, True)
+                for name in ("research_enabled", "contacts_enabled", "campaign_enabled")
+            )
+        ):
+            raise ValidationError("本机 scheduler 外部能力必须未配置")
+        if pilot_config is None and (
+            secret_resolver is not None or unconfigured_dns_step is not None
+        ):
+            raise ValidationError("本机 scheduler 接线必须显式配置")
+        self._pilot_config = pilot_config
+        self._secret_resolver = secret_resolver
+        self._unconfigured_dns_step = unconfigured_dns_step
         self._environ = environ
         self._dependencies = dependencies
         self._bootstrap = bootstrap
@@ -1071,7 +1095,7 @@ class SchedulerRuntimeFactory:
     @asynccontextmanager
     async def _resources(self) -> AsyncIterator[SchedulerRuntime]:
         dependencies = self._dependencies
-        config = SchedulerWorkerConfig.from_environ(self._environ)
+        config = self._pilot_config or SchedulerWorkerConfig.from_environ(self._environ)
         quote_settings = (
             quotation_from_json(self._environ["TRADEOS_QUOTATION_SETTINGS_JSON"])
             if "TRADEOS_QUOTATION_SETTINGS_JSON" in self._environ
@@ -1143,7 +1167,7 @@ class SchedulerRuntimeFactory:
                 ):
                     raise ValidationError("scheduler Hunter 生产组合不完整")
 
-            secrets = EnvironmentSecretResolver(self._environ)
+            secrets = self._secret_resolver or EnvironmentSecretResolver(self._environ)
             fingerprint_key = secrets.resolve(config.fingerprint_key_ref).encode(
                 "utf-8"
             )
@@ -1452,14 +1476,21 @@ class SchedulerRuntimeFactory:
                 now=self._now,
                 id_factory=new_id,
             )
-            auth_step = DnsAuthenticationStep(
-                sending,
-                ToolGatewayDnsAuthenticationChecker(gateway, tool_user),
-                dkim_selector=config.dkim_selector,
-            )
+            if self._unconfigured_dns_step is not None:
+                auth_step = self._unconfigured_dns_step
+            else:
+                if config.dkim_selector is None:
+                    raise ValidationError("DNS 认证未配置")
+                auth_step = DnsAuthenticationStep(
+                    sending,
+                    ToolGatewayDnsAuthenticationChecker(gateway, tool_user),
+                    dkim_selector=config.dkim_selector,
+                )
             campaign_handlers: dict[str, StepHandler] = {}
             campaign_outreach: OutreachService | None = None
             if dependencies.campaign_messaging is not None:
+                if config.gmail_oauth_token_ref is None:
+                    raise ValidationError("邮件发送未配置")
                 campaign_handlers, campaign_outreach = self._build_campaign_messaging(
                     factory,
                     config,
@@ -2005,7 +2036,7 @@ class SchedulerRuntimeFactory:
         composition: CampaignMessagingComposition,
         sending: SendingIdentityService,
         fingerprints: HmacFingerprintProvider,
-        secrets: EnvironmentSecretResolver,
+        secrets: SecretResolver,
         tool_user: UserId,
     ) -> tuple[dict[str, StepHandler], OutreachService]:
         """装配 Campaign 发送链路：outreach 服务、退订链接、email.send 网关。
@@ -2015,6 +2046,9 @@ class SchedulerRuntimeFactory:
         """
         from workflows.email_feedback.repository import FeedbackPageUnitOfWork
 
+        gmail_reference = config.gmail_oauth_token_ref
+        if gmail_reference is None:
+            raise ValidationError("邮件发送未配置")
         tenant = config.tenant_id
         now = self._now
         contact_eligibility = composition.contact_eligibility
@@ -2103,7 +2137,7 @@ class SchedulerRuntimeFactory:
         gmail = _SchedulerLazyGmailConnector(
             composition.gmail_transport,
             composition.secret_resolver,
-            config.gmail_oauth_token_ref,
+            gmail_reference,
         )
         handler = EmailSendHandler(
             gmail,

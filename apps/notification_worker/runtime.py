@@ -93,6 +93,7 @@ logger = logging.getLogger("apps.notification_worker")
 class NotificationRuntimeMode(str, Enum):
     PRODUCTION = "production"
     CONTROLLED_IN_APP = "controlled_in_app"
+    LOCAL_IN_APP = "local_in_app"
 
 
 @dataclass(frozen=True)
@@ -289,7 +290,11 @@ async def notification_worker_runtime(
         router = NotificationRouter(
             PostgresNotificationDedupStore(factory),
             ControlledInAppRoutingPolicy()
-            if mode is NotificationRuntimeMode.CONTROLLED_IN_APP
+            if mode
+            in {
+                NotificationRuntimeMode.CONTROLLED_IN_APP,
+                NotificationRuntimeMode.LOCAL_IN_APP,
+            }
             else NotificationRoutingPolicy(),
         )
         router.register_channel(InAppChannel(PostgresInAppNotificationStore(factory)))
@@ -301,7 +306,11 @@ async def notification_worker_runtime(
         health.mark_ready("registry")
         server = (
             NotificationHealthServer(health, config.health_port, host="127.0.0.1")
-            if mode is NotificationRuntimeMode.CONTROLLED_IN_APP
+            if mode
+            in {
+                NotificationRuntimeMode.CONTROLLED_IN_APP,
+                NotificationRuntimeMode.LOCAL_IN_APP,
+            }
             else NotificationHealthServer(health, config.health_port)
         )
         health_task = asyncio.create_task(server.serve())

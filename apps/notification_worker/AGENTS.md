@@ -18,3 +18,9 @@
 
 仅controlled专用入口可显式controlled_in_app，只注册站内，保留优先级/模板/受众及真实持久投递。
 能力必须披露email disabled，job完成不代表邮件或多渠道送达。生产默认无邮件仍拒绝。
+
+## 持久本机内测例外（ADR0068）
+
+仅 `pilot.py` 可显式启用 `LOCAL_IN_APP`，复用真实持久站内投递策略。
+健康能力必须披露 `email=disabled`；job 完成只代表站内投递完成。
+不创建邮箱客户端，不返回伪邮件成功。默认 PRODUCTION 和原 CONTROLLED_IN_APP 的约束保持。

@@ -126,12 +126,18 @@ with exclusive_profile_lock(profile_path):
 
 **Files:**
 - Create: `apps/api/pilot.py`, `apps/scheduler_worker/pilot.py`, `apps/notification_worker/pilot.py`
-- Modify: `apps/notification_worker/runtime.py`, `apps/notification_worker/AGENTS.md`
+- Modify: `apps/notification_worker/runtime.py`, `apps/notification_worker/health.py`, `apps/notification_worker/AGENTS.md`
+- Modify: `apps/scheduler_worker/config.py`, `apps/scheduler_worker/runtime.py`（显式pilot配置接线；保留默认生产必填检查）
+- Modify: `connectors/object_store/config.py`, `connectors/object_store/AGENTS.md`（显式loopback pilot解析，dev_mode保持False，默认解析不变）
 - Create: `docs/adr/0068-local-in-app-notifications.md`, `tests/integration/test_pilot_notifications.py`
 - Modify: `scripts/run_web_pilot.py`, `apps/api/runtime_config.py`（仅明确pilot配置接线需要时）
 - Create: `scripts/pilot_web_supervisor.py`（三应用生命周期与健康检查；CLI只解析/派发）
 - Create: `apps/web/src/api/authentication.ts`, `apps/web/src/components/LoginPanel.vue`
 - Modify: `apps/web/src/api/client.ts`, `apps/web/src/App.vue`
+- Modify: `apps/web/tests/api-client-identity.test.ts`（真实模式去掉旧身份头断言，保留dev断言）
+- Modify: `apps/web/tests/catalog-product-proposal.test.ts`（mock请求时捕获身份快照，保留authenticated迟到响应隔离）
+- Modify: `infra/pilot/resources.py`（仅稳定端口SO_REUSEADDR及实际快速重启验证）
+- Modify: `tests/unit/test_pilot_profile.py`（旧start占位断言换为实际supervisor失败不得假成功）
 - Create: `apps/web/src/api/authentication.spec.ts`, `apps/web/src/components/LoginPanel.spec.ts`, `tests/integration/test_pilot_runtime.py`
 - Modify: `apps/web/src/api/api.d.ts`（仅重新生成）
 

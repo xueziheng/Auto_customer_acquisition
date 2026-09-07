@@ -562,7 +562,7 @@ describe("Catalog Product Proposal internal regions", () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
       const request = input as Request;
       const path = new URL(request.url).pathname;
-      if (late && request.headers.get("X-Tenant-Id") === "tenant-lifecycle-a" && path.startsWith("/products/catalog-")) {
+      if (late && identity.provider.current()?.tenantId === "tenant-lifecycle-a" && path.startsWith("/products/catalog-")) {
         const slot = deferredResponse();
         pending.set(`${path}-${pending.size}`, slot);
         lateRequests.push(request);
@@ -790,10 +790,12 @@ describe("Catalog Product Proposal internal regions", () => {
   it("never reuses an uncertain A intent under B and clears mutation state on identity switch", async () => {
     const identity = identityHarness("policy-cross-identity");
     const posts: Request[] = [];
+    const postTenants: (string | undefined)[] = [];
     const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
       const request = input as Request;
       const path = new URL(request.url).pathname;
       if (path === "/products/catalog-policies" && request.method === "POST") {
+        postTenants.push(identity.provider.current()?.tenantId);
         posts.push(request.clone());
         if (posts.length === 1) throw new TypeError("uncertain A");
         return Response.json(policyView("cpv_b", "pending_approval", "pending"), { status: 202 });
@@ -815,7 +817,8 @@ describe("Catalog Product Proposal internal regions", () => {
     setField(root, "minimum_distinct_accounts", "3");
     submitPolicyForm(root);
     await eventually(() => expect(posts).toHaveLength(2));
-    expect(posts[1]!.headers.get("X-Tenant-Id")).toBe("tenant-policy-cross-identity-b");
+    expect(postTenants).toEqual(["tenant-policy-cross-identity-a", "tenant-policy-cross-identity-b"]);
+    expect(posts.every(request => !request.headers.has("X-Tenant-Id") && !request.headers.has("X-Employee-Id"))).toBe(true);
     expect(posts[1]!.headers.get("Idempotency-Key")).not.toBe(aKey);
     expect(root.textContent).not.toContain(aKey!);
   });
