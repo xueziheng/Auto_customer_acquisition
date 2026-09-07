@@ -786,9 +786,10 @@ backpressure、真实 direct supplier quote 与商业来源仍未完成。
 - 冷备份要求全部应用和存储已停止，只恢复到全新profile/新owner。备份含敏感配置和业务数据，目录
   0700、文件0600；当前无加密、自动保留或异地复制，与原盘同故障域时不能抵御磁盘损坏。
 - 生产源`ecfb4d2d959ade7ffa143b7b9ad1b8e29cde4242`、测试修订
-  `c1cdad875bea547e20fdaefbf006ac31f8ec9c3b`的新E2E为1 passed/28.52s；覆盖刷新、完整stop/start、
-  DB/对象hash、账号切换顺序、停用/重置、冷恢复、旧会话拒绝、重登与390px。见
-  [持久内测验收](docs/acceptance/2026-09-07-web-internal-pilot.md)。
+  `63150da376b07414088f5c0f90bcb7ea5f22e075`的增强E2E为1 passed/34.15s；覆盖刷新、完整stop/start、
+  DB/对象hash、退出失败重试与旧token重放、直接跨标签换号/共同失效、真实响应交付顺序与Web Lock
+  排队、账号停用/重置、冷恢复、重登与390px。console collector的宽泛过滤局限见
+  [持久内测验收](docs/acceptance/2026-09-07-web-internal-pilot.md)，不得据此宣称过滤窗口内无其他告警。
 - 这是本机loopback内测。共享TLS/反向代理、其他浏览器、真实Provider/供应商/邮件、桌面端与生产
   Browser任务源仍未验收；[桌面扩展契约](docs/architecture/12-client-capability-boundaries.md)继续保留。
 

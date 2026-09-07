@@ -16,7 +16,7 @@
 | 最终主链修复 | `7e10383c253df4a98cd224fb7ee526d721476f9a`：仅两测试文件修复真实Campaign审批actor，完整Mac主链1 passed/34.97s；生产仍与48e4465一致，未再全量 |
 | Web | 同Task12未变Web源码，411 passed（32文件），typecheck/build/gen:api通过且API生成无diff；lint112 warnings/0 errors，均历史归属 |
 | 受控基线迁移 | Task12 当时单一head `0059`：[入站正文迁移](../../migrations/versions/0059_email_inbound.py)。这是历史受控基线；实际完整门禁含旧迁移往返/组合，不只源码枚举 |
-| 持久内测 | 生产源 `ecfb4d2d959ade7ffa143b7b9ad1b8e29cde4242`；测试修订 `c1cdad875bea547e20fdaefbf006ac31f8ec9c3b`；新E2E 1 passed/28.52s；当前单一head `0060`，生产静态Web、真实账号/会话、三应用、持久PG/MinIO、stop/start与冷恢复 |
+| 持久内测 | 生产源 `ecfb4d2d959ade7ffa143b7b9ad1b8e29cde4242`；测试修订 `63150da376b07414088f5c0f90bcb7ea5f22e075`；增强E2E 1 passed/34.15s；当前单一head `0060`，生产静态Web、真实账号/会话、三应用、持久PG/MinIO、stop/start与冷恢复 |
 | 依赖 | Python3.12.14独立环境安装`.[dev]`；Node24.15.0独立空npm配置执行ci/build，见[操作说明](web-core-local.md) |
 | Mac受控入口 | `scripts/run_web_core_controlled.py`：API/scheduler/notification/Vite四应用，owned PG/MinIO，loopback；停止删除本次合成环境。最终主链owner `8d234c0956fb498e9f171342c3b72f51` |
 | Mac持久内测入口 | `scripts/run_web_pilot.py`：同源API/生产Web、scheduler、notification三应用，独立owned PG/MinIO；真实账号，停止保留profile/容器/卷；只验Chromium 151.0.7922.34与loopback HTTP |
@@ -31,10 +31,10 @@
 | 能力 | 本机持久内测实际状态 |
 | --- | --- |
 | 登录与授权 | boss/sales真实密码登录、HttpOnly同源Cookie、刷新保持；每次请求重读当前员工角色，boss团队API 200、sales 403。无默认账号、注册、邮件找回或开发身份回退 |
-| 会话生命周期 | logout 204无body；网络失败时不假称撤销，直接重试成功；多标签由Web Locks串行，旧视图在账号切换时卸载；disable/reset-password撤销旧会话 |
+| 会话生命周期 | logout 204无body；失败重试与普通退出均验证正常jar清Cookie及隔离重放旧token为401；B直接换号时A旧业务壳卸载，共享会话从一页退出时另一页也清空；真实服务端logout响应暂缓交付期间Web Lock可见held/pending，实际response事件先于login request；disable/reset-password撤销旧会话 |
 | 持久运行 | 完整stop/start后合成团队数据、数据库canonical hash和对象SHA-256保持；生产stop只停止精确owner进程/容器，不删除卷或profile |
 | 冷备份恢复 | 双存储停止后物理归档；恢复到新owner、新卷、新端口，源profile独立不变；目标保留tenant/对象/业务关联并撤销恢复会话，必须重新登录 |
-| Web | 使用`apps/web/dist`生产构建和同源API，不使用Vite/开发员工头；1440与390px实测，无文档级横向溢出和未解释的运行时错误 |
+| Web | 使用`apps/web/dist`生产构建和同源API，不使用Vite/开发员工头；1440与390px实测，无文档级横向溢出及Vite overlay。console collector宽泛忽略任意failed-resource 401/403及模拟网络故障窗口内全部warning/error，不能排除过滤范围内并发告警，M1延期至最终review |
 | 通知与外部能力 | `local_in_app`启用、email disabled；真实模型、搜索、Hunter、Gmail、供应商、发送、TLS与共享部署not_run |
 
 持久内测只证明本机单租户登录、授权、持久化与恢复。合成员工、Territory Assignment和对象不证明
