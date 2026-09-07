@@ -769,6 +769,33 @@ backpressure、真实 direct supplier quote 与商业来源仍未完成。
 [正式证据与裁定索引](docs/acceptance/web-core-delivery/README.md)保留历史失败、取舍与成本；
 最终全分支review由控制者追加，未发生的审查不填通过。
 
+## 十五、本机持久 Web 内测（2026-09-07）
+
+真实账号、生产Web构建、三应用与独立持久PG/MinIO现由`scripts/run_web_pilot.py`提供。首次使用
+必须由操作者显式提供业务政策，再依次`init`、`start`和在
+真实TTY中创建账号；系统没有默认员工、默认密码、默认市场或测试业务政策。完整命令、政策字段形状、
+`getpass`交互、私有权限与冷备份恢复步骤见
+[持久内测操作说明](docs/operations/web-internal-pilot.md)。
+
+- 当前schema为单一head `0060`；`start`只核验不迁移。生产Web须先执行`gen:api`和`build`，页面与
+  `/api`同源，不使用开发员工头。
+- `stop`只停止当前profile精确owner的应用和存储，保留profile、容器及卷。关机前必须stop并核对
+  应用/存储均stopped；不要用prune、宽泛pkill或删卷代替。
+- `disable`和`reset-password`撤销旧会话；恢复副本也撤销全部会话。多标签登录/退出要求Web Locks，
+  当前实际浏览器仅Chromium 151.0.7922.34。
+- 冷备份要求全部应用和存储已停止，只恢复到全新profile/新owner。备份含敏感配置和业务数据，目录
+  0700、文件0600；当前无加密、自动保留或异地复制，与原盘同故障域时不能抵御磁盘损坏。
+- 生产源`ecfb4d2d959ade7ffa143b7b9ad1b8e29cde4242`、测试修订
+  `c1cdad875bea547e20fdaefbf006ac31f8ec9c3b`的新E2E为1 passed/28.52s；覆盖刷新、完整stop/start、
+  DB/对象hash、账号切换顺序、停用/重置、冷恢复、旧会话拒绝、重登与390px。见
+  [持久内测验收](docs/acceptance/2026-09-07-web-internal-pilot.md)。
+- 这是本机loopback内测。共享TLS/反向代理、其他浏览器、真实Provider/供应商/邮件、桌面端与生产
+  Browser任务源仍未验收；[桌面扩展契约](docs/architecture/12-client-capability-boundaries.md)继续保留。
+
+受控四应用/Vite入口、持久三应用/生产Web入口和独立Linux报价证据必须分开阅读，不能把不同owner、
+不同Need/Opportunity或合成结果拼成一条真实业务闭环。[能力矩阵](docs/operations/web-core-capability-matrix.md)
+已按这三类证据分别标注。
+
 ## 附：常用命令
 
 ```bash
