@@ -24,6 +24,7 @@
 - `/auth/login` 只接受小型JSON（4 KiB上限），所有不安全方法要求精确Origin及自定义浏览器请求头；已登录写操作还必须校验会话绑定的CSRF token。登录仅JSON，其他业务写操作保留各原router的请求体/MIME校验与空命令协议，不在认证层复制上传规则。拒绝重复cookie、重复安全头、不匹配来源、跨站请求。GET不产生业务写操作，原匿名unsubscribe保持既有严格独立契约。会话模式的GET `/health/live`与`/health/ready`只提供原固定状态供本机supervisor无密码探测，精确Host仍校验；capabilities与其他health路径不匿名。
 - 会话模式禁用 X-Employee-Id/X-Tenant-Id 身份断言，无自动退回开发模式；无认证依赖的非dev入口仍失败关闭。原受控开发模式继续隔离运作。
 - Web不在localStorage/sessionStorage/URL保存密码或会话。首次读取会话前不挂载业务页面；401、退出和身份变化清除页面状态并取消/隔离旧请求，通知组件随之卸载。403业务拒绝不一律当退出。浏览器标签页退出同步只传播事件，不传播token。
+- 登录与退出使用同源 Web Locks 排他序列协调标签页，并保留本页认证变更忙状态与身份代次检查；退出重试在业务页面隐藏时重新取得会话绑定CSRF。缺少Web Locks明确拒绝认证变更，不提供弱化后备。当前实际验收浏览器为Chromium，不宣称全浏览器兼容。该锁只协调合作页面，不能替代服务端认证或隔离恶意同源脚本。
 - Postgres与对象存储使用独立具名卷，profile目录0700、配置0600，拒绝软链接、不正确所有者/权限。停止只停本profile精确拥有的进程和容器，不删除卷或配置。新入口没有自动清库或重置命令。
 - 资源操作核对 owner 标签、精确ID、卷绑定和进程出生时间；并发start/stop/backup/restore使用profile锁。Web/API端口首建分配后保存在profile并复用；被其他程序占用时安全拒绝，避免浏览器入口漂移。DB/对象端口重分配后重新生成当前子进程配置，禁止继续使用旧端口。只使用本地已有镜像，不自动pull。
 - `init`/`migrate`显式升级schema；`start`只检查当前schema，拒绝落后版本，不自动迁移。单份profile最多一个scheduler与notification worker。通知使用显式LOCAL_IN_APP模式，只承诺真实站内投递并披露email disabled；默认生产入口的邮件必需约束及原controlled模式保留。
@@ -51,3 +52,5 @@ API以显式AuthenticationService注入真实模式，登录/会话/退出路由
 5. 运行结构自检、受影响Python测试、Web类型/lint/测试/build与独立审查。仅报告实际运行的版本和结果；真实Provider与共享TLS部署标记未运行。
 
 依据：[OWASP密码存储](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)、[会话管理](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)、[CSRF防护](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)。具体数值是本轮技术配置，非业务政策。
+
+跨标签认证序列的技术依据：[W3C Web Locks工作草案](https://www.w3.org/TR/web-locks/)；实际支持以本轮浏览器运行证据为准。

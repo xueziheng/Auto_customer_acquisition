@@ -282,3 +282,34 @@ def test_start_rejects_profile_symlink_before_resource_operations(tmp_path):
     (tmp_path / "linked").symlink_to(tmp_path / "profile", target_is_directory=True)
     with pytest.raises(PilotError, match="configuration_invalid"):
         start_profile(tmp_path / "linked")
+
+
+def test_unexpected_owned_child_exit_preserves_failed_state_after_cleanup(
+    owned_profiles,
+):
+    import os
+    import signal
+    import time
+
+    from scripts.run_web_pilot import start_profile
+
+    directory, profiles = owned_profiles
+    profile = initialized(directory, profiles)
+    start_profile(profile.path)
+    state = profile.runtime_state()
+    scheduler = next(p for p in state.processes if p.name == "scheduler")
+    assert scheduler.live()
+    os.kill(scheduler.pid, signal.SIGKILL)
+    deadline = time.monotonic() + 40
+    while state.supervisor.live() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not state.supervisor.live(), "OWNED_SUPERVISOR_DID_NOT_STOP"
+    assert all(not process.live() for process in state.processes)
+    profile.reload()
+    profile.require_stopped()
+    result = profile.runtime_state()
+    assert result.status == "failed"
+    assert result.reason == "operation_failed"
+    assert result.supervisor is None
+    assert result.processes == ()
+    assert profile.status()["applications"] == "failed"

@@ -6,13 +6,16 @@ import { RouterLink, RouterView } from "vue-router";
 import ControlledModeBar from "./components/ControlledModeBar.vue";
 import NotificationBadge from "./components/NotificationBadge.vue";
 import LoginPanel from "./components/LoginPanel.vue";
-import { listenForSessionInvalidation, logout, restoreSession } from "./api/authentication";
+import { currentAuthenticationMutation, listenForSessionInvalidation, logout, restoreSession, subscribeAuthenticationMutation, supportsAuthenticationMutations } from "./api/authentication";
 
 const isControlled = controlledWebConfig() !== null;
 const isIsolatedDevelopment = import.meta.env.DEV && !import.meta.env.PROD;
 const snapshot = ref(apiClient.identitySnapshot());
 const identityGeneration = ref(snapshot.value.generation);
-const loading = ref(!snapshot.value.identity && !isControlled && !isIsolatedDevelopment);
+const authenticationSupported = supportsAuthenticationMutations();
+const authMutation = ref(currentAuthenticationMutation());
+const unsubscribeMutation = subscribeAuthenticationMutation(() => { authMutation.value = currentAuthenticationMutation(); });
+const loading = ref(authenticationSupported && !snapshot.value.identity && !isControlled && !isIsolatedDevelopment);
 const sessionError = ref("");
 const exiting = ref(false);
 const unsubscribeIdentity = apiClient.subscribeIdentity(() => {
@@ -20,7 +23,7 @@ const unsubscribeIdentity = apiClient.subscribeIdentity(() => {
   identityGeneration.value = snapshot.value.generation;
 });
 const stopListening = isControlled || isIsolatedDevelopment ? () => {} : listenForSessionInvalidation();
-onUnmounted(() => { unsubscribeIdentity(); stopListening(); });
+onUnmounted(() => { unsubscribeIdentity(); unsubscribeMutation(); stopListening(); });
 async function restore(): Promise<void> {
   loading.value = true; sessionError.value = "";
   try { await restoreSession(); }
@@ -47,6 +50,20 @@ function closeMore(): void {
 <template>
   <main :aria-label="appName">
     <p
+      v-if="!authenticationSupported && !isIsolatedDevelopment"
+      role="alert"
+      class="session-status"
+    >
+      当前浏览器不支持 Web Locks，无法安全登录或退出。请使用支持 Web Locks 的 Chromium 浏览器打开本机入口。
+    </p>
+    <p
+      v-if="authMutation"
+      role="status"
+      class="session-status"
+    >
+      {{ authMutation === 'logout' ? '正在完成退出，请等待…' : '正在处理登录，请等待…' }}
+    </p>
+    <p
       v-if="loading"
       role="status"
       class="session-status"
@@ -58,18 +75,21 @@ function closeMore(): void {
       class="session-status"
       role="alert"
     >
-      <p>{{ sessionError }}</p><button @click="restore">
+      <p>{{ sessionError }}</p><button
+        :disabled="authMutation !== null"
+        @click="restore"
+      >
         重试恢复
       </button>
       <button
-        :disabled="exiting"
+        :disabled="exiting || authMutation !== null"
         @click="exit"
       >
         重试退出
       </button>
     </section>
-    <LoginPanel v-if="!loading && !snapshot.identity && !isControlled && !isIsolatedDevelopment" />
-    <template v-if="!loading && (snapshot.identity || isControlled || isIsolatedDevelopment)">
+    <LoginPanel v-if="authenticationSupported && authMutation !== 'logout' && !loading && !snapshot.identity && !isControlled && !isIsolatedDevelopment" />
+    <template v-if="!authMutation && !loading && (isIsolatedDevelopment || (authenticationSupported && (snapshot.identity || isControlled)))">
       <header class="topbar">
         <span class="brand">TradeOS 内部运营台</span>
         <nav aria-label="主导航">
@@ -161,7 +181,7 @@ function closeMore(): void {
         <NotificationBadge :key="identityGeneration" />
         <button
           v-if="snapshot.identity?.mode === 'authenticated'"
-          :disabled="exiting"
+          :disabled="exiting || authMutation !== null"
           @click="exit"
         >
           {{ exiting ? '正在退出…' : '退出' }}

@@ -143,20 +143,20 @@ class PilotSupervisor:
                     time.sleep(0.1)
                 self.publish("running", "applications_ready")
 
-    def close(self) -> None:
-        """先逐个精确停止，全部成功后才清记录；任一失败保留归属诊断。"""
+    def close(self, *, failed: bool = False) -> None:
+        """先精确停止再清记录；保留故障终态，只有请求停机标记 requested_stop。"""
         try:
             if not self.owned:
                 return
-            failed = False
+            cleanup_failed = False
             for process in reversed(self.processes):
                 try:
                     process.stop(timeout=10)
                 except BaseException:  # noqa: BLE001 独立回收其余 owned 子进程
-                    failed = True
+                    cleanup_failed = True
             with exclusive_profile_lock(self.profile.path):
                 self.profile.reload()
-                if failed:
+                if cleanup_failed:
                     self.publish("failed", "operation_failed")
                     raise PilotError("application_stop_failed")
                 self.profile.publish_processes_locked(
@@ -165,7 +165,23 @@ class PilotSupervisor:
                     status="stopped",
                     reason="requested_stop",
                 )
-                self.profile.stop_storage_locked()
+                try:
+                    self.profile.stop_storage_locked()
+                except BaseException:
+                    self.profile.publish_processes_locked(
+                        supervisor=None,
+                        processes=(),
+                        status="failed",
+                        reason="operation_failed",
+                    )
+                    raise
+                if failed:
+                    self.profile.publish_processes_locked(
+                        supervisor=None,
+                        processes=(),
+                        status="failed",
+                        reason="operation_failed",
+                    )
             self.owned = False
         finally:
             self.profile.client.close()
@@ -265,7 +281,7 @@ def main() -> int:
     finally:
         if supervisor is not None:
             try:
-                supervisor.close()
+                supervisor.close(failed=result != 0 and not supervisor.stopping)
             except BaseException:  # noqa: BLE001 清理失败不得宣称成功
                 result = 2
         if ready_fd >= 0:
