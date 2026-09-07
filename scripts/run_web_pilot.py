@@ -73,6 +73,13 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps({"status": "failed", "reason": error.reason}, ensure_ascii=False)
         )
         return 2
+    except KeyboardInterrupt:
+        print(
+            json.dumps(
+                {"status": "failed", "reason": "pilot_interrupted"}, ensure_ascii=False
+            )
+        )
+        return 2
     except Exception:  # noqa: BLE001 安全边界仅输出固定错误码
         print(
             json.dumps(

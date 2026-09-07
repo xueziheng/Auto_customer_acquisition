@@ -339,3 +339,92 @@ def test_schema_check_never_migrates_and_failed_restore_cannot_start(
     assert failed.status()["storage"] == "stopped"
     with pytest.raises(PilotError, match="restore_incomplete"):
         failed.start_storage()
+
+
+@pytest.mark.parametrize("failure", ["interrupt", "diagnostic_io"])
+def test_restore_failure_after_storage_start_always_stops_and_closes(
+    owned_profiles, monkeypatch, capsys, failure
+):
+    from infra.pilot.backup import backup_profile
+    from infra.pilot.config import PilotError
+    from infra.pilot.resources import PilotProfile
+    from scripts.run_web_pilot import main
+
+    tmp_path, profiles = owned_profiles
+    source = initialized(tmp_path, profiles)
+    source.stop()
+    backup_profile(source.path, tmp_path / "failure-backup")
+    source_hash = hashlib.sha256((source.path / "config.json").read_bytes()).hexdigest()
+    target_path = tmp_path / "failure-target"
+    observed = {"started": False, "closed": False}
+    original_check = PilotProfile.check_schema_locked
+
+    def fail_after_storage_started(profile):
+        if profile.path != target_path:
+            return original_check(profile)
+        observed["started"] = all(
+            container.status == "running" for container in profile.verify_all().values()
+        )
+        original_close = profile.client.close
+
+        def close():
+            observed["closed"] = True
+            original_close()
+
+        patch.setattr(profile.client, "close", close)
+        if failure == "interrupt":
+            raise KeyboardInterrupt
+
+        def fail_save():
+            raise OSError("synthetic_private_write_failure")
+
+        from infra.pilot import backup as backup_module
+        from infra.pilot import resources as resource_module
+
+        def fail_diagnostic_write(path, payload):
+            raise OSError("synthetic_private_write_failure")
+
+        patch.setattr(profile, "save", fail_save)
+        patch.setattr(resource_module, "private_write", fail_diagnostic_write)
+        patch.setattr(backup_module, "private_write", fail_diagnostic_write)
+        profile.save()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(PilotProfile, "check_schema_locked", fail_after_storage_started)
+        try:
+            result = main(
+                [
+                    "restore",
+                    "--backup",
+                    str(tmp_path / "failure-backup"),
+                    "--profile",
+                    str(target_path),
+                ]
+            )
+        except BaseException:  # noqa: BLE001 测试拦住中断以检查真实资源是否已停止
+            result = None
+        finally:
+            if (target_path / "config.json").exists():
+                target = PilotProfile(target_path)
+                profiles.append(target)
+    assert observed["started"], "RESTORE_FAILURE_INJECTION_NOT_REACHED"
+    assert target.status()["storage"] == "stopped", (
+        "RESTORE_FAILURE_LEFT_STORAGE_RUNNING"
+    )
+    assert observed["closed"], "RESTORE_FAILURE_LEFT_CLIENT_OPEN"
+    assert result == 2, "RESTORE_FAILURE_ESCAPED_CLI"
+    expected_reason = (
+        "restore_interrupted" if failure == "interrupt" else "restore_failed"
+    )
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "failed",
+        "reason": expected_reason,
+    }
+    assert target.config.restore_state in {"pending", "failed"}
+    with pytest.raises(PilotError, match="restore_incomplete"):
+        target.start_storage()
+    assert source.status()["storage"] == "stopped"
+    assert (
+        hashlib.sha256((source.path / "config.json").read_bytes()).hexdigest()
+        == source_hash
+    )

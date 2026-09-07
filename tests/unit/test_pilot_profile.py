@@ -270,3 +270,32 @@ def test_process_from_previous_boot_is_dead_even_if_numeric_pid_reused():
     current = ProcessIdentity.current()
     old = current.model_copy(update={"born": psutil.boot_time() - 1})
     assert not old.live()
+
+
+def test_cli_restore_interruption_before_resource_creation_is_fixed_failure(
+    tmp_path, monkeypatch, capsys
+):
+    from scripts import run_web_pilot
+
+    def interrupted(backup, profile):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run_web_pilot, "restore_profile", interrupted)
+    try:
+        result = run_web_pilot.main(
+            [
+                "restore",
+                "--backup",
+                str(tmp_path / "backup"),
+                "--profile",
+                str(tmp_path / "new-profile"),
+            ]
+        )
+    except KeyboardInterrupt:
+        result = None
+    assert result == 2, "CLI_INTERRUPTION_ESCAPED"
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "failed",
+        "reason": "pilot_interrupted",
+    }
+    assert not (tmp_path / "new-profile").exists()

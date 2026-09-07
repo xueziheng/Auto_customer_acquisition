@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import json
 import os
 import secrets
 import stat
@@ -250,6 +251,43 @@ def _restore_volume(
         verification.unlink(missing_ok=True)
 
 
+def _cleanup_failed_restore(profile: PilotProfile) -> None:
+    """停止、诊断和关闭独立尝试；诊断失败或中断不能跳过客户端关闭。"""
+    errors: list[str] = []
+    try:
+        try:
+            profile.stop_storage_locked()
+        except BaseException:  # noqa: BLE001 仍须尝试诊断和关闭，不能回显原异常
+            errors.append("restore_cleanup_unknown")
+        try:
+            profile.config = profile.config.model_copy(
+                update={"restore_state": "failed"}
+            )
+            profile.save()
+        except BaseException:  # noqa: BLE001 磁盘失败不阻断独立清理步骤
+            errors.append("restore_state_write_failed")
+        try:
+            profile.publish_processes_locked(
+                supervisor=None, processes=(), status="failed", reason="restore_failed"
+            )
+        except BaseException:  # noqa: BLE001 状态记录失败不阻断 client.close
+            errors.append("restore_status_write_failed")
+    finally:
+        try:
+            profile.client.close()
+        except BaseException:  # noqa: BLE001 清理只保留固定诊断，不能覆盖原失败码
+            errors.append("restore_client_close_failed")
+    if errors:
+        try:
+            private_write(
+                profile.path / "restore-failure.json",
+                json.dumps({"errors": errors}).encode(),
+            )
+        except BaseException:  # noqa: BLE001, S110 磁盘不可写时仍已尝试停止和关闭
+            # pending/failed 配置继续阻断启动；不声称诊断已成功持久化。
+            pass
+
+
 def restore_profile(backup: Path, path: Path) -> PilotProfile:
     """验证完整包后仅创建新资源，保留 tenant/bucket/key；撤销会话后停止交付。"""
     _new_destination(path)
@@ -296,8 +334,9 @@ def restore_profile(backup: Path, path: Path) -> PilotProfile:
                 "restore_state": "pending",
             }
         )
-        config.write(path / "config.json")
+        completed = False
         try:
+            config.write(path / "config.json")
             profile = PilotProfile(path)
             profile.provision_storage_locked(
                 {str(k): v for k, v in manifest.image_ids.items()}
@@ -312,25 +351,15 @@ def restore_profile(backup: Path, path: Path) -> PilotProfile:
                 update={"restore_state": "complete"}
             )
             profile.save()
+            completed = True
             return profile
-        except Exception:  # noqa: BLE001 安全边界仅输出固定错误码
-            if profile is not None:
-                profile.config = profile.config.model_copy(
-                    update={"restore_state": "failed"}
-                )
-                profile.save()
-                try:
-                    profile.stop_storage_locked()
-                    profile.publish_processes_locked(
-                        supervisor=None,
-                        processes=(),
-                        status="failed",
-                        reason="restore_failed",
-                    )
-                except Exception:  # noqa: BLE001 安全边界仅输出固定错误码
-                    private_write(
-                        path / "restore-failure.json",
-                        b'{"reason":"restore_cleanup_unknown"}',
-                    )
-                profile.client.close()
-            raise PilotError("restore_failed") from None
+        except BaseException as error:  # noqa: BLE001 用户中断也须走固定失败与 finally 清理
+            reason = (
+                "restore_interrupted"
+                if isinstance(error, KeyboardInterrupt)
+                else "restore_failed"
+            )
+            raise PilotError(reason) from None
+        finally:
+            if profile is not None and not completed:
+                _cleanup_failed_restore(profile)
