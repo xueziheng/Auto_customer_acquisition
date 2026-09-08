@@ -17,6 +17,16 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from connectors.gmail.client import GmailConnector, GmailHttpTransport, SecretResolver
 from connectors.gmail.transport import GmailApiHttpTransport
+from domains.opportunities.permissions import Actor as OpportunityActor
+from domains.opportunities.permissions import (
+    OpportunityScope,
+    Phase1OpportunityAuthorizer,
+)
+from domains.opportunities.permissions import ScopeLevel as OpportunityScopeLevel
+from domains.opportunities.permissions import (
+    StandardAuditLogger as OpportunityAuditLogger,
+)
+from domains.opportunities.service_impl import HandoffNotificationServiceImpl
 from domains.sending_identity.permissions import (
     Actor as SendingIdentityActor,
 )
@@ -40,9 +50,15 @@ from infra.db.schema import assert_database_schema_current
 from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
 from infra.db.session import create_engine_from
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
+from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
 from notification_gateway.channels.email import EmailNotificationChannel
 from notification_gateway.channels.in_app import InAppChannel
-from notification_gateway.jobs import NotificationJobClaim, NotificationJobStore
+from notification_gateway.inbox import InAppNotification
+from notification_gateway.jobs import (
+    NotificationJobClaim,
+    NotificationJobStore,
+    NotificationKind,
+)
 from notification_gateway.models import (
     Notification,
     NotificationChannel,
@@ -59,7 +75,13 @@ from shared.errors import (
     TradeOSError,
     ValidationError,
 )
-from shared.schemas.identifiers import TenantId, UserId, new_id
+from shared.schemas.identifiers import (
+    HandoffId,
+    OpportunityId,
+    TenantId,
+    UserId,
+    new_id,
+)
 from tool_gateway.checks.idempotency import IdempotencyCheck
 from tool_gateway.checks.permission import PermissionCheck
 from tool_gateway.fingerprint import HmacFingerprintProvider
@@ -129,6 +151,8 @@ class NotificationRoutingPolicy(RoutingPolicy):
         names = [channel.name for channel in available]
         if names != ["in_app", "email"] or len(names) != len(set(names)):
             raise PolicyViolation("通知渠道注册表无效")
+        if notification.context.kind is NotificationKind.HANDOFF_ESCALATION and notification.context.reason_code in {"owner_pending", "owner_reminder"}:
+            return [available[0]]
         if notification.priority in {
             NotificationPriority.URGENT,
             NotificationPriority.NORMAL,
@@ -286,7 +310,7 @@ async def notification_worker_runtime(
             await connection.execute(text("SELECT 1"))
         health.mark_ready("database")
         factory = async_sessionmaker(bind=engine, expire_on_commit=False)
-        jobs = PostgresNotificationJobStore(factory)
+        jobs = PostgresNotificationJobStore(factory, now=now)
         router = NotificationRouter(
             PostgresNotificationDedupStore(factory),
             ControlledInAppRoutingPolicy()
@@ -297,7 +321,38 @@ async def notification_worker_runtime(
             }
             else NotificationRoutingPolicy(),
         )
-        router.register_channel(InAppChannel(PostgresInAppNotificationStore(factory)))
+        handoffs = HandoffNotificationServiceImpl(
+            lambda: SqlAlchemyOpportunityUnitOfWork(factory, config.tenant_id),  # type: ignore[arg-type, return-value]
+            Phase1OpportunityAuthorizer(config.tenant_id),
+            OpportunityAuditLogger(),
+        )
+
+        @asynccontextmanager
+        async def handoff_guard(notification: InAppNotification) -> AsyncIterator[bool]:
+            opportunity_id = OpportunityId(notification.context.secondary_id or "")
+            actor = OpportunityActor(
+                "system:notification-handoff",
+                OpportunityScope(
+                    level=OpportunityScopeLevel.SYSTEM,
+                    notification_opportunity_id=opportunity_id,
+                ),
+                "system",
+            )
+            async with handoffs.handoff_notification_scope(
+                notification.tenant_id,
+                HandoffId(notification.context.primary_id),
+                opportunity_id,
+                notification.recipient,
+                actor=actor,
+            ) as allowed:
+                yield allowed
+
+        router.register_channel(
+            InAppChannel(
+                PostgresInAppNotificationStore(factory, handoff_guard=handoff_guard),
+                now=now,
+            )
+        )
         if mode is NotificationRuntimeMode.PRODUCTION:
             email_channel, gmail_transport = await _compose_email_channel(
                 config, factory, transport_factory, now

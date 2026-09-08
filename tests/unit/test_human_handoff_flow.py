@@ -576,3 +576,80 @@ async def test_request_handoff_without_current_owner_fails_closed() -> None:
         )
     assert uow.handoffs.added == []
     assert uow.bus.events == []
+
+
+def test_owner_mode_keeps_legacy_and_has_only_durable_owner_wait() -> None:
+    interval = timedelta(seconds=7200)
+    definition = build_human_handoff_definition(
+        _T1, _T2, owner_reminder_interval=interval
+    )
+    assert definition.workflow_type == HUMAN_HANDOFF_WORKFLOW_TYPE
+    assert definition.version == 7201
+    assert [step.step_name for step in definition.steps] == [
+        "notify_owner",
+        "wait_owner_acceptance",
+    ]
+    wait = definition.steps[1]
+    assert wait.reminder_interval == interval
+    assert wait.timeout is None
+    assert wait.wait_event_type == "HandoffAccepted"
+    assert wait.reminder_handler_ref == "human_handoff.remind_owner"
+    assert build_human_handoff_definition(_T1, _T2).version == 1
+
+
+@pytest.mark.parametrize("seconds", [0, -1, 0.5])
+def test_owner_mode_rejects_nonpositive_or_fractional_interval(seconds) -> None:
+    with pytest.raises(ValidationError):
+        build_human_handoff_definition(
+            _T1, _T2, owner_reminder_interval=timedelta(seconds=seconds)
+        )
+
+
+async def test_new_owner_wait_checks_current_facts_before_every_enqueue() -> None:
+    from contextlib import asynccontextmanager
+
+    from workflows.engine.runner import ReminderInvocation
+
+    class PendingOpportunities(_FakeOpportunityService):
+        pending = True
+
+        @asynccontextmanager
+        async def handoff_notification_scope(self, *args, **kwargs):
+            yield self.pending
+
+    opportunities = PendingOpportunities()
+    notifier = _FakeNotifier()
+    handlers = build_human_handoff_step_handlers(
+        opportunity_service=opportunities,
+        employee_service=_FakeEmployeeService([]),
+        notifier=notifier,
+        opportunity_system_actor=_opportunity_actor(),
+        employee_system_actor=_employee_actor(),
+        t1=_T1,
+        t2=_T2,
+        now=lambda: _NOW,
+        owner_reminder_interval=timedelta(seconds=7200),
+    )
+    run = _run("notify_owner")
+    run.workflow_version = 7201
+    assert await handlers["human_handoff.notify_pending_owner"].execute(run) == (
+        "advance",
+        "wait_owner_acceptance",
+        {},
+    )
+    run.current_step = "wait_owner_acceptance"
+    run.reminder = ReminderInvocation(1, _REQUESTED_AT + timedelta(seconds=7200))
+    await handlers["human_handoff.remind_owner"].execute(run)
+    opportunities.pending = False
+    run.reminder = ReminderInvocation(2, _REQUESTED_AT + timedelta(seconds=14400))
+    await handlers["human_handoff.remind_owner"].execute(run)
+    assert [n.level for n in notifier.notices] == ["owner_pending", "owner_reminder"]
+    assert all(n.recipient_id == EmployeeId("sales-1") for n in notifier.notices)
+    assert opportunities.escalations == []
+
+
+def test_owner_interval_rejects_database_integer_overflow() -> None:
+    with pytest.raises(ValidationError):
+        build_human_handoff_definition(
+            _T1, _T2, owner_reminder_interval=timedelta(seconds=2147483647)
+        )

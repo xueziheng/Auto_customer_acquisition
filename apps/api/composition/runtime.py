@@ -38,6 +38,9 @@ from apps.composition_support.employee_readers import RequestScopedHandoffEmploy
 from apps.composition_support.employee_readers import (
     employee_service_scope as employee_service_scope,  # noqa: PLC0414 - 保持公开类型身份
 )
+from apps.composition_support.handoff_notifications import (
+    NotificationJobHandoffNotifier,
+)
 from apps.composition_support.outreach_fact_readers import (
     CurrentContactEligibilityReader,
     CurrentReplyStatusReader,
@@ -185,6 +188,7 @@ from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
 from infra.db.provider_readiness_uow import SqlAlchemyProviderReadinessUnitOfWork
 from infra.db.quote_evidence_context import SqlAlchemyQuoteEvidenceContextReader
 from infra.db.repositories.in_app_notifications import PostgresInAppNotificationStore
+from infra.db.repositories.notification_jobs import PostgresNotificationJobStore
 from infra.db.repositories.notifications import PostgresNotificationDedupStore
 from infra.db.run_audit import PostgresRunAuditRepository
 from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
@@ -1319,11 +1323,18 @@ def build_phase1_dependencies(
         build_human_handoff_step_handlers(
             opportunity_service=opportunities,
             employee_service=RequestScopedHandoffEmployeeReader(employees),
-            notifier=RuntimeHandoffNotifier(router),
+            notifier=(
+                NotificationJobHandoffNotifier(
+                    PostgresNotificationJobStore(factory, now=now), now=now
+                )
+                if settings.owner_reminder_interval is not None
+                else RuntimeHandoffNotifier(router)
+            ),
             opportunity_system_actor=opportunity_system_actor,
             employee_system_actor=employee_system_actor,
             t1=settings.t1,
             t2=settings.t2,
+            owner_reminder_interval=settings.owner_reminder_interval,
             now=now,
         )
     )
@@ -1418,7 +1429,13 @@ def build_phase1_dependencies(
         now=now,
         max_attempts=settings.outbox_max_attempts,
     )
-    register_human_handoff(workflow, outbox, t1=settings.t1, t2=settings.t2)
+    register_human_handoff(
+        workflow,
+        outbox,
+        t1=settings.t1,
+        t2=settings.t2,
+        owner_reminder_interval=settings.owner_reminder_interval,
+    )
     quotation = None
     if (
         quote_domain is not None

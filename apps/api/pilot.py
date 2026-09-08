@@ -58,6 +58,11 @@ def runtime_settings(config: PilotConfig) -> Phase1RuntimeSettings:
         handoff_policy=HandoffPolicy(handoff.sla_seconds, handoff.backlog_threshold),
         t1=timedelta(seconds=handoff.t1_seconds),
         t2=timedelta(seconds=handoff.t2_seconds),
+        owner_reminder_interval=(
+            timedelta(seconds=handoff.owner_reminder_interval_seconds)
+            if handoff.owner_reminder_interval_seconds is not None
+            else None
+        ),
         scoring_policy=ScoringPolicy(
             scoring.version,
             tuple(

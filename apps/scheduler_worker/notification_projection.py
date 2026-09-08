@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
+from apps.composition_support.handoff_notifications import (
+    NotificationJobHandoffNotifier as NotificationJobHandoffNotifier,  # noqa: PLC0414 -- 旧公开导出兼容
+)
 from infra.db.outbox import serialize
 from notification_gateway.jobs import (
     NotificationContext,
@@ -34,7 +37,6 @@ from shared.schemas.identifiers import (
     TenantId,
     new_id,
 )
-from workflows.human_handoff.flow import HandoffEscalationNotice
 
 _ULID = r"[0-7][0-9A-HJKMNP-TV-Z]{25}"
 _TENANT_ID = re.compile(rf"tn_{_ULID}\Z")
@@ -52,7 +54,6 @@ _SUPPORTED_EVENTS = (
     CommitmentOverdue,
     ApprovalDecided,
 )
-_HANDOFF_LEVELS = frozenset({"owner", "manager", "boss", "boss_reminder"})
 _APPROVAL_DECISION_REASONS = {
     "approve": "approved",
     "reject": "rejected",
@@ -147,61 +148,6 @@ class NotificationProjectionHandler:
             )
         for job in pending:
             await self._jobs.enqueue(job)
-
-
-class NotificationJobHandoffNotifier:
-    """把 workflow notice 写入同一任务仓储，不在 scheduler 直投渠道。"""
-
-    def __init__(
-        self,
-        jobs: NotificationJobStore,
-        *,
-        now: Callable[[], datetime] = lambda: datetime.now(UTC),
-        id_factory: Callable[[str], str] = new_id,
-    ) -> None:
-        self._jobs = jobs
-        self._now = now
-        self._id_factory = id_factory
-
-    async def notify(self, notice: HandoffEscalationNotice) -> None:
-        if (
-            not isinstance(notice, HandoffEscalationNotice)
-            or not isinstance(notice.tenant_id, str)
-            or _TENANT_ID.fullmatch(notice.tenant_id) is None
-            or not isinstance(notice.recipient_id, str)
-            or _EMPLOYEE_ID.fullmatch(notice.recipient_id) is None
-            or not isinstance(notice.handoff_id, str)
-            or _HANDOFF_ID.fullmatch(notice.handoff_id) is None
-            or not isinstance(notice.opportunity_id, str)
-            or _OPPORTUNITY_ID.fullmatch(notice.opportunity_id) is None
-            or notice.level not in _HANDOFF_LEVELS
-        ):
-            raise ValidationError("人工接管通知无效")
-        created_at = self._now()
-        if not _is_utc(created_at):
-            raise ValidationError("通知任务时间无效")
-        fingerprint = hashlib.sha256(
-            f"HandoffEscalationNotice:{notice.dedup_key}".encode()
-        ).hexdigest()
-        await self._jobs.enqueue(
-            NotificationJob(
-                NotificationJobId(self._id_factory("njb")),
-                notice.tenant_id,
-                notice.recipient_id,
-                NotificationPriority.URGENT,
-                NotificationContext(
-                    NotificationKind.HANDOFF_ESCALATION,
-                    str(notice.handoff_id),
-                    str(notice.opportunity_id),
-                    reason_code=notice.level,
-                    level=None,
-                ),
-                fingerprint,
-                "HandoffEscalationNotice",
-                notice.dedup_key,
-                created_at,
-            )
-        )
 
 
 def _project_context(

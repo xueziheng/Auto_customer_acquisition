@@ -39,6 +39,9 @@ class HandoffInput(StrictModel):
     backlog_threshold: int = Field(strict=True, gt=0)
     t1_seconds: int = Field(strict=True, gt=0)
     t2_seconds: int = Field(strict=True, gt=0)
+    owner_reminder_interval_seconds: int | None = Field(
+        default=None, strict=True, gt=0, le=2147483646
+    )
 
     @model_validator(mode="after")
     def domain_validation(self) -> HandoffInput:
@@ -294,6 +297,16 @@ class PilotConfig(StrictModel):
     def runtime_environment(self) -> dict[str, str]:
         """当前端口与显式业务政策；不配置真实外部 Provider，也不继承父环境。"""
         return {
+            **(
+                {
+                    "TRADEOS_HANDOFF_OWNER_REMINDER_INTERVAL_SECONDS": str(
+                        self.policy.handoff_policy.owner_reminder_interval_seconds
+                    )
+                }
+                if self.policy.handoff_policy.owner_reminder_interval_seconds
+                is not None
+                else {}
+            ),
             "DATABASE_URL": self.database_url.get_secret_value(),
             "TRADEOS_TENANT_ID": self.tenant_id,
             "TRADEOS_DEV_MODE": "false",

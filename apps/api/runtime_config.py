@@ -155,6 +155,9 @@ class _HandoffPayload(BaseModel):
     backlog_threshold: StrictInt = Field(gt=0)
     t1_seconds: StrictInt = Field(gt=0)
     t2_seconds: StrictInt = Field(gt=0)
+    owner_reminder_interval_seconds: StrictInt | None = Field(
+        default=None, gt=0, le=2147483646
+    )
 
 
 class _ScoringPayload(BaseModel):
@@ -264,6 +267,7 @@ class Phase1RuntimeSettings:
     tavily_api_key_ref: str | None = field(default=None, repr=False)
     tavily_exclusive_account_confirmed: bool = False
     quotation: QuotationRuntimeSettings | None = None
+    owner_reminder_interval: timedelta | None = None
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> Phase1RuntimeSettings:
@@ -369,6 +373,11 @@ class Phase1RuntimeSettings:
             ),
             t1=timedelta(seconds=handoff.t1_seconds),
             t2=timedelta(seconds=handoff.t2_seconds),
+            owner_reminder_interval=(
+                timedelta(seconds=handoff.owner_reminder_interval_seconds)
+                if handoff.owner_reminder_interval_seconds is not None
+                else None
+            ),
             scoring_policy=scoring_policy,
             outbox_max_attempts=max_attempts,
             gmail_oauth_token_ref=gmail_oauth_token_ref,

@@ -25,8 +25,9 @@
 
 **Files:**
 - Modify: `workflows/human_handoff/flow.py` 与 `AGENTS.md`：新增明确模式，接受停止与持久重复提醒。
-- Modify: `infra/pilot/config.py`、`apps/api/runtime_config.py`、`apps/api/composition/runtime.py`、`apps/scheduler_worker/config.py`、`apps/scheduler_worker/runtime.py`：显式周期贯穿配置与装配。
+- Modify: `infra/pilot/config.py`、`apps/api/runtime_config.py`、`apps/api/runtime.py`、`apps/api/pilot.py`、`apps/api/composition/runtime.py`、`apps/scheduler_worker/config.py`、`apps/scheduler_worker/runtime.py`：显式周期贯穿配置与装配。
 - Modify: `apps/scheduler_worker/notification_projection.py`、`notification_gateway/templates.py`：新负责人提醒原因与准确文案。
+- Create: `apps/composition_support/handoff_notifications.py`：API/scheduler共享持久通知任务的机械适配；scheduler保留兼容导出，不共享运行对象。
 - 按具体并发证据扩展：`domains/opportunities/service.py`、`service_impl.py`、`permissions.py`、`repository.py`、`infra/db/repositories/` 下现有接管/通知仓储、`apps/notification_worker/` 与通知投递装配。只允许最窄的当前接管事实/投递边界，不复制域规则，不重构通用 Workflow engine。
 - Test: `tests/unit/test_human_handoff_flow.py`、对应 runtime_config/pilot 配置测试、`tests/integration/test_human_handoff_workflow.py`、新增 `tests/integration/test_owner_handoff_reminders.py`。
 - Docs: `docs/operations/web-internal-pilot.md`、`docs/operations/web-pilot-policy-decisions-2026-09-08.md`；若改变公共契约或需要明确持久版本约束，使用下一个空 ADR 编号记录。

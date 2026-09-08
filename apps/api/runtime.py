@@ -6,7 +6,7 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI
 from sqlalchemy import text
@@ -17,6 +17,7 @@ from apps.composition_support.email_inbound import InboundMailbox
 from connectors.gmail.client import SecretResolver
 from connectors.gmail.transport import GmailHttpTransport
 from connectors.object_store.config import S3ObjectStoreSettings
+from infra.db.repositories.opportunities import assert_handoff_reminder_compatibility
 from infra.db.schema import (
     DatabaseSchemaError,
 )
@@ -26,6 +27,7 @@ from infra.db.schema import (
 from infra.db.session import create_engine_from
 from infra.secrets import EnvironmentSecretResolver
 from shared.authentication import AuthenticationService
+from shared.schemas.identifiers import TenantId
 
 from .composition.runtime import ManualSendComposition, build_phase1_dependencies
 from .main import create_app
@@ -140,6 +142,13 @@ def create_runtime_app_from_settings(
         primary: BaseException | None = None
         try:
             await assert_database_schema_current(engine)
+            await assert_handoff_reminder_compatibility(
+                factory,
+                TenantId(settings.tenant_id),
+                None
+                if settings.owner_reminder_interval is None
+                else settings.owner_reminder_interval // timedelta(seconds=1),
+            )
             if dependencies.quotation is not None:
                 await dependencies.quotation.lifecycle.startup()
             yield

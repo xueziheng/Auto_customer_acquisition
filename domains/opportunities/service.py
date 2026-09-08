@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
@@ -170,6 +171,18 @@ class OpportunityService(Protocol):
         - 发布 ``HandoffRequested``（SLA 计时从此开始）
         - 同一机会已有未完成接管时返回既有 ID（幂等）
         """
+        ...
+
+    def handoff_notification_scope(
+        self,
+        tenant_id: TenantId,
+        handoff_id: HandoffId,
+        opportunity_id: OpportunityId,
+        recipient: EmployeeId,
+        *,
+        actor: Actor,
+    ) -> AbstractAsyncContextManager[bool]:
+        """持当前事实锁到调用者的站内提交完成；False 表示已接受或旧受众。"""
         ...
 
     async def accept_handoff(

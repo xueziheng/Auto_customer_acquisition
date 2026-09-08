@@ -24,3 +24,9 @@ transport必须由进程typed显式注入；禁止环境读取、全局缓存、
 
 ADR0027允许email_inbound.py的InboundComposition公开其同一BoundedRawArtifactStore供scheduler
 借用；与technical-review授权wrapper分离，不扩大review权限、不改变原进程资源归属。
+
+## ADR0069 接管通知机械映射
+
+允许 handoff_notifications.py 供 API 与 scheduler 复用既有 notice→持久 notification job 映射；
+每个进程注入独立仓储/时钟，不读取环境、不建 engine、不投递渠道、不判断接管当前事实。
+scheduler 保留原导出以兼容现有调用；当前事实与并发边界仍由机会公开 scope 与投递装配负责。

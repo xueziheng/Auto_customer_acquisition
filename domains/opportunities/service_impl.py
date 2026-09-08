@@ -31,7 +31,8 @@ from __future__ import annotations
 
 import logging
 import sys
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import datetime
 
 from domains.opportunities.errors import (
@@ -979,6 +980,22 @@ class OpportunityServiceImpl:
             if not _is_handoff_escalation_duplicate(exc):
                 raise
 
+    def handoff_notification_scope(
+        self,
+        tenant_id: TenantId,
+        handoff_id: HandoffId,
+        opportunity_id: OpportunityId,
+        recipient: EmployeeId,
+        *,
+        actor: Actor,
+    ) -> AbstractAsyncContextManager[bool]:
+        """委托无打分/业务政策依赖的窄通知服务，锁持续到下游提交。"""
+        return HandoffNotificationServiceImpl(
+            self._uow_factory, self._authorizer, self._audit
+        ).handoff_notification_scope(
+            tenant_id, handoff_id, opportunity_id, recipient, actor=actor
+        )
+
     async def accept_handoff(
         self,
         tenant_id: TenantId,
@@ -1472,3 +1489,54 @@ class OpportunityServiceImpl:
             bucket = breakdown.setdefault(reason, {})
             bucket[state] = bucket.get(state, 0) + count
         return breakdown
+
+
+class HandoffNotificationServiceImpl:
+    """只提供当前事实持锁边界，不创建通知、不要求任何商业政策默认。"""
+
+    def __init__(
+        self,
+        uow_factory: Callable[[], OpportunityUnitOfWork],
+        authorizer: OpportunityAuthorizer,
+        audit: AuditLogger,
+    ) -> None:
+        self._uow_factory = uow_factory
+        self._authorizer = authorizer
+        self._audit = audit
+
+    @asynccontextmanager
+    async def handoff_notification_scope(
+        self,
+        tenant_id: TenantId,
+        handoff_id: HandoffId,
+        opportunity_id: OpportunityId,
+        recipient: EmployeeId,
+        *,
+        actor: Actor,
+    ) -> AsyncIterator[bool]:
+        """判权和精确机会校验在 IO 前；持锁范围必须覆盖实际站内事务提交。"""
+        action = OpportunityAction.NOTIFICATION_AUDIENCE_READ
+        rule = self._authorizer.require(actor, action, actor.scope, tenant_id)
+        if actor.scope.notification_opportunity_id != opportunity_id:
+            raise PermissionDenied("通知受众必须限定单一机会")
+        async with self._uow_factory() as uow:
+            facts = await uow.handoffs.lock_notification_facts(
+                tenant_id, handoff_id, opportunity_id, recipient
+            )
+            if facts is None:
+                raise ValidationError("接管通知当前事实缺失")
+            allowed = (
+                facts.state == HandoffState.REQUESTED.value
+                and facts.assigned_to == recipient
+                and facts.owner == recipient
+                and facts.account_owner == recipient
+                and facts.recipient_active
+            )
+            self._audit.log(
+                actor=actor.actor_id,
+                action=action.value,
+                tenant_id=tenant_id,
+                scope=actor.scope.label,
+                rule=rule,
+            )
+            yield allowed

@@ -286,6 +286,7 @@ class SchedulerWorkerConfig:
     unsubscribe_key_refs: tuple[UnsubscribeKeyReference, ...]
     hunter_contacts: HunterContactsSettings
     sourcing: SourcingSettings | None
+    handoff_owner_reminder_interval_seconds: int | None = None
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> SchedulerWorkerConfig:
@@ -384,6 +385,17 @@ class SchedulerWorkerConfig:
             or campaign_retry_interval_seconds > 86_400
         ):
             raise ValidationError("scheduler worker 配置无效")
+        if "TRADEOS_HANDOFF_OWNER_REMINDER_INTERVAL_SECONDS" in environ and not isinstance(environ["TRADEOS_HANDOFF_OWNER_REMINDER_INTERVAL_SECONDS"], str):
+            raise ValidationError("scheduler worker 配置无效")
+        reminder_seconds = (
+            _integer(
+                environ, "TRADEOS_HANDOFF_OWNER_REMINDER_INTERVAL_SECONDS", minimum=1
+            )
+            if "TRADEOS_HANDOFF_OWNER_REMINDER_INTERVAL_SECONDS" in environ
+            else None
+        )
+        if reminder_seconds is not None and reminder_seconds > 2147483646:
+            raise ValidationError("scheduler worker 配置无效")
         return cls(
             database_url,
             TenantId(tenant),
@@ -406,4 +418,5 @@ class SchedulerWorkerConfig:
             key_references,
             hunter_contacts,
             sourcing,
+            reminder_seconds,
         )

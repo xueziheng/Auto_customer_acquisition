@@ -848,3 +848,13 @@ def test_main_missing_configuration_returns_fixed_nonzero_without_dsn(
         assert module.main() != 0
     assert "postgresql" not in caplog.text
     assert "database_url" not in caplog.text.casefold()
+
+
+def test_owner_pending_and_reminder_do_not_select_email_channel():
+    from types import SimpleNamespace
+
+    from apps.notification_worker.runtime import NotificationRoutingPolicy
+    for reason in ("owner_pending", "owner_reminder"):
+        notification = Notification(_TENANT, _EMPLOYEE, NotificationPriority.URGENT, "待接管提醒", NotificationContext(NotificationKind.HANDOFF_ESCALATION,new_id("hand"),new_id("opp"),reason,None), "HandoffEscalationNotice", new_id("key"))
+        channels = [SimpleNamespace(name="in_app"), SimpleNamespace(name="email")]
+        assert NotificationRoutingPolicy().channels_for(notification, channels) == [channels[0]]

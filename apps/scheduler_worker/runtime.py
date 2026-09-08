@@ -127,6 +127,7 @@ from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
 from infra.db.provider_readiness_uow import SqlAlchemyProviderReadinessUnitOfWork
 from infra.db.quote_evidence_context import SqlAlchemyQuoteEvidenceContextReader
 from infra.db.repositories.notification_jobs import PostgresNotificationJobStore
+from infra.db.repositories.opportunities import assert_handoff_reminder_compatibility
 from infra.db.schema import assert_database_schema_current
 from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
 from infra.db.session import create_engine_from
@@ -811,9 +812,12 @@ def register_complete_scheduler(
     notification_handler: EventHandler[DomainEvent],
     t1: timedelta,
     t2: timedelta,
+    owner_reminder_interval: timedelta | None = None,
 ) -> None:
     """一次性注册全部已支持 workflow 与投影，防止 partial delivery。"""
-    register_human_handoff(engine, registry, t1=t1, t2=t2)
+    register_human_handoff(
+        engine, registry, t1=t1, t2=t2, owner_reminder_interval=owner_reminder_interval
+    )
     for event_type, name in (
         (HandoffRequested, "notification.handoff_requested"),
         (HandoffQueueBacklogged, "notification.handoff_queue_backlogged"),
@@ -825,6 +829,8 @@ def register_complete_scheduler(
         (CommitmentOverdue, "notification.commitment_overdue"),
         (ApprovalDecided, "notification.approval_decided"),
     ):
+        if event_type is HandoffRequested and owner_reminder_interval is not None:
+            continue
         registry.register_handler(event_type, name, notification_handler)
     register_sending_identity_auth(engine, registry)
 
@@ -1112,6 +1118,11 @@ class SchedulerRuntimeFactory:
         try:
             factory = async_sessionmaker(bind=engine, expire_on_commit=False)
             await assert_database_schema_current(engine)
+            await assert_handoff_reminder_compatibility(
+                factory,
+                config.tenant_id,
+                config.handoff_owner_reminder_interval_seconds,
+            )
             health.mark_ready("schema")
             async with engine.connect() as connection:
                 await connection.execute(text("SELECT 1"))
@@ -1434,6 +1445,11 @@ class SchedulerRuntimeFactory:
                 employee_system_actor=scheduler_employee_actor,
                 t1=timedelta(seconds=config.handoff_t1_seconds),
                 t2=timedelta(seconds=config.handoff_t2_seconds),
+                owner_reminder_interval=(
+                    timedelta(seconds=config.handoff_owner_reminder_interval_seconds)
+                    if config.handoff_owner_reminder_interval_seconds is not None
+                    else None
+                ),
                 now=self._now,
             )
             connector = DnsAuthenticationConnector(
@@ -1791,6 +1807,11 @@ class SchedulerRuntimeFactory:
                 notification_handler=notification_handler,
                 t1=timedelta(seconds=config.handoff_t1_seconds),
                 t2=timedelta(seconds=config.handoff_t2_seconds),
+                owner_reminder_interval=(
+                    timedelta(seconds=config.handoff_owner_reminder_interval_seconds)
+                    if config.handoff_owner_reminder_interval_seconds is not None
+                    else None
+                ),
             )
             register_playbook_change(workflow, outbox, change_approvals)
             register_country_policy_change(workflow, outbox, change_approvals)
@@ -2195,6 +2216,11 @@ async def configured_scheduler_runtime(
     """验证 schema/DB 后注册完整集合，并在所有退出路径释放引擎。"""
     try:
         await assert_database_schema_current(engine)
+        await assert_handoff_reminder_compatibility(
+            async_sessionmaker(engine, expire_on_commit=False),
+            config.tenant_id,
+            config.handoff_owner_reminder_interval_seconds,
+        )
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
         register_complete_scheduler(
@@ -2203,6 +2229,11 @@ async def configured_scheduler_runtime(
             notification_handler=notification_handler,
             t1=timedelta(seconds=config.handoff_t1_seconds),
             t2=timedelta(seconds=config.handoff_t2_seconds),
+            owner_reminder_interval=(
+                timedelta(seconds=config.handoff_owner_reminder_interval_seconds)
+                if config.handoff_owner_reminder_interval_seconds is not None
+                else None
+            ),
         )
         yield SchedulerRuntime(
             engine,

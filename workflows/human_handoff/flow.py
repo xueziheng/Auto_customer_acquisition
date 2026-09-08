@@ -1,8 +1,9 @@
 """人工接管 SLA 流程：通知负责人，按绝对 T1/T2 边界逐级升级。"""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
@@ -78,10 +79,32 @@ def _validate_sla(t1: timedelta, t2: timedelta) -> None:
 
 
 def build_human_handoff_definition(
-    t1: timedelta, t2: timedelta
+    t1: timedelta, t2: timedelta, *, owner_reminder_interval: timedelta | None = None
 ) -> WorkflowDefinition:
     """构建显式六步流程；SLA 必须由 composition root 注入。"""
     _validate_sla(t1, t2)
+    if owner_reminder_interval is not None:
+        seconds = owner_reminder_interval // timedelta(seconds=1)
+        if not 1 <= seconds <= 2147483646 or owner_reminder_interval != timedelta(
+            seconds=seconds
+        ):
+            raise ValidationError("负责人提醒周期必须为正整数秒")
+        return WorkflowDefinition(
+            workflow_type=HUMAN_HANDOFF_WORKFLOW_TYPE,
+            version=seconds + 1,
+            steps=(
+                StepDefinition("notify_owner", "human_handoff.notify_pending_owner"),
+                StepDefinition(
+                    "wait_owner_acceptance",
+                    "human_handoff.accept",
+                    wait_event_type="HandoffAccepted",
+                    reminder_interval=owner_reminder_interval,
+                    reminder_handler_ref="human_handoff.remind_owner",
+                    inherit_planned_anchor=True,
+                ),
+            ),
+            transitions={"notify_owner": ("wait_owner_acceptance",)},
+        )
     return WorkflowDefinition(
         workflow_type=HUMAN_HANDOFF_WORKFLOW_TYPE,
         version=1,
@@ -177,6 +200,59 @@ class _NotifyOwnerStep:
             _notice(ctx, ctx.assigned_to, "owner", ctx.sla_started_at + self._t1)
         )
         return ("advance", "wait_acceptance_t1", {})
+
+
+class _PendingOwnerStep:
+    def __init__(
+        self,
+        opportunities: OpportunityService,
+        notifier: HandoffEscalationNotifier,
+        actor: OpportunityActor,
+        *,
+        initial: bool,
+    ) -> None:
+        self._opportunities, self._notifier, self._actor, self._initial = (
+            opportunities,
+            notifier,
+            actor,
+            initial,
+        )
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        ctx = _context(run)
+        actor = replace(
+            self._actor,
+            scope=replace(
+                self._actor.scope, notification_opportunity_id=ctx.opportunity_id
+            ),
+        )
+        reminder = run.reminder
+        if not self._initial and (reminder is None or reminder.index < 1):
+            raise ValidationError("负责人提醒轮次无效")
+        async with self._opportunities.handoff_notification_scope(
+            ctx.tenant_id,
+            ctx.handoff_id,
+            ctx.opportunity_id,
+            ctx.assigned_to,
+            actor=actor,
+        ) as allowed:
+            if allowed:
+                await self._notifier.notify(
+                    _notice(
+                        ctx,
+                        ctx.assigned_to,
+                        "owner_pending" if self._initial else "owner_reminder",
+                        ctx.sla_started_at
+                        if reminder is None
+                        else reminder.scheduled_at,
+                        dedup_key=f"human_handoff:{ctx.handoff_id}:owner-reminder:{0 if reminder is None else reminder.index}",
+                    )
+                )
+        return (
+            ("advance", "wait_owner_acceptance", {})
+            if self._initial
+            else ("wait", None, {})
+        )
 
 
 class _AcceptStep:
@@ -395,10 +471,21 @@ def build_human_handoff_step_handlers(
     t1: timedelta,
     t2: timedelta,
     now: Callable[[], datetime],
+    owner_reminder_interval: timedelta | None = None,
 ) -> Mapping[str, StepHandler]:
     """装配步骤 handler；actor、SLA 与时钟均由 composition root 显式注入。"""
     _validate_sla(t1, t2)
+    if owner_reminder_interval is not None:
+        build_human_handoff_definition(
+            t1, t2, owner_reminder_interval=owner_reminder_interval
+        )
     return {
+        "human_handoff.notify_pending_owner": _PendingOwnerStep(
+            opportunity_service, notifier, opportunity_system_actor, initial=True
+        ),
+        "human_handoff.remind_owner": _PendingOwnerStep(
+            opportunity_service, notifier, opportunity_system_actor, initial=False
+        ),
         "human_handoff.notify_owner": _NotifyOwnerStep(notifier, t1),
         "human_handoff.accept": _AcceptStep(),
         "human_handoff.escalate_manager": _EscalateManagerStep(
@@ -499,9 +586,16 @@ def register_human_handoff(
     *,
     t1: timedelta,
     t2: timedelta,
+    owner_reminder_interval: timedelta | None = None,
 ) -> None:
     """注册流程定义与两个 durable outbox 事件入口。"""
     engine.register(build_human_handoff_definition(t1, t2))
+    if owner_reminder_interval is not None:
+        engine.register(
+            build_human_handoff_definition(
+                t1, t2, owner_reminder_interval=owner_reminder_interval
+            )
+        )
     registry.register_handler(
         HandoffRequested,
         "human_handoff.requested",

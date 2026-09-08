@@ -57,7 +57,9 @@ _KIND_PRIORITIES: dict[NotificationKind, NotificationPriority] = {
     NotificationKind.APPROVAL_DECIDED: NotificationPriority.NORMAL,
     NotificationKind.QUOTE_APPROVAL_RESULT: NotificationPriority.LOW,
 }
-_HANDOFF_REASONS = frozenset({"owner", "manager", "boss", "boss_reminder"})
+_HANDOFF_REASONS = frozenset(
+    {"owner", "manager", "boss", "boss_reminder", "owner_pending", "owner_reminder"}
+)
 _APPROVAL_DECISIONS = frozenset({"approved", "rejected"})
 _SUSPENSION_REASONS = frozenset(
     {
@@ -170,6 +172,15 @@ class FixedNotificationTemplateRenderer:
         template = _TEMPLATES.get(context.kind)
         if template is None or not _required_context_present(context):
             raise ValidationError("通知任务无法渲染")
+        if (
+            context.kind is NotificationKind.HANDOFF_ESCALATION
+            and context.reason_code in {"owner_pending", "owner_reminder"}
+        ):
+            template = _Template(
+                "待接管提醒",
+                "查看接管资料并点击接受；接受后停止提醒",
+                lambda context: f"/crm/handoffs/{context.primary_id}",
+            )
         link = _validated_relative_link(template.link(context))
         return Notification(
             claim.tenant_id,

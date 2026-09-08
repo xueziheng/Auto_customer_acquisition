@@ -305,3 +305,48 @@ def test_cli_restore_interruption_before_resource_creation_is_fixed_failure(
         "reason": "pilot_interrupted",
     }
     assert not (tmp_path / "new-profile").exists()
+
+
+def test_owner_reminder_policy_survives_profile_and_both_parsers(tmp_path):
+    from datetime import timedelta
+
+    from apps.api.pilot import runtime_settings
+    from apps.scheduler_worker.config import SchedulerWorkerConfig
+    from infra.pilot.config import PilotConfig
+
+    path = synthetic_policy(tmp_path / "policy.json")
+    policy = json.loads(path.read_text())
+    policy["handoff_policy"]["owner_reminder_interval_seconds"] = 7200
+    path.write_text(json.dumps(policy))
+    PilotConfig.create(tmp_path / "profile", path)
+    reread = PilotConfig.read(tmp_path / "profile/config.json")
+    env = reread.runtime_environment()
+    assert env["TRADEOS_HANDOFF_OWNER_REMINDER_INTERVAL_SECONDS"] == "7200"
+    assert runtime_settings(reread).owner_reminder_interval == timedelta(seconds=7200)
+    assert (
+        SchedulerWorkerConfig.from_pilot_environ(
+            env
+        ).handoff_owner_reminder_interval_seconds
+        == 7200
+    )
+
+
+@pytest.mark.parametrize("invalid", [True, 0, -1, 0.5, "7200", 2147483647])
+def test_owner_reminder_policy_rejects_invalid_integer(invalid):
+    from pydantic import ValidationError
+
+    from apps.api.runtime_config import _HandoffPayload
+    from infra.pilot.config import HandoffInput
+    for model in (HandoffInput, _HandoffPayload):
+        with pytest.raises(ValidationError):
+            model.model_validate({"sla_seconds":1,"backlog_threshold":1,"t1_seconds":3,"t2_seconds":7,"owner_reminder_interval_seconds":invalid})
+
+
+@pytest.mark.parametrize("invalid", [True, "0", "-1", "0.5", "2147483647"])
+def test_scheduler_owner_reminder_rejects_invalid_interval(tmp_path, invalid):
+    from apps.scheduler_worker.config import SchedulerWorkerConfig
+    from shared.errors import ValidationError
+    env = make_config(tmp_path).runtime_environment()
+    env["TRADEOS_HANDOFF_OWNER_REMINDER_INTERVAL_SECONDS"] = invalid
+    with pytest.raises(ValidationError):
+        SchedulerWorkerConfig.from_pilot_environ(env)
