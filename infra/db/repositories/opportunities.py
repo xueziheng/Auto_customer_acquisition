@@ -581,7 +581,8 @@ class HandoffRepositoryImpl(TenantScopedRepository):
                     EmployeeRow.tenant_id == str(tenant_id),
                     EmployeeRow.employee_id == str(recipient),
                 )
-                .with_for_update()
+                # 兼容转移历史 FK 的 KEY SHARE，同时仍阻塞员工停用 UPDATE（ADR0069）。
+                .with_for_update(key_share=True)
             )
         ).scalar_one_or_none()
         opportunity = (

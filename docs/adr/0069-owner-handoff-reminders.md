@@ -25,16 +25,26 @@ human_handoff Run。活跃版本与所选模式/周期不一致即固定 `handof
 返回异步上下文管理器。SYSTEM actor 必须精确限定 opportunity；在任何读取前授权。
 窄 `HandoffNotificationServiceImpl` 不依赖打分、SLA 或任何商业默认，供通知 worker 装配。
 
-Infra 以固定顺序持有员工、机会、账户归属、handoff 行锁；所有查询均限定 tenant。域解释当前事实，
+Infra 以固定顺序持有员工（FOR NO KEY UPDATE）、机会、账户归属、handoff 行锁；所有查询均限定 tenant。域解释当前事实，
 不导入员工域内部。扫描在该 scope 内写 job；真实站内 append 同样在 scope 内完成另一连接的
 INSERT **和 commit**，再释放事实锁。接受路径的 `accept_if_requested` UPDATE 必须取得同一
 handoff 行锁，因此：通知先持锁时，站内提交先于接受提交；接受先提交时，通知重读得到 accepted，
 不写站内行。不是 check-then-send，也不以 Outbox 是否已消费作为接受事实。
 
-机会分配只写机会行，账户 transfer 只原子替换归属行，员工停用只更新员工事实；当前没有逆向
-取得上述整条锁链的路径。scope 内不调用模板、router 或任何会重新请求同一事实锁的服务。
-独立站内连接不反向锁业务行。待投递旧 job 可被消费但不产生新站内记录；缺失事实/依赖失败
-仍走原 retry/reject，不能当作已投递。历史站内记录保留。
+独立审查 I1 修正了初版“没有逆向锁”的判断：账户 transfer 先 UPDATE OwnershipLock，后追加
+OwnershipTransferHistory；历史 from_owner / transferred_by 外键在 flush/commit 隐式取得旧
+Employee 的 KEY SHARE。初版 guard 先取 Employee FOR UPDATE 再等待 OwnershipLock，因而
+与上述历史 FK 形成真实循环等待，已在独立 PostgreSQL 复现 SQLSTATE 40P01。
+
+修复只将 Employee 事实锁改为 FOR NO KEY UPDATE（SQLAlchemy with_for_update(key_share=True)，
+read=False）。该锁兼容 FK KEY SHARE，转移历史可以先提交，guard 再取得账户归属并抑制旧受众；
+它仍与 Employee 的普通非键 UPDATE 及键更新/删除互斥，所以停用不能越过正在提交的站内通知。
+其余机会、归属和 handoff 锁模式不变，接受 UPDATE 的串行边界保留。不能从这次窄修复推断
+所有未来外键或新增事务都无死锁；新增锁关系仍需核对隐式 FK 锁。
+
+scope 内不调用模板、router 或任何会重新请求同一事实锁的服务。独立站内连接不反向锁业务行。
+待投递旧 job 可被消费但不产生新站内记录；缺失事实/依赖失败仍走原 retry/reject，不能当作
+已投递。历史站内记录保留。
 
 ## 通知装配与兼容成本
 

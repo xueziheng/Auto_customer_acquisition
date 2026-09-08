@@ -573,3 +573,176 @@ async def test_wrong_tenant_old_owner_and_duplicate_acceptance_rejected(scenario
     await service.accept_handoff(tenant,hand,owner,actor=actor)
     with pytest.raises(HandoffAlreadyAcceptedError):
         await service.accept_handoff(tenant,hand,owner,actor=actor)
+
+
+def _lock_failure_state(error: BaseException) -> str:
+    """只从原始异常提取 SQLSTATE；不可把原始数据库材料放进断言或输出。"""
+    current: BaseException | None = error
+    while current is not None:
+        state = getattr(current, "sqlstate", None)
+        if isinstance(state, str):
+            return state
+        current = getattr(current, "orig", None) or current.__cause__
+    return "unexpected_failure"
+
+
+async def test_transfer_history_and_owner_guard_commit_without_deadlock(
+    scenario, integration_engine
+):
+    import importlib
+
+    from sqlalchemy import event
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from infra.db.repositories.employees import OwnershipRepositoryImpl
+    from infra.db.tables import OwnershipTransferHistoryRow
+    from shared.schemas.identifiers import ProspectAccountId
+
+    models = importlib.import_module("domains.employees.models")
+    factory, tenant, owner, opp, hand, service, _actor, system = scenario
+    replacement = EmployeeId(new_id("emp"))
+    async with factory.begin() as session:
+        session.add(EmployeeRow(tenant_id=tenant, employee_id=replacement,
+            name="合成新负责人", role="sales", is_active=True))
+    notification = await _notification(factory, tenant, owner, opp, hand)
+    owner_locked, transfer_updated = asyncio.Event(), asyncio.Event()
+
+    def after_execute(_conn, _cursor, statement, _params, _context, _many):
+        if "FROM employees" in statement and "FOR " in statement:
+            owner_locked.set()
+
+    @asynccontextmanager
+    async def guard(notification):
+        async with service.handoff_notification_scope(
+            tenant, hand, opp, owner, actor=system
+        ) as allowed:
+            yield allowed
+
+    store = PostgresInAppNotificationStore(factory, handoff_guard=guard)
+
+    async def transfer():
+        try:
+            async with factory.begin() as session:
+                row = (await session.execute(select(OwnershipLockRow).where(
+                    OwnershipLockRow.tenant_id == tenant))).scalar_one()
+                await OwnershipRepositoryImpl(session, tenant).replace(
+                    tenant,
+                    models.OwnershipLock(tenant_id=tenant,
+                        account_id=ProspectAccountId(row.account_id), owner=replacement,
+                        locked_at=NOW, locked_by_rule="transfer"),
+                    models.OwnershipTransfer(transfer_id=new_id("otr"), tenant_id=tenant,
+                        account_id=ProspectAccountId(row.account_id), from_owner=owner,
+                        to_owner=replacement, transferred_by=owner, transferred_at=NOW,
+                        reason="合成并发转移"),
+                )
+                transfer_updated.set()
+                await asyncio.wait_for(owner_locked.wait(), 3)
+                # 真实 flush/commit 的历史 FK 请求旧员工 KEY SHARE。
+            return "committed"
+        except SQLAlchemyError as error:
+            return _lock_failure_state(error)
+
+    async def reminder():
+        await asyncio.wait_for(transfer_updated.wait(), 3)
+        try:
+            return "created" if await store.append(notification) else "suppressed"
+        except SQLAlchemyError as error:
+            return _lock_failure_state(error)
+
+    event.listen(integration_engine.sync_engine, "after_cursor_execute", after_execute)
+    tasks = [asyncio.create_task(transfer()), asyncio.create_task(reminder())]
+    try:
+        outcomes = await asyncio.wait_for(asyncio.gather(*tasks), 8)
+        assert outcomes.count("40P01") == 0
+        assert outcomes == ["committed", "suppressed"]
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        event.remove(integration_engine.sync_engine, "after_cursor_execute", after_execute)
+
+    async with factory() as session:
+        history = (await session.execute(select(OwnershipTransferHistoryRow).where(
+            OwnershipTransferHistoryRow.tenant_id == tenant))).scalars().all()
+        assert len(history) == 1
+        assert (history[0].from_owner, history[0].to_owner) == (owner, replacement)
+        assert await session.scalar(select(OwnershipLockRow.owner).where(
+            OwnershipLockRow.tenant_id == tenant)) == replacement
+        assert await session.scalar(select(HandoffRow.state).where(
+            HandoffRow.tenant_id == tenant, HandoffRow.handoff_id == hand)) == "requested"
+    assert await store.list_for_recipient(tenant, owner, limit=20, before=None) == ()
+
+
+async def test_matching_active_run_allows_real_api_and_scheduler_startups(scenario, db_url):
+    from apps.api.pilot import UnconfiguredModelClient
+    from apps.api.runtime import create_runtime_app_from_settings
+    from connectors.object_store.config import S3ObjectStoreSettings
+    from infra.db.tables import WorkflowRunRow
+
+    factory, tenant, owner, opp, hand, _service, _actor, _system = scenario
+    profile, settings, env = _pilot_settings(tenant, db_url)
+    app = create_runtime_app_from_settings(settings, secret_resolver=profile,
+        model_client=UnconfiguredModelClient(),
+        object_store_settings=S3ObjectStoreSettings.from_pilot_environ(env))
+    await app.state.dependencies.workflow_engine.start(tenant, "human_handoff", hand,
+        {"handoff_id": hand, "opportunity_id": opp, "assigned_to": owner, "sla_started_at": NOW.isoformat()},
+        new_id("key"), scheduled_at=NOW)
+    async with (
+        app.router.lifespan_context(app),
+        _scheduler_factory(profile, settings, env, lambda: NOW)(),
+        factory() as session,
+    ):
+        run = (await session.execute(select(WorkflowRunRow).where(
+            WorkflowRunRow.tenant_id == tenant))).scalar_one()
+        assert (run.status, run.workflow_version) == ("running", 7201)
+        assert (await session.execute(select(InAppNotificationRow).where(
+            InAppNotificationRow.tenant_id == tenant))).scalars().all() == []
+
+
+async def test_employee_deactivation_waits_for_in_app_commit_then_suppresses(scenario):
+    from infra.db.repositories.employees import EmployeeRepositoryImpl
+
+    factory, tenant, owner, opp, hand, service, _actor, system = scenario
+    locked, release = asyncio.Event(), asyncio.Event()
+
+    @asynccontextmanager
+    async def guard(notification):
+        async with service.handoff_notification_scope(tenant, hand, opp, owner, actor=system) as allowed:
+            locked.set()
+            await release.wait()
+            yield allowed
+
+    store = PostgresInAppNotificationStore(factory, handoff_guard=guard)
+    notification = await _notification(factory, tenant, owner, opp, hand)
+    disable_started = asyncio.Event()
+
+    async def deactivate():
+        async with factory.begin() as session:
+            repository = EmployeeRepositoryImpl(session, tenant)
+            employee = await repository.get(tenant, owner)
+            assert employee is not None
+            employee.is_active = False
+            disable_started.set()
+            await repository.update(employee)
+
+    delivery = asyncio.create_task(store.append(notification))
+    deactivation = None
+    try:
+        await asyncio.wait_for(locked.wait(), 3)
+        deactivation = asyncio.create_task(deactivate())
+        await asyncio.wait_for(disable_started.wait(), 3)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(deactivation), 0.15)
+        release.set()
+        assert await asyncio.wait_for(delivery, 3) is True
+        await asyncio.wait_for(deactivation, 3)
+        assert await store.append(await _notification(factory, tenant, owner, opp, hand)) is False
+        assert len(await store.list_for_recipient(tenant, owner, limit=20, before=None)) == 1
+    finally:
+        release.set()
+        tasks = [delivery] + ([deactivation] if deactivation is not None else [])
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
