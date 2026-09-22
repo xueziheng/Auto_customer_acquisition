@@ -6,6 +6,8 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import cast
 
+from pydantic import ValidationError as SchemaError
+
 from agent_runtime.assistant.context import AssistantContext
 from domains.assistant.schemas import Clarification, ResearchDraft, SourcedField
 from domains.directives.schemas import (
@@ -59,9 +61,13 @@ def collect_fields(context: AssistantContext) -> dict[str, SourcedField]:
                 if len(set(found)) != 1:
                     values.pop(name, None)
                 else:
-                    values[name] = SourcedField(
-                        name=name, value=found[-1].strip(), source_turn_id=turn.turn_id
-                    )
+                    try:
+                        values[name] = SourcedField(
+                            name=name, value=found[-1].strip(), source_turn_id=turn.turn_id
+                        )
+                    except SchemaError:
+                        # 无效新值必须清除旧值，不能回退旧预算或阻断之后的纠正。
+                        values.pop(name, None)
     return values
 
 

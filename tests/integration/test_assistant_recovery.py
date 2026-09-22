@@ -180,6 +180,50 @@ async def test_selected_sources_complete_multiple_turns_and_survive_restart(unit
     assert len(await restarted[0].list_turns(owner, session.session_id)) == 3
 
 
+async def test_chinese_research_fields_and_two_budget_updates_form_exact_proposals(unit_engine):
+    import json
+
+    from infra.db.tables import DirectiveProposalRow, WorkflowRunRow
+    from tests.integration.test_directives_persistence import BOSS
+    from tests.unit.test_assistant_model_decision import RESEARCH_INPUT
+
+    provider = Provider(text='{"kind":"research"}')
+    app, wf, dispatcher, db, _handlers, _identity = assemble(unit_engine, provider)
+    owner = actor(employee=BOSS)
+    session = await app.create_session(owner)
+    proposals = []
+    for index, (message, budget) in enumerate(((RESEARCH_INPUT, "9"), ("搜索次数=6", "6"), ("搜索次数=3", "3"))):
+        turn = await app.accept_turn(owner, session.session_id,
+            input_text(text=message, key=f"research-{index}"))
+        await dispatcher.dispatch(owner.tenant_id, 10)
+        await drain(wf, owner.tenant_id)
+        result = await app.get_turn(owner, session.session_id, turn.turn_id)
+        assert result.state == "proposal_ready" and result.proposal_id
+        proposals.append(result.proposal_id)
+        async with db() as connection:
+            proposal = await connection.scalar(select(DirectiveProposalRow).where(
+                DirectiveProposalRow.tenant_id == owner.tenant_id,
+                DirectiveProposalRow.proposal_id == result.proposal_id))
+            fields = json.loads(proposal.raw_text)
+            field = next(f for f in fields if f["name"] == "max_search_queries")
+            assert field["value"] == budget and field["source_turn_id"] == turn.turn_id
+            assert proposal.state == "pending_confirmation"
+            plan = proposal.parsed_content["demand_discovery"]
+            assert plan["max_search_queries"] == int(budget)
+            assert plan["target_countries"] == ["US"]
+            assert plan["execution_mode"] == "research_only"
+            kinds = list(await connection.scalars(select(WorkflowRunRow.workflow_type).where(
+                WorkflowRunRow.tenant_id == owner.tenant_id)))
+            assert set(kinds) == {"assistant"}
+        assert provider.calls == index + 1
+    assert len(set(proposals)) == 3
+    restarted = assemble(unit_engine, provider)
+    await restarted[2].dispatch(owner.tenant_id, 10)
+    await drain(restarted[1], owner.tenant_id)
+    assert provider.calls == 3
+    assert [t.proposal_id for t in await restarted[0].list_turns(owner, session.session_id)] == proposals
+
+
 async def test_selected_source_revoked_before_delivery_stays_blocked(unit_engine):
     from shared.errors import PermissionDenied
 
@@ -343,7 +387,6 @@ async def test_persisted_result_before_engine_advance_is_reused(unit_engine):
 
 
 async def test_committed_proposal_before_turn_binding_is_reused(unit_engine):
-    from domains.assistant.schemas import ResearchDraft, SourcedField
     from infra.db.tables import AssistantProposalSourceRow
     from tests.integration.test_directives_persistence import BOSS
 
@@ -376,12 +419,7 @@ async def test_committed_proposal_before_turn_binding_is_reused(unit_engine):
         session.session_id,
         input_text(text="；".join(f"{k}={v}" for k, v in fields.items())),
     )
-    provider.text = ResearchDraft(
-        fields=tuple(
-            SourcedField(name=k, value=v, source_turn_id=turn.turn_id)
-            for k, v in fields.items()
-        )
-    ).model_dump_json()
+    provider.text = '{"kind":"research"}'
     await dispatcher.dispatch(owner.tenant_id, 10)
     await drain(wf, owner.tenant_id, 2)
     run = await wf.get_run(owner.tenant_id, turn.run_id)

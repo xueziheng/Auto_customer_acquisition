@@ -8,6 +8,7 @@ from pydantic import Field, TypeAdapter, model_validator
 from pydantic import ValidationError as SchemaError
 
 from agent_runtime.assistant.context import AssistantContext
+from agent_runtime.assistant.proposal import LABELS, collect_fields, missing
 from domains.assistant.schemas import (
     AssistantDecision,
     AssistantDTO,
@@ -46,8 +47,14 @@ class SourceSelection(AssistantDTO):
         return self
 
 
+class ResearchSelection(AssistantDTO):
+    """只表达准备提案的意图；范围、预算和来源不由模型重新抄写。"""
+
+    kind: Literal["research"] = "research"
+
+
 ModelDecision = Annotated[
-    Clarification | ReadRequest | SourceSelection | ResearchDraft,
+    Clarification | ReadRequest | SourceSelection | ResearchSelection,
     Field(discriminator="kind"),
 ]
 _ADAPTER: TypeAdapter[ModelDecision] = TypeAdapter(ModelDecision)
@@ -58,6 +65,18 @@ def model_decision_schema() -> dict[str, Any]:
     return _ADAPTER.json_schema()
 
 
+def model_context(context: AssistantContext) -> dict[str, object]:
+    """向模型提供代码从员工原话收集的当前字段；不猜值、不把存在等同于合法。"""
+    payload = context.payload()
+    fields = collect_fields(context)
+    payload["research_input"] = {
+        "fields": [field.model_dump(mode="json") for field in fields.values()],
+        "missing_fields": sorted(set(LABELS) - fields.keys()),
+        "labels": {name: list(labels) for name, labels in LABELS.items()},
+    }
+    return payload
+
+
 def parse_model_decision(text: str, context: AssistantContext) -> AssistantDecision:
     """拒绝越界选择；交付前仍须通过原护栏与当前来源重核。"""
     if len(text.encode()) > 65536:
@@ -66,6 +85,9 @@ def parse_model_decision(text: str, context: AssistantContext) -> AssistantDecis
         decision = _ADAPTER.validate_json(text)
     except SchemaError:
         raise AssistantOutputError("output_schema") from None
+    if isinstance(decision, ResearchSelection):
+        fields = collect_fields(context)
+        return ResearchDraft(fields=tuple(fields.values())) if fields else missing(tuple(LABELS))
     if not isinstance(decision, SourceSelection):
         return decision
     if any(index >= len(context.fragments) for index in decision.source_indexes):
