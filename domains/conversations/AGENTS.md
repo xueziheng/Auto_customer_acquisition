@@ -63,3 +63,7 @@ ADR0028将员工Inbox的list/detail/correct/evidence/next_questions绑定Convers
 
 ADR0066：受托 record_classification 必须在原事务内按 Inbox 的 ownership/员工锁顺序，
 重核当前 active boss qualify 与真实入站/出站绑定，再持消息幂等锁写分类；授权也先于既有分类 no-op。
+
+ADR0075 的本人邮箱镜像与原业务会话独立。租户、active 员工与固定邮箱 owner 同时校验，
+boss/manager 无跨本人读取特权。全邮箱镜像不发布 InboundMessageStored/ReplyReceived，
+不创建客户、需求或商机，不允许进入 Agent 上下文；需要业务提取时另走原证据与审批链。

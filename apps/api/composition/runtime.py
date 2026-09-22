@@ -1575,8 +1575,11 @@ def build_phase1_dependencies(
             now=now,
         )
     from apps.api.inbox_evidence import build_inbox_evidence_reader
+    from domains.conversations.mailbox import MailboxService
+    from infra.db.mailbox import SqlMailboxRepository
 
     return ConfiguredApiDependencies(
+        mailbox=MailboxService(SqlMailboxRepository(factory)),
         inbox_evidence=(
             build_inbox_evidence_reader(
                 tenant, factory, conversations, inbound.bounded_raw_store, now=now

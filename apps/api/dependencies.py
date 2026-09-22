@@ -16,6 +16,7 @@ from domains.approvals.service import ApprovalService
 from domains.assistant.service import AssistantService, ModelConfigurationService
 from domains.commitments.service import CommitmentService
 from domains.compliance.service import ComplianceService
+from domains.conversations.mailbox import MailboxService
 from domains.conversations.service import ConversationService
 from domains.costing.service import CostingService
 from domains.demand.schemas import (
@@ -292,6 +293,7 @@ class ConfiguredApiDependencies:
     compliance: ComplianceService | None = None
     inbox_evidence: ToolGatewayInboxEvidenceReader | None = None
     conversations: ConversationService | None = None
+    mailbox: MailboxService | None = None
     reply_suggestions: ReplySuggestionApplication | None = None
     commitments: CommitmentService | None = None
     costing: CostingService | None = None

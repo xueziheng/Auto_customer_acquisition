@@ -62,6 +62,10 @@ _SALES_READ_GATE = Depends(
     )
 )
 _EXPECTED_API_PATHS = {
+    "/inbox/mailboxes",
+    "/inbox/mailboxes/{mailbox_id}/threads",
+    "/inbox/mailboxes/{mailbox_id}/threads/{thread_id}",
+    "/inbox/mailboxes/{mailbox_id}/sync",
     "/agent/sessions",
     "/agent/sessions/{session_id}/turns",
     "/agent/sessions/{session_id}/turns/{turn_id}",

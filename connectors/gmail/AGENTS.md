@@ -89,3 +89,10 @@ ControlledGmailTransport外部场景是显式受控Provider seam，真实Gmail�
 
 Task5b消费者只传耐久opaque cursor；初始化时间/after先保存再profile锚定，重启不得换新起点。
 只有原scheduler完整回复消费者已注册且持singleton才自动抓取；关联与Message入库不在Connector。
+
+## ADR0075 本人全邮箱镜像
+
+操作者明确要求同步整个账号时，`mailbox.py` 与 `mailbox_transport.py` 提供独立只读用途。
+全量镜像没有旧入站的 30 天或外发关联限制，不改变旧消费者语义。必须逐页核验 Gmail profile
+与绑定邮箱一致；只申请 gmail.readonly，固定官方 Gmail/OAuth 地址，令牌只在私有文件中解析。
+外部邮件读取只由 `email.mailbox.fetch` handler 发起；不得触发发送、自动分类或创建业务实体。

@@ -25,6 +25,7 @@ from fastapi.openapi.utils import get_openapi
 from starlette.types import Lifespan
 
 from apps.api.routers.assistant import router as assistant_router
+from apps.api.routers.mailbox import router as mailbox_router
 from apps.api.routers.model_settings import router as model_settings_router
 from shared.authentication import AuthenticationService
 from shared.schemas.runtime_capabilities import CapabilityName, RuntimeCapability
@@ -210,6 +211,7 @@ def create_app(
     app.include_router(approvals_router)
     app.include_router(notifications_router)
     app.include_router(inbox_router)
+    app.include_router(mailbox_router)
     app.include_router(email_inbound_router)
     app.include_router(products_router, prefix="/products")
     app.include_router(sourcing_router)

@@ -28,7 +28,7 @@ npm --prefix apps/web run build
 .venv/bin/python scripts/run_web_pilot.py accounts --profile PROFILE create --username USERNAME --name NAME --role boss
 ```
 
-`init` 完成后存储停止；`migrate` 显式升级到单一 head `0066`，并让数据库与对象存储保持运行。
+`init` 完成后存储停止；`migrate` 显式升级到单一 head `0067`，并让数据库与对象存储保持运行。
 账号命令会在终端隐蔽读取密码。没有默认账号或默认密码。此处只复用旧工具的存储与账号管理，
 **不要运行旧工具的 `start`**：它启动的是无真实模型的受限 pilot。
 已有 profile 必须先停止全部应用再迁移；应用启动不会代替迁移。
@@ -163,3 +163,8 @@ Web 可修改非秘密模型配置和业务资料外发许可，保存后显示�
 再按输入对话；只有 `research_only`、当前可确认且全部提案字段与预批准映射完全相等时才确认。
 不相等会停止，不会替管理员接受模型扩大的范围。报告分别标记受控、live 模型、live 来源和共享部署，
 未运行明确写 `not_run`。这份脚本不部署共享服务。
+
+## 6. 本人 Gmail 邮箱
+
+全账号历史与后续邮件同步使用独立只读授权，见 [本人邮箱同步](private-gmail-mailbox.md)。
+此入口不依赖模型、不会把邮件自动送入 Agent。完成 Google 授权并启动同步进程后，在“我的邮箱”查看。

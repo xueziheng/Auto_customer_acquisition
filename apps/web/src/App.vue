@@ -108,6 +108,9 @@ function closeMore(): void {
           <RouterLink to="/inbox">
             智能收件箱
           </RouterLink>
+          <RouterLink to="/inbox/mailbox">
+            我的邮箱
+          </RouterLink>
           <RouterLink to="/approvals">
             审批
           </RouterLink>

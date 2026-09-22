@@ -1626,6 +1626,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/inbox/mailboxes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Mailboxes */
+        get: operations["list_mailboxes_inbox_mailboxes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/mailboxes/{mailbox_id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Sync */
+        post: operations["request_sync_inbox_mailboxes__mailbox_id__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/mailboxes/{mailbox_id}/threads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Threads */
+        get: operations["list_threads_inbox_mailboxes__mailbox_id__threads_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/mailboxes/{mailbox_id}/threads/{thread_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Thread Messages */
+        get: operations["thread_messages_inbox_mailboxes__mailbox_id__threads__thread_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/inbox/messages/{message_id}/correct-classification": {
         parameters: {
             query?: never;
@@ -4950,6 +5018,101 @@ export interface components {
          * @enum {string}
          */
         LossReason: "unreachable" | "no_reply" | "need_not_real" | "no_supply_found" | "price_too_high" | "lost_to_competitor" | "customer_went_silent" | "timing_mismatch" | "compliance_blocked" | "margin_too_low" | "internal_no_capacity" | "duplicate";
+        /** MailAttachment */
+        MailAttachment: {
+            /** Filename */
+            filename: string;
+            /** Mime Type */
+            mime_type: string;
+            /** Size */
+            size: number;
+        };
+        /** MailMessagePage */
+        MailMessagePage: {
+            /** Items */
+            items: components["schemas"]["MailMessageView"][];
+            /** Next Offset */
+            next_offset: number | null;
+        };
+        /** MailMessageView */
+        MailMessageView: {
+            /** Attachments */
+            attachments: components["schemas"]["MailAttachment"][];
+            /** Body Text */
+            body_text: string;
+            /** Labels */
+            labels: string[];
+            /** Message Id */
+            message_id: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Recipients */
+            recipients: string;
+            /** Sender */
+            sender: string;
+            /** Snippet */
+            snippet: string;
+            /** Source Sha256 */
+            source_sha256: string;
+            /** Source Url */
+            source_url: string;
+            /** Subject */
+            subject: string;
+            /** Thread Id */
+            thread_id: string;
+        };
+        /** MailThreadPage */
+        MailThreadPage: {
+            /** Items */
+            items: components["schemas"]["MailThreadView"][];
+            /** Next Offset */
+            next_offset: number | null;
+        };
+        /** MailThreadView */
+        MailThreadView: {
+            /**
+             * Latest At
+             * Format: date-time
+             */
+            latest_at: string;
+            /** Message Count */
+            message_count: number;
+            /** Sender */
+            sender: string;
+            /** Snippet */
+            snippet: string;
+            /** Subject */
+            subject: string;
+            /** Thread Id */
+            thread_id: string;
+            /** Unread */
+            unread: boolean;
+        };
+        /** MailboxView */
+        MailboxView: {
+            /** Email */
+            email: string;
+            /** Failure Code */
+            failure_code: string | null;
+            /** Last Attempt At */
+            last_attempt_at: string | null;
+            /** Last Synced At */
+            last_synced_at: string | null;
+            /** Mailbox Id */
+            mailbox_id: string;
+            /** Message Count */
+            message_count: number;
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "backfill" | "catch_up" | "synced";
+            /** Sync Requested */
+            sync_requested: boolean;
+        };
         /**
          * ManualEmailSendBody
          * @description 员工唯一可提交的邮件内容；所有资源绑定均由服务端解析。
@@ -14127,6 +14290,139 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReplyNextQuestionsView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_mailboxes_inbox_mailboxes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailboxView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    request_sync_inbox_mailboxes__mailbox_id__sync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mailbox_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_threads_inbox_mailboxes__mailbox_id__threads_get: {
+        parameters: {
+            query?: {
+                search?: string;
+                label?: string | null;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                mailbox_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailThreadPage"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    thread_messages_inbox_mailboxes__mailbox_id__threads__thread_id__get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                mailbox_id: string;
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailMessagePage"];
                 };
             };
             /** @description 请求参数无效 */

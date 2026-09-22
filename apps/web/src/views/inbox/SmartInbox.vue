@@ -250,6 +250,9 @@ onMounted(() => void loadItems());
           回复处理
         </p>
         <h1>智能收件箱</h1>
+        <RouterLink to="/inbox/mailbox">
+          我的邮箱 · 查看全部往来
+        </RouterLink>
       </div>
       <button
         type="button"

@@ -21,3 +21,11 @@
 只暴露 `/health/live` 与 `/health/ready`，绑定 `0.0.0.0` 的严格端口并关闭 access
 log。provider 暂时失败只标记 `degraded`，不把已通过 config/schema/DB/registry 的
 readiness 改成失败；disabled 模式 live 但永不 ready，也不取锁或抓取。
+
+## ADR0075 本人邮箱入口
+
+`python -m apps.email_feedback_worker.mailbox` 是本进程的独立运行模式，只注册
+`email.mailbox.fetch`，与原 feedback 模式互不装配。用户明确选择全账号历史同步时，
+新模式不适用原反馈 30 天限制。仍强制租户＋邮箱 advisory lock、前后心跳和整页原子提交，
+SIGINT/SIGTERM 不取消在途页。只读 OAuth 授权由操作者运行本机向导完成；不提供发信端口。
+新模式通过本人 Web 页的计数、阶段、最近成功/尝试时间和固定错误展示状态；不复用旧模式健康端口。
