@@ -389,7 +389,7 @@ describe("handoff queue", () => {
     expect(firstCard.textContent).toContain("客户请求报价");
     expect(firstCard.textContent).toContain("employee-demo-one");
     expect(firstCard.textContent).toContain("2026-08-09T01:30:00Z");
-    expect(firstCard.textContent).toContain("状态 requested");
+    expect(firstCard.textContent).toContain("状态 已请求");
     expect(firstCard.textContent).toContain("推断 / 价值与建议");
     expect(firstCard.textContent).toContain("缺失信息 2 项");
     expect(firstCard.textContent).toContain("证据入口 2 项");
@@ -410,7 +410,7 @@ describe("handoff queue", () => {
       "handoff-demo-one",
       "opportunity-demo-one",
       "客户请求报价",
-      "requested",
+      "已请求",
       "2026-08-09T01:30:00Z",
       "5058",
       "林岚（演示）",
@@ -905,5 +905,5 @@ it("精确接管深链接受后保留成功反馈并读取历史accepted对象",
  const {app,root}=await mountQueue(fetch);await router.replace('/crm/handoffs/handoff-demo-one');
  await eventually(()=>expect(buttonNamed(root,'接受接管').disabled).toBe(false));buttonNamed(root,'接受接管').click();
  await eventually(()=>expect(root.querySelector('.live-region')?.textContent).toContain('已接受接管'));
- expect(root.querySelector('.state-tag')?.textContent).toContain('accepted');expect(buttonNamed(root,'接受接管').disabled).toBe(true);app.unmount();
+ expect(root.querySelector('.state-tag')?.textContent).toContain('已接受');expect(buttonNamed(root,'接受接管').disabled).toBe(true);app.unmount();
 });

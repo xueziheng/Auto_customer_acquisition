@@ -90,7 +90,7 @@ onMounted(() => void loadTeam());
     <div class="page-head team-head">
       <div>
         <p class="phase-eyebrow">
-          TEAM & TERRITORY
+          团队与业务分配
         </p>
         <h1>团队与归属</h1>
       </div>
@@ -130,7 +130,7 @@ onMounted(() => void loadTeam());
         <header>
           <div>
             <p class="card-kicker">
-              ACTIVE TEAM
+              在岗团队
             </p><h2>活跃员工</h2>
           </div>
           <span>{{ employees.length }} 人</span>
@@ -163,7 +163,7 @@ onMounted(() => void loadTeam());
               <div><h3>{{ item.name }}</h3><span>{{ roleLabels[item.role] ?? item.role }}</span></div>
             </header>
             <dl>
-              <div><dt>员工 ID</dt><dd>{{ item.employee_id }}</dd></div>
+              <div><dt>员工编号</dt><dd>{{ item.employee_id }}</dd></div>
               <div><dt>直属经理</dt><dd>{{ employeeName(item.manager_id ?? null) }}</dd></div>
               <div><dt>语言</dt><dd>{{ dimension(item.languages) }}</dd></div>
               <div><dt>时区</dt><dd>{{ item.timezone ?? "未设置" }}</dd></div>
@@ -177,7 +177,7 @@ onMounted(() => void loadTeam());
         <header>
           <div>
             <p class="card-kicker">
-              TERRITORY MATRIX
+              业务分配矩阵
             </p><h2>业务分配矩阵</h2>
           </div>
           <span>按优先级升序</span>

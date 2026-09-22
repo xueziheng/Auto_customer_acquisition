@@ -311,7 +311,7 @@ onMounted(() => void loadList());
       </div>
       <nav
         class="topnav"
-        aria-label="CRM 页面"
+        aria-label="客户管理页面"
       >
         <button
           type="button"
@@ -345,7 +345,7 @@ onMounted(() => void loadList());
       >
         <header class="pane-header">
           <p class="eyebrow">
-            EVIDENCE LEDGER
+            证据账本
           </p>
           <h1 id="board-title">
             机会看板

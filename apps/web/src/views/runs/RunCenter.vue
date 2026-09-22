@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel, sourcingStageLabel } from "../../components/displayLabels";
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 
@@ -42,7 +43,7 @@ const filteredRuns = computed(() => {
   const workflow = workflowFilter.value.trim().toLowerCase();
   return runs.value.filter((run) =>
     (!statusFilter.value || run.status === statusFilter.value)
-    && (!workflow || run.workflow_type.toLowerCase().includes(workflow)),
+    && (!workflow || `${codeLabel(run.workflow_type)} ${run.workflow_type}`.toLowerCase().includes(workflow)),
   );
 });
 const activeCount = computed(() => runs.value.filter((run) =>
@@ -68,10 +69,10 @@ const statusLabels: Readonly<Record<string, string>> = Object.freeze({
 
 function safeError(status: number): string {
   if (status === 401) return "登录身份已失效，请重新选择有效身份";
-  if (status === 403) return "只有老板可以查看 Run 审计记录";
-  if (status === 404) return "该 Run 已不存在或不属于当前租户";
-  if (status === 503) return "Run 审计服务暂不可用";
-  return "Run 审计记录读取失败，请稍后重试";
+  if (status === 403) return "只有老板可以查看运行记录审计记录";
+  if (status === 404) return "该运行记录已不存在或不属于当前租户";
+  if (status === 503) return "运行记录审计服务暂不可用";
+  return "运行记录审计记录读取失败，请稍后重试";
 }
 
 function revokeRead(status: number): void {
@@ -117,7 +118,7 @@ async function loadDetail(runId: string): Promise<void> {
   } catch {
     if (!op.valid() || requestVersion !== detailRequestVersion) return;
     detail.value = null;
-    detailError.value = "无法连接 Run 审计服务";
+    detailError.value = "无法连接运行记录审计服务";
   } finally {
     if (op.valid() && requestVersion === detailRequestVersion) detailLoading.value = false;
   }
@@ -147,7 +148,7 @@ async function loadRuns(): Promise<void> {
   } catch {
     if (!op.valid() || requestVersion !== listRequestVersion) return;
     runs.value = [];
-    listError.value = "无法连接 Run 审计服务";
+    listError.value = "无法连接运行记录审计服务";
   } finally {
     if (op.valid() && requestVersion === listRequestVersion) listLoading.value = false;
   }
@@ -187,7 +188,7 @@ watch(() => route.query.run, (runId) => {
   detailLoading.value = false;
   detailError.value = null;
   if (typeof runId === "string" && runId.trim()) void loadDetail(runId);
-  else if (runId !== undefined) detailError.value = "Run 链接无效，请使用单个非空 Run ID";
+  else if (runId !== undefined) detailError.value = "运行记录链接无效，请使用单个非空运行记录编号";
   else if (runs.value[0]) void loadDetail(runs.value[0].run_id);
 }, { immediate: true });
 
@@ -203,9 +204,9 @@ onBeforeUnmount(() => {
     <div class="page-head run-head">
       <div>
         <p class="phase-eyebrow">
-          TRADE RUN AUDIT
+          运行审计
         </p>
-        <h1>Run 全景</h1>
+        <h1>运行记录</h1>
       </div>
       <button
         type="button"
@@ -218,7 +219,7 @@ onBeforeUnmount(() => {
 
     <div class="safe-banner">
       <span aria-hidden="true">i</span>
-      <div>本页只展示 Workflow、步骤、工具、产物和审批的安全元数据；不会返回 context、步骤 data、客户正文、PII 或凭证。报价 Run 只显示安全摘要，审批完成不代表发送。</div>
+      <div>本页展示工作流、步骤、工具、资料和审批的安全摘要；不展示内部执行数据、客户正文、个人信息或凭证。报价运行记录中的审批完成不代表已发送。</div>
     </div>
     <div
       v-if="error"
@@ -230,7 +231,7 @@ onBeforeUnmount(() => {
 
     <section
       class="run-metrics"
-      aria-label="Run 审计概览"
+      aria-label="运行记录审计概览"
     >
       <article><span>最近记录</span><strong>{{ listLoading || listError ? "—" : runs.length }}</strong><p>按创建时间倒序，最多 50 条</p></article>
       <article><span>进行中 / 等待</span><strong>{{ listLoading || listError ? "—" : activeCount }}</strong><p>含等待人工与外部事件</p></article>
@@ -249,7 +250,7 @@ onBeforeUnmount(() => {
         <header>
           <div>
             <p class="card-kicker">
-              RUN INDEX
+              运行记录列表
             </p>
             <h2>执行记录</h2>
           </div>
@@ -261,7 +262,7 @@ onBeforeUnmount(() => {
             <input
               v-model="workflowFilter"
               type="search"
-              placeholder="按 workflow_type 筛选"
+              placeholder="按工作流类型筛选"
             >
           </label>
           <label>
@@ -282,7 +283,7 @@ onBeforeUnmount(() => {
           v-if="listLoading"
           class="empty"
         >
-          正在读取 Run 记录…
+          正在读取运行记录…
         </div>
         <div
           v-else-if="listError"
@@ -294,7 +295,7 @@ onBeforeUnmount(() => {
           v-else-if="!filteredRuns.length"
           class="empty"
         >
-          {{ runs.length ? "没有符合筛选条件的 Run" : "当前没有可审计的 Run 记录" }}
+          {{ runs.length ? "没有符合筛选条件的运行记录" : "当前没有可审计的运行记录" }}
         </div>
         <div
           v-else
@@ -309,12 +310,12 @@ onBeforeUnmount(() => {
             @click="loadDetail(run.run_id)"
           >
             <span class="run-row-top">
-              <strong>{{ run.workflow_type }}</strong>
+              <strong>{{ codeLabel(run.workflow_type) }}</strong>
               <small :class="`state-${run.status}`">{{ statusLabel(run.status) }}</small>
             </span>
             <span>{{ run.subject_ref }}</span>
             <span v-if="run.research">只研究 · {{ stopLabel(run.research.stop_reason) }}</span>
-            <span class="run-row-meta">{{ run.current_step }} · {{ formatTime(run.last_activity_at) }}</span>
+            <span class="run-row-meta">{{ codeLabel(run.current_step) }} · {{ formatTime(run.last_activity_at) }}</span>
           </button>
         </div>
       </article>
@@ -323,7 +324,7 @@ onBeforeUnmount(() => {
         <header>
           <div>
             <p class="card-kicker">
-              EVIDENCE CHAIN
+              证据链
             </p>
             <h2>审计证据链</h2>
           </div>
@@ -345,21 +346,21 @@ onBeforeUnmount(() => {
           v-else-if="!detail"
           class="empty"
         >
-          选择一条 Run 查看步骤、工具、产物与审批
+          选择一条运行记录查看步骤、工具、产物与审批
         </div>
         <div
           v-else
           class="detail-content"
         >
           <section class="summary-grid">
-            <div><span>工作流</span><strong>{{ detail.summary.workflow_type }} v{{ detail.summary.workflow_version }}</strong></div>
+            <div><span>工作流</span><strong>{{ codeLabel(detail.summary.workflow_type) }} v{{ detail.summary.workflow_version }}</strong></div>
             <div><span>业务主体</span><strong>{{ detail.summary.subject_ref }}</strong></div>
-            <div><span>当前步骤</span><strong>{{ detail.summary.current_step }}</strong></div>
+            <div><span>当前步骤</span><strong>{{ codeLabel(detail.summary.current_step) }}</strong></div>
             <div><span>状态</span><strong>{{ statusLabel(detail.summary.status) }}</strong></div>
             <div><span>创建时间</span><strong>{{ formatTime(detail.summary.created_at) }}</strong></div>
             <div><span>下次调度</span><strong>{{ formatTime(detail.summary.next_poll_at) }}</strong></div>
             <div><span>重试次数</span><strong>{{ detail.summary.retry_count }}</strong></div>
-            <div><span>脱敏错误</span><strong>{{ detail.summary.last_error ?? "无" }}</strong></div>
+            <div><span>脱敏错误</span><strong>{{ codeLabel(detail.summary.last_error ?? "无") }}</strong></div>
           </section>
 
           <section
@@ -367,9 +368,9 @@ onBeforeUnmount(() => {
             class="audit-section run-observation"
           >
             <h3>停留位置与可追溯输入</h3>
-            <p>当前步骤：{{ detail.summary.current_step }} · 处理责任：{{ detail.observation.responsible_employee_id ?? '未知，需老板核对分工' }}</p>
+            <p>当前步骤：{{ codeLabel(detail.summary.current_step) }} · 处理责任：{{ detail.observation.responsible_employee_id ?? '未知，需老板核对分工' }}</p>
             <p>记录时间跨度：{{ detail.observation.recorded_span_seconds === null ? '未知' : `${detail.observation.recorded_span_seconds} 秒` }} · 时间异常 {{ detail.observation.invalid_time_count }}。这是记录时钟跨度，不是执行或人工工作耗时。</p>
-            <p>工具调用 {{ detail.observation.call_count }} · 尝试 {{ detail.observation.attempt_count }} · 重放回执 {{ detail.observation.duplicate_receipt_count }}；模型 token、人工工时和费用未知，缺少实际 usage、计时和费率。</p>
+            <p>工具调用 {{ detail.observation.call_count }} · 尝试 {{ detail.observation.attempt_count }} · 重放回执 {{ detail.observation.duplicate_receipt_count }}；模型计量单位、人工工时和费用未知，缺少实际用量、计时和费率。</p>
             <p>关联机会：{{ detail.observation.opportunity_id ?? '未知' }}</p>
             <p v-if="detail.observation.handoff_id">
               <RouterLink :to="`/crm/handoffs/${detail.observation.handoff_id}`">
@@ -396,10 +397,10 @@ onBeforeUnmount(() => {
             class="audit-section sourcing-run-summary"
           >
             <header><h3>寻源运行摘要</h3><span>{{ detail.summary.sourcing.case_id }}</span></header>
-            <p>计划：{{ detail.summary.sourcing.plan_status ?? "未确认" }} · 候选 {{ detail.summary.sourcing.candidate_count }} · 搜索尝试 {{ detail.summary.sourcing.search_attempt_count }} · 页面尝试 {{ detail.summary.sourcing.page_attempt_count }}</p>
+            <p>计划：{{ codeLabel(detail.summary.sourcing.plan_status ?? "未确认") }} · 候选 {{ detail.summary.sourcing.candidate_count }} · 搜索尝试 {{ detail.summary.sourcing.search_attempt_count }} · 页面尝试 {{ detail.summary.sourcing.page_attempt_count }}</p>
             <p>免费额度：已预留 {{ detail.summary.sourcing.reserved_credits }} / 已消耗 {{ detail.summary.sourcing.consumed_credits }} / 不确定 {{ detail.summary.sourcing.uncertain_credits }}</p>
             <p v-if="detail.summary.sourcing.stop_reason">
-              停止：{{ detail.summary.sourcing.stop_reason.code }} · {{ detail.summary.sourcing.stop_reason.stage ?? "未知阶段" }}
+              停止：{{ codeLabel(detail.summary.sourcing.stop_reason.code) }} · {{ sourcingStageLabel(detail.summary.sourcing.stop_reason.stage) }}
             </p>
             <ul
               v-if="detail.summary.sourcing.ladder.length"
@@ -409,7 +410,7 @@ onBeforeUnmount(() => {
                 v-for="item in detail.summary.sourcing.ladder"
                 :key="`${item.rung}-${item.outcome}`"
               >
-                第 {{ item.rung }} 级：{{ item.outcome }}
+                第 {{ item.rung }} 级：{{ codeLabel(item.outcome) }}
               </li>
             </ul>
             <p class="meta">
@@ -437,7 +438,7 @@ onBeforeUnmount(() => {
                   class="timeline-dot"
                   :class="`state-${step.status}`"
                 />
-                <div><strong>{{ step.step_name }}</strong><small>{{ statusLabel(step.status) }} · 尝试 {{ step.attempt }} 次</small><p>{{ formatTime(step.created_at) }} → {{ formatTime(step.updated_at) }}</p><em v-if="step.error">{{ step.error }}</em></div>
+                <div><strong>{{ codeLabel(step.step_name) }}</strong><small>{{ statusLabel(step.status) }} · 尝试 {{ step.attempt }} 次</small><p>{{ formatTime(step.created_at) }} → {{ formatTime(step.updated_at) }}</p><em v-if="step.error">{{ codeLabel(step.error) }}</em></div>
               </li>
             </ol>
           </section>
@@ -448,7 +449,7 @@ onBeforeUnmount(() => {
               v-if="!detail.tool_calls.length"
               class="audit-empty"
             >
-              该 Run 没有工具调用元数据
+              该运行记录没有工具调用元数据
             </div>
             <div
               v-else
@@ -458,9 +459,9 @@ onBeforeUnmount(() => {
                 v-for="call in detail.tool_calls"
                 :key="call.tool_call_id"
               >
-                <header><strong>{{ call.tool_id }}</strong><span>{{ call.status }}</span></header>
-                <p>版本 {{ call.tool_version }} · 风险 {{ call.risk_level }} · 成本级别 {{ call.cost_class }}</p>
-                <small>尝试 {{ call.attempt_count }} 次 · {{ call.error_category ?? "无错误类别" }}</small>
+                <header><strong>{{ codeLabel(call.tool_id) }}</strong><span>{{ codeLabel(call.status) }}</span></header>
+                <p>版本 {{ call.tool_version }} · 风险 {{ codeLabel(call.risk_level) }} · 成本级别 {{ codeLabel(call.cost_class) }}</p>
+                <small>尝试 {{ call.attempt_count }} 次 · {{ codeLabel(call.error_category ?? "无错误类别") }}</small>
               </article>
             </div>
           </section>
@@ -482,7 +483,7 @@ onBeforeUnmount(() => {
                   v-for="artifact in detail.artifacts"
                   :key="artifact.artifact_id"
                 >
-                  <strong>{{ artifact.kind }}</strong><p>{{ artifact.subject_ref }}</p><small>{{ artifact.generated_by }} · {{ formatTime(artifact.generated_at) }}</small>
+                  <strong>{{ codeLabel(artifact.kind) }}</strong><p>{{ artifact.subject_ref }}</p><small>{{ artifact.generated_by }} · {{ formatTime(artifact.generated_at) }}</small>
                 </article>
               </div>
             </section>
@@ -492,7 +493,7 @@ onBeforeUnmount(() => {
                 v-if="!detail.approvals.length"
                 class="audit-empty compact"
               >
-                没有由该 Run 发起的审批
+                没有由该运行记录发起的审批
               </div>
               <div
                 v-else
@@ -502,7 +503,7 @@ onBeforeUnmount(() => {
                   v-for="approval in detail.approvals"
                   :key="approval.approval_id"
                 >
-                  <header><strong>{{ approval.approval_type }}</strong><span>{{ approval.state }}</span></header><p>
+                  <header><strong>{{ codeLabel(approval.approval_type) }}</strong><span>{{ codeLabel(approval.state) }}</span></header><p>
                     <RouterLink :to="{ path: '/approvals', query: { approval_id: approval.approval_id } }">
                       {{ approval.approval_id }}
                     </RouterLink>

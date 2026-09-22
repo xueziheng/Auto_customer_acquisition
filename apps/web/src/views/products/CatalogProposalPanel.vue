@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 
@@ -167,7 +168,7 @@ onMounted(() => {
     <header class="region-head">
       <div>
         <p class="phase-eyebrow">
-          CATALOG PROPOSALS
+          目录产品提案
         </p><h2 id="catalog-proposals-title">
           目录提案
         </h2>
@@ -295,7 +296,7 @@ onMounted(() => {
           class="proposal-card"
         >
           <header style="min-width: 0px; flex-wrap: wrap">
-            <strong style="min-width: 0px; overflow-wrap: anywhere">{{ entry.proposal.proposal_id }}</strong><span class="status">{{ entry.proposal.state }}</span>
+            <strong style="min-width: 0px; overflow-wrap: anywhere">{{ entry.proposal.proposal_id }}</strong><span class="status">{{ codeLabel(entry.proposal.state) }}</span>
           </header>
           <dl>
             <div><dt>需求簇</dt><dd>{{ entry.proposal.cluster_id }}</dd></div>
@@ -309,7 +310,7 @@ onMounted(() => {
           >
             审批状态：{{ approvalStateLabel(entry.approval.state) }}
           </RouterLink>
-          <span v-else>Approval Center 尚无关联审批</span>
+          <span v-else>审批中心尚无关联审批</span>
         </article>
       </template>
     </section>

@@ -105,8 +105,8 @@ describe("CampaignCenter", () => {
     expect(root.textContent).toContain("enr_controlled");
     expect(root.textContent).toContain("acc_controlled");
     expect(root.textContent).toContain("hyp_01K39P9M5D6K4A91YEQ80EJZ0Z");
-    expect(root.textContent).toContain("Campaign v3");
-    expect(root.textContent).toContain("replied");
+    expect(root.textContent).toContain("活动 v3");
+    expect(root.textContent).toContain("已回复");
     app.unmount();
   });
 });

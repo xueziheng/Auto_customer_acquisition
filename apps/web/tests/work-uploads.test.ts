@@ -150,7 +150,7 @@ describe("WorkUploads", () => {
 
     await eventually(() => {
       expect(root.textContent).toContain("原件证据");
-      expect(root.textContent).toContain("Agent 原始提取");
+      expect(root.textContent).toContain("智能助手原始提取");
       expect(root.textContent).toContain("员工修订版本");
       expect(root.textContent).toContain("We need 500 units");
     });

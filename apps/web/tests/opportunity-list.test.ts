@@ -409,7 +409,7 @@ describe("opportunity board", () => {
     for (const visibleText of [
       "客户名称 · 来源记录",
       "来源类型",
-      "conversation",
+      "客户会话",
       "来源标识",
       "e2e-message-identity",
       "提取者",
@@ -1123,7 +1123,7 @@ describe("opportunity board", () => {
     buttonNamed(root, "确认标记流失").click();
     await eventually(() => {
       expect(root.querySelector("article")?.textContent).toContain("已流失");
-      expect(root.querySelector("article")?.textContent).toContain("margin_too_low");
+      expect(root.querySelector("article")?.textContent).toContain("利润空间过低");
       expect(listRequests).toBe(2);
       expect(detailRequests).toBe(2);
     });

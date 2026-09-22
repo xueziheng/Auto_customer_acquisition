@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 /* global Response */
 import { computed, inject, onMounted, ref, watch } from "vue";
 
@@ -68,7 +69,7 @@ const admissionPolicyLabel = computed(() => ({
 
 function admissionSafeError(status: number): string {
   if (status === 403) return "当前身份无权配置寻源准入策略";
-  if (status === 409) return "提案基于的 Directive 已变化，请重新创建提案";
+  if (status === 409) return "提案基于的老板指令已变化，请重新创建提案";
   if (status === 503) return "寻源准入策略服务暂不可用，请稍后重试";
   return "寻源准入策略请求未完成，请检查配置后重试";
 }
@@ -184,7 +185,7 @@ const fieldLabels: Record<string, string> = {
   max_hypotheses: "最多需求假设",
   minimum_confidence_tier: "最低置信档位",
   strategy_group: "策略组",
-  campaign_id: "Campaign",
+  campaign_id: "活动",
   role_hints: "联系人角色线索",
   assessment_ref: "正当利益评估引用",
 };
@@ -241,6 +242,7 @@ function safeError(response: Response): string {
 function displayValue(key: string, value: string): string {
   if (!value) return "未设置";
   if (key === "execution_mode") return value === "research_only" ? "只研究" : "触达准备（原流程）";
+  if (key === "minimum_confidence_tier") return codeLabel(value);
   if (key !== "queries") return value;
   try {
     const parsed: unknown = JSON.parse(value);
@@ -376,7 +378,7 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
         if(!op.valid())return;
   statusMessage.value = refreshed
           ? "提案已确认；系统只会在页面列明的范围和上限内执行。"
-          : "确认已成功，Run 回执已保留；详情刷新未完成，可只读刷新提案状态。";
+          : "确认已成功，运行记录回执已保留；详情刷新未完成，可只读刷新提案状态。";
         return;
       }
       if(!op.valid())return ;
@@ -426,7 +428,7 @@ onMounted(() => void loadPage());
     <div class="page-head command-head">
       <div>
         <p class="eyebrow">
-          BOSS COMMAND CENTER
+          老板指令
         </p>
         <h1>指挥中心</h1>
       </div>
@@ -568,7 +570,7 @@ onMounted(() => void loadPage());
         class="research-plan"
       >
         <strong>只研究 · 计划线路：{{ proposal.planned_discovery_lanes?.map(laneLabel).join(" / ") }}</strong>
-        <p>进口商候选不代表运输记录或客户采购确认；无需 Campaign，不执行联系人、邮箱验证、发送和报价。</p>
+        <p>进口商候选不代表运输记录或客户采购确认；无需活动，不执行联系人、邮箱验证、发送和报价。</p>
         <ResearchAccessCard :status="proposal.research_access ?? null" />
         <p
           v-if="proposal.confirmation_blocked_reason"
@@ -584,7 +586,7 @@ onMounted(() => void loadPage());
         aria-label="工作流启动状态"
       >
         <p v-if="execution?.state === 'not_started'">
-          提案已确认，尚未创建 Run；提案决定不等于工作流已启动。
+          提案已确认，尚未创建运行记录；提案决定不等于工作流已启动。
         </p>
         <p v-else>
           提案已确认，启动状态待核实；请只读刷新，不要重复提交。
@@ -644,14 +646,14 @@ onMounted(() => void loadPage());
         <span class="receipt-mark">✓</span>
         <div>
           <h2>受限工作流已启动</h2>
-          <p>Run {{ receiptRunId }} <span v-if="confirmation">· Directive {{ confirmation.directive_id }}</span></p>
+          <p>运行记录 {{ receiptRunId }} <span v-if="confirmation">· 老板指令 {{ confirmation.directive_id }}</span></p>
         </div>
       </div>
       <RouterLink to="/demand">
         查看需求雷达 →
       </RouterLink>
       <RouterLink :to="{ path: '/runs', query: { run: receiptRunId } }">
-        查看本次 Run →
+        查看本次运行记录 →
       </RouterLink>
     </section>
 
@@ -663,7 +665,7 @@ onMounted(() => void loadPage());
       <header>
         <div>
           <p class="eyebrow">
-            SOURCING ADMISSION
+            寻源准入
           </p>
           <h2 id="admission-policy-title">
             寻源准入策略
@@ -672,15 +674,15 @@ onMounted(() => void loadPage());
         <strong>当前策略：{{ admissionPolicyLabel }}</strong>
       </header>
       <p class="admission-boundary">
-        按需求簇规模决定尚未启动 Case 的顺序。一个 Need 仍对应一个 Case，需求簇不是合并订单。
+        按需求簇规模决定尚未启动寻源案例的顺序。一个需求仍对应一个寻源案例，需求簇不是合并订单。
       </p>
       <dl
         v-if="admissionPolicy.directive_version"
         class="policy-facts"
       >
-        <div><dt>生效版本</dt><dd>Directive v{{ admissionPolicy.directive_version }}</dd></div>
+        <div><dt>生效版本</dt><dd>老板指令 v{{ admissionPolicy.directive_version }}</dd></div>
         <div><dt>自动准入</dt><dd>{{ admissionPolicy.automatic_admission_enabled ? "启用" : "关闭" }}</dd></div>
-        <div><dt>每轮上限</dt><dd>{{ admissionPolicy.batch_limit }} 个 Case</dd></div>
+        <div><dt>每轮上限</dt><dd>{{ admissionPolicy.batch_limit }} 个寻源案例</dd></div>
       </dl>
       <form
         aria-label="寻源准入策略提案"
@@ -753,9 +755,9 @@ onMounted(() => void loadPage());
           </section>
         </div>
         <dl class="policy-facts proposal-policy-facts">
-          <div><dt>排序模式</dt><dd>{{ admissionProposal.sourcing_admission_mode }}</dd></div>
+          <div><dt>排序模式</dt><dd>{{ codeLabel(admissionProposal.sourcing_admission_mode) }}</dd></div>
           <div><dt>自动准入</dt><dd>{{ admissionProposal.automatic_sourcing_admission_enabled ? "启用" : "关闭" }}</dd></div>
-          <div><dt>每轮上限</dt><dd>{{ admissionProposal.sourcing_admission_batch_limit }} 个 Case</dd></div>
+          <div><dt>每轮上限</dt><dd>{{ admissionProposal.sourcing_admission_batch_limit }} 个寻源案例</dd></div>
         </dl>
         <footer class="admission-decision">
           <span>{{ admissionProposal.state === "confirmed" ? "提案已确认" : "提案不会启动寻源流程" }}</span>
@@ -774,7 +776,7 @@ onMounted(() => void loadPage());
           class="admission-confirmed"
           role="status"
         >
-          <strong>生效 Directive v{{ admissionConfirmation.directive_version }}</strong>
+          <strong>生效老板指令 v{{ admissionConfirmation.directive_version }}</strong>
           <span>确认只更新准入策略，不代表寻源已启动。</span>
         </div>
       </article>

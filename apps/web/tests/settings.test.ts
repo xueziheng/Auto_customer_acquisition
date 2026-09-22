@@ -297,7 +297,7 @@ function fillCountryPolicy(root: HTMLElement): void {
 
 function expectReadinessBanners(root: HTMLElement, expectedMessage: string): void {
   const playbook = root.querySelector<HTMLElement>(
-    '[aria-label="Playbook 联系人补全就绪状态"]',
+    '[aria-label="公司业务规则联系人补全就绪状态"]',
   );
   const countryPolicy = root.querySelector<HTMLElement>(
     '[aria-label="国家政策联系人补全就绪状态"]',
@@ -375,9 +375,9 @@ describe("SettingsCenter", () => {
     const { root } = await mountSettings(fetch);
 
     await eventually(() => {
-      expect(root.textContent).toContain("尚未配置 Company Playbook");
+      expect(root.textContent).toContain("尚未配置公司业务规则");
       expect(root.textContent).toContain("尚无任何已激活国家政策，联系人补全保持阻断");
-      expect(root.textContent).not.toContain("先提交含目标/排除国家的 Playbook 候选");
+      expect(root.textContent).not.toContain("先提交含目标/排除国家的公司业务规则候选");
       expect(root.textContent).toContain("待审批");
       expect(root.textContent).toContain("已拒绝");
       expect(root.textContent).toContain("已生效");
@@ -435,7 +435,7 @@ describe("SettingsCenter", () => {
     expect(root.querySelector<HTMLInputElement>('[name="minimum_deal_amount"]')?.value).toBe("10000");
     expect(root.textContent).toContain("emp_boss");
     expect(root.textContent).toContain("emp_approver");
-    expect(root.textContent).toContain("employee_input");
+    expect(root.textContent).toContain("员工录入");
     expect(root.textContent).toContain("system:playbook-change");
   });
 
@@ -468,7 +468,7 @@ describe("SettingsCenter", () => {
       return jsonResponse({}, 500);
     });
     const { root } = await mountSettings(fetch);
-    await eventually(() => expect(root.textContent).toContain("尚未配置 Company Playbook"));
+    await eventually(() => expect(root.textContent).toContain("尚未配置公司业务规则"));
 
     setField(root, "company_type", "trading_company");
     setField(root, "minimum_deal_amount", "10000.0010");
@@ -504,7 +504,7 @@ describe("SettingsCenter", () => {
 
     const { root } = await mountSettings(fetch);
 
-    await eventually(() => expect(root.textContent).toContain("只有老板可以查看或提交 Company Playbook"));
+    await eventually(() => expect(root.textContent).toContain("只有老板可以查看或提交公司业务规则"));
     expect(root.textContent).not.toContain("raw internal detail");
   });
 });
@@ -512,7 +512,7 @@ describe("SettingsCenter", () => {
 describe("SettingsCenter country policy workspace", () => {
   it.each([
     ["COUNTRY_POLICY_NOT_CONFIGURED", "尚无任何已激活国家政策，联系人补全保持阻断。"],
-    ["CONTACT_ENRICHMENT_NOT_ALLOWED", "已激活政策均禁止联系人补全，系统不会调用外部 Provider。"],
+    ["CONTACT_ENRICHMENT_NOT_ALLOWED", "已激活政策均禁止联系人补全，系统不会调用外部服务商。"],
   ] as const)("maps %s inside the Playbook section without claiming Playbook can fix it", async (reason, expected) => {
     const { app, root } = await mountSettings(countryPolicyFetch({
       activePolicies: reason === "COUNTRY_POLICY_NOT_CONFIGURED" ? [] : [activeCountryPolicy],
@@ -523,17 +523,17 @@ describe("SettingsCenter country policy workspace", () => {
     await eventually(() => {
       expectReadinessBanners(root, expected);
       expect(root.querySelector<HTMLElement>(
-        '[aria-label="Playbook 联系人补全就绪状态"]',
+        '[aria-label="公司业务规则联系人补全就绪状态"]',
       )?.textContent).toContain("在下方国家政策包工作区单独录入、审批并激活");
     });
-    expect(root.textContent).not.toContain("先提交含目标/排除国家的 Playbook 候选");
+    expect(root.textContent).not.toContain("先提交含目标/排除国家的公司业务规则候选");
     app.unmount();
   });
 
   it.each([
     ["CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED", "部署尚未声明 Hunter 安全配置版本。"],
-    ["CONTACT_ENRICHMENT_PROVIDER_VALIDATION_PENDING", "Hunter 配置已声明，等待人工 Provider 验证。"],
-    ["CONTACT_ENRICHMENT_PROVIDER_VALIDATION_FAILED", "Hunter Provider 验证失败，请按固定分类排查。"],
+    ["CONTACT_ENRICHMENT_PROVIDER_VALIDATION_PENDING", "Hunter 配置已声明，等待人工服务商验证。"],
+    ["CONTACT_ENRICHMENT_PROVIDER_VALIDATION_FAILED", "Hunter 服务商验证失败，请按固定分类排查。"],
     ["CONTACT_ENRICHMENT_PROVIDER_VALIDATION_INCONCLUSIVE", "Hunter 验证结果不确定，禁止自动重试。"],
     ["CONTACT_ENRICHMENT_RUNTIME_NOT_COMPOSED", "验证已通过，等待 scheduler 重启并完成工具注册。"],
   ] satisfies ReadonlyArray<readonly [ReadinessReason, string]>)(
@@ -721,8 +721,8 @@ describe("SettingsCenter country policy workspace", () => {
 
     await eventually(() => expect(root.textContent).toContain("生效国家政策 2"));
     expect(root.textContent).toContain("允许联系人补全 1");
-    expect(root.textContent).toContain("public_research：允许");
-    expect(root.textContent).toContain("cold_b2b_email：禁止");
+    expect(root.textContent).toContain("公开研究：允许");
+    expect(root.textContent).toContain("企业冷开发邮件：禁止");
     expect(root.querySelector('time[datetime="2026-08-24T10:00:00Z"]')).not.toBeNull();
   });
 
@@ -924,8 +924,8 @@ describe("SettingsCenter country policy workspace", () => {
 
     await eventually(() => expect(root.textContent).toContain("待审批"));
     expect(root.textContent).toContain("已应用");
-    expect(root.textContent).toContain("cold_b2b_email_allowed：禁止 → 允许");
-    expect(root.textContent).toContain("contact_enrichment_allowed：允许 → 禁止");
+    expect(root.textContent).toContain("企业冷开发邮件：禁止 → 允许");
+    expect(root.textContent).toContain("联系人补全：允许 → 禁止");
     expect(root.textContent).toContain("提案人 emp_policy_reviser");
     expect(root.textContent).toContain("决定人 emp_policy_approver");
     expect(root.querySelector('time[datetime="2026-08-24T09:30:00Z"]')).not.toBeNull();
@@ -994,7 +994,7 @@ describe("SettingsCenter country policy workspace", () => {
     const entries = [...root.querySelectorAll<HTMLElement>(".country-history-list > li")];
     const v2 = entries.find((entry) => entry.textContent?.includes(version2.country_policy_version_id));
     const v4 = entries.find((entry) => entry.textContent?.includes(missingBase.country_policy_version_id));
-    expect(v2?.textContent).toContain("cold_b2b_email_allowed：禁止 → 允许");
+    expect(v2?.textContent).toContain("企业冷开发邮件：禁止 → 允许");
     expect(v2?.textContent).not.toContain("cold_b2b_email_allowed：允许 → 禁止");
     expect(v4?.textContent).toContain("基准版本未在当前历史中");
     expect(v4?.textContent).not.toContain("cold_b2b_email_allowed：");
@@ -1010,8 +1010,8 @@ describe("SettingsCenter country policy workspace", () => {
     fillCountryPolicy(root);
     await nextTick();
 
-    expect(root.textContent).toContain("public_research_allowed：未配置 → 允许");
-    expect(root.textContent).toContain("contact_enrichment_allowed：未配置 → 禁止");
+    expect(root.textContent).toContain("公开研究：未配置 → 允许");
+    expect(root.textContent).toContain("联系人补全：未配置 → 禁止");
   });
 
   it.each(["http-500", "network"] as const)(
@@ -1292,7 +1292,7 @@ describe("SettingsCenter country policy workspace", () => {
     }));
 
     await eventually(() => expect(root.textContent).toContain("尚无任何已激活国家政策，联系人补全保持阻断"));
-    expect(root.textContent).not.toContain("Hunter / Provider 生产组合尚未完成");
+    expect(root.textContent).not.toContain("Hunter / 服务商生产组合尚未完成");
   });
 
   it("maps all-denied readiness to a distinct explanation", async () => {

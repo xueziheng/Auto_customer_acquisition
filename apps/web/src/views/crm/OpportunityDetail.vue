@@ -174,9 +174,9 @@ function submitMarkLost(): void {
           <span>下一步 / 到期</span>
           <strong>{{ opportunity.next_action ?? "待确认" }} · {{ opportunity.next_action_due ?? "未设置" }}</strong>
         </div>
-        <div><span>账户 ID</span><strong>{{ opportunity.account_id }}</strong></div>
+        <div><span>账户编号</span><strong>{{ opportunity.account_id }}</strong></div>
         <div>
-          <span>需求 ID</span><RouterLink :to="{ name: 'validated-need-detail', params: { needId: opportunity.need_id } }">
+          <span>需求编号</span><RouterLink :to="{ name: 'validated-need-detail', params: { needId: opportunity.need_id } }">
             {{ opportunity.need_id }}
           </RouterLink>
         </div>
@@ -198,7 +198,7 @@ function submitMarkLost(): void {
       <div class="section-heading">
         <div>
           <p class="section-kicker">
-            SOURCE RECORD
+            来源记录
           </p><h2 id="facts-title">
             关键字段
           </h2>
@@ -272,7 +272,7 @@ function submitMarkLost(): void {
       aria-labelledby="amount-title"
     >
       <p class="section-kicker">
-        AMOUNT SUMMARY
+        金额摘要
       </p>
       <h2 id="amount-title">
         金额摘要
@@ -309,13 +309,13 @@ function submitMarkLost(): void {
       aria-labelledby="loss-title"
     >
       <p class="section-kicker">
-        DEAL OUTCOME
+        成交结果
       </p>
       <h2 id="loss-title">
         失败闭环
       </h2>
-      <p>失败原因：{{ opportunity.loss_reason ?? "未记录" }}</p>
-      <p>终止状态：{{ opportunity.died_at_state ?? "未记录" }}</p>
+      <p>失败原因：{{ opportunity.loss_reason ? lossReasonLabels[opportunity.loss_reason as LossReason] : "未记录" }}</p>
+      <p>终止状态：{{ opportunity.died_at_state ? stateLabels[opportunity.died_at_state as OpportunityState] : "未记录" }}</p>
     </section>
 
     <section
@@ -325,12 +325,12 @@ function submitMarkLost(): void {
       <div class="section-heading">
         <div>
           <p class="section-kicker">
-            HUMAN ACTION
+            人工操作
           </p><h2 id="actions-title">
             人工操作
           </h2>
         </div>
-        <span class="action-boundary">API / 域服务判权为最终裁决</span>
+        <span class="action-boundary">权限以后台服务校验为准</span>
       </div>
       <div class="controls">
         <select

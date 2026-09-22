@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 import { computed, inject, onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 
@@ -492,8 +493,8 @@ async function reconcileUncertain(command: ReconciliationCommand): Promise<void>
         const fact = current.reconciliation;
         const same = fact.reconciliation_id === command.reconciliation_id && fact.reason === command.reason && fact.provider_usage_artifact_ref === command.provider_usage_artifact_ref && fact.status === "confirmed_consumed" && fact.execution_id === attempt.executionId && fact.reconciled_by === client.identitySnapshot().identity?.employeeId;
         if (!same) { error.value = "当前已有不同核对事实；原请求存在冲突，不能重发"; return; }
-        if (current.recovery_action === "event_delivered") { notice.value = "精确恢复事件已送达，业务进度仍须刷新 Case 与 Run 核对"; return; }
-        if (current.recovery_action !== "resume_reconciliation") { error.value = "核对事实已记录，当前不可恢复；请刷新 Case 与 Run 核对"; return; }
+        if (current.recovery_action === "event_delivered") { notice.value = "精确恢复事件已送达，业务进度仍须刷新寻源案例与运行记录核对"; return; }
+        if (current.recovery_action !== "resume_reconciliation") { error.value = "核对事实已记录，当前不可恢复；请刷新寻源案例与运行记录核对"; return; }
       }
       if (!current.reconciliation && !current.can_current_user_reconcile) { error.value = "原执行当前不可恢复；保留原命令供核对"; return; }
     }
@@ -510,7 +511,7 @@ async function reconcileUncertain(command: ReconciliationCommand): Promise<void>
     }
     recoveryAttempt.value = null;
     const refreshed = await loadCase(true); if (!op.valid()) return;
-    notice.value = refreshed ? "核对请求已被接受；恢复进度以最新 Case 与 Run 为准，不代表搜索已完成" : "核对请求已被接受；最新状态暂不可读，请刷新核对";
+    notice.value = refreshed ? "核对请求已被接受；恢复进度以最新寻源案例与运行记录为准，不代表搜索已完成" : "核对请求已被接受；最新状态暂不可读，请刷新核对";
   } catch { if (op.valid()) error.value = "核对结果未知；保留原命令与原键，先读取精确执行事实"; }
   finally { if (op.valid()) mutating.value = false; }
 }
@@ -539,7 +540,7 @@ async function mutate(
     }
     notice.value = success;
   } catch {
-    if (op.valid()) error.value = "操作结果待核对，请刷新当前 Case，不自动重发";
+    if (op.valid()) error.value = "操作结果待核对，请刷新当前寻源案例，不自动重发";
   } finally {
     if (op.valid()) mutating.value = false;
   }
@@ -555,8 +556,8 @@ onMounted(() => void loadEntry());
         <RouterLink to="/sourcing">
           ← 返回寻源中心
         </RouterLink><p class="phase-eyebrow">
-          {{ isAdmissionRoute ? "SOURCING ADMISSION" : "SOURCING CASE" }}
-        </p><h1>{{ isAdmissionRoute ? "寻源准入详情" : "寻源 Case" }}</h1>
+          {{ isAdmissionRoute ? "寻源准入" : "寻源案例" }}
+        </p><h1>{{ isAdmissionRoute ? "寻源准入详情" : "寻源案例" }}</h1>
       </div>
       <button
         type="button"
@@ -567,7 +568,7 @@ onMounted(() => void loadEntry());
       </button>
     </div>
     <div class="safe-banner">
-      <span aria-hidden="true">i</span><div>{{ isAdmissionRoute ? "一个 Need 对应一个 Case；需求簇不是合并订单。排序快照一经记录不可变。" : "公开页面参考价（indicative）不可用于客户报价。事实、供应商自述、匹配推断和未知项必须分别阅读。" }}</div>
+      <span aria-hidden="true">i</span><div>{{ isAdmissionRoute ? "一个需求对应一个寻源案例；需求簇不是合并订单。排序快照一经记录不可变。" : "公开页面参考价不可用于客户报价。事实、供应商自述、匹配推断和未知项必须分别阅读。" }}</div>
     </div>
     <div
       v-if="error"
@@ -591,14 +592,14 @@ onMounted(() => void loadEntry());
     </div>
     <template v-else-if="admissionDetail">
       <section class="case-summary detail-panel">
-        <div><span>Admission</span><strong>{{ admissionDetail.admission.admission_id }}</strong></div>
-        <div><span>Case</span><strong>{{ admissionDetail.admission.case_id }}</strong></div>
+        <div><span>准入</span><strong>{{ admissionDetail.admission.admission_id }}</strong></div>
+        <div><span>寻源案例</span><strong>{{ admissionDetail.admission.case_id }}</strong></div>
         <div>
-          <span>Need</span><RouterLink :to="`/demand/needs/${admissionDetail.admission.need_id}`">
+          <span>需求</span><RouterLink :to="`/demand/needs/${admissionDetail.admission.need_id}`">
             {{ admissionDetail.admission.need_id }}
           </RouterLink>
         </div>
-        <div><span>状态</span><strong>{{ admissionDetail.admission.state }}</strong></div>
+        <div><span>状态</span><strong>{{ codeLabel(admissionDetail.admission.state) }}</strong></div>
         <div v-if="admissionDetail.admission.blocked_reason">
           <span>固定阻断原因</span><strong>{{ blockedReasonLabel(admissionDetail.admission.blocked_reason) }}</strong>
         </div>
@@ -608,13 +609,13 @@ onMounted(() => void loadEntry());
         <header>
           <div>
             <p class="card-kicker">
-              ADMISSION STATE &amp; TIME
+              准入状态与时间
             </p><h2>准入状态与时间</h2>
           </div>
         </header>
         <dl class="snapshot-grid">
-          <div><dt>状态</dt><dd>{{ admissionDetail.admission.state }}</dd></div>
-          <div><dt>Case 就绪时间</dt><dd>{{ displayTime(admissionDetail.admission.ready_at) }}</dd></div>
+          <div><dt>状态</dt><dd>{{ codeLabel(admissionDetail.admission.state) }}</dd></div>
+          <div><dt>寻源案例就绪时间</dt><dd>{{ displayTime(admissionDetail.admission.ready_at) }}</dd></div>
           <div><dt>{{ admissionTiming.label }}</dt><dd>{{ admissionTiming.value }}</dd></div>
         </dl>
       </section>
@@ -626,7 +627,7 @@ onMounted(() => void loadEntry());
         <header>
           <div>
             <p class="card-kicker">
-              PRIORITY SNAPSHOT
+              优先级快照
             </p><h2 id="snapshot-title">
               不可变排序快照
             </h2>
@@ -634,7 +635,7 @@ onMounted(() => void loadEntry());
           <span>{{ admissionDetail.admission.ranking_version ?? "无有效快照" }}</span>
         </header>
         <dl class="snapshot-grid">
-          <div><dt>Snapshot</dt><dd>{{ admissionDetail.admission.snapshot_id ?? "无" }}</dd></div>
+          <div><dt>快照</dt><dd>{{ admissionDetail.admission.snapshot_id ?? "无" }}</dd></div>
           <div><dt>需求簇</dt><dd>{{ admissionDetail.admission.cluster_id ?? "尚未归簇" }}</dd></div>
           <div><dt>成员数</dt><dd>{{ admissionDetail.admission.cluster_member_count ? `${admissionDetail.admission.cluster_member_count} 条已验证需求` : "未知" }}</dd></div>
           <div><dt>事实观测时间</dt><dd>{{ displayTime(admissionDetail.admission.facts_observed_at) }}</dd></div>
@@ -648,7 +649,7 @@ onMounted(() => void loadEntry());
         <header>
           <div>
             <p class="card-kicker">
-              ADMISSION AUDIT
+              准入审计
             </p><h2>准入审计</h2>
           </div><span>{{ policyLabel(admissionDetail.policy.status) }}</span>
         </header>
@@ -662,16 +663,16 @@ onMounted(() => void loadEntry());
     </template>
     <template v-else-if="sourcingCase">
       <section class="case-summary detail-panel">
-        <div><span>Case</span><strong>{{ sourcingCase.case_id }}</strong></div>
+        <div><span>寻源案例</span><strong>{{ sourcingCase.case_id }}</strong></div>
         <div>
-          <span>Need</span><RouterLink :to="`/demand/needs/${sourcingCase.need_id}`">
+          <span>需求</span><RouterLink :to="`/demand/needs/${sourcingCase.need_id}`">
             {{ sourcingCase.need_id }}
           </RouterLink>
         </div>
-        <div><span>状态</span><strong>{{ sourcingCase.state }}</strong></div>
+        <div><span>状态</span><strong>{{ codeLabel(sourcingCase.state) }}</strong></div>
         <div><span>梯子</span><strong>{{ sourcingCase.ladder_checked_to ?? "未知" }}</strong></div>
         <div v-if="sourcingCase.stop">
-          <span>停止原因</span><strong>{{ sourcingCase.stop.code }}</strong>
+          <span>停止原因</span><strong>{{ codeLabel(sourcingCase.stop.code) }}</strong>
         </div>
       </section>
 
@@ -679,7 +680,7 @@ onMounted(() => void loadEntry());
         <header>
           <div>
             <p class="card-kicker">
-              MATCH LADDER
+              匹配梯级
             </p><h2>匹配梯子检查</h2>
           </div><span>{{ checks.length }} 项</span>
         </header>
@@ -697,7 +698,7 @@ onMounted(() => void loadEntry());
             v-for="check in checks"
             :key="check.check_id"
           >
-            第 {{ check.rung }} 级 · {{ check.outcome }} · {{ check.checked_by }}<small v-if="check.evidence_refs.length">证据：{{ check.evidence_refs.join("、") }}</small>
+            第 {{ check.rung }} 级 · {{ codeLabel(check.outcome) }} · {{ check.checked_by }}<small v-if="check.evidence_refs.length">证据：{{ check.evidence_refs.join("、") }}</small>
           </li>
         </ol>
       </section>
@@ -709,7 +710,7 @@ onMounted(() => void loadEntry());
         <header>
           <div>
             <p class="card-kicker">
-              CANDIDATE EVIDENCE
+              候选证据
             </p><h2>候选与证据</h2>
           </div><span>{{ candidates.length }} 个</span>
         </header>
@@ -724,7 +725,7 @@ onMounted(() => void loadEntry());
           :key="candidate.candidate_id"
           class="candidate-card"
         >
-          <header><div><h3>{{ candidate.supplier_name }}</h3><p>{{ candidate.product_title }} · {{ candidate.verification_status }}</p></div><span class="status indicative">indicative</span></header>
+          <header><div><h3>{{ candidate.supplier_name }}</h3><p>{{ candidate.product_title }} · {{ codeLabel(candidate.verification_status) }}</p></div><span class="status indicative">参考价</span></header>
           <div class="candidate-columns">
             <section>
               <h4>网页观察事实</h4><dl>
@@ -756,7 +757,7 @@ onMounted(() => void loadEntry());
                 </template>
               </dl>
             </section>
-            <section><h4>未知 / 待核验</h4><p>{{ candidate.verification_missing.join("、") || "无" }}</p></section>
+            <section><h4>未知 / 待核验</h4><p>{{ candidate.verification_missing.map(code => codeLabel(code)).join("、") || "无" }}</p></section>
           </div>
           <section class="candidate-audit">
             <h4>规格逐项比较</h4><p
@@ -769,17 +770,17 @@ onMounted(() => void loadEntry());
                 v-for="comparison in candidate.spec_comparisons"
                 :key="comparison.spec_name"
               >
-                {{ comparison.spec_name }}：需求 {{ comparison.required }} · 提供 {{ comparison.offered ?? "未知" }} · {{ comparison.level }}<span v-if="comparison.substitutable !== null"> · 可替代：{{ comparison.substitutable ? "是" : "否" }}</span><span v-if="comparison.substitution_impact"> · 影响：{{ comparison.substitution_impact }}</span><span v-if="comparison.needs_customer_confirmation"> · 需客户确认</span>
+                {{ codeLabel(comparison.spec_name) }}：需求 {{ comparison.required }} · 提供 {{ comparison.offered ?? "未知" }} · {{ codeLabel(comparison.level) }}<span v-if="comparison.substitutable !== null"> · 可替代：{{ comparison.substitutable ? "是" : "否" }}</span><span v-if="comparison.substitution_impact"> · 影响：{{ comparison.substitution_impact }}</span><span v-if="comparison.needs_customer_confirmation"> · 需客户确认</span>
               </li>
             </ul>
           </section>
           <section class="candidate-audit">
-            <h4>八项核验</h4><p>产品类型、材质、尺寸、型号、数量档、MOQ、计价单位、币种</p><p>状态：{{ candidate.verification_status }} · 缺项：{{ candidate.verification_missing.join("、") || "无" }}</p><p v-if="candidate.rejection_reasons.length">
-              拒绝原因：{{ candidate.rejection_reasons.join("、") }}
+            <h4>八项核验</h4><p>产品类型、材质、尺寸、型号、数量档、最小起订量、计价单位、币种</p><p>状态：{{ codeLabel(candidate.verification_status) }} · 缺项：{{ candidate.verification_missing.map(code => codeLabel(code)).join("、") || "无" }}</p><p v-if="candidate.rejection_reasons.length">
+              拒绝原因：{{ candidate.rejection_reasons.map(code => codeLabel(code)).join("、") }}
             </p>
           </section>
           <div class="safe-banner source-warning">
-            <strong>不可用于客户报价</strong><span>公开页面参考价（indicative）</span>
+            <strong>不可用于客户报价</strong><span>公开页面参考价</span>
           </div>
           <ul class="indicative-prices">
             <li
@@ -790,7 +791,7 @@ onMounted(() => void loadEntry());
             </li>
           </ul>
           <p class="meta">
-            Artifact：{{ candidate.evidence.map((item) => item.artifact_id).join("、") }}
+            原始资料：{{ candidate.evidence.map((item) => item.artifact_id).join("、") }}
           </p>
         </article>
       </section>

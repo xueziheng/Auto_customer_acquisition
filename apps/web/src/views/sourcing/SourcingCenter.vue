@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 import { computed, inject, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 
@@ -174,7 +175,7 @@ function closeManualDialog(): void {
 function manualError(status: number): string {
   if (status === 409) return "准入状态已变化，请刷新队列后重试";
   if (status === 503) return "寻源准入服务暂不可用，请稍后重试";
-  if (status === 403) return "当前身份无权人工准入此 Case";
+  if (status === 403) return "当前身份无权人工准入此寻源案例";
   if (status === 404) return "准入记录不存在或不属于当前租户";
   return "人工准入未完成，请稍后重试";
 }
@@ -196,7 +197,7 @@ async function confirmManualAdmission(): Promise<void> {
     if (result.response.status === 200 && result.data) {
       manualRequestKeys.delete(target.admission_id);
       manualTarget.value = null;
-      notice.value = "已准入；这只代表该 Case 获准启动，不代表寻源、询价或报价已完成。";
+      notice.value = "已准入；这只代表该寻源案例获准启动，不代表寻源、询价或报价已完成。";
       await loadAll();
       return;
     }
@@ -218,7 +219,7 @@ onMounted(() => void loadAll());
     <div class="page-head">
       <div>
         <p class="phase-eyebrow">
-          SOURCING CENTER
+          寻源中心
         </p><h1>寻源中心</h1>
       </div>
       <button
@@ -230,11 +231,11 @@ onMounted(() => void loadAll());
       </button>
     </div>
     <div class="safe-banner">
-      <span aria-hidden="true">i</span><div>一个 Need 对应一个 Case；需求簇不是合并订单。簇规模只决定尚未启动 Case 的准入顺序。</div>
+      <span aria-hidden="true">i</span><div>一个需求对应一个寻源案例；需求簇不是合并订单。簇规模只决定尚未启动寻源案例的准入顺序。</div>
     </div>
     <div class="policy-strip">
       <strong>{{ policyLabel }}</strong>
-      <span v-if="policy.directive_version">Directive v{{ policy.directive_version }} · 每轮上限 {{ policy.batch_limit }}</span>
+      <span v-if="policy.directive_version">老板指令 v{{ policy.directive_version }} · 每轮上限 {{ policy.batch_limit }}</span>
     </div>
     <div
       v-if="error"
@@ -265,7 +266,7 @@ onMounted(() => void loadAll());
         <header>
           <div>
             <p class="phase-eyebrow">
-              ADMISSION QUEUE
+              待准入队列
             </p><h2 id="waiting-title">
               等待准入
             </h2>
@@ -275,7 +276,7 @@ onMounted(() => void loadAll());
           v-if="!waitingAdmissions.length && !blockedAdmissions.length"
           class="empty"
         >
-          当前没有等待准入的 Case
+          当前没有等待准入的寻源案例
         </p>
         <article
           v-for="item in waitingAdmissions"
@@ -287,7 +288,7 @@ onMounted(() => void loadAll());
             <RouterLink :to="`/sourcing/${item.admission_id}`">
               <strong>{{ item.case_id }}</strong>
             </RouterLink>
-            <small>Need {{ item.need_id }}</small>
+            <small>需求 {{ item.need_id }}</small>
           </div>
           <dl>
             <div><dt>需求簇</dt><dd>{{ clusterLabel(item) }}</dd></div>
@@ -317,7 +318,7 @@ onMounted(() => void loadAll());
             <RouterLink :to="`/sourcing/${item.admission_id}`">
               <strong>{{ item.case_id }}</strong>
             </RouterLink>
-            <small>Need {{ item.need_id }}</small>
+            <small>需求 {{ item.need_id }}</small>
           </div>
           <dl>
             <div><dt>状态</dt><dd>已阻断 · {{ blockedLabel(item) }}</dd></div>
@@ -338,7 +339,7 @@ onMounted(() => void loadAll());
         <header>
           <div>
             <p class="phase-eyebrow">
-              ADMISSION IN PROGRESS
+              准入处理中
             </p><h2 id="active-title">
               处理中
             </h2>
@@ -355,7 +356,7 @@ onMounted(() => void loadAll());
           :key="item.admission_id"
           class="case-row"
         >
-          <span><strong>{{ item.case_id }}</strong><small>Need {{ item.need_id }}</small></span>
+          <span><strong>{{ item.case_id }}</strong><small>需求 {{ item.need_id }}</small></span>
           <span>{{ item.state === "starting" ? "启动绑定中" : "已准入" }}</span>
           <span>
             {{ formatTime(item.ready_at) }} · {{ activeTiming(item) }}
@@ -369,7 +370,7 @@ onMounted(() => void loadAll());
               准入审计详情
             </RouterLink>
             <RouterLink :to="`/sourcing/${item.case_id}`">
-              Case 工作台
+              寻源案例工作台
             </RouterLink>
           </nav>
         </article>
@@ -385,20 +386,20 @@ onMounted(() => void loadAll());
       <header>
         <div>
           <p class="phase-eyebrow">
-            CASE WORKBENCH
+            寻源案例工作台
           </p><h2 id="case-workbench-title">
-            Case 工作台
+            寻源案例工作台
           </h2>
         </div><span>{{ cases.length }} 个</span>
       </header>
       <p class="case-workbench-note">
-        此处独立展示 Case 记录，不根据准入队列推断其准入状态。
+        此处独立展示寻源案例记录，不根据准入队列推断其准入状态。
       </p>
       <p
         v-if="!cases.length"
         class="empty"
       >
-        当前没有可展示的寻源 Case
+        当前没有可展示的寻源案例
       </p>
       <RouterLink
         v-for="item in cases"
@@ -406,9 +407,9 @@ onMounted(() => void loadAll());
         class="case-row"
         :to="`/sourcing/${item.case_id}`"
       >
-        <span><strong>{{ item.case_id }}</strong><small>Need {{ item.need_id }}</small></span>
-        <span>Case 状态：{{ item.state }} · 梯子至 {{ item.ladder_checked_to ?? "未知" }}</span>
-        <span v-if="item.stop">停止：{{ item.stop.code }}</span>
+        <span><strong>{{ item.case_id }}</strong><small>需求 {{ item.need_id }}</small></span>
+        <span>寻源案例状态：{{ codeLabel(item.state) }} · 梯子至 {{ item.ladder_checked_to ?? "未知" }}</span>
+        <span v-if="item.stop">停止：{{ codeLabel(item.stop.code) }}</span>
       </RouterLink>
     </section>
 
@@ -427,7 +428,7 @@ onMounted(() => void loadAll());
         <h2 id="manual-dialog-title">
           确认人工准入
         </h2>
-        <p>将允许 Case {{ manualTarget.case_id }} 启动既有寻源 Workflow。此操作不代表已找到供应、已询价或已报价。</p>
+        <p>将允许寻源案例 {{ manualTarget.case_id }} 启动既有寻源工作流。此操作不代表已找到供应、已询价或已报价。</p>
         <div>
           <button
             type="button"

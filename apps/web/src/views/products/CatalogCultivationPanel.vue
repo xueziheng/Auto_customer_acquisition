@@ -48,7 +48,7 @@ function boundFacts(item: CultivationApiView): CatalogFacts | null {
 }
 
 function unknownFacts(facts: CatalogFacts | null): string[] {
-  if (!facts) return ["Canonical 评估事实未知"];
+  if (!facts) return ["标准化评估事实未知"];
   const labels: string[] = [];
   if (facts.recurring_unknown_account_count > 0) labels.push(`复购事实 ${facts.recurring_unknown_account_count} 个账户未知`);
   if (facts.unknown_country_account_count > 0) labels.push(`客户国家 ${facts.unknown_country_account_count} 个账户未知`);
@@ -128,7 +128,7 @@ onMounted(() => {
     <header class="region-head">
       <div>
         <p class="phase-eyebrow">
-          CULTIVATION QUEUE
+          培养队列
         </p><h2 id="catalog-cultivation-title">
           培养队列
         </h2>
@@ -161,7 +161,7 @@ onMounted(() => {
       v-else-if="loaded && !error && !cases.length"
       class="region-empty"
     >
-      当前没有排队中的培养 Case
+      当前没有排队中的培养寻源案例
     </div>
     <div
       v-else
@@ -182,7 +182,7 @@ onMounted(() => {
           <div><dt>排队时间</dt><dd>{{ formatDate(row.item.cultivation_case.queued_at) }}</dd></div>
         </dl>
         <div class="facts-summary">
-          <strong>绑定的 Canonical 评估事实</strong>
+          <strong>绑定的标准化评估事实</strong>
           <p>去重客户数：{{ row.facts?.distinct_account_count ?? "未知" }}</p>
           <p>数量/单位证据覆盖：{{ row.facts ? `${row.facts.quantity_unit_covered_account_count} / ${row.facts.distinct_account_count}` : "未知" }}</p>
           <p>安全证据摘要：{{ row.facts ? `${row.facts.evidence_summaries.length} 条` : "未知" }}</p>

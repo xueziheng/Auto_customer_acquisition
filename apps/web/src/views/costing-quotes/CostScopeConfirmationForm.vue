@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 import { computed, inject, reactive, ref } from "vue";
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
@@ -49,11 +50,11 @@ async function read(): Promise<void> {
   <section class="panel">
     <h2>成本适用性确认</h2><p>确认完整目标需求、条款、期限与每项成本来源的人工映射；不是供应商原话。</p>
     <dl>
-      <div><dt>产品 / 规格</dt><dd>{{ context.specification.product_category }} · {{ context.specification.material ?? '材料缺失' }} · {{ context.specification.size_spec ?? '尺寸缺失' }}</dd></div><div><dt>用途 / 包装 / 认证</dt><dd>{{ context.specification.application ?? '用途缺失' }} · {{ context.specification.packaging ?? '包装缺失' }} · {{ context.specification.certification_required ?? '认证缺失' }}</dd></div><div><dt>数量 / 单位</dt><dd>{{ context.need.quantity }} · {{ context.need.unit ?? '单位缺失' }}</dd></div><div><dt>目的地 / 时间</dt><dd>{{ context.need.destination ?? '目的地缺失' }} · {{ context.need.required_by ?? '时间要求缺失' }}</dd></div><div><dt>完整需求 hash</dt><dd>{{ context.need_facts_hash }}</dd></div><div><dt>报价期限</dt><dd>{{ validUntil || '尚未填写' }}</dd></div><div
+      <div><dt>产品 / 规格</dt><dd>{{ context.specification.product_category }} · {{ context.specification.material ?? '材料缺失' }} · {{ context.specification.size_spec ?? '尺寸缺失' }}</dd></div><div><dt>用途 / 包装 / 认证</dt><dd>{{ context.specification.application ?? '用途缺失' }} · {{ context.specification.packaging ?? '包装缺失' }} · {{ context.specification.certification_required ?? '认证缺失' }}</dd></div><div><dt>数量 / 单位</dt><dd>{{ context.need.quantity }} · {{ context.need.unit ?? '单位缺失' }}</dd></div><div><dt>目的地 / 时间</dt><dd>{{ context.need.destination ?? '目的地缺失' }} · {{ context.need.required_by ?? '时间要求缺失' }}</dd></div><div><dt>完整需求校验值</dt><dd>{{ context.need_facts_hash }}</dd></div><div><dt>报价期限</dt><dd>{{ validUntil || '尚未填写' }}</dd></div><div
         v-for="term in terms"
         :key="term.kind"
       >
-        <dt>{{ term.kind }}</dt><dd>{{ term.text }}</dd>
+        <dt>{{ codeLabel(term.kind) }}</dt><dd>{{ term.text }}</dd>
       </div>
     </dl>
     <label
@@ -75,7 +76,7 @@ async function read(): Promise<void> {
       {{ message }} <code v-if="key">{{ key }}</code>
     </p>
     <p v-if="selected">
-      选择的确认 ID {{ selected.confirmation_id }} <strong v-if="stale(selected)">绑定已变化，旧确认失效；请人工重新确认</strong>
+      选择的确认编号 {{ selected.confirmation_id }} <strong v-if="stale(selected)">绑定已变化，旧确认失效；请人工重新确认</strong>
     </p>
     <article
       v-for="record in records"

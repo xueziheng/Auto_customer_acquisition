@@ -76,7 +76,7 @@ describe("ProductSupplyCenter", () => {
       expect(root.textContent).toContain("不锈钢紧固件");
     });
     const link = root.querySelector<HTMLAnchorElement>('a[href="/sourcing/src_existing"]');
-    expect(link?.textContent).toContain("查看寻源 Case 与候选证据");
+    expect(link?.textContent).toContain("查看寻源案例与候选证据");
     expect(root.textContent).toContain("不可用于客户报价");
   });
 

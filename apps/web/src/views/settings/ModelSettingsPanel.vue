@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 /* global setTimeout, clearTimeout */
 import { computed, inject, onMounted, onBeforeUnmount, ref } from 'vue';
 import type { components } from '../../api/api';
@@ -20,7 +21,7 @@ function resetDraft(){
 }
 let key:string|null=null, timer:ReturnType<typeof setTimeout>|undefined;
 const labels:Record<View['status'],string>={missing:'尚未配置',pending_restart:'已保存，等待进程重启',unverified:'已装配，尚未验证',verified:'连接验证通过',failed:'连接测试未通过'};
-const fields:Record<keyof Limits,string>={window_seconds:'额度窗口（秒）',tenant_calls:'公司调用上限',employee_calls:'每人调用上限',tenant_concurrency:'公司并发上限',employee_concurrency:'每人并发上限',max_input_bytes:'输入上限（字节）',max_output_tokens:'输出上限（token）',timeout_seconds:'超时（秒）'};
+const fields:Record<keyof Limits,string>={window_seconds:'额度窗口（秒）',tenant_calls:'公司调用上限',employee_calls:'每人调用上限',tenant_concurrency:'公司并发上限',employee_concurrency:'每人并发上限',max_input_bytes:'输入上限（字节）',max_output_tokens:'输出上限（模型计量单位）',timeout_seconds:'超时（秒）'};
 const scope=useQuoteRequestScope(client,()=>[],()=>{view.value=null;limits.value=null;model.value='';editVersion.value=null;exportEnabled.value=false;key=null;busy.value=false;dirty.value=false;if(timer)clearTimeout(timer);});
 async function load() {
   const op=scope.begin('load');if(!op)return;
@@ -88,10 +89,10 @@ onMounted(()=>void load());onBeforeUnmount(()=>{if(timer)clearTimeout(timer);});
       <strong>{{ labels[view.status] }}</strong>
       <p>配置版本：{{ view.configuration_version??'未设置' }} · 后台：{{ view.worker_available?'可用':'不可用或版本未匹配' }} · 业务资料外发：{{ view.model_data_export_enabled?'已允许':'未允许' }}</p>
       <p v-if="view.failure_code">
-        最近失败：{{ view.failure_code }}
+        最近失败：{{ codeLabel(view.failure_code) }}
       </p>
       <p v-if="view.status==='pending_restart'">
-        请管理员将部署文件同步到本页配置版本及参数，并重启 API 与后台，再显式测试连接。
+        请管理员将部署文件同步到本页配置版本及参数，并重启接口与后台，再显式测试连接。
       </p>
       <p
         v-if="view.probe_state==='queued'||view.probe_state==='running'"
@@ -126,7 +127,7 @@ onMounted(()=>void load());onBeforeUnmount(()=>{if(timer)clearTimeout(timer);});
         @input="dirty=true"
       >
         <label><input v-model="exportEnabled" type="checkbox" :disabled="busy">允许业务资料发送至模型服务（保存新版本）</label>
-        <label>模型 ID<input
+        <label>模型编号<input
           v-model="model"
           required
           maxlength="128"

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "./displayLabels";
 /* global crypto, document, HTMLButtonElement, HTMLElement, KeyboardEvent, MouseEvent, Node, URL, window */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 
@@ -131,7 +132,7 @@ onBeforeUnmount(() => document.removeEventListener("mousedown", onDocumentPointe
     </header>
     <div class="provenance-body">
       <dl>
-        <div><dt>来源类型</dt><dd>{{ provenance.source_type }}</dd></div>
+        <div><dt>来源类型</dt><dd>{{ codeLabel(provenance.source_type) }}</dd></div>
         <div><dt>来源标识</dt><dd>{{ provenance.source_id }}</dd></div>
         <div><dt>提取者</dt><dd>{{ provenance.extracted_by }}</dd></div>
         <div><dt>提取时间</dt><dd>{{ provenance.extracted_at }}</dd></div>

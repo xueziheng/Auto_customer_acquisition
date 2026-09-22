@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 /* global Response */
 import { computed, inject, onMounted, ref } from "vue";
 
@@ -117,7 +118,7 @@ async function startDiscovery(): Promise<void> {
   actionMessage.value = null;
   const hints = roleHints();
   if (!hypothesisId.value || !campaignId.value || !assessmentRef.value || hints.length === 0) {
-    actionMessage.value = "请填写假设、Campaign、角色线索和正当利益评估引用";
+    actionMessage.value = "请填写假设、活动、角色线索和正当利益评估引用";
     return;
   }
   actionBusy.value = true;
@@ -159,7 +160,7 @@ onMounted(() => void loadAccounts());
   <div class="shell discovery-shell">
     <div class="page-head">
       <h1>客户发现</h1>
-      <span class="meta">企业消歧、法律依据、可达性验证与 Campaign 入组</span>
+      <span class="meta">企业消歧、法律依据、可达性验证与活动入组</span>
     </div>
 
 
@@ -169,7 +170,7 @@ onMounted(() => void loadAccounts());
       aria-label="只研究入口"
     >
       <p>
-        只研究公开来源：无需 Campaign，不补全联系人、不验证邮箱、不发送、不报价。<RouterLink to="/commands">
+        只研究公开来源：无需活动，不补全联系人、不验证邮箱、不发送、不报价。<RouterLink to="/commands">
           到指挥中心创建研究提案 →
         </RouterLink>
       </p>
@@ -181,11 +182,11 @@ onMounted(() => void loadAccounts());
     >
       <div>
         <h2>从已通过门槛的需求假设开始</h2>
-        <p>任务只会把 Provider 结果写入潜客域；只有已验证邮箱会进入 Campaign。</p>
+        <p>任务只会把服务商结果写入潜客域；只有已验证邮箱会进入活动。</p>
       </div>
       <form @submit.prevent="startDiscovery">
         <label>
-          需求假设 ID
+          需求假设编号
           <input
             v-model="hypothesisId"
             autocomplete="off"
@@ -193,7 +194,7 @@ onMounted(() => void loadAccounts());
           >
         </label>
         <label>
-          Campaign ID
+          活动编号
           <input
             v-model="campaignId"
             autocomplete="off"
@@ -214,7 +215,7 @@ onMounted(() => void loadAccounts());
           <input
             v-model="assessmentRef"
             autocomplete="off"
-            placeholder="LIA 文档引用"
+            placeholder="合法利益评估文档引用"
           >
         </label>
         <button
@@ -316,7 +317,7 @@ onMounted(() => void loadAccounts());
           </div>
 
           <dl class="account-facts">
-            <dt>企业类型</dt><dd>{{ detail.account.entity_type ?? "—" }}</dd>
+            <dt>企业类型</dt><dd>{{ codeLabel(detail.account.entity_type, "—") }}</dd>
             <dt>行业</dt><dd>{{ detail.account.industry ?? "—" }}</dd>
             <dt>规模线索</dt><dd>{{ detail.account.size_hint ?? "—" }}</dd>
             <dt>来源信号</dt>
@@ -372,7 +373,7 @@ onMounted(() => void loadAccounts());
                   </span>
                 </div>
                 <dl>
-                  <dt>法律依据</dt><dd>{{ point.legal_basis }} · {{ point.contact_type }}</dd>
+                  <dt>法律依据</dt><dd>{{ codeLabel(point.legal_basis) }} · {{ codeLabel(point.contact_type) }}</dd>
                   <dt>来源</dt>
                   <dd>
                     <a

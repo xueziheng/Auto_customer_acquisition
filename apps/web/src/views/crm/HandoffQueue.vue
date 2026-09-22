@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 /* global HTMLButtonElement, HTMLOListElement, Response */
 import { computed, inject, nextTick, onMounted, ref, watch } from "vue";
 
@@ -499,7 +500,7 @@ onMounted(() => {
       </div>
       <nav
         class="topnav"
-        aria-label="CRM 页面"
+        aria-label="客户管理页面"
       >
         <RouterLink to="/crm/opportunities">
           机会看板
@@ -525,7 +526,7 @@ onMounted(() => {
       >
         <header class="pane-header">
           <p class="eyebrow">
-            EVIDENCE LEDGER
+            证据账本
           </p>
           <div class="heading-row">
             <div>
@@ -548,7 +549,7 @@ onMounted(() => {
           <div class="fairness-rule">
             <strong>等待最久优先</strong>
             <span>当前可见 {{ visibleQueue.length }} 项（最多50项，按当前授权范围）；等待不是人工工作耗时。</span>
-            <span>requested_at 升序 / wait_seconds 降序；不按分数排序</span>
+            <span>按请求时间从早到晚、等待时长从长到短排列；不按分数排序</span>
           </div>
           <p
             v-if="stale"
@@ -608,7 +609,7 @@ onMounted(() => {
               <span class="wait-time"><small>已等待</small>{{ item.wait_seconds }} 秒</span>
               <span class="queue-order-row"><span class="queue-order">等待顺序第 {{ index + 1 }} 项</span><span class="requested-at">{{ item.requested_at }}</span></span>
               <strong class="account-name">{{ item.account_name }}</strong>
-              <span class="card-meta">{{ item.country }} · 指派员工 {{ item.assigned_to ?? "未分配" }} · 状态 {{ item.state }}</span>
+              <span class="card-meta">{{ item.country }} · 指派员工 {{ item.assigned_to ?? "未分配" }} · 状态 {{ codeLabel(item.state) }}</span>
               <span class="handoff-inference">
                 <strong>推断 / 价值与建议</strong>
                 <span><b>价值说明：</b>{{ item.why_valuable }}</span>
@@ -668,13 +669,13 @@ onMounted(() => {
       >
         <header class="pane-header">
           <p class="eyebrow">
-            HUMAN ACTION
+            人工操作
           </p>
           <h2 id="operation-title">
             操作状态
           </h2>
           <p class="subcopy">
-            API / 域服务判权为最终裁决
+            权限以后台服务校验为准
           </p>
         </header>
         <div class="status-content">
@@ -701,7 +702,7 @@ onMounted(() => {
             <h3>安全状态</h3>
             <p><strong>403 · 没有权限</strong> 清空受保护详情并禁用操作。</p>
             <p><strong>503 · 服务暂时不可用</strong> 保留最近成功内容并标记可能过期，只允许手工恢复。</p>
-            <p><strong>Empty</strong> 无事项时不能接受接管。</p>
+            <p><strong>暂无记录</strong> 无事项时不能接受接管。</p>
           </section>
         </div>
       </aside>

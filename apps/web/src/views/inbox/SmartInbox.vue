@@ -109,7 +109,7 @@ function formatDate(value: string | null): string {
 
 function safeError(status: number): string {
   if (status === 404) return "所选会话不存在或不可见";
-  if (status === 401 || status === 403) return "当前身份无权访问 Smart Inbox";
+  if (status === 401 || status === 403) return "当前身份无权访问智能收件箱";
   if (status === 503) return "会话服务暂不可用";
   return "请求未完成，请稍后重试";
 }
@@ -247,9 +247,9 @@ onMounted(() => void loadItems());
     <div class="page-head inbox-head">
       <div>
         <p class="eyebrow">
-          REPLY CONTROL PLANE
+          回复处理
         </p>
-        <h1>Smart Inbox</h1>
+        <h1>智能收件箱</h1>
       </div>
       <button
         type="button"
@@ -334,7 +334,7 @@ onMounted(() => void loadItems());
       >
         <header>
           <div>
-            <span class="account-label">ACCOUNT</span>
+            <span class="account-label">企业</span>
             <h2>{{ detail.account_id }}</h2>
             <p>{{ detail.conversation_id }} · {{ detail.channel }}</p>
           </div>
@@ -356,9 +356,9 @@ onMounted(() => void loadItems());
               <time>{{ formatDate(message.sent_at) }}</time>
             </div>
             <dl>
-              <div><dt>消息 ID</dt><dd>{{ message.message_id }}</dd></div>
+              <div><dt>消息编号</dt><dd>{{ message.message_id }}</dd></div>
               <div v-if="message.outbound_message_id">
-                <dt>关联出站 ID</dt><dd><code>{{ message.outbound_message_id }}</code></dd>
+                <dt>关联出站编号</dt><dd><code>{{ message.outbound_message_id }}</code></dd>
               </div>
               <div>
                 <dt>原件引用</dt><dd>

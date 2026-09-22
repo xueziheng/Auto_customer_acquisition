@@ -1,9 +1,10 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 /* global Event, HTMLTextAreaElement */
 import { inject, reactive, ref, watch } from "vue";
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
-import { costItemLabels, createQuotePriceBody, utf16SelectionToCodepoints } from "./quote-input";
+import { costItemLabel, costItemLabels, createQuotePriceBody, utf16SelectionToCodepoints } from "./quote-input";
 import { quoteError, useQuoteConfirmation, useQuoteRequestScope } from "./quote-request-scope";
 const props = defineProps<{ opportunityId: string; needId: string }>();
 const emit = defineEmits<{ saved: [] }>();
@@ -59,10 +60,10 @@ async function save(): Promise<void> {
   try { money = createQuotePriceBody(form.amount, form.currency); } catch { message.value = "请填写金额和币种"; return; }
   let body: components["schemas"]["SupplierPriceEvidenceCreate"] | components["schemas"]["ExpenseEvidenceCreate"];
   if (form.kind === "supplier_price") {
-    if (form.basis === "actual") { message.value = "采购价格请选择 quoted 或 indicative"; return; }
+    if (form.basis === "actual") { message.value = "采购价格请选择已报价或参考价"; return; }
     body = { ...money, kind: "supplier_price", basis: form.basis, opportunity_id: props.opportunityId, need_id: props.needId, source_ref: locator.value.source_ref, locator: locator.value.locator, unit: form.unit, moq: Number(form.moq), quantity_min: Number(form.min), quantity_max: Number(form.max), supplier_ref: form.supplier, specification: form.spec, destination: form.destination, quoted_at: form.observed, valid_until: form.valid };
   } else {
-    if (form.basis === "indicative") { message.value = "费用依据请选择 quoted 或 actual"; return; }
+    if (form.basis === "indicative") { message.value = "费用依据请选择已报价或实际"; return; }
     body = { ...money, kind: "confirmed_expense", basis: form.basis, opportunity_id: props.opportunityId, source_ref: locator.value.source_ref, locator: locator.value.locator, item_type: form.itemType, quantity: Number(form.quantity), allocation_scope: form.allocation, is_per_unit: form.perUnit, observed_at: form.observed, valid_until: form.valid || null };
   }
   await confirm(body, (id, signal) => client.POST("/costing-quotes/price-evidence", { params: { header: { "Idempotency-Key": id } }, body, signal }), (data) => { records.value = [data, ...records.value.filter((item) => item.evidence_id !== data.evidence_id)]; emit("saved"); });
@@ -124,13 +125,13 @@ async function read(): Promise<void> {
       <label>价格性质<select
         v-model="form.basis"
         name="price-basis"
-      ><option value="quoted">已报价 quoted</option><option
+      ><option value="quoted">已报价</option><option
         v-if="form.kind === 'supplier_price'"
         value="indicative"
-      >参考价 indicative</option><option
+      >参考价</option><option
         v-else
         value="actual"
-      >实际凭证 actual</option></select></label>
+      >实际凭证</option></select></label>
       <label>原始金额<input
         v-model="form.amount"
         name="price-amount"
@@ -142,7 +143,7 @@ async function read(): Promise<void> {
         <label>计价单位<input
           v-model="form.unit"
           name="price-unit"
-        ></label><label>MOQ<input
+        ></label><label>最小起订量<input
           v-model="form.moq"
           name="price-moq"
         ></label><label>数量档下限<input
@@ -175,7 +176,7 @@ async function read(): Promise<void> {
       <label>报价 / 观察时间（含时区）<input
         v-model="form.observed"
         name="price-observed"
-      ></label><label>有效期（actual 可空）<input
+      ></label><label>有效期（实际可空）<input
         v-model="form.valid"
         name="price-valid"
       ></label>
@@ -194,10 +195,10 @@ async function read(): Promise<void> {
       v-for="record in records"
       :key="record.evidence_id"
     >
-      <h3>{{ record.evidence_id }} · {{ record.basis }}</h3><p>{{ record.amount }} {{ record.currency }} · {{ record.source.source_ref }} · {{ record.evidence_hash }}</p><p>确认人 {{ record.confirmed_by }} · {{ record.confirmed_at }}</p><p v-if="record.kind === 'supplier_price'">
+      <h3>{{ record.evidence_id }} · {{ codeLabel(record.basis) }}</h3><p>{{ record.amount }} {{ record.currency }} · {{ record.source.source_ref }} · {{ record.evidence_hash }}</p><p>确认人 {{ record.confirmed_by }} · {{ record.confirmed_at }}</p><p v-if="record.kind === 'supplier_price'">
         {{ record.specification }} · {{ record.quantity_min }}–{{ record.quantity_max }} {{ record.unit }} · {{ record.destination }} · {{ record.valid_until }}
       </p><p v-else>
-        {{ record.item_type }} · {{ record.allocation_scope }} · {{ record.is_per_unit ? '单件' : '整单' }} · {{ record.valid_until ?? '无有效期（实际凭证）' }}
+        {{ costItemLabel(record.item_type) }} · {{ record.allocation_scope }} · {{ record.is_per_unit ? '单件' : '整单' }} · {{ record.valid_until ?? '无有效期（实际凭证）' }}
       </p>
     </article>
   </section>

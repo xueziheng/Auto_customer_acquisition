@@ -86,7 +86,7 @@ async function read(): Promise<void> {
       {{ message }} <code v-if="key">幂等键 {{ key }}</code>
     </p>
     <dl v-if="saved">
-      <div><dt>政策 / hash</dt><dd>{{ saved.policy_id }} / {{ saved.content_hash }}</dd></div><div><dt>目标 / 底线比例</dt><dd>{{ saved.target_margin_rate }} / {{ saved.minimum_margin_rate }}</dd></div><div><dt>确认来源</dt><dd>{{ saved.source?.source_ref }} · {{ saved.confirmed_by }} · {{ saved.confirmed_at }}</dd></div>
+      <div><dt>政策 / 校验值</dt><dd>{{ saved.policy_id }} / {{ saved.content_hash }}</dd></div><div><dt>目标 / 底线比例</dt><dd>{{ saved.target_margin_rate }} / {{ saved.minimum_margin_rate }}</dd></div><div><dt>确认来源</dt><dd>{{ saved.source?.source_ref }} · {{ saved.confirmed_by }} · {{ saved.confirmed_at }}</dd></div>
     </dl>
   </section>
 </template>

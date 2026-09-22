@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 /* global URL */
 import { computed, inject, onMounted, ref } from "vue";
 
@@ -101,7 +102,7 @@ onMounted(() => void loadRadar());
     <div class="page-head radar-head">
       <div>
         <p class="eyebrow">
-          DEMAND INTELLIGENCE
+          需求情报
         </p>
         <h1>需求雷达</h1>
       </div>
@@ -184,7 +185,7 @@ onMounted(() => void loadRadar());
 
       <template v-else-if="activeTab === 'signals'">
         <header class="section-head">
-          <div><span class="kind-badge fact">来源观察</span><h2>Demand Signal · 需求信号</h2></div>
+          <div><span class="kind-badge fact">来源观察</span><h2>需求信号</h2></div>
           <p>信号只是市场中发生过的观察，不等于客户会购买。</p>
         </header>
         <div
@@ -197,10 +198,10 @@ onMounted(() => void loadRadar());
             class="radar-card signal-card"
           >
             <header>
-              <div><span class="signal-type">{{ signal.signal_type }}</span><h3>{{ signal.entity_name }}</h3></div>
-              <span class="record-status">{{ signal.status }}</span>
+              <div><span class="signal-type">{{ codeLabel(signal.signal_type) }}</span><h3>{{ signal.entity_name }}</h3></div>
+              <span class="record-status">{{ codeLabel(signal.status) }}</span>
             </header>
-            <code class="record-id">Signal ID · {{ signal.signal_id }}</code>
+            <code class="record-id">信号编号 · {{ signal.signal_id }}</code>
             <ResearchEvidenceCard :signal="signal" />
             <div class="fact-block">
               <span>原始观察</span>
@@ -214,7 +215,7 @@ onMounted(() => void loadRadar());
               <p>{{ signal.possible_need }}</p>
             </div>
             <footer>
-              <span>{{ formatDate(signal.observed_at) }} · {{ signal.source_type }}</span>
+              <span>{{ formatDate(signal.observed_at) }} · {{ codeLabel(signal.source_type) }}</span>
               <a
                 v-if="safeSourceUrl(signal.source_url)"
                 :href="safeSourceUrl(signal.source_url) ?? undefined"
@@ -235,7 +236,7 @@ onMounted(() => void loadRadar());
 
       <template v-else-if="activeTab === 'hypotheses'">
         <header class="section-head inference-head">
-          <div><span class="kind-badge inference">推断</span><h2>Need Hypothesis · 需求假设</h2></div>
+          <div><span class="kind-badge inference">推断</span><h2>需求假设</h2></div>
           <p>档位由代码根据证据等级推导；它不是模型输出的概率。</p>
         </header>
         <div
@@ -252,7 +253,7 @@ onMounted(() => void loadRadar());
               <span class="tier">置信档位：{{ confidenceLabel(hypothesis.confidence_tier) }}</span>
             </header>
             <p class="record-id">
-              Hypothesis ID · {{ hypothesis.hypothesis_id }} · Account ID · {{ hypothesis.account_id }}
+              需求假设编号 · {{ hypothesis.hypothesis_id }} · 企业编号 · {{ hypothesis.account_id }}
             </p>
             <p class="category">
               {{ hypothesis.category }}
@@ -294,7 +295,7 @@ onMounted(() => void loadRadar());
 
       <template v-else-if="activeTab === 'needs'">
         <header class="section-head validated-head">
-          <div><span class="kind-badge validated">客户确认</span><h2>Validated Need · 已验证需求</h2></div>
+          <div><span class="kind-badge validated">客户确认</span><h2>已验证需求</h2></div>
           <p>这里只展示客户明确表达，或有人工确认留痕的需求字段。</p>
         </header>
         <div
@@ -329,7 +330,7 @@ onMounted(() => void loadRadar());
               </article>
             </div>
             <footer>
-              <span>状态：{{ need.status }} · {{ formatDate(need.created_at) }}</span>
+              <span>状态：{{ codeLabel(need.status) }} · {{ formatDate(need.created_at) }}</span>
               <span
                 v-if="need.missing_for_sourcing.length"
                 class="missing"
@@ -354,7 +355,7 @@ onMounted(() => void loadRadar());
 
       <template v-else>
         <header class="section-head cluster-head">
-          <div><span class="kind-badge cluster">聚合</span><h2>Need Cluster · 需求簇</h2></div>
+          <div><span class="kind-badge cluster">聚合</span><h2>需求簇</h2></div>
           <p>需求簇来自已验证需求的确定性聚合，不把相似度包装成事实。</p>
         </header>
         <div

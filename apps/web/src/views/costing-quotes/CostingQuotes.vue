@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 import { computed, inject, reactive, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 
@@ -130,7 +131,7 @@ const itemTypes = [
   ["sample_fee", "样品"],
   ["mold_fee", "模具"],
   ["customization_fee", "定制"],
-  ["logo_printing", "Logo 印刷"],
+  ["logo_printing", "标志印刷"],
   ["packaging", "包装"],
   ["quality_inspection", "质检"],
   ["wastage", "损耗"],
@@ -146,7 +147,7 @@ const itemTypes = [
   ["customer_acquisition", "获客"],
   ["contact_data_cost", "联系人数据"],
   ["ad_allocation", "广告分摊"],
-  ["agent_api_allocation", "Agent/API 分摊"],
+  ["agent_api_allocation", "智能助手/接口分摊"],
   ["returns_reserve", "退货售后预留"],
 ] as const;
 
@@ -162,7 +163,7 @@ function safeError(status: number): string {
 function validOpportunity(): boolean {
   if (!routeInputValid.value) { error.value = "路由中的机会或成本引用无效，请从精确对象链接重新进入"; return false; }
   if (!/^opp_[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(opportunityId.value.trim())) {
-    error.value = "请输入有效的 Opportunity ID";
+    error.value = "请输入有效的贸易机会编号";
     return false;
   }
   return true;
@@ -229,7 +230,7 @@ async function createSheet(): Promise<void> {
     version_type: versionType.value,
   };
   if (body.version_type === "quoted" && !body.fx_snapshot_id) {
-    error.value = "QUOTED 版本必须填写汇率快照 ID";
+    error.value = "已报价版本必须填写汇率快照编号";
     return;
   }
   saving.value = true;
@@ -427,14 +428,14 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
     <div class="page-head costing-head">
       <div>
         <p class="phase-eyebrow">
-          DETERMINISTIC COSTING
+          确定性成本核算
         </p><h1>成本与报价</h1>
       </div>
-      <span class="status manual-status">Phase 2 · 成本与报价</span>
+      <span class="status manual-status">第二阶段 · 成本与报价</span>
     </div>
     <div class="safe-banner">
       <span aria-hidden="true">i</span>
-      <div>金额、比例与汇率只以 Decimal 字符串提交，由后端确定性计算。本批支持成本确认、报价审批与文件交付，批准不发送；不代表整个 Phase 2 完成。实际能力和权限由后端配置与 allowed_actions 决定。</div>
+      <div>金额、比例与汇率由系统精确计算。当前支持成本确认、报价审批与文件交付，批准后仍需单独发送；可用操作以当前权限和系统配置为准。</div>
     </div>
     <div
       v-if="error"
@@ -452,7 +453,7 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
     </div>
 
     <section class="opportunity-bar panel">
-      <label>Opportunity ID
+      <label>贸易机会编号
         <input
           v-model.trim="opportunityId"
           name="opportunity-id"
@@ -488,11 +489,11 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
     >
       <h2>报价准备事实</h2><RouterLink :to="{ name: 'validated-need-detail', params: { needId: quoteContext.need.need_id } }">
         查看需求原话与来源 {{ quoteContext.need.need_id }}
-      </RouterLink><p>{{ quoteContext.account_name }} · {{ quoteContext.country }} · {{ quoteContext.specification.product_category }}</p><p>单位状态 {{ quoteContext.unit_status }} · 需求 hash {{ quoteContext.need_facts_hash }} · context {{ quoteContext.context_hash ?? '尚不完整' }}</p><p
+      </RouterLink><p>{{ quoteContext.account_name }} · {{ quoteContext.country }} · {{ quoteContext.specification.product_category }}</p><p>单位状态 {{ codeLabel(quoteContext.unit_status) }} · 需求校验值 {{ quoteContext.need_facts_hash }} · 上下文 {{ quoteContext.context_hash ?? '尚不完整' }}</p><p
         v-for="blocker in quoteContext.blockers"
         :key="`${blocker.field}-${blocker.code}`"
       >
-        {{ blocker.field }}：{{ blocker.code }}
+        {{ codeLabel(blocker.field) }}：{{ codeLabel(blocker.code) }}
       </p><button @click="loadQuoteContext">
         核对最新需求事实
       </button>
@@ -515,12 +516,12 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
         <header>
           <div>
             <p class="card-kicker">
-              NEW VERSION
+              新建版本
             </p><h2>创建成本表版本</h2>
           </div>
         </header>
         <div class="field-grid">
-          <label>版本类型<select v-model="versionType"><option value="estimated">ESTIMATED</option><option value="quoted">QUOTED</option><option value="actual">ACTUAL</option></select></label>
+          <label>版本类型<select v-model="versionType"><option value="estimated">预估</option><option value="quoted">已报价</option><option value="actual">实际</option></select></label>
           <label>数量<input
             v-model="quantity"
             inputmode="numeric"
@@ -533,9 +534,9 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
             v-model.trim="quoteCurrency"
             maxlength="3"
           ></label>
-          <label class="wide">汇率快照 ID<input
+          <label class="wide">汇率快照编号<input
             v-model.trim="fxSnapshotId"
-            placeholder="QUOTED 必填"
+            placeholder="已报价必填"
           ></label>
         </div>
         <button
@@ -552,7 +553,7 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
         <header>
           <div>
             <p class="card-kicker">
-              VERSION LEDGER
+              版本记录
             </p><h2>成本版本</h2>
           </div><span>{{ sheets.length }} 个</span>
         </header>
@@ -560,7 +561,7 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
           v-if="!sheets.length"
           class="empty"
         >
-          输入 Opportunity ID 后读取版本
+          输入贸易机会编号后读取版本
         </div>
         <button
           v-for="sheet in sheets"
@@ -570,7 +571,7 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
           type="button"
           @click="selectedSheetId = sheet.cost_sheet_id; readiness = null"
         >
-          <span><strong>{{ sheet.version_type.toUpperCase() }} · v{{ sheet.version_number }}</strong><small>{{ sheet.quantity }} 件 · {{ sheet.base_currency }} → {{ sheet.quote_currency }}</small></span>
+          <span><strong>{{ codeLabel(sheet.version_type) }} · v{{ sheet.version_number }}</strong><small>{{ sheet.quantity }} 件 · {{ sheet.base_currency }} → {{ sheet.quote_currency }}</small></span>
           <span class="state-pill">{{ sheet.is_locked ? "已锁定" : "可编辑" }}</span>
         </button>
       </article>
@@ -584,7 +585,7 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
         <header>
           <div>
             <p class="card-kicker">
-              COST PROVENANCE
+              成本来源追踪
             </p><h2>成本项与来源</h2>
           </div><span>{{ selectedSheet.cost_sheet_id }}</span>
         </header>
@@ -603,7 +604,7 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
             :key="`${item.item_type}:${item.source_ref}`"
             class="item-row"
           >
-            <div><strong>{{ item.item_label }}</strong><small>{{ item.price_basis }} · {{ item.is_per_unit ? "单件" : "整单" }}</small></div>
+            <div><strong>{{ item.item_label }}</strong><small>{{ codeLabel(item.price_basis) }} · {{ item.is_per_unit ? "单件" : "整单" }}</small></div>
             <div class="amount">
               {{ item.amount.amount }} {{ item.amount.currency }}
             </div>
@@ -628,11 +629,11 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
             v-model.trim="itemCurrency"
             maxlength="3"
           ></label>
-          <label>价格基准<select v-model="priceBasis"><option value="quoted">quoted</option><option value="indicative">indicative</option><option value="actual">actual</option></select></label>
+          <label>价格基准<select v-model="priceBasis"><option value="quoted">已报价</option><option value="indicative">参考价</option><option value="actual">实际</option></select></label>
           <label class="wide">来源引用<input
             v-model.trim="itemSource"
             name="item-source"
-            placeholder="供应商报价或证据 Artifact 引用"
+            placeholder="供应商报价或证据原始资料引用"
           ></label>
           <label class="wide">备注<input
             v-model.trim="itemNote"
@@ -655,7 +656,7 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
 
       <aside class="panel readiness-panel">
         <p class="card-kicker">
-          QUOTE READINESS
+          报价就绪检查
         </p><h2>报价阻断检查</h2>
         <p class="muted">
           只读检查，不会锁定成本表，也不会接受参考价风险。
@@ -664,7 +665,7 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
           <input
             v-model.trim="expectedItems"
             name="expected-items"
-            placeholder="逗号分隔的 CostItemType"
+            placeholder="逗号分隔的成本项类型"
           >
         </label>
         <button
@@ -738,7 +739,7 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
         </button><p role="status">
           {{ fxMutation.message.value }} <code>{{ fxMutation.key.value }}</code>
         </p>
-        <label>用于报价的已确认汇率 ID（同币种可空）<input
+        <label>用于报价的已确认汇率编号（同币种可空）<input
           v-model="fxForm.ref"
           name="quote-fx-ref"
         ></label><button @click="readFx">
@@ -798,7 +799,7 @@ watch([() => route.query.opportunity_id, () => route.query.cost_sheet_id], (_val
                 >
                   <dt>{{ profitMetricLabels[name] ?? name }}</dt><dd>{{ value }}</dd>
                 </div>
-              </dl><p>输入 hash {{ result.inputs_hash }} · 政策 {{ result.policy_id }}</p>
+              </dl><p>输入校验值 {{ result.inputs_hash }} · 政策 {{ result.policy_id }}</p>
             </template><p v-else>
               尚未计算
             </p>

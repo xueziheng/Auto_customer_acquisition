@@ -2,12 +2,12 @@ import type { components } from "../../api/api";
 
 export const costItemLabels = [
   ["product_purchase", "产品采购"], ["sample_fee", "样品"], ["mold_fee", "模具"],
-  ["customization_fee", "定制"], ["logo_printing", "Logo 印刷"], ["packaging", "包装"],
+  ["customization_fee", "定制"], ["logo_printing", "标志印刷"], ["packaging", "包装"],
   ["quality_inspection", "质检"], ["wastage", "损耗"], ["domestic_freight", "国内运输"],
   ["international_freight", "国际运输"], ["insurance", "保险"], ["customs_clearance", "报关"],
   ["duties_and_taxes", "关税与税费"], ["destination_freight", "目的地运输"], ["warehousing", "仓储"],
   ["payment_fees", "支付手续费"], ["sales_commission", "销售佣金"], ["customer_acquisition", "获客"],
-  ["contact_data_cost", "联系人数据"], ["ad_allocation", "广告分摊"], ["agent_api_allocation", "Agent/API 分摊"],
+  ["contact_data_cost", "联系人数据"], ["ad_allocation", "广告分摊"], ["agent_api_allocation", "智能助手/接口分摊"],
   ["returns_reserve", "退货售后预留"],
 ] as const;
 
@@ -34,4 +34,8 @@ export function utf16SelectionToCodepoints(text: string, start: number, end: num
     throw new Error("请选择完整的原文字符");
   }
   return [Array.from(text.slice(0, start)).length, Array.from(text.slice(0, end)).length];
+}
+
+export function costItemLabel(value: string): string {
+  return costItemLabels.find(([code]) => code === value)?.[1] ?? `待核实（${value}）`;
 }

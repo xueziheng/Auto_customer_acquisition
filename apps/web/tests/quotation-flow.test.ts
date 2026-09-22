@@ -546,13 +546,13 @@ it("confirms persisted cost bindings and full scope before precise quote creatio
   const createButton = [...root.querySelectorAll("button")].find((item) => item.textContent?.includes("确认创建新报价"));
   expect(createButton?.disabled).toBe(true);
   expect(root.textContent).toContain("旧确认失效");
-  expect(root.textContent).not.toContain("输入 hash inputs-hash");
+  expect(root.textContent).not.toContain("输入校验值 inputs-hash");
   field(root, "term-payment", ""); await nextTick();
   click(root, "确认创建新报价");
   await eventually(() => expect(router.currentRoute.value.params.quoteId).toBe("quote-1"));
   expect(requests.find((item) => item.path.endsWith("/quotes"))?.body).toMatchObject({ expected_sheet_hash: "sheet-hash", expected_context_hash: "context-hash", scope_confirmation_id: "scope-1", unit_price: { amount: "0.123456789012", currency: "USD" }, replaces_quote_id: null, expected_quote_version: null });
   await eventually(() => expect(root.textContent).toContain("指定版本 V1"));
-  click(root, "提交此版本审批"); await eventually(() => expect(root.textContent).toContain("Run run-quote"));
+  click(root, "提交此版本审批"); await eventually(() => expect(root.textContent).toContain("运行记录 run-quote"));
   expect(root.textContent).toContain("尚未批准、更未发送");
 });
 
@@ -668,7 +668,7 @@ it.each([`upload:${messageId}`, `message:${messageId}`, `message:message:${messa
   field(root, "opportunity-id", opp); click(root, "读取成本版本");
   await eventually(() => expect(root.querySelector('[name="unit-source"]')).not.toBeNull());
   field(root, "unit-source", source); await nextTick(); click(root, "预览客户消息"); await nextTick();
-  expect(previews).toBe(0); expect(root.textContent).toContain("请输入裸客户消息 ID");
+  expect(previews).toBe(0); expect(root.textContent).toContain("请输入裸客户消息编号");
 });
 
 it.each([`upload:${messageId}`, `message:message:${messageId}`, "message:msg_01M0PWRX23T9DP9ENM9PW5GFC9"])("rejects mismatched customer locator %s instead of confirming it", async (wrongSource) => {
@@ -719,7 +719,7 @@ it("ignores the old quote response after path A-B-A while loading the exact new 
   expect(root.textContent).toContain("指定版本 V1"); expect(root.textContent).not.toContain("旧路径错误");
 });
 
-it.each([[403, "当前身份无权"], [409, "quote_expired"], [503, "并非空数据"]] as const)("keeps customer file %s distinct from an empty list and never falls back to history", async (status, expected) => {
+it.each([[403, "当前身份无权"], [409, "报价已过期"], [503, "并非空数据"]] as const)("keeps customer file %s distinct from an empty list and never falls back to history", async (status, expected) => {
   const paths: string[] = [];
   const root = await mount(async (input) => {
     if (!(input instanceof Request)) throw new Error(); const path = new URL(input.url).pathname; paths.push(path);
@@ -743,7 +743,7 @@ it("retains the real generation call id and only reconciles metadata after an ex
     if (path.endsWith("/files")) return json([]);
     return json({ code: "permission_denied", message: "拒绝" }, 403);
   }, "/costing-quotes/quotes/quote-1");
-  click(root, "请求生成客户文件"); await eventually(() => expect(root.textContent).toContain("reconciliation_required"));
+  click(root, "请求生成客户文件"); await eventually(() => expect(root.textContent).toContain("需要人工核对"));
   expect(root.querySelector<HTMLInputElement>('[name="original-generation-call"]')?.value).toBe("call-actual");
   expect(writes).toHaveLength(1); click(root, "仅恢复原调用");
   await eventually(() => expect(root.textContent).toContain("原调用仍未决"));
@@ -766,13 +766,13 @@ it("preserves the original generation reference on reconcile errors and displays
   }, "/costing-quotes/quotes/quote-1");
   await eventually(() => expect(root.textContent).toContain("尚无已加载文件"));
   field(root, "original-generation-call", "generation-call-1"); await nextTick(); click(root, "仅恢复原调用");
-  await eventually(() => expect(root.textContent).toContain("recovery_unavailable"));
+  await eventually(() => expect(root.textContent).toContain("恢复暂不可用"));
   expect(root.querySelector<HTMLInputElement>('[name="original-generation-call"]')?.value).toBe("generation-call-1");
-  expect(root.textContent).toContain("本次恢复调用 ID：recovery-call-2");
+  expect(root.textContent).toContain("本次恢复调用编号：recovery-call-2");
   expect(root.textContent).not.toContain("调用引用已变化"); expect(writes).toHaveLength(1);
   click(root, "仅恢复原调用"); await eventually(() => expect(root.textContent).toContain("原调用仍未决"));
   expect(writes).toEqual([{ quote_id: "quote-1", original_generation_call_id: "generation-call-1" }, { quote_id: "quote-1", original_generation_call_id: "generation-call-1" }]);
-  expect(root.textContent).toContain("本次恢复调用 ID：recovery-call-3"); expect(root.textContent).not.toContain("recovery-call-2");
+  expect(root.textContent).toContain("本次恢复调用编号：recovery-call-3"); expect(root.textContent).not.toContain("recovery-call-2");
   configureAuthenticatedIdentity("tenant-b", "employee-b"); await nextTick();
   expect(root.textContent).not.toContain("recovery-call-3");
   expect(root.querySelector<HTMLInputElement>('[name="original-generation-call"]')?.value).toBe("");

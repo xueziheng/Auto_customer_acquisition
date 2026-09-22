@@ -63,7 +63,7 @@ onMounted(() => void loadCards());
   <div class="shell supply-shell">
     <div class="page-head">
       <div>
-        <p class="phase-eyebrow">PRODUCT &amp; SUPPLY</p>
+        <p class="phase-eyebrow">产品与供应</p>
         <h1>产品与供应能力</h1>
       </div>
       <button type="button" :disabled="loading" @click="loadCards">
@@ -77,7 +77,7 @@ onMounted(() => void loadCards());
     </div>
     <label class="source-filter">
       <input v-model="sourceOnly" type="checkbox" @change="loadCards">
-      只看公开寻源来源卡（source_only）
+      只看公开寻源来源卡（仅公开来源）
     </label>
     <div v-if="error" class="safe-banner danger" role="alert">{{ error }}</div>
 
@@ -91,22 +91,22 @@ onMounted(() => void loadCards());
             <h2>{{ card.name_zh }}</h2>
             <p>{{ card.name_en }} · {{ card.category }}</p>
           </div>
-          <span v-if="card.source_only" class="status source-only">source_only</span>
+          <span v-if="card.source_only" class="status source-only">仅公开来源</span>
         </header>
         <p>{{ card.spec_summary ?? "规格信息未知" }}</p>
         <dl>
-          <div><dt>MOQ</dt><dd>{{ card.moq ?? "未知" }}</dd></div>
+          <div><dt>最小起订量</dt><dd>{{ card.moq ?? "未知" }}</dd></div>
           <div><dt>交期</dt><dd>{{ card.lead_time_display ?? "未知" }}</dd></div>
         </dl>
         <template v-if="card.source_only && card.source">
-          <div class="safe-banner source-warning"><strong>{{ card.quote_warning }}</strong><span>公开页面参考价（indicative），不是正式报价。</span></div>
+          <div class="safe-banner source-warning"><strong>{{ card.quote_warning }}</strong><span>公开页面参考价，不是正式报价。</span></div>
           <ul class="indicative-prices" aria-label="公开页面参考价">
             <li v-for="price in card.source.indicative_prices" :key="`${price.minimum_quantity}-${price.evidence_ref}`">
               {{ price.minimum_quantity }} 起：{{ price.unit_amount }} {{ price.currency }} / {{ price.unit }}
             </li>
           </ul>
           <p class="meta">证据：{{ card.source.evidence_refs.join("、") }}</p>
-          <RouterLink :to="`/sourcing/${card.source.sourcing_case_id}`">查看寻源 Case 与候选证据</RouterLink>
+          <RouterLink :to="`/sourcing/${card.source.sourcing_case_id}`">查看寻源案例与候选证据</RouterLink>
         </template>
       </article>
     </section>

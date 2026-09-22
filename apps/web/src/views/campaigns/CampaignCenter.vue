@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 /* global window */
 import { computed, inject, onMounted, reactive, ref } from "vue";
 
@@ -81,9 +82,9 @@ const enrollmentSummary = computed(() => {
 
 function safeError(status: number): string {
   if (status === 401) return "登录身份已失效，请重新选择有效身份";
-  if (status === 404) return "Campaign 不存在或当前身份不可见";
+  if (status === 404) return "活动不存在或当前身份不可见";
   if (status === 403) return "当前身份没有执行此操作的权限";
-  if (status === 409) return "Campaign 状态已变化，请刷新后重试";
+  if (status === 409) return "活动状态已变化，请刷新后重试";
   if (status === 503) return "服务暂不可用，请稍后重试";
   return "请求未完成，请检查边界内容";
 }
@@ -162,17 +163,17 @@ async function loadCampaigns(): Promise<void> {
     campaigns.value = result.data;
     const expected = pendingTransition.value;
     if (commandUnknown.value && expected && result.data.some(item => item.campaign_id === expected.campaignId && item.state === expected.state)) {
-      commandUnknown.value = false; pendingTransition.value = null; actionMessage.value = "已核对精确 Campaign 当前状态；在途事实与额度保持不变。";
+      commandUnknown.value = false; pendingTransition.value = null; actionMessage.value = "已核对精确活动当前状态；在途事实与额度保持不变。";
     }
     const retained = selectedId.value;
     if (retained && !result.data.some(item => item.campaign_id === retained)) {
-      selectedId.value = null; enrollments.value = []; enrollmentError.value = "原 Campaign 不存在或当前身份不可见"; return;
+      selectedId.value = null; enrollments.value = []; enrollmentError.value = "原活动不存在或当前身份不可见"; return;
     }
     const next = retained ?? result.data[0]?.campaign_id;
     if (next) await loadEnrollments(next); else enrollments.value = [];
   } catch {
     if (!op.valid()) return;
-    campaigns.value = []; enrollments.value = []; selectedId.value = null; error.value = "Campaign 读取失败，请刷新核对";
+    campaigns.value = []; enrollments.value = []; selectedId.value = null; error.value = "活动读取失败，请刷新核对";
   } finally { if (op.valid()) loading.value = false; }
 }
 async function loadIdentities(): Promise<void> {
@@ -225,14 +226,14 @@ async function saveBoundary(): Promise<void> {
       }
       protectedFailure(result.response.status);
       commandUnknown.value = result.response.status >= 500;
-      error.value = commandUnknown.value ? "提交结果待核对，请刷新当前 Campaign；不自动重新提交" : safeError(result.response.status);
+      error.value = commandUnknown.value ? "提交结果待核对，请刷新当前活动；不自动重新提交" : safeError(result.response.status);
     } else {
       const result = await client.POST("/crm/campaigns", {
         body: { ...form },
       });
       if (!op.valid() || editingCampaignId.value !== editingId) return;
       if (result.response.status === 200 && result.data) {
-        actionMessage.value = "Campaign 草稿已创建；提交审批前不会发送。";
+        actionMessage.value = "活动草稿已创建；提交审批前不会发送。";
         editorOpen.value = false;
         selectedId.value = result.data.campaign_id;
         await loadCampaigns();
@@ -240,10 +241,10 @@ async function saveBoundary(): Promise<void> {
       }
       protectedFailure(result.response.status);
       commandUnknown.value = result.response.status >= 500;
-      error.value = commandUnknown.value ? "提交结果待核对，请刷新当前 Campaign；不自动重新提交" : safeError(result.response.status);
+      error.value = commandUnknown.value ? "提交结果待核对，请刷新当前活动；不自动重新提交" : safeError(result.response.status);
     }
   } catch {
-    if (op.valid()) { commandUnknown.value = true; error.value = "提交结果待核对，请刷新当前 Campaign；不自动重新提交"; }
+    if (op.valid()) { commandUnknown.value = true; error.value = "提交结果待核对，请刷新当前活动；不自动重新提交"; }
   } finally {
     if (op.valid()) actionBusy.value = false;
   }
@@ -265,33 +266,33 @@ async function transition(action: "submit" | "activate" | "pause" | "cancel"): P
         body: { reason: reason.trim() },
       });
       if (!op.valid() || selectedId.value !== campaignId) return;
-      if (result.response.status !== 200) { protectedFailure(result.response.status); commandUnknown.value = result.response.status >= 500; error.value = commandUnknown.value ? "操作结果待核对，请刷新当前 Campaign，不自动重发" : safeError(result.response.status); return; }
-      actionMessage.value = "Campaign 已暂停新发送；入站回复处理保持运行。";
+      if (result.response.status !== 200) { protectedFailure(result.response.status); commandUnknown.value = result.response.status >= 500; error.value = commandUnknown.value ? "操作结果待核对，请刷新当前活动，不自动重发" : safeError(result.response.status); return; }
+      actionMessage.value = "活动已暂停新发送；入站回复处理保持运行。";
     } else if (action === "submit") {
       const result = await client.POST("/crm/campaigns/{campaign_id}/submit", {
         params: { path: { campaign_id: campaignId } },
       });
       if (!op.valid() || selectedId.value !== campaignId) return;
-      if (result.response.status !== 200 || !result.data) { protectedFailure(result.response.status); commandUnknown.value = result.response.status >= 500; error.value = commandUnknown.value ? "操作结果待核对，请刷新当前 Campaign，不自动重发" : safeError(result.response.status); return; }
+      if (result.response.status !== 200 || !result.data) { protectedFailure(result.response.status); commandUnknown.value = result.response.status >= 500; error.value = commandUnknown.value ? "操作结果待核对，请刷新当前活动，不自动重发" : safeError(result.response.status); return; }
       actionMessage.value = `已提交审批：${result.data.approval_id}`;
     } else if (action === "activate") {
       const result = await client.POST("/crm/campaigns/{campaign_id}/activate", {
         params: { path: { campaign_id: campaignId } },
       });
       if (!op.valid() || selectedId.value !== campaignId) return;
-      if (result.response.status !== 200) { protectedFailure(result.response.status); commandUnknown.value = result.response.status >= 500; error.value = commandUnknown.value ? "操作结果待核对，请刷新当前 Campaign，不自动重发" : safeError(result.response.status); return; }
-      actionMessage.value = "Campaign 精确版本已激活。";
+      if (result.response.status !== 200) { protectedFailure(result.response.status); commandUnknown.value = result.response.status >= 500; error.value = commandUnknown.value ? "操作结果待核对，请刷新当前活动，不自动重发" : safeError(result.response.status); return; }
+      actionMessage.value = "活动精确版本已激活。";
     } else {
       const result = await client.POST("/crm/campaigns/{campaign_id}/cancel", {
         params: { path: { campaign_id: campaignId } },
       });
       if (!op.valid() || selectedId.value !== campaignId) return;
-      if (result.response.status !== 200) { protectedFailure(result.response.status); commandUnknown.value = result.response.status >= 500; error.value = commandUnknown.value ? "操作结果待核对，请刷新当前 Campaign，不自动重发" : safeError(result.response.status); return; }
-      actionMessage.value = "Campaign 已取消，不能恢复。";
+      if (result.response.status !== 200) { protectedFailure(result.response.status); commandUnknown.value = result.response.status >= 500; error.value = commandUnknown.value ? "操作结果待核对，请刷新当前活动，不自动重发" : safeError(result.response.status); return; }
+      actionMessage.value = "活动已取消，不能恢复。";
     }
     await loadCampaigns();
   } catch {
-    if (op.valid() && selectedId.value === campaignId) { commandUnknown.value = true; error.value = "操作结果待核对，请刷新当前 Campaign；不自动重发"; }
+    if (op.valid() && selectedId.value === campaignId) { commandUnknown.value = true; error.value = "操作结果待核对，请刷新当前活动；不自动重发"; }
   } finally {
     if (op.valid()) actionBusy.value = false;
   }
@@ -307,20 +308,20 @@ onMounted(() => {
     <div class="page-head campaign-head">
       <div>
         <p class="eyebrow">
-          AUTHORIZED OUTREACH
-        </p><h1>Campaign Center</h1>
+          授权触达
+        </p><h1>活动中心</h1>
       </div>
       <button
         class="btn-primary"
         type="button"
         @click="newCampaign"
       >
-        新建 Campaign
+        新建活动
       </button>
     </div>
 
     <div class="principle">
-      <strong>Campaign 是授权书，不是发送队列。</strong><span>边界内自主运行；改边界 = 新版本 + 重新审批。包含价格或承诺的内容仍逐次审批。</span>
+      <strong>活动是授权书，不是发送队列。</strong><span>边界内自主运行；改边界 = 新版本 + 重新审批。包含价格或承诺的内容仍逐次审批。</span>
     </div>
     <div class="pause-semantics">
       <strong>暂停语义</strong><span>暂停只阻止新发送；入站回复仍继续处理。在途发送尝试与已占用额度继续保留，结果未知不得再次发送。</span>
@@ -342,10 +343,10 @@ onMounted(() => {
     <section
       v-if="editorOpen"
       class="boundary-editor"
-      aria-label="Campaign 边界编辑器"
+      aria-label="活动边界编辑器"
     >
       <header>
-        <div><h2>{{ editingCampaignId ? "修订 Campaign 边界" : "创建 Campaign 草稿" }}</h2><p>{{ editingCampaignId ? "保存会追加新版本并立即进入重新审批。" : "草稿不会触发发送。" }}</p></div><button
+        <div><h2>{{ editingCampaignId ? "修订活动边界" : "创建活动草稿" }}</h2><p>{{ editingCampaignId ? "保存会追加新版本并立即进入重新审批。" : "草稿不会触发发送。" }}</p></div><button
           type="button"
           @click="editorOpen = false"
         >
@@ -353,21 +354,21 @@ onMounted(() => {
         </button>
       </header>
       <form @submit.prevent="saveBoundary">
-        <label>Campaign 名称<input
+        <label>活动名称<input
           v-model="form.name"
           autocomplete="off"
         ></label>
         <label>目标市场<input
           v-model="marketsText"
-          placeholder="Germany, Netherlands"
+          placeholder="输入国家名称，多个用逗号分隔"
         ><small>英文逗号分隔</small></label>
         <label>企业类型<input
           v-model="entityTypesText"
-          placeholder="importer, manufacturer"
+          placeholder="输入企业类型，多个用逗号分隔"
         ></label>
         <label>允许品类<input
           v-model="categoriesText"
-          placeholder="hardware, packaging"
+          placeholder="输入品类，多个用逗号分隔"
         ></label>
         <fieldset class="sender-picker">
           <legend>冷开发发件身份</legend><label
@@ -378,7 +379,7 @@ onMounted(() => {
             type="checkbox"
             :value="identity.identity_id"
             :disabled="!identity.usable_for_cold_outreach"
-          ><span>{{ identity.address }}</span><small>{{ identity.state }} · 今日余量 {{ identity.remaining_today }}</small></label><p
+          ><span>{{ identity.address }}</span><small>{{ codeLabel(identity.state) }} · 今日余量 {{ identity.remaining_today }}</small></label><p
             v-if="identityError"
             role="alert"
           >
@@ -446,7 +447,7 @@ onMounted(() => {
           v-model="form.stop_on_reply"
           type="checkbox"
           disabled
-        ><span>收到回复立即停序列（Phase 1 强制开启，发送前会再次检查）</span></label>
+        ><span>收到回复立即停序列（第一阶段强制开启，发送前会再次检查）</span></label>
         <div class="editor-actions">
           <button
             type="button"
@@ -467,7 +468,7 @@ onMounted(() => {
     <section class="campaign-layout">
       <aside class="campaign-list">
         <header>
-          <h2>Campaign</h2><button
+          <h2>活动</h2><button
             type="button"
             @click="refresh"
           >
@@ -495,7 +496,7 @@ onMounted(() => {
           v-if="!loading && !error && !campaigns.length"
           class="empty"
         >
-          暂无 Campaign
+          暂无活动
         </div>
       </aside>
 
@@ -512,7 +513,7 @@ onMounted(() => {
             </p><p
               v-if="selected.paused_reason"
             >
-              暂停原因：{{ selected.paused_reason }}
+              暂停原因：{{ codeLabel(selected.paused_reason) }}
             </p>
           </div><div class="detail-actions">
             <button
@@ -575,7 +576,7 @@ onMounted(() => {
                 v-for="identityId in selected.boundary.sender_identity_ids"
                 :key="identityId"
               >
-                <strong>{{ identities.find((item) => item.identity_id === identityId)?.address ?? identityId }}</strong><span>{{ identities.find((item) => item.identity_id === identityId)?.state ?? "状态需刷新" }}</span>
+                <strong>{{ identities.find((item) => item.identity_id === identityId)?.address ?? identityId }}</strong><span>{{ codeLabel(identities.find((item) => item.identity_id === identityId)?.state ?? "状态需刷新") }}</span>
               </li>
             </ul>
           </article>
@@ -588,7 +589,7 @@ onMounted(() => {
             >
               <span>{{ step.step_number }}</span><div><strong>{{ step.intent === "discovery" ? "需求发现" : step.intent === "follow_up" ? "跟进" : "能力介绍" }}</strong><small>{{ step.step_number === 1 ? "立即开始" : `等待 ${step.wait_days} 天` }}</small></div>
             </li>
-          </ol><p>Stop on reply：{{ selected.boundary.stop_on_reply ? "开启" : "关闭" }}</p>
+          </ol><p>收到回复后停止：{{ selected.boundary.stop_on_reply ? "开启" : "关闭" }}</p>
         </article>
         <article class="enrollment-panel">
           <header><h3>入组进度</h3><span v-if="!detailLoading && !enrollmentError">{{ enrollments.length }} 个已验证联系人</span></header><div
@@ -613,14 +614,14 @@ onMounted(() => {
             <span
               v-for="(count, state) in enrollmentSummary"
               :key="state"
-            ><strong>{{ count }}</strong>{{ state }}</span>
+            ><strong>{{ count }}</strong>{{ codeLabel(state) }}</span>
           </div><table v-if="enrollments.length">
-            <thead><tr><th>Enrollment</th><th>Account</th><th>来源 Hypothesis</th><th>Campaign 版本</th><th>状态</th><th>当前步骤</th><th>下次发送</th><th>发件身份</th></tr></thead><tbody>
+            <thead><tr><th>入组记录</th><th>企业</th><th>来源需求假设</th><th>活动版本</th><th>状态</th><th>当前步骤</th><th>下次发送</th><th>发件身份</th></tr></thead><tbody>
               <tr
                 v-for="item in enrollments"
                 :key="item.enrollment_id"
               >
-                <td>{{ item.enrollment_id }}</td><td>{{ item.account_id }}</td><td>{{ item.source_hypothesis_id ?? "—" }}</td><td>Campaign v{{ item.campaign_version }}</td><td>{{ item.state }}</td><td>{{ item.current_step }}</td><td>{{ item.next_send_at ? new Date(item.next_send_at).toLocaleString("zh-CN", { hour12: false }) : "—" }}</td><td>{{ item.sending_identity_id }}</td>
+                <td>{{ item.enrollment_id }}</td><td>{{ item.account_id }}</td><td>{{ item.source_hypothesis_id ?? "—" }}</td><td>活动 v{{ item.campaign_version }}</td><td>{{ codeLabel(item.state) }}</td><td>{{ item.current_step }}</td><td>{{ item.next_send_at ? new Date(item.next_send_at).toLocaleString("zh-CN", { hour12: false }) : "—" }}</td><td>{{ item.sending_identity_id }}</td>
               </tr>
             </tbody>
           </table><div
@@ -635,7 +636,7 @@ onMounted(() => {
         v-else
         class="campaign-detail empty"
       >
-        选择或创建一个 Campaign
+        选择或创建一个活动
       </div>
     </section>
   </div>

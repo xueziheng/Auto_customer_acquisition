@@ -337,7 +337,7 @@ const quotaScenarioExpectation: Record<QuotaScenario, {
     runVisible: false,
   },
   paid: {
-    blockedRun: "运行公开寻源已阻止：当前额度状态为 paid 或已启用付费，不会走付费回退。",
+    blockedRun: "运行公开寻源已阻止：当前额度状态为付费或已启用付费，不会走付费回退。",
     quotaMessage: "",
     runVisible: true,
   },
@@ -549,9 +549,9 @@ describe("Sourcing and Product centers", () => {
     });
 
     const root = await mount(`/sourcing/${caseId}`, fetch);
-    await eventually(() => expect(root.textContent).toContain("Opportunity 缺失，需先补齐后再尝试成本交接。"));
+    await eventually(() => expect(root.textContent).toContain("贸易机会缺失，需先补齐后再尝试成本交接。"));
     [...root.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent?.includes("在补齐 Opportunity 后重试成本交接"),
+      (button) => button.textContent?.includes("在补齐贸易机会后重试成本交接"),
     )!.click();
 
     await eventually(() => expect(retryBodies).toEqual([{
@@ -580,7 +580,7 @@ describe("Sourcing and Product centers", () => {
       );
       await eventually(() => expect(postPaths).toContain(`/sourcing-cases/${caseId}/public-search-plan`));
       planButton(root, "确认精确范围")!.click();
-      await eventually(() => expect(root.textContent).toContain("authorized"));
+      await eventually(() => expect(root.textContent).toContain("已授权"));
 
       expect(quotaReads.value).toBe(initialQuotaReads);
       expect(postPaths).not.toContain(`/sourcing-cases/${caseId}/run`);
@@ -629,7 +629,7 @@ describe("Sourcing and Product centers", () => {
     await eventually(() => {
       expect(root.textContent).toContain("不锈钢铰链");
       expect(root.textContent).toContain("不可用于客户报价");
-      expect(root.textContent).toContain("公开页面参考价（indicative）");
+      expect(root.textContent).toContain("公开页面参考价");
       expect(root.textContent).toContain("1.25 USD / piece");
     });
     expect([...root.querySelectorAll("button")].map((button) => button.textContent)).not.toContain("创建正式报价");
@@ -666,9 +666,9 @@ describe("Sourcing and Product centers", () => {
       expect(root.textContent).toContain("供应商自述");
       expect(root.textContent).toContain("匹配推断");
       expect(root.textContent).toContain("未知 / 待核验");
-      expect(root.textContent).toContain("公开页面参考价（indicative）");
+      expect(root.textContent).toContain("公开页面参考价");
       expect(root.textContent).toContain("不可用于客户报价");
-      expect(root.textContent).toContain("model");
+      expect(root.textContent).toContain("型号");
     });
   });
 
@@ -771,7 +771,7 @@ describe("Sourcing and Product centers", () => {
     await eventually(() => {
       expect(root.textContent).toContain("规格逐项比较");
       expect(root.textContent).toContain("八项核验");
-      expect(root.textContent).toContain("拒绝原因：ambiguous_price");
+      expect(root.textContent).toContain("拒绝原因：价格不明确");
       expect(root.textContent).toContain("当前安全额度");
     });
 
@@ -795,9 +795,9 @@ describe("Sourcing and Product centers", () => {
     expect(planBodies[0]!.plan_id).not.toBe(planBodies[1]!.plan_id);
 
     [...root.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("确认精确范围"))!.click();
-    await eventually(() => expect(root.textContent).toContain("authorized"));
+    await eventually(() => expect(root.textContent).toContain("已授权"));
     [...root.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("运行公开寻源"))!.click();
-    await eventually(() => expect(root.textContent).toContain("running"));
+    await eventually(() => expect(root.textContent).toContain("运行中"));
 
     const reviewPanel = root.querySelector(".review-panel")!;
     const reviewSelect = reviewPanel.querySelector<HTMLSelectElement>("select")!;
@@ -845,7 +845,7 @@ describe("Sourcing admission queue", () => {
       expect(root.textContent).toContain("8 条已验证需求");
       expect(root.textContent).toContain("尚未归簇（按 1 条需求排序）");
       expect(root.textContent).toContain("案例状态不匹配");
-      expect(root.textContent).toContain("Directive v7");
+      expect(root.textContent).toContain("老板指令 v7");
     });
     const waitingRows = [...root.querySelectorAll<HTMLElement>('[data-section="waiting-admission"] [data-admission-id]')];
     expect(waitingRows.map((row) => row.dataset.admissionId)).toEqual([
@@ -885,7 +885,7 @@ describe("Sourcing admission queue", () => {
       expect.stringContaining(admissionFixture(admittedId, "admitted").case_id),
       expect.stringContaining(admissionFixture(waitingOneId, "waiting").case_id),
     ]);
-    expect(root.textContent).toContain("一个 Need 对应一个 Case；需求簇不是合并订单");
+    expect(root.textContent).toContain("一个需求对应一个寻源案例；需求簇不是合并订单");
   });
 
   it("offers separate admission audit and Case workspace links for active admissions", async () => {
@@ -898,7 +898,7 @@ describe("Sourcing admission queue", () => {
         .find((candidate) => candidate.textContent?.includes(item.case_id));
       expect(row).toBeDefined();
       expect(row?.textContent).toContain("准入审计详情");
-      expect(row?.textContent).toContain("Case 工作台");
+      expect(row?.textContent).toContain("寻源案例工作台");
       expect([...row!.querySelectorAll<HTMLAnchorElement>("a")].map((link) => link.getAttribute("href")))
         .toEqual([`/sourcing/${id}`, `/sourcing/${item.case_id}`]);
     }
@@ -961,7 +961,7 @@ describe("Sourcing admission queue", () => {
 
     expect(admissionSections).not.toContain(omittedCaseId);
     expect(workbench.textContent).toContain(omittedCaseId);
-    expect(workbench.textContent).toContain("Case 状态：opened");
+    expect(workbench.textContent).toContain("寻源案例状态：已建立");
     expect(workbench.textContent).not.toContain("处理中");
   });
 
@@ -1070,7 +1070,7 @@ describe("Sourcing admission queue", () => {
     expect(root.querySelector('[data-section="active-admissions"]')).toBeNull();
 
     resolveManual(jsonResponse(admissionFixture(waitingOneId, "admitted")));
-    await eventually(() => expect(root.textContent).toContain("已准入；这只代表该 Case 获准启动"));
+    await eventually(() => expect(root.textContent).toContain("已准入；这只代表该寻源案例获准启动"));
     expect(root.querySelector('[data-section="active-admissions"]')).toBeNull();
   });
 
@@ -1097,7 +1097,7 @@ describe("Sourcing admission queue", () => {
     await eventually(() => expect(buttons[0]!.disabled).toBe(true));
     expect(buttons[1]!.disabled).toBe(false);
     resolveManual(jsonResponse(admissionFixture(waitingOneId, "admitted")));
-    await eventually(() => expect(root.textContent).toContain("已准入；这只代表该 Case 获准启动"));
+    await eventually(() => expect(root.textContent).toContain("已准入；这只代表该寻源案例获准启动"));
   });
 
   it.each([

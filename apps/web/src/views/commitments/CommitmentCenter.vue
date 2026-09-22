@@ -148,7 +148,7 @@ onMounted(() => void loadCommitments());
     <div class="page-head commitment-head">
       <div>
         <p class="phase-eyebrow">
-          COMMITMENT CONTROL
+          承诺管理
         </p><h1>承诺中心</h1>
       </div>
       <div class="head-actions">
@@ -168,7 +168,7 @@ onMounted(() => void loadCommitments());
     </div>
 
     <div class="safe-banner danger">
-      <span aria-hidden="true">!</span><div>价格、折扣、交期、库存、认证、付款条件和合同条款永远不能由 Agent 自动承诺。</div>
+      <span aria-hidden="true">!</span><div>价格、折扣、交期、库存、认证、付款条件和合同条款永远不能由智能助手自动承诺。</div>
     </div>
     <div
       v-if="error"
@@ -191,7 +191,7 @@ onMounted(() => void loadCommitments());
       <header>
         <div>
           <p class="card-kicker">
-            MY LEDGER
+            我的记录
           </p><h2>我负责的承诺</h2>
         </div><span>{{ commitments.length }} 条</span>
       </header>

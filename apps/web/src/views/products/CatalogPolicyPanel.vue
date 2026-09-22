@@ -316,7 +316,7 @@ async function submitPolicy(): Promise<void> {
     if (result.response.status === 202 && result.data) {
       forgetRequest(client, identityKey);
       retainedIdentityKey = null;
-      actionNotice.value = "策略候选已提交，等待 Approval Center 决定";
+      actionNotice.value = "策略候选已提交，等待审批中心决定";
       emit("submitted");
       await loadPolicies();
       return;
@@ -355,7 +355,7 @@ onMounted(() => {
     <header class="region-head">
       <div>
         <p class="phase-eyebrow">
-          CATALOG POLICY
+          目录产品政策
         </p><h2 id="catalog-policy-title">
           策略版本
         </h2>

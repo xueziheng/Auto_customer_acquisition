@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 /* global URL, window */
 import { computed, inject, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
@@ -165,8 +166,8 @@ onMounted(() => void loadApprovals());
     <div class="page-head approval-head">
       <div>
         <p class="eyebrow">
-          HUMAN CONTROL PLANE
-        </p><h1>Approval Center</h1>
+          人工审批
+        </p><h1>审批中心</h1>
       </div>
       <button
         type="button"
@@ -237,7 +238,7 @@ onMounted(() => void loadApprovals());
               v-for="(value, key) in selected.proposed_change_display"
               :key="key"
             >
-              <dt>{{ key }}</dt><dd>{{ value }}</dd>
+              <dt>{{ codeLabel(key) }}</dt><dd>{{ value }}</dd>
             </div>
           </dl>
         </section>
@@ -262,7 +263,7 @@ onMounted(() => void loadApprovals());
         </section>
 
         <section class="evidence-section">
-          <h3>证据与归属</h3><dl><div><dt>提议人</dt><dd>{{ selected.proposed_by ?? "Agent Run" }}</dd></div><div><dt>业务负责人</dt><dd>{{ selected.owner_name ?? "未指定" }}</dd></div><div><dt>提交时间</dt><dd>{{ formatDate(selected.created_at) }}</dd></div></dl><ul v-if="selected.evidence_links?.length">
+          <h3>证据与归属</h3><dl><div><dt>提议人</dt><dd>{{ selected.proposed_by ?? "智能助手运行记录" }}</dd></div><div><dt>业务负责人</dt><dd>{{ selected.owner_name ?? "未指定" }}</dd></div><div><dt>提交时间</dt><dd>{{ formatDate(selected.created_at) }}</dd></div></dl><ul v-if="selected.evidence_links?.length">
             <li
               v-for="link in selected.evidence_links ?? []"
               :key="link"

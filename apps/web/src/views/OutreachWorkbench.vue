@@ -205,7 +205,7 @@ onBeforeUnmount(() => {
     >
       <div class="ledger">
         <div class="ledger-head">
-          <span>入组记录（Enrollment）</span>
+          <span>入组记录</span>
           <button @click="loadEnrollments">刷新列表</button>
         </div>
         <div v-if="listLoading" class="ledger-state" role="status">正在加载触达任务…</div>
@@ -220,7 +220,7 @@ onBeforeUnmount(() => {
           <li
             v-for="item in enrollments"
             :key="item.enrollment_id"
-            aria-label="入组记录（Enrollment）"
+            aria-label="入组记录"
             class="row"
             :class="{ selected: item.enrollment_id === selectedId }"
             tabindex="0"
@@ -237,14 +237,14 @@ onBeforeUnmount(() => {
           </li>
         </ol>
       </div>
-      <div class="detail" aria-label="选中 Enrollment 详情">
+      <div class="detail" aria-label="选中入组记录详情">
         <template v-if="selectedEnrollment">
           <h2>入组记录详情</h2>
           <dl class="kv">
-            <dt>入组记录（Enrollment）</dt><dd>{{ selectedEnrollment.enrollment_id }}</dd>
-            <dt>活动（Campaign）</dt><dd>{{ selectedEnrollment.campaign_id }}</dd>
-            <dt>企业（Account）</dt><dd>{{ selectedEnrollment.account_id }}</dd>
-            <dt>联系人（Contact）</dt><dd>{{ selectedEnrollment.contact_point_id }}</dd>
+            <dt>入组记录</dt><dd>{{ selectedEnrollment.enrollment_id }}</dd>
+            <dt>活动</dt><dd>{{ selectedEnrollment.campaign_id }}</dd>
+            <dt>企业</dt><dd>{{ selectedEnrollment.account_id }}</dd>
+            <dt>联系人</dt><dd>{{ selectedEnrollment.contact_point_id }}</dd>
             <dt>发件身份</dt><dd>{{ selectedEnrollment.sending_identity_id }}</dd>
             <dt>当前步骤</dt><dd>{{ selectedEnrollment.current_step }}</dd>
             <dt>下次发送</dt><dd>{{ selectedEnrollment.next_send_at ?? "—" }}</dd>
@@ -292,12 +292,12 @@ onBeforeUnmount(() => {
       </div>
       <div class="drawer-body">
         <div class="field">
-          <label for="send-subject">邮件主题（Subject）</label>
+          <label for="send-subject">邮件主题</label>
           <input id="send-subject" v-model="subject" type="text" maxlength="998" />
           <div class="hint">发给客户的内容请使用英文。</div>
         </div>
         <div class="field">
-          <label for="send-body">邮件正文（Body）</label>
+          <label for="send-body">邮件正文</label>
           <textarea id="send-body" v-model="body" maxlength="100000"></textarea>
           <div class="hint">发给客户的内容请使用英文。</div>
         </div>

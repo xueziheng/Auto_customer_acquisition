@@ -75,11 +75,11 @@ describe("公开研究展示", () => {
     const routes: Record<string, unknown> = { "/runs": failure };
     const { root } = await mount(DemandRadar, routes);
     expect(root.textContent).toContain("研究运行摘要读取失败");
-    expect(root.textContent).not.toContain("暂无研究 Run");
+    expect(root.textContent).not.toContain("暂无研究运行记录");
     routes["/runs"] = [];
     [...root.querySelectorAll("button")].find((button) => button.textContent?.trim() === "刷新")!.click();
     await settle();
-    expect(root.textContent).toContain("最近记录中暂无研究 Run 摘要");
+    expect(root.textContent).toContain("最近记录中暂无研究运行记录摘要");
     expect(root.textContent).not.toContain("研究运行摘要读取失败");
   });
   it.each([false, true])("确认503后只读恢复启动状态，不自动重试：已有Run=%s", async (started) => {
@@ -104,7 +104,7 @@ describe("公开研究展示", () => {
       expect(root.textContent).toContain("run_recovered");
       expect(root.textContent).not.toContain("恢复启动");
     } else {
-      expect(root.textContent).toContain("提案已确认，尚未创建 Run");
+      expect(root.textContent).toContain("提案已确认，尚未创建运行记录");
       routes["/commands/discovery-proposals/dpr_controlled/confirm"] = { proposal_id: "dpr_controlled", directive_id: "dir_controlled", run_id: "run_recovered", workflow_type: "demand_discovery" };
       routes["/commands/discovery-proposals/dpr_controlled/execution"] = { state: "started", run_id: "run_recovered", can_resume: false };
       [...root.querySelectorAll("button")].find((button) => button.textContent?.includes("恢复启动"))!.click();
@@ -142,7 +142,7 @@ describe("公开研究展示", () => {
     refresh.click();
     await settle();
     expect(root.textContent).toContain("研究运行摘要读取失败");
-    expect(root.textContent).not.toContain("暂无研究 Run");
+    expect(root.textContent).not.toContain("暂无研究运行记录");
     expect(requests.filter((request) => request === "GET /runs")).toHaveLength(3);
   });
   it("研究摘要出现后数据层导航不被固定高度容器压缩，仍能切换假设", async () => {
@@ -151,7 +151,7 @@ describe("公开研究展示", () => {
     expect(tabs.style.flexShrink).toBe("0");
     [...tabs.querySelectorAll("button")].find((button) => button.textContent?.includes("需求假设"))!.click();
     await settle();
-    expect(root.querySelector(".radar-content")!.textContent).toContain("Need Hypothesis");
+    expect(root.querySelector(".radar-content")!.textContent).toContain("需求假设");
     expect(root.querySelector(".radar-content")!.textContent).not.toContain("Demand Signal");
     app.unmount();
   });
@@ -210,7 +210,7 @@ describe("公开研究展示", () => {
     expect(root.textContent).toContain("进口商候选");
     expect(root.textContent).toContain("总页面读取上限");
     expect(root.querySelector(".caps-card")!.textContent).toContain("7");
-    expect(root.textContent).not.toContain("Campaign未设置");
+    expect(root.textContent).not.toContain("活动未设置");
     expect(root.textContent).toContain("US hinges importer");
     const confirm = [...root.querySelectorAll("button")].find((button) => button.textContent?.includes("确认并启动"))!;
     expect(confirm.disabled).toBe(reason !== null);

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 import { computed, ref, watch } from "vue";
 
 import type { components } from "../../api/api";
@@ -131,10 +132,10 @@ function run(): void {
     <header>
       <div>
         <p class="card-kicker">
-          PUBLIC SEARCH PLAN
+          公开搜索计划
         </p><h2>公开寻源计划</h2>
       </div>
-      <span>{{ plan?.status ?? "尚未草拟" }}</span>
+      <span>{{ codeLabel(plan?.status ?? "尚未草拟") }}</span>
     </header>
     <p
       v-if="plan"
@@ -153,7 +154,7 @@ function run(): void {
       aria-label="当前安全额度"
     >
       <strong>当前安全额度</strong>
-      <span>状态：{{ currentQuota?.cost_status ?? "unknown" }}</span>
+      <span>状态：{{ codeLabel(currentQuota?.cost_status ?? "unknown") }}</span>
       <span>剩余：{{ currentQuota?.remaining ?? "未知" }}</span>
       <span>已预留：{{ currentQuota?.reservations ?? "未知" }}</span>
       <span>付费：{{ currentQuota?.paygo_enabled === true ? "已启用（运行将拒绝）" : currentQuota?.paygo_enabled === false ? "明确关闭" : "未知（运行将拒绝）" }}</span>
@@ -162,7 +163,7 @@ function run(): void {
       class="inline-form"
       @submit.prevent="draft"
     >
-      <label>新计划 ID<input
+      <label>新计划编号<input
         v-model="planId"
         required
         maxlength="40"
@@ -212,7 +213,7 @@ function run(): void {
         type="number"
       ></label>
       <p class="full-width muted">
-        Provider 固定为 tavily，search depth 固定为 basic。lane 当前未持久化，必须保持未知，不能从查询文本推断。
+        搜索服务固定使用 Tavily 基础搜索。研究线路尚未保存时显示为未知，不能从查询文本推断。
       </p>
       <p
         v-if="!hasCompleteScope"
@@ -235,7 +236,7 @@ function run(): void {
           v-for="query in plan.queries"
           :key="`${query.target_country}-${query.query_text}`"
         >
-          {{ query.target_country }} · {{ query.query_text }} · lane：{{ query.lane ?? "未知（当前未持久化）" }}
+          {{ query.target_country }} · {{ query.query_text }} · 研究线路：{{ query.lane ?? "未知（当前未持久化）" }}
         </li>
       </ul>
       <p
@@ -279,7 +280,7 @@ function run(): void {
         class="run-state"
         role="alert"
       >
-        运行公开寻源已阻止：当前额度状态为 paid 或已启用付费，不会走付费回退。
+        运行公开寻源已阻止：当前额度状态为付费或已启用付费，不会走付费回退。
       </p>
       <p
         v-if="plan.status === 'authorized' && runAvailability === 'unknown'"

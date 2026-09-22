@@ -107,7 +107,7 @@ describe("ValidatedNeedDetail", () => {
       expect(root.textContent).toContain("emp-reviewer");
       expect(root.textContent).toContain("artifact:reply-rotterdam");
       expect(root.textContent).toContain("寻源前仍缺：规格");
-      expect(root.textContent).toContain("查看关联寻源 Case（verifying）");
+      expect(root.textContent).toContain("查看关联寻源案例（核验中）");
     });
     expect(root.querySelector("[v-html]")).toBeNull();
     const disclosure = root.querySelector<HTMLDetailsElement>(".field-provenance");
@@ -141,7 +141,7 @@ describe("ValidatedNeedDetail", () => {
     await router.replace(`/demand/needs/${needId}`);
     await eventually(() => {
       expect(root.textContent).toContain("Northwind Hardware");
-      expect(root.textContent).toContain("关联寻源 Case 暂不可读取");
+      expect(root.textContent).toContain("关联寻源案例暂不可读取");
     });
     app.unmount();
   });

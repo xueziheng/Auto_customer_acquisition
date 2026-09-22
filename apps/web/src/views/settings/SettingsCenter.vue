@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 import { computed, inject, onMounted, reactive, ref, type CSSProperties } from "vue";
 
 import type { components } from "../../api/api";
@@ -93,15 +94,15 @@ const countryPolicyWorkspaceLayout: CSSProperties = {
 };
 
 const countryPolicyFields = Object.freeze([
-  { key: "public_research_allowed", label: "public_research_allowed" },
-  { key: "contact_enrichment_allowed", label: "contact_enrichment_allowed" },
-  { key: "cold_b2b_email_allowed", label: "cold_b2b_email_allowed" },
-  { key: "personal_data_basis_required", label: "personal_data_basis_required" },
-  { key: "subject_type_affects_judgment", label: "subject_type_affects_judgment" },
-  { key: "contact_type_affects_judgment", label: "contact_type_affects_judgment" },
-  { key: "opt_out_deadline_days", label: "opt_out_deadline_days" },
-  { key: "local_representative_required", label: "local_representative_required" },
-  { key: "requirements", label: "requirements" },
+  { key: "public_research_allowed", label: "公开研究" },
+  { key: "contact_enrichment_allowed", label: "联系人补全" },
+  { key: "cold_b2b_email_allowed", label: "企业冷开发邮件" },
+  { key: "personal_data_basis_required", label: "要求个人数据处理依据" },
+  { key: "subject_type_affects_judgment", label: "主体类型影响判断" },
+  { key: "contact_type_affects_judgment", label: "联系人类型影响判断" },
+  { key: "opt_out_deadline_days", label: "退订处理期限（天）" },
+  { key: "local_representative_required", label: "要求本地代表" },
+  { key: "requirements", label: "附加要求" },
 ] satisfies ReadonlyArray<{ key: CountryPolicyField; label: string }>);
 
 const countryBooleanFields = Object.freeze([
@@ -234,15 +235,15 @@ const countryFormFrozen = computed(() =>
 const contactEnrichmentBlockedMessages: Readonly<Record<ContactEnrichmentReason, string>> =
   Object.freeze({
     CONTACT_ENRICHMENT_NOT_ALLOWED:
-      "已激活政策均禁止联系人补全，系统不会调用外部 Provider。",
+      "已激活政策均禁止联系人补全，系统不会调用外部服务商。",
     CONTACT_ENRICHMENT_PROVIDER_NOT_CONFIGURED:
       "部署尚未声明 Hunter 安全配置版本。",
     CONTACT_ENRICHMENT_PROVIDER_VALIDATION_FAILED:
-      "Hunter Provider 验证失败，请按固定分类排查。",
+      "Hunter 服务商验证失败，请按固定分类排查。",
     CONTACT_ENRICHMENT_PROVIDER_VALIDATION_INCONCLUSIVE:
       "Hunter 验证结果不确定，禁止自动重试。",
     CONTACT_ENRICHMENT_PROVIDER_VALIDATION_PENDING:
-      "Hunter 配置已声明，等待人工 Provider 验证。",
+      "Hunter 配置已声明，等待人工服务商验证。",
     CONTACT_ENRICHMENT_RUNTIME_NOT_COMPOSED:
       "验证已通过，等待 scheduler 重启并完成工具注册。",
     COUNTRY_POLICY_NOT_CONFIGURED:
@@ -283,11 +284,11 @@ const playbookReadinessMessage = computed(() => readinessMessage(
 
 const countryLiveDiff = computed(() => {
   if (revisionBase.value) return policyDifferences(revisionBase.value, countryForm);
-  return countryPolicyFields.flatMap(({ key }) => {
+  return countryPolicyFields.flatMap(({ key, label }) => {
     const candidate = policyValue(countryForm, key);
     return candidate === "未设置" || candidate === "无"
       ? []
-      : [`${key}：未配置 → ${candidate}`];
+      : [`${label}：未配置 → ${candidate}`];
   });
 });
 
@@ -341,10 +342,10 @@ function policyDifferences(
   before: CountryPolicyVersion,
   after: CountryPolicyVersion | CountryPolicyFormState,
 ): string[] {
-  return countryPolicyFields.flatMap(({ key }) => {
+  return countryPolicyFields.flatMap(({ key, label }) => {
     const beforeValue = policyValue(before, key);
     const afterValue = policyValue(after, key);
-    return beforeValue === afterValue ? [] : [`${key}：${beforeValue} → ${afterValue}`];
+    return beforeValue === afterValue ? [] : [`${label}：${beforeValue} → ${afterValue}`];
   });
 }
 
@@ -560,7 +561,7 @@ async function submitCountryProposal(): Promise<void> {
       countryIdempotencyKey.value = null; countryAttemptBody.value = null;
       countrySubmitError.value = "候选内容未通过严格校验，请核对九项来源"; return;
     }
-    countrySubmitError.value = "提交结果待核对；候选可能已持久保存，Run 尚未确认。核对历史后按原内容与原键恢复";
+    countrySubmitError.value = "提交结果待核对；候选可能已持久保存，运行记录尚未确认。核对历史后按原内容与原键恢复";
   } catch { if (op.valid()) countrySubmitError.value = "网络结果未知；保留原内容与原幂等键，先核对历史再恢复"; }
   finally { if (op.valid()) countrySubmitting.value = false; }
 }
@@ -579,9 +580,9 @@ function copyActiveToForm(version: PlaybookVersion): void {
 
 function safeLoadError(status: number): string {
   if (status === 401 || status === 404 || status === 409) return stateError(status);
-  if (status === 403) return "只有老板可以查看或提交 Company Playbook";
-  if (status === 503) return "Company Playbook 服务暂不可用，请稍后刷新";
-  return "Company Playbook 读取失败，请稍后重试";
+  if (status === 403) return "只有老板可以查看或提交公司业务规则";
+  if (status === 503) return "公司业务规则服务暂不可用，请稍后刷新";
+  return "公司业务规则读取失败，请稍后重试";
 }
 
 function editForm(): void {
@@ -626,7 +627,7 @@ async function loadSettings(): Promise<void> {
       copyActiveToForm(overviewResult.data.active_version.version);
     }
   } catch {
-    if (op.valid()) { overview.value = null; versions.value = []; loadError.value = "无法连接 Company Playbook 服务"; }
+    if (op.valid()) { overview.value = null; versions.value = []; loadError.value = "无法连接公司业务规则服务"; }
   } finally {
     if (op.valid()) loading.value = false;
   }
@@ -690,7 +691,7 @@ async function submitProposal(): Promise<void> {
     if (!wasUnknown && [400,422].includes(result.response.status)) {
       idempotencyKey.value = null; playbookAttemptBody.value = null; submitError.value = "候选内容未通过校验，请检查各字段"; return;
     }
-    submitError.value = "提交结果待核对；候选可能已持久保存，Run 尚未确认。核对历史后按原内容与原键恢复";
+    submitError.value = "提交结果待核对；候选可能已持久保存，运行记录尚未确认。核对历史后按原内容与原键恢复";
   } catch { if (op.valid()) submitError.value = "网络结果未知；保留原内容与原幂等键，先核对历史再恢复"; }
   finally { if (op.valid()) submitting.value = false; }
 }
@@ -725,7 +726,7 @@ onMounted(() => void refreshSettings());
     >
       <div>
         <p class="phase-eyebrow">
-          COMPANY PLAYBOOK
+          公司业务规则
         </p>
         <RouterLink to="/crm/sending-identities">
           管理发件身份与入站绑定
@@ -786,12 +787,12 @@ onMounted(() => void refreshSettings());
       :style="settingsFlowItemLayout"
       role="status"
       aria-live="polite"
-      aria-label="Playbook 联系人补全就绪状态"
+      aria-label="公司业务规则联系人补全就绪状态"
     >
       <span aria-hidden="true">i</span>
       <div>
         <strong>{{ playbookReadinessMessage }}</strong>
-        国家政策需在下方国家政策包工作区单独录入、审批并激活；Company Playbook 候选不能替代国家政策。
+        国家政策需在下方国家政策包工作区单独录入、审批并激活；公司业务规则候选不能替代国家政策。
       </div>
     </div>
 
@@ -801,12 +802,12 @@ onMounted(() => void refreshSettings());
     >
       <article
         class="settings-card active-card"
-        aria-label="当前生效 Playbook"
+        aria-label="当前生效公司业务规则"
       >
         <header>
           <div>
             <p class="card-kicker">
-              ACTIVE VERSION
+              生效版本
             </p><h2>当前经营边界</h2>
           </div>
         </header>
@@ -826,7 +827,7 @@ onMounted(() => void refreshSettings());
           v-else-if="!activeVersion"
           class="empty compact-empty"
         >
-          <strong>尚未配置 Company Playbook</strong>
+          <strong>尚未配置公司业务规则</strong>
           <span>系统不会补入默认市场、金额或国家。</span>
         </div>
         <template v-else>
@@ -843,7 +844,7 @@ onMounted(() => void refreshSettings());
           <div class="audit-box">
             <strong>提案与审批来源</strong>
             <p>提案人 {{ activeVersion.proposed_by }} · {{ displayTime(activeVersion.proposed_at) }}</p>
-            <p>来源 {{ activeVersion.content_provenance.source_type }} / {{ activeVersion.content_provenance.source_id }}</p>
+            <p>来源 {{ codeLabel(activeVersion.content_provenance.source_type) }} / {{ activeVersion.content_provenance.source_id }}</p>
             <p>提取者 {{ activeVersion.content_provenance.extracted_by }} · {{ displayTime(activeVersion.content_provenance.extracted_at) }}</p>
             <p>批准人 {{ activeActivation?.approved_by }} · {{ displayTime(activeActivation?.approved_at) }}</p>
             <p>激活者 {{ activeActivation?.activated_by }} · {{ displayTime(activeActivation?.activated_at) }}</p>
@@ -853,12 +854,12 @@ onMounted(() => void refreshSettings());
 
       <article
         class="settings-card proposal-card"
-        aria-label="Playbook 候选表单"
+        aria-label="公司业务规则候选表单"
       >
         <header>
           <div>
             <p class="card-kicker">
-              CANDIDATE
+              候选版本
             </p><h2>{{ loadError ? "候选提交暂不可用" : activeVersion ? "修订经营边界" : "首次配置" }}</h2>
           </div><span>只创建候选</span>
         </header>
@@ -938,7 +939,7 @@ onMounted(() => void refreshSettings());
             v-model="form.approvalRequirements"
             name="approval_requirements"
             rows="2"
-            placeholder="只允许加严的 action ID"
+            placeholder="只允许加严的操作编号"
             :disabled="submitting || Boolean(playbookAttemptBody)"
             @input="editForm"
           /></label>
@@ -981,8 +982,8 @@ onMounted(() => void refreshSettings());
           >
             <strong>候选版本已创建</strong>
             <span :data-candidate-id="accepted.playbook_version_id">候选 {{ accepted.playbook_version_id }}</span>
-            <span :data-run-id="accepted.run_id">Run {{ accepted.run_id }}</span>
-            <div><a href="/approvals">前往审批中心</a><a :href="`/runs/${accepted.run_id}`">查看 Run</a></div>
+            <span :data-run-id="accepted.run_id">运行记录 {{ accepted.run_id }}</span>
+            <div><a href="/approvals">前往审批中心</a><a :href="`/runs/${accepted.run_id}`">查看运行记录</a></div>
           </div>
           <button
             class="btn-primary submit-button"
@@ -998,12 +999,12 @@ onMounted(() => void refreshSettings());
     <section
       class="settings-card history-card"
       :style="settingsFlowItemLayout"
-      aria-label="Playbook 版本历史"
+      aria-label="公司业务规则版本历史"
     >
       <header>
         <div>
           <p class="card-kicker">
-            VERSION HISTORY
+            版本历史
           </p><h2>版本与审批状态</h2>
         </div><span>{{ versions.length }} 个版本</span>
       </header>
@@ -1036,7 +1037,7 @@ onMounted(() => void refreshSettings());
           </header>
           <p>{{ item.version.company_type }} · {{ item.version.minimum_deal_amount }} {{ item.version.minimum_deal_currency }}</p>
           <p>提案人 {{ item.version.proposed_by }} · {{ displayTime(item.version.proposed_at) }}</p>
-          <p>来源 {{ item.version.content_provenance.source_type }} / {{ item.version.content_provenance.source_id }} · 提取者 {{ item.version.content_provenance.extracted_by }}</p>
+          <p>来源 {{ codeLabel(item.version.content_provenance.source_type) }} / {{ item.version.content_provenance.source_id }} · 提取者 {{ item.version.content_provenance.extracted_by }}</p>
           <p v-if="item.version.content_provenance.confirmed_by">
             确认人 {{ item.version.content_provenance.confirmed_by }} · {{ displayTime(item.version.content_provenance.confirmed_at) }}
           </p>
@@ -1061,7 +1062,7 @@ onMounted(() => void refreshSettings());
       <header>
         <div>
           <p class="card-kicker">
-            COUNTRY POLICY
+            国家政策
           </p>
           <h2 id="country-policy-title">
             国家政策包
@@ -1159,9 +1160,9 @@ onMounted(() => void refreshSettings());
                 </div>
                 <span>v{{ active.version.version_number }}</span>
               </header>
-              <p>public_research：{{ active.version.public_research_allowed ? "允许" : "禁止" }}</p>
-              <p>contact_enrichment：{{ active.version.contact_enrichment_allowed ? "允许" : "禁止" }}</p>
-              <p>cold_b2b_email：{{ active.version.cold_b2b_email_allowed ? "允许" : "禁止" }}</p>
+              <p>公开研究：{{ active.version.public_research_allowed ? "允许" : "禁止" }}</p>
+              <p>联系人补全：{{ active.version.contact_enrichment_allowed ? "允许" : "禁止" }}</p>
+              <p>企业冷开发邮件：{{ active.version.cold_b2b_email_allowed ? "允许" : "禁止" }}</p>
               <p>
                 激活时间
                 <time :datetime="active.activation.activated_at">{{ displayTime(active.activation.activated_at) }}</time>
@@ -1189,8 +1190,8 @@ onMounted(() => void refreshSettings());
                     v-for="field in countryPolicyFields"
                     :key="field.key"
                   >
-                    <code>{{ field.key }}</code>
-                    {{ active.version.field_provenance[field.key].source_type }} /
+                    <span>{{ field.label }}</span>
+                    {{ codeLabel(active.version.field_provenance[field.key].source_type) }} /
                     {{ active.version.field_provenance[field.key].source_id }}
                     <span>
                       提取 {{ active.version.field_provenance[field.key].extracted_by }} ·
@@ -1249,31 +1250,30 @@ onMounted(() => void refreshSettings());
                 v-for="field in countryBooleanFields"
                 :key="field.key"
                 :for="`policy-${field.key}`"
-              >{{ field.label }} <code>{{ field.key }}</code>
-                <select
-                  :id="`policy-${field.key}`"
-                  v-model="countryForm[field.key]"
-                  :name="field.key"
-                  :disabled="countryFormFrozen"
-                  required
+              >{{ field.label }}  <select
+                :id="`policy-${field.key}`"
+                v-model="countryForm[field.key]"
+                :name="field.key"
+                :disabled="countryFormFrozen"
+                required
+              >
+                <option
+                  :value="null"
+                  disabled
                 >
-                  <option
-                    :value="null"
-                    disabled
-                  >
-                    请选择已核验事实
-                  </option>
-                  <option :value="true">
-                    允许 / 是
-                  </option>
-                  <option :value="false">
-                    禁止 / 否
-                  </option>
-                </select>
+                  请选择已核验事实
+                </option>
+                <option :value="true">
+                  允许 / 是
+                </option>
+                <option :value="false">
+                  禁止 / 否
+                </option>
+              </select>
               </label>
             </div>
 
-            <label for="policy-opt-out">退订期限（天） <code>opt_out_deadline_days</code>
+            <label for="policy-opt-out">退订期限（天） <code>退订处理期限（天）</code>
               <input
                 id="policy-opt-out"
                 v-model="countryForm.opt_out_deadline_days"
@@ -1285,13 +1285,13 @@ onMounted(() => void refreshSettings());
                 :disabled="countryFormFrozen"
               >
             </label>
-            <label for="policy-requirements">附加要求代码 <code>requirements</code>
+            <label for="policy-requirements">附加要求代码 <code>要求</code>
               <textarea
                 id="policy-requirements"
                 v-model="countryForm.requirements"
                 name="requirements"
                 rows="2"
-                placeholder="用逗号或换行分隔固定 action code"
+                placeholder="用逗号或换行分隔固定操作代码"
                 :disabled="countryFormFrozen"
               />
             </label>
@@ -1312,7 +1312,7 @@ onMounted(() => void refreshSettings());
               :disabled="countryFormFrozen"
             >
               <legend>九项决策字段安全来源</legend>
-              <p>这里只展示并提交安全 source ID/type，不展示原始网页正文。</p>
+              <p>这里只展示并提交来源编号和类型，不展示原始网页正文。</p>
               <div
                 v-for="field in countryPolicyFields"
                 :key="field.key"
@@ -1326,17 +1326,17 @@ onMounted(() => void refreshSettings());
                     @change="normalizeCountrySource(field.key)"
                   >
                     <option value="employee_input">
-                      employee_input
+                      员工录入
                     </option>
                     <option value="upload">
-                      upload
+                      上传资料
                     </option>
                     <option value="web_page">
-                      web_page
+                      网页
                     </option>
                   </select>
                 </label>
-                <label :for="`source-id-${field.key}`">安全 source ID
+                <label :for="`source-id-${field.key}`">安全来源编号
                   <input
                     :id="`source-id-${field.key}`"
                     v-model="countryForm.field_sources[field.key].source_id"
@@ -1347,7 +1347,7 @@ onMounted(() => void refreshSettings());
                   >
                 </label>
                 <template v-if="countryForm.field_sources[field.key].source_type === 'web_page'">
-                  <label :for="`source-url-${field.key}`">HTTPS 来源 URL
+                  <label :for="`source-url-${field.key}`">安全来源网址
                     <input
                       :id="`source-url-${field.key}`"
                       v-model="countryForm.field_sources[field.key].source_url"
@@ -1382,7 +1382,7 @@ onMounted(() => void refreshSettings());
               class="diff-box"
               aria-label="国家政策候选差异"
             >
-              <strong>提交前 before / after</strong>
+              <strong>提交前后对比</strong>
               <ul>
                 <li
                   v-for="item in countryLiveDiff"
@@ -1406,7 +1406,7 @@ onMounted(() => void refreshSettings());
             >
               <strong>国家政策候选已创建，等待审批</strong>
               <span>候选 {{ countryAccepted.country_policy_version_id }}</span>
-              <span>Run {{ countryAccepted.run_id }}</span>
+              <span>运行记录 {{ countryAccepted.run_id }}</span>
             </div>
             <button
               class="btn-primary submit-button"
@@ -1514,7 +1514,7 @@ onMounted(() => void refreshSettings());
               v-else-if="historyBaseMissing(item.version)"
               class="history-base-missing"
             >
-              基准版本未在当前历史中；不展示推测的 before 值。
+              基准版本未在当前历史中；不展示推测的修改前值。
             </p>
             <details>
               <summary>字段来源（安全引用）</summary>
@@ -1523,8 +1523,8 @@ onMounted(() => void refreshSettings());
                   v-for="field in countryPolicyFields"
                   :key="field.key"
                 >
-                  <code>{{ field.key }}</code>
-                  {{ item.version.field_provenance[field.key].source_type }} /
+                  <span>{{ field.label }}</span>
+                  {{ codeLabel(item.version.field_provenance[field.key].source_type) }} /
                   {{ item.version.field_provenance[field.key].source_id }}
                   <span>
                     提取 {{ item.version.field_provenance[field.key].extracted_by }} ·

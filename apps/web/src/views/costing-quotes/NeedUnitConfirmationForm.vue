@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 /* global Event, HTMLTextAreaElement */
 import { inject, ref, watch } from "vue";
 import type { components } from "../../api/api";
@@ -33,7 +34,7 @@ async function read(): Promise<void> {
   } catch { if (op.valid()) message.value = "客户单位核对失败"; }
 }
 async function readPreview(): Promise<void> {
-  if (!messageIdPattern.test(source.value)) { clearRaw(); rawError.value = "请输入裸客户消息 ID（msg_…），不要填写来源前缀"; return; }
+  if (!messageIdPattern.test(source.value)) { clearRaw(); rawError.value = "请输入裸客户消息编号（msg_…），不要填写来源前缀"; return; }
   clearRaw(); const op = rawGate.begin("preview"); if (!op?.valid()) return;
   try {
     const result = await client.POST("/costing-quotes/evidence/preview", { signal: op.signal, body: { operation: "preview", scope: { purpose: "need_unit", action: "confirm", need_id: props.needId }, source_ref: `message:${source.value}`, profile: "rfc822-plain-v1", page: null } });
@@ -74,10 +75,10 @@ watch(() => props.needId, () => { clearCurrent(); void read(); }, { immediate: t
   <section class="panel">
     <h2>客户单位确认</h2><p>仅从有读取权限的客户消息确认；不扩大收件箱权限。需求数量变更后必须重新核对确认。</p>
     <p v-if="current">
-      数量 {{ current.quantity ?? '缺失' }} · 单位 {{ current.unit ?? '缺失' }} · {{ current.unit_status }} · 当前确认 {{ current.unit_confirmation_id ?? '无' }} · 数量 hash {{ current.quantity_fact_hash }}
+      数量 {{ current.quantity ?? '缺失' }} · 单位 {{ current.unit ?? '缺失' }} · {{ codeLabel(current.unit_status) }} · 当前确认 {{ current.unit_confirmation_id ?? '无' }} · 数量校验值 {{ current.quantity_fact_hash }}
     </p>
     <div class="field-grid">
-      <label>客户消息 ID<input
+      <label>客户消息编号<input
         v-model="source"
         name="unit-source"
       ></label><label>明确计价单位<input
@@ -123,7 +124,7 @@ watch(() => props.needId, () => { clearCurrent(); void read(); }, { immediate: t
     <p role="status">
       {{ message }} <code v-if="key">{{ key }}</code>
     </p><p v-if="receipt">
-      确认 ID {{ receipt.confirmation_id }} · {{ receipt.unit }} · {{ receipt.confirmed_by }} · {{ receipt.confirmed_at }} · {{ receipt.quantity_fact_hash }}
+      确认编号 {{ receipt.confirmation_id }} · {{ receipt.unit }} · {{ receipt.confirmed_by }} · {{ receipt.confirmed_at }} · {{ receipt.quantity_fact_hash }}
     </p>
   </section>
 </template>

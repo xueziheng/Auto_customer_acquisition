@@ -26,7 +26,7 @@ const campaign:components['schemas']['CampaignView']={campaign_id:'cmp-one',tena
 it('Campaign 读取拒绝不伪装成零联系人或可用发件选项',async()=>{
  const {root}=await mount(CampaignCenter,async input=>{const p=new URL((input as Request).url).pathname;return p==='/crm/campaigns'?json([campaign]):json({},503);});
  expect(root.textContent).toContain('入组进度读取失败');expect(root.textContent).not.toContain('暂无已验证联系人入组');
- button(root,'新建 Campaign').click();await flush();expect(root.textContent).toContain('发件身份读取失败');expect(button(root,'创建草稿').disabled).toBe(true);
+ button(root,'新建活动').click();await flush();expect(root.textContent).toContain('发件身份读取失败');expect(button(root,'创建草稿').disabled).toBe(true);
 });
 it('Campaign 列表403撤销仍在途的入组响应',async()=>{
  const old=deferred();let denied=false;
@@ -35,11 +35,11 @@ it('Campaign 列表403撤销仍在途的入组响应',async()=>{
 });
 it('Run 失败读取与无数据分开，缺失深链不回退其他Run',async()=>{
  const calls:string[]=[];const {root}=await mount(RunCenter,async input=>{const p=new URL((input as Request).url).pathname;calls.push(p);return json({},p==='/runs'?503:404);},'/runs?run=missing');
- expect(root.textContent).not.toContain('当前没有可审计的 Run 记录');expect(root.textContent).not.toContain('选择一条 Run');expect(root.textContent).toContain('不存在');expect(calls).toContain('/runs/missing');
+ expect(root.textContent).not.toContain('当前没有可审计的运行记录');expect(root.textContent).not.toContain('选择一条运行记录');expect(root.textContent).toContain('不存在');expect(calls).toContain('/runs/missing');
 });
 it('Settings 503读取失败显示研究配置错误，不渲染未配置',async()=>{
  const {root}=await mount(SettingsCenter,async()=>json({},503));
- expect(root.textContent).toContain('研究配置读取失败');expect(root.textContent).not.toContain('尚未配置 Company Playbook');
+ expect(root.textContent).toContain('研究配置读取失败');expect(root.textContent).not.toContain('尚未配置公司业务规则');
 });
 it('Settings 503冻结Playbook payload，同键恢复先读取历史',async()=>{
  const requests:Request[]=[];const bodies:unknown[]=[];const order:string[]=[];
@@ -104,7 +104,7 @@ it('Campaign 暂停响应未知后刷新不把旧active当成功，必须核对�
 });
 it('Settings并行读取中的403立即撤销页面，不等待另一读取完成',async()=>{
  const pending=deferred();const {root}=await mount(SettingsCenter,async input=>{const p=new URL((input as Request).url).pathname;if(p==='/settings/playbook')return json({},403);if(p==='/settings/playbook/versions')return pending.promise;return json({},503);});
- expect(root.textContent).toContain('只有老板可以查看或提交 Company Playbook');expect(root.textContent).not.toContain('尚未配置 Company Playbook');pending.resolve(json([]));await flush();expect(root.textContent).toContain('只有老板');
+ expect(root.textContent).toContain('只有老板可以查看或提交公司业务规则');expect(root.textContent).not.toContain('尚未配置公司业务规则');pending.resolve(json([]));await flush();expect(root.textContent).toContain('只有老板');
 });
 
 it.each([200,503])('入站A旧retry %s晚到不覆盖B绑定及B新retry busy/unknown',async staleStatus=>{

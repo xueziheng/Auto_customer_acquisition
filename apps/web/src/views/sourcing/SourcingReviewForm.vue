@@ -72,14 +72,14 @@ function retryCostHandoff(): void {
     <header>
       <div>
         <p class="card-kicker">
-          HUMAN REVIEW
+          人工审核
         </p><h2>人工审核</h2>
       </div><span v-if="review">{{ review.review_id }}</span>
     </header>
     <template v-if="review">
       <p>主选 {{ review.primary_option_id }} · 备选 {{ review.alternate_option_ids.join("、") || "无" }} · {{ review.reason }}。这仅是内部供给选择，未创建报价。</p>
       <p class="muted">
-        {{ review.confirmed_by ? `已由 ${review.confirmed_by} 确认。` : "待老板按保存的精确主选、备选、理由和 Case 版本确认。" }}
+        {{ review.confirmed_by ? `已由 ${review.confirmed_by} 确认。` : "待老板按保存的精确主选、备选、理由和寻源案例版本确认。" }}
       </p>
       <button
         v-if="review.can_current_user_confirm"
@@ -95,14 +95,14 @@ function retryCostHandoff(): void {
         class="cost-handoff-retry"
         role="alert"
       >
-        <p>Opportunity 缺失，需先补齐后再尝试成本交接。</p>
+        <p>贸易机会缺失，需先补齐后再尝试成本交接。</p>
         <button
           class="btn-primary"
           type="button"
           :disabled="disabled"
           @click="retryCostHandoff"
         >
-          在补齐 Opportunity 后重试成本交接
+          在补齐贸易机会后重试成本交接
         </button>
       </div>
     </template>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 /* global HTMLDetailsElement, HTMLElement, KeyboardEvent */
 import { inject, onMounted, ref, watch } from "vue";
 import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
@@ -84,18 +85,18 @@ async function loadNeed(): Promise<void> {
         if (sourcing.response.status !== 200 || !sourcing.data) {
           sourcingCase.value = null;
           sourcingNotice.value = sourcing.response.status === 403
-            ? "当前身份无权读取关联寻源 Case"
-            : "关联寻源 Case 暂不可读取";
+            ? "当前身份无权读取关联寻源案例"
+            : "关联寻源案例暂不可读取";
         } else {
           sourcingCase.value = sourcing.data.find(
             (item) => item.need_id === result.data!.need_id,
           ) ?? null;
-          if (!sourcingCase.value) sourcingNotice.value = "最近 50 条可见记录中未找到关联寻源 Case；是否存在暂不可确认";
+          if (!sourcingCase.value) sourcingNotice.value = "最近 50 条可见记录中未找到关联寻源案例；是否存在暂不可确认";
         }
       } catch {
         if (!op.valid()) return;
         sourcingCase.value = null;
-        sourcingNotice.value = "关联寻源 Case 暂不可读取";
+        sourcingNotice.value = "关联寻源案例暂不可读取";
       }
     } else {
       error.value = safeError(result.response.status);
@@ -119,7 +120,7 @@ onMounted(() => void loadNeed());
           ← 返回需求雷达
         </RouterLink>
         <p class="eyebrow">
-          CUSTOMER-VALIDATED EVIDENCE
+          客户确认的证据
         </p>
         <h1>已验证需求证据链</h1>
       </div>
@@ -148,7 +149,7 @@ onMounted(() => void loadNeed());
       class="empty"
       role="status"
     >
-      正在读取客户原话与 Provenance…
+      正在读取客户原话与来源追踪…
     </div>
 
     <main
@@ -172,7 +173,7 @@ onMounted(() => void loadNeed());
         class="sourcing-link"
         :to="`/sourcing/${sourcingCase.case_id}`"
       >
-        查看关联寻源 Case（{{ sourcingCase.state }}）
+        查看关联寻源案例（{{ codeLabel(sourcingCase.state) }}）
       </RouterLink>
       <p
         v-else-if="sourcingNotice"
@@ -197,13 +198,13 @@ onMounted(() => void loadNeed());
           <strong v-if="need.target_price">{{ need.target_price.amount }} {{ need.target_price.currency }}</strong>
           <strong v-else>未确认</strong>
         </article>
-        <article><span>状态</span><strong>{{ need.status }}</strong></article>
+        <article><span>状态</span><strong>{{ codeLabel(need.status) }}</strong></article>
       </section>
 
       <section class="evidence-section">
         <div class="section-head">
           <div>
-            <span class="validated-badge">字段级 Provenance</span>
+            <span class="validated-badge">字段级来源追踪</span>
             <h2>来源摘录与确认记录</h2>
           </div>
           <span>{{ need.fields.length }} 个字段</span>
@@ -217,7 +218,7 @@ onMounted(() => void loadNeed());
             <span>{{ fieldLabel(field.name) }}</span>
             <strong>{{ field.value }}</strong>
           </header>
-          <span>{{ field.confirmed_by ? "人工确认记录" : "来源摘录；字段确认状态见 Provenance" }}</span>
+          <span>{{ field.confirmed_by ? "人工确认记录" : "来源摘录；字段确认状态见来源追踪" }}</span>
           <MessageEvidenceDownload
             v-if="/^msg_[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(field.source_ref)"
             :message-id="field.source_ref"
@@ -234,7 +235,7 @@ onMounted(() => void loadNeed());
           </p>
           <details class="field-provenance">
             <summary @keydown="toggleProvenance">
-              查看字段 Provenance
+              查看字段来源追踪
             </summary>
             <dl>
               <div><dt>来源记录</dt><dd><code>{{ field.source_ref }}</code></dd></div>

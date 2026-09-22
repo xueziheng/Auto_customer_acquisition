@@ -1,4 +1,5 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { codeLabel } from "../../components/displayLabels";
 import type { components } from "../../api/api";
 import type { ApiIdentityReader, WebIdentitySnapshot } from "../../api/client";
 
@@ -55,7 +56,7 @@ export function quoteError(status: number, error?: components["schemas"]["ApiErr
     409: "绑定失效、状态冲突或已过期；请核对持久记录后重新确认",
     429: "请求受限；不自动重试", 503: "服务未配置或暂不可用，并非空数据",
   };
-  return `${labels[status] ?? "请求结果待核对"}${error ? `：${error.code} · ${error.message}` : ""}`;
+  return `${labels[status] ?? "请求结果待核对"}${error ? `：${codeLabel(error.code)} · ${error.message}` : ""}`;
 }
 
 export function useQuoteConfirmation(client: ApiIdentityReader, scope: () => readonly unknown[], reset: () => void) {

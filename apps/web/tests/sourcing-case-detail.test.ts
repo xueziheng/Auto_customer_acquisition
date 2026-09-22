@@ -119,7 +119,7 @@ describe("Sourcing admission detail", () => {
     const timing = root.querySelector<HTMLElement>(".admission-timing")!;
     expect(timing.textContent).toContain("准入等待用时");
     expect(timing.textContent).toContain("1 小时 5 分钟");
-    expect(root.textContent).toContain("一个 Need 对应一个 Case；需求簇不是合并订单");
+    expect(root.textContent).toContain("一个需求对应一个寻源案例；需求簇不是合并订单");
     expect(root.textContent).not.toContain("claim-secret-value");
     expect(root.textContent).not.toContain("claim_expires_at");
     expect(root.textContent).not.toContain("emp_hidden");

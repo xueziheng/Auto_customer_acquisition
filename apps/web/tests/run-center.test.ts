@@ -184,7 +184,7 @@ describe("RunCenter", () => {
     await eventually(() => {
       expect(root.textContent).toContain("寻源运行摘要");
       expect(root.textContent).toContain("已预留 1 / 已消耗 1 / 不确定 0");
-      expect(root.textContent).toContain("第 1 级：no_qualified_supply");
+      expect(root.textContent).toContain("第 1 级：尚无合格供应");
     });
     expect(root.textContent).not.toContain("stainless hinge query");
   });
@@ -230,7 +230,7 @@ describe("RunCenter", () => {
 
     await eventually(() => { expect(root.querySelector('[role="alert"]')).not.toBeNull(); });
     expect(root.querySelector(".run-detail")?.textContent).not.toContain(firstRun.run_id);
-    expect(root.querySelector(".run-detail")?.textContent).not.toContain("email_draft");
+    expect(root.querySelector(".run-detail")?.textContent).not.toContain("邮件草稿");
     expect(requested).toContain("/runs/run_unknown");
     expect(requested).not.toContain(`/runs/${firstRun.run_id}`);
   });
@@ -245,18 +245,18 @@ describe("RunCenter", () => {
       return pending.promise;
     });
     const { root } = await mountRuns(fetch, `/runs?run=${firstRun.run_id}`);
-    await eventually(() => { expect(root.querySelector(".run-detail")?.textContent).toContain("email_draft"); });
+    await eventually(() => { expect(root.querySelector(".run-detail")?.textContent).toContain("邮件草稿"); });
 
     await router.push(`/runs?run=${secondRun.run_id}`);
     await eventually(() => { expect(root.querySelector(".run-detail")?.textContent).toContain(secondRun.subject_ref); });
-    expect(root.querySelector(".run-detail")?.textContent).not.toContain("email_draft");
+    expect(root.querySelector(".run-detail")?.textContent).not.toContain("邮件草稿");
 
     await router.push("/runs?run=run_unknown");
     await nextTick();
     expect(root.querySelector(".run-detail")?.textContent).not.toContain(secondRun.run_id);
     expect(root.querySelector(".run-detail")?.textContent).not.toContain(secondRun.subject_ref);
     pending.resolve(jsonResponse({}, 404));
-    await eventually(() => { expect(root.textContent).toContain("该 Run 已不存在或不属于当前租户"); });
+    await eventually(() => { expect(root.textContent).toContain("该运行记录已不存在或不属于当前租户"); });
     expect(root.querySelector(".run-detail")?.textContent).not.toContain(secondRun.subject_ref);
   });
 
@@ -279,7 +279,7 @@ describe("RunCenter", () => {
     else older.resolve(jsonResponse(outcome === "404" ? {} : firstDetail, outcome === "404" ? 404 : 200));
     await settle();
     expect(root.querySelector(".run-detail")?.textContent).toContain(secondRun.run_id);
-    expect(root.querySelector(".run-detail")?.textContent).not.toContain("email_draft");
+    expect(root.querySelector(".run-detail")?.textContent).not.toContain("邮件草稿");
     expect(root.querySelector('[role="alert"]')).toBeNull();
   });
 
@@ -320,7 +320,7 @@ describe("RunCenter", () => {
     listing.resolve(jsonResponse([firstRun]));
     await settle();
     expect(root.querySelector(".run-detail")?.textContent).toContain(secondRun.run_id);
-    expect(root.querySelector(".run-detail")?.textContent).not.toContain("email_draft");
+    expect(root.querySelector(".run-detail")?.textContent).not.toContain("邮件草稿");
   });
 
   it.each([503, "network"])("旧列表迟到的 %s 不清除新深链的证据", async (outcome) => {
@@ -347,11 +347,11 @@ describe("RunCenter", () => {
       return jsonResponse(path === "/runs" ? [firstRun] : firstDetail);
     });
     const { root } = await mountRuns(fetch, `/runs?run=${firstRun.run_id}`);
-    await eventually(() => { expect(root.querySelector(".run-detail")?.textContent).toContain("email_draft"); });
+    await eventually(() => { expect(root.querySelector(".run-detail")?.textContent).toContain("邮件草稿"); });
     await router.push(`/runs${query}`);
     await nextTick();
-    expect(root.querySelector(".run-detail")?.textContent).not.toContain("email_draft");
-    expect(root.querySelector('[role="alert"]')?.textContent).toContain("Run 链接无效");
+    expect(root.querySelector(".run-detail")?.textContent).not.toContain("邮件草稿");
+    expect(root.querySelector('[role="alert"]')?.textContent).toContain("运行记录链接无效");
     expect(requested.filter((path) => path.startsWith("/runs/") && path !== "/runs/observability")).toHaveLength(1);
   });
 
@@ -393,17 +393,17 @@ describe("RunCenter", () => {
     const { root } = await mountRuns(fetch);
 
     await eventually(() => {
-      expect(root.textContent).toContain("demand_discovery");
-      expect(root.textContent).toContain("discover");
-      expect(root.textContent).toContain("web.search");
-      expect(root.textContent).toContain("email_draft");
-      expect(root.textContent).toContain("campaign_activation");
+      expect(root.textContent).toContain("需求发现");
+      expect(root.textContent).toContain("发现需求");
+      expect(root.textContent).toContain("网页搜索");
+      expect(root.textContent).toContain("邮件草稿");
+      expect(root.textContent).toContain("活动启用审批");
     });
     expect(root.textContent).not.toContain("接口尚未装配");
     expect(root.textContent).not.toContain("must-not-leak");
 
     const secondButton = [...root.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.textContent?.includes("human_handoff"));
+      .find((button) => button.textContent?.includes("人工接管"));
     expect(secondButton).toBeTruthy();
     secondButton!.click();
 
@@ -421,7 +421,7 @@ describe("RunCenter", () => {
     const { root } = await mountRuns(fetch);
 
     await eventually(() => {
-      expect(root.textContent).toContain("只有老板可以查看 Run 审计记录");
+      expect(root.textContent).toContain("只有老板可以查看运行记录审计记录");
     });
   });
 });
@@ -496,10 +496,10 @@ it('observation permission failure clears already visible protected Run data', a
     if (path === '/runs/observability') return pending.promise;
     return jsonResponse(path === '/runs' ? [firstRun] : firstDetail);
   }, '/runs', true);
-  await eventually(() => expect(root.querySelector('.run-detail')?.textContent).toContain('email_draft'));
+  await eventually(() => expect(root.querySelector('.run-detail')?.textContent).toContain('邮件草稿'));
   pending.resolve(jsonResponse({}, 403));
   await eventually(() => {
-    expect(root.querySelector('.run-detail')?.textContent).not.toContain('email_draft');
+    expect(root.querySelector('.run-detail')?.textContent).not.toContain('邮件草稿');
     expect(root.querySelector('.observation-panel')?.textContent).toContain('只有老板');
   });
 });
@@ -514,7 +514,7 @@ it.each([200, 503])('late observation %s cannot replace a refreshed snapshot', a
     }
     return jsonResponse(path === '/runs' ? [firstRun] : firstDetail);
   }, '/runs', true);
-  await eventually(() => expect(root.querySelector('.run-detail')?.textContent).toContain('email_draft'));
+  await eventually(() => expect(root.querySelector('.run-detail')?.textContent).toContain('邮件草稿'));
   Array.from(root.querySelectorAll('button')).find(button => button.textContent?.includes('刷新记录'))!.click();
   await eventually(() => expect(root.querySelector('.observation-panel')?.textContent).toContain('当前租户待接管：7'));
   older.resolve(jsonResponse(status === 200 ? observation : {}, status));

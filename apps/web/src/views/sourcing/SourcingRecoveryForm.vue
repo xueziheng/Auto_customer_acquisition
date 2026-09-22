@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 import { computed, ref, watch } from "vue";
 
 import type { components } from "../../api/api";
@@ -63,12 +64,12 @@ function reconcile(): void {
     <header>
       <div>
         <p class="card-kicker">
-          UNCERTAIN RECOVERY
+          不确定结果核对
         </p><h2>不确定请求核对</h2>
       </div><span>{{ executions.length }} 项</span>
     </header>
     <p class="muted">
-      只显示恢复所需的操作标识和状态，不显示查询、页面或 Provider 原始内容。核对会将不确定额度收紧为已消耗，不能自动重试或付费回退。
+      只显示恢复所需的操作标识和状态，不显示查询、页面或服务商原始内容。核对会将不确定额度收紧为已消耗，不能自动重试或付费回退。
     </p>
     <p
       v-if="!executions.length && !attempt"
@@ -82,7 +83,7 @@ function reconcile(): void {
           v-for="execution in executions"
           :key="execution.execution_id"
         >
-          <strong>{{ execution.execution_id }}</strong> · {{ execution.status }} · {{ execution.reconciliation?.status ?? "待人工核对" }} · {{ recoveryLabels[execution.recovery_action ?? "unavailable"] }}
+          <strong>{{ execution.execution_id }}</strong> · {{ codeLabel(execution.status) }} · {{ codeLabel(execution.reconciliation?.status ?? "待人工核对") }} · {{ recoveryLabels[execution.recovery_action ?? "unavailable"] }}
           <p v-if="execution.reconciliation">
             已记录理由：{{ execution.reconciliation.reason }} · 用量依据：{{ execution.reconciliation.provider_usage_artifact_ref }}
           </p>
@@ -115,7 +116,7 @@ function reconcile(): void {
           :value="execution.execution_id"
           :disabled="!execution.can_current_user_reconcile"
         >{{ execution.execution_id }} · {{ execution.can_current_user_reconcile ? "可核对" : "不可恢复" }}</option></select></label>
-        <label>可信用量 Artifact<input
+        <label>可信用量原始资料<input
           v-model="providerUsageArtifactRef"
           :disabled="Boolean(attempt) || disabled"
           required

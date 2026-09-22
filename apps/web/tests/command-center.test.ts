@@ -152,13 +152,13 @@ describe("Command Center sourcing admission policy", () => {
     await eventually(() => {
       expect(root.textContent).toContain("自动寻源准入：启用");
       expect(root.textContent).toContain("每轮最多启动 3 个寻源案例");
-      expect(root.textContent).toContain("cluster_ranked");
+      expect(root.textContent).toContain("按需求簇排序");
       expect(root.textContent).toContain("确认提案");
     });
     expect(root.textContent).toContain("提案不会启动寻源流程");
     root.querySelector<HTMLButtonElement>(".admission-policy button[type='button']")!.click();
 
-    await eventually(() => expect(root.textContent).toContain("生效 Directive v7"));
+    await eventually(() => expect(root.textContent).toContain("生效老板指令 v7"));
     expect(root.textContent).toContain("确认只更新准入策略，不代表寻源已启动");
     expect(requests.map((request) => new URL(request.url).pathname)).not.toContain("/workflow-runs");
   });

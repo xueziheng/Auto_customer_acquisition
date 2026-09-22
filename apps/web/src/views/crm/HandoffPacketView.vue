@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 import { computed } from "vue";
 
 import type { components } from "../../api/api";
@@ -40,7 +41,7 @@ const opportunityFacts = computed(() => [
 ]);
 
 function evidenceLabel(provenance: ProvenanceSummary): string {
-  if(provenance.source_type === "agent_inference") return "Agent 推断";
+  if(provenance.source_type === "agent_inference") return "智能助手推断";
   if(provenance.confirmed_by) return "人工确认";
   if(provenance.source_type === "conversation") return "客户会话来源（字段确认见来源）";
   return "来源记录（尚未人工确认）";
@@ -62,7 +63,7 @@ const evidenceCount = computed(() => props.packet.evidence_links?.length ?? 0);
   >
     <header class="packet-header">
       <div class="packet-badges">
-        <span class="state-tag"><span aria-hidden="true">●</span> {{ packet.state }}</span>
+        <span class="state-tag"><span aria-hidden="true">●</span> {{ codeLabel(packet.state) }}</span>
       </div>
       <h1>{{ packet.account_name }}</h1>
       <p class="record-ids">
@@ -79,7 +80,7 @@ const evidenceCount = computed(() => props.packet.evidence_links?.length ?? 0);
 
     <section class="packet-section">
       <p class="section-kicker">
-        SOURCE RECORD
+        来源记录
       </p>
       <h2>关键字段</h2>
       <dl class="fact-grid">
@@ -112,7 +113,7 @@ const evidenceCount = computed(() => props.packet.evidence_links?.length ?? 0);
 
     <section class="packet-section context-section">
       <p class="section-kicker">
-        HANDOFF CONTEXT
+        接管背景
       </p>
       <h2>完整上下文</h2>
       <dl class="context-grid">
@@ -196,7 +197,7 @@ const evidenceCount = computed(() => props.packet.evidence_links?.length ?? 0);
           @denied="emit('denied', $event)"
         />
         <p v-if="!messages.length">
-          当前接管包未提供可直接下载的消息 ID，请进入会话核对。原始资料定位符不可直接下载。
+          当前接管包未提供可直接下载的消息编号，请进入会话核对。原始资料定位符不可直接下载。
         </p>
       </div>
     </section>

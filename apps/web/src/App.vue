@@ -54,7 +54,7 @@ function closeMore(): void {
       role="alert"
       class="session-status"
     >
-      当前浏览器不支持 Web Locks，无法安全登录或退出。请使用支持 Web Locks 的 Chromium 浏览器打开本机入口。
+      当前浏览器不支持安全会话锁，无法登录或退出。请使用新版 Chrome 或 Edge 浏览器打开本机入口。
     </p>
     <p
       v-if="authMutation"
@@ -103,7 +103,7 @@ function closeMore(): void {
             客户发现
           </RouterLink>
           <RouterLink to="/campaigns">
-            Campaign
+            活动
           </RouterLink>
           <RouterLink to="/inbox">
             智能收件箱
@@ -112,7 +112,7 @@ function closeMore(): void {
             审批
           </RouterLink>
           <RouterLink to="/crm/opportunities">
-            CRM
+            客户管理
           </RouterLink>
           <RouterLink to="/products">
             供应能力
@@ -162,7 +162,7 @@ function closeMore(): void {
               to="/runs"
               @click="closeMore"
             >
-              Run 全景
+              运行记录
             </RouterLink>
             <RouterLink
               to="/settings"

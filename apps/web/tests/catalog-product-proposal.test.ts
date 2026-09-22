@@ -273,7 +273,7 @@ describe("Catalog Product Proposal internal regions", () => {
     await eventually(() => {
       expect(root.textContent).toContain("未配置即关闭");
       expect(root.textContent).toContain("当前没有可展示的目录提案");
-      expect(root.textContent).toContain("当前没有排队中的培养 Case");
+      expect(root.textContent).toContain("当前没有排队中的培养寻源案例");
     });
     const minimumAccounts = root.querySelector('[name="minimum_distinct_accounts"]') as HTMLInputElement;
     expect(minimumAccounts.value).toBe("");
@@ -551,7 +551,7 @@ describe("Catalog Product Proposal internal regions", () => {
     });
     expect(root.querySelector('[data-region="catalog-policy"]')?.textContent).not.toContain("未配置即关闭");
     expect(root.querySelector('[data-region="catalog-proposals"]')?.textContent).not.toContain("当前没有可展示的目录提案");
-    expect(root.querySelector('[data-region="catalog-cultivation"]')?.textContent).not.toContain("当前没有排队中的培养 Case");
+    expect(root.querySelector('[data-region="catalog-cultivation"]')?.textContent).not.toContain("当前没有排队中的培养寻源案例");
   });
 
   it("clears all catalog data on identity change, aborts every channel, and ignores late A responses", async () => {

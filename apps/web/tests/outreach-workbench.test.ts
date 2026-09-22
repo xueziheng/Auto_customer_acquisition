@@ -133,7 +133,7 @@ async function eventually(assertion: () => void): Promise<void> {
 }
 
 async function selectFirstRow(root: HTMLElement): Promise<HTMLButtonElement> {
-  const row = root.querySelector('li[aria-label="入组记录（Enrollment）"]');
+  const row = root.querySelector('li[aria-label="入组记录"]');
   expect(row).toBeTruthy();
   (row as HTMLElement).click();
   await eventually(() => {
@@ -205,7 +205,7 @@ describe("OutreachWorkbench", () => {
     const fetch = makeSendFetch();
     const { root } = await mountWorkbench(fetch);
     await eventually(() => {
-      expect(root.querySelectorAll('li[aria-label="入组记录（Enrollment）"]')).toHaveLength(1);
+      expect(root.querySelectorAll('li[aria-label="入组记录"]')).toHaveLength(1);
       expect(root.textContent).toContain("enr-demo-one");
     });
   });
@@ -271,8 +271,8 @@ describe("OutreachWorkbench", () => {
     prepare.click();
     await eventually(() => {
       expect(prepareCalls).toBe(1);
-      expect(root.textContent).toContain("邮件主题（Subject）");
-      expect(root.textContent).toContain("邮件正文（Body）");
+      expect(root.textContent).toContain("邮件主题");
+      expect(root.textContent).toContain("邮件正文");
       expect(root.textContent).toContain("发给客户的内容请使用英文");
     });
     await typeDraftAndSend(root, "demo subject", "demo body");
@@ -282,7 +282,7 @@ describe("OutreachWorkbench", () => {
     // 发送成功后抽屉关闭、输入框已卸载；重新准备并打开抽屉验证草稿被清空
     (await selectFirstRow(root)).click();
     await eventually(() => {
-      expect(root.textContent).toContain("邮件主题（Subject）");
+      expect(root.textContent).toContain("邮件主题");
     });
     const reopenedSubject = root.querySelector<HTMLInputElement>("#send-subject")!;
     const reopenedBody = root.querySelector<HTMLTextAreaElement>("#send-body")!;
@@ -313,7 +313,7 @@ describe("OutreachWorkbench", () => {
     });
     (await selectFirstRow(root)).click();
     await eventually(() => {
-      expect(root.textContent).toContain("邮件主题（Subject）");
+      expect(root.textContent).toContain("邮件主题");
     });
     await typeDraftAndSend(root, "demo subject", "demo body");
     const send = [...root.querySelectorAll("button")].find((b) => b.textContent?.trim() === "发送")!;
@@ -340,7 +340,7 @@ describe("OutreachWorkbench", () => {
       });
       (await selectFirstRow(root)).click();
       await eventually(() => {
-        expect(root.textContent).toContain("邮件主题（Subject）");
+        expect(root.textContent).toContain("邮件主题");
       });
       await typeDraftAndSend(root, "demo subject", "demo body");
       await eventually(() => {
@@ -362,7 +362,7 @@ describe("OutreachWorkbench", () => {
     });
     (await selectFirstRow(root)).click();
     await eventually(() => {
-      expect(root.textContent).toContain("邮件主题（Subject）");
+      expect(root.textContent).toContain("邮件主题");
     });
     const subject = root.querySelector<HTMLInputElement>("#send-subject")!;
     await typeDraftAndSend(root, "retryable", "demo body");
@@ -388,7 +388,7 @@ describe("OutreachWorkbench", () => {
     });
     (await selectFirstRow(root)).click();
     await eventually(() => {
-      expect(root.textContent).toContain("邮件主题（Subject）");
+      expect(root.textContent).toContain("邮件主题");
     });
     await typeDraftAndSend(root, "will-be-wiped", "demo body");
     await eventually(() => {
@@ -405,7 +405,7 @@ describe("OutreachWorkbench", () => {
     const prepare = await selectFirstRow(root);
     prepare.click();
     await eventually(() => {
-      expect(root.textContent).toContain("邮件主题（Subject）");
+      expect(root.textContent).toContain("邮件主题");
     });
     await typeDraft(root, "demo subject", "demo body");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
@@ -416,7 +416,7 @@ describe("OutreachWorkbench", () => {
     // 重新打开抽屉：草稿已被清空
     (await selectFirstRow(root)).click();
     await eventually(() => {
-      expect(root.textContent).toContain("邮件主题（Subject）");
+      expect(root.textContent).toContain("邮件主题");
     });
     expect(root.querySelector<HTMLInputElement>("#send-subject")!.value).toBe("");
     expect(root.querySelector<HTMLTextAreaElement>("#send-body")!.value).toBe("");
@@ -433,7 +433,7 @@ describe("OutreachWorkbench", () => {
     });
     (await selectFirstRow(root)).click();
     await eventually(() => {
-      expect(root.textContent).toContain("邮件主题（Subject）");
+      expect(root.textContent).toContain("邮件主题");
     });
     await typeDraftAndSend(root, "demo subject", "demo body");
     // 发送在途：按钮保持锁定
@@ -465,7 +465,7 @@ describe("OutreachWorkbench", () => {
     });
     (await selectFirstRow(root)).click();
     await eventually(() => {
-      expect(root.textContent).toContain("邮件主题（Subject）");
+      expect(root.textContent).toContain("邮件主题");
     });
     await typeDraftAndSend(root, "customer-marker-secret", "demo body");
     await eventually(() => {

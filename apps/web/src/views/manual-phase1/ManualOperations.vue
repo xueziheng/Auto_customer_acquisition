@@ -6,25 +6,25 @@ const route = useRoute();
 
 const operations = {
   products: {
-    eyebrow: "PRODUCT & SUPPLY",
+    eyebrow: "产品与供应",
     title: "产品与供应能力",
     description: "由员工维护产品、变体与供应能力；客户可见视图与内部视图必须分开。",
     steps: ["登记产品与变体", "核对来源与规格", "分别生成内部 / 销售 / 客户视图"],
-    boundary: "客户渠道只能读取 customer view，不能靠前端隐藏内部价格或利润字段。",
+    boundary: "客户渠道只能读取客户视图，不能靠前端隐藏内部价格或利润字段。",
   },
   sourcing: {
-    eyebrow: "MANUAL SOURCING",
+    eyebrow: "人工寻源",
     title: "人工寻源操作台",
-    description: "Phase 1 由员工对已验证需求执行匹配梯子、候选核验和证据留存。",
+    description: "第一阶段由员工对已验证需求执行匹配梯子、候选核验和证据留存。",
     steps: ["确认需求完整度至少为 3", "记录匹配梯子前五级结论", "提交带快照的供应商候选"],
-    boundary: "网页抓取价只能标为 indicative；缺少证据快照的候选不得提交。",
+    boundary: "网页抓取价只能标为参考价；缺少证据快照的候选不得提交。",
   },
   "costing-quotes": {
-    eyebrow: "DETERMINISTIC COST & QUOTE",
+    eyebrow: "成本与报价",
     title: "成本与报价",
-    description: "Phase 1 由员工录入成本项，确定性代码计算金额，正式报价逐次审批。",
+    description: "第一阶段由员工录入成本项，确定性代码计算金额，正式报价逐次审批。",
     steps: ["创建成本表版本", "确认所有成本项和报价基准", "锁定后提交正式报价审批"],
-    boundary: "金额只用 Decimal 计算；只有 quoted 供应价可进入客户可见报价。",
+    boundary: "金额只用精确小数计算；只有已报价供应价可进入客户可见报价。",
   },
 } as const;
 
@@ -39,7 +39,7 @@ const current = computed(() => operations[operation.value as keyof typeof operat
         <p class="phase-eyebrow">{{ current.eyebrow }}</p>
         <h1>{{ current.title }}</h1>
       </div>
-      <span class="status manual-status">Phase 1 · 人工执行</span>
+      <span class="status manual-status">第一阶段 · 人工执行</span>
     </div>
     <nav class="section-tabs" aria-label="人工运营模块">
       <RouterLink to="/products">产品</RouterLink>

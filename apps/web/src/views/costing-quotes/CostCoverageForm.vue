@@ -2,7 +2,7 @@
 import { inject, reactive, ref, watch } from "vue";
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
-import { costItemLabels } from "./quote-input";
+import { costItemLabel, costItemLabels } from "./quote-input";
 import { quoteError, useQuoteConfirmation } from "./quote-request-scope";
 const props = defineProps<{ sheet: components["schemas"]["CostSheetView"] }>();
 const emit = defineEmits<{ saved: [value: components["schemas"]["CostCoveragePublicView"] | null] }>();
@@ -26,7 +26,7 @@ async function read(): Promise<void> {
   try {
     const result = await client.GET("/costing-quotes/cost-sheets/{sheet_id}/coverage", { params: { path: { sheet_id: props.sheet.cost_sheet_id } }, signal: op.signal });
     if (!op.valid()) return;
-    if (result.response.ok) { coverage.value = result.data ?? null; emit("saved", coverage.value); message.value = coverage.value ? "已读取费用确认；仍须检查成本 hash" : "尚未确认适用清单"; }
+    if (result.response.ok) { coverage.value = result.data ?? null; emit("saved", coverage.value); message.value = coverage.value ? "已读取费用确认；仍须检查成本校验值" : "尚未确认适用清单"; }
     else message.value = quoteError(result.response.status, result.error);
   } catch { if (op.valid()) message.value = "费用适用清单读取失败"; }
 }
@@ -51,7 +51,7 @@ async function save(): Promise<void> {
 </script>
 <template>
   <section class="panel">
-    <h2>22 项成本适用清单</h2><p>缺失 ≠ 零金额 ≠ 不适用。零金额需原始依据；不适用需人工说明。旧 readiness 保持独立只读。</p>
+    <h2>22 项成本适用清单</h2><p>缺失 ≠ 零金额 ≠ 不适用。零金额需原始依据；不适用需人工说明。旧就绪检查保持独立只读。</p>
     <label>获客归集口径<select
       v-model="mode"
       name="coverage-mode"
@@ -80,7 +80,7 @@ async function save(): Promise<void> {
           v-if="item.item_sequence != null && bindings[item.item_sequence]"
           class="field-grid"
         >
-          <label>依据 ID<input
+          <label>依据编号<input
             v-model="bindings[item.item_sequence]!.evidence"
             :name="`binding-evidence-${item.item_sequence}`"
           ></label><label>原文费用行引用<input
@@ -115,7 +115,7 @@ async function save(): Promise<void> {
         v-for="decision in coverage.decisions"
         :key="decision.item_type"
       >
-        {{ decision.item_type }}：{{ decision.applicable ? '适用' : '不适用' }} · {{ decision.reason }}
+        {{ costItemLabel(decision.item_type) }}：{{ decision.applicable ? '适用' : '不适用' }} · {{ decision.reason }}
       </p>
     </div>
   </section>

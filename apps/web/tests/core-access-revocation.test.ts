@@ -39,7 +39,7 @@ it('会话列表403后旧详情不得恢复受限原件',async()=>{
   return json(detail('old'));
  },'/inbox');
  [...root.querySelectorAll('.conversation-list button')].find(b=>b.textContent?.includes('second-account'))!.dispatchEvent(new MouseEvent('click'));await flush();
- denied=true;button(root,'刷新').click();await flush();expect(root.textContent).toContain('当前身份无权访问 Smart Inbox');
+ denied=true;button(root,'刷新').click();await flush();expect(root.textContent).toContain('当前身份无权访问智能收件箱');
  old.resolve(json(detail('second')));await flush();expect(root.textContent).not.toContain('protected-second');expect(root.textContent).not.toContain('second-account');expect(root.textContent).not.toContain('下载邮件原件');
 });
 
@@ -117,6 +117,6 @@ it('列表401后旧详情错误不得覆盖拒绝消息，404拒绝后结束加�
   return json(inboxDetail('first'));
  },'/inbox');
  [...root.querySelectorAll('.conversation-list button')].find(b=>b.textContent?.includes('second-account'))!.dispatchEvent(new MouseEvent('click'));await flush();button(root,'刷新').click();await flush();
- old.reject(new Error('old detail error'));await flush();expect(root.textContent).toContain('当前身份无权访问 Smart Inbox');expect(root.textContent).not.toContain('会话详情加载失败');expect(button(root,'刷新').disabled).toBe(false);
+ old.reject(new Error('old detail error'));await flush();expect(root.textContent).toContain('当前身份无权访问智能收件箱');expect(root.textContent).not.toContain('会话详情加载失败');expect(button(root,'刷新').disabled).toBe(false);
  button(root,'刷新').click();await flush();expect(root.textContent).toContain('所选会话不存在或不可见');expect(button(root,'刷新').disabled).toBe(false);expect(root.querySelector('.conversation-detail')?.getAttribute('aria-busy')).not.toBe('true');
 });

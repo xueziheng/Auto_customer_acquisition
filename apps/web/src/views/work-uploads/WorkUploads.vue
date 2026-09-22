@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 /* global Blob, Event, File, HTMLInputElement, URL */
 import { computed, inject, onMounted, onUnmounted, ref } from "vue";
 
@@ -221,7 +222,7 @@ async function confirmRevision(): Promise<void> {
     }
     extraction.value = result.data;
     revision.value = clonePayload(result.data.confirmation?.payload ?? result.data.payload);
-    notice.value = "员工修订已作为新版本确认；Agent 原始提取保持不变";
+    notice.value = "员工修订已作为新版本确认；智能助手原始提取保持不变";
     await loadUploads();
   } catch {
     error.value = "修订版本未提交，请稍后重试";
@@ -243,7 +244,7 @@ onUnmounted(releasePreview);
     <div class="page-head work-head">
       <div>
         <p class="phase-eyebrow">
-          HUMAN WORK INTAKE
+          工作资料录入
         </p><h1>员工工作上传</h1>
       </div>
       <button
@@ -255,7 +256,7 @@ onUnmounted(releasePreview);
       </button>
     </div>
     <div class="safe-banner">
-      <span aria-hidden="true">i</span><div>原件先进入不可变 Artifact Store；Agent 提取只是候选，员工确认新版本后才可进入后续业务流程。</div>
+      <span aria-hidden="true">i</span><div>原件先进入不可变原始资料库；智能助手提取只是候选，员工确认新版本后才可进入后续业务流程。</div>
     </div>
     <div
       v-if="error"
@@ -277,7 +278,7 @@ onUnmounted(releasePreview);
         <header>
           <div>
             <p class="card-kicker">
-              NEW ARTIFACT
+              上传原始资料
             </p><h2>上传工作原件</h2>
           </div><span>本人可见</span>
         </header>
@@ -311,7 +312,7 @@ onUnmounted(releasePreview);
         <header>
           <div>
             <p class="card-kicker">
-              MY INTAKE LEDGER
+              我的上传记录
             </p><h2>我的上传记录</h2>
           </div><span>{{ uploads.length }} 条</span>
         </header>
@@ -341,7 +342,7 @@ onUnmounted(releasePreview);
               <span
                 class="status-pill"
                 :data-status="item.status"
-              >{{ statusLabels[item.status] }}</span><strong>{{ item.upload_id }}</strong><small>{{ item.source_kind }} · {{ formatDate(item.occurred_at) }}</small>
+              >{{ statusLabels[item.status] }}</span><strong>{{ item.upload_id }}</strong><small>{{ codeLabel(item.source_kind) }} · {{ formatDate(item.occurred_at) }}</small>
             </div>
             <button
               type="button"
@@ -362,8 +363,8 @@ onUnmounted(releasePreview);
       <header>
         <div>
           <p class="card-kicker">
-            EVIDENCE COMPARISON
-          </p><h2>原件 → Agent 候选 → 员工确认</h2>
+            证据对照
+          </p><h2>原件 → 智能助手候选 → 员工确认</h2>
         </div><span>{{ selectedUpload.upload_id }}</span>
       </header>
       <div
@@ -410,12 +411,12 @@ onUnmounted(releasePreview);
             原件预览暂不可用
           </p>
           <dl class="metadata">
-            <div><dt>Artifact</dt><dd>{{ selectedUpload.artifact_id }}</dd></div><div><dt>发生时间</dt><dd>{{ formatDate(selectedUpload.occurred_at) }}</dd></div><div><dt>客户时区</dt><dd>{{ selectedUpload.customer_timezone }}</dd></div>
+            <div><dt>原始资料</dt><dd>{{ selectedUpload.artifact_id }}</dd></div><div><dt>发生时间</dt><dd>{{ formatDate(selectedUpload.occurred_at) }}</dd></div><div><dt>客户时区</dt><dd>{{ selectedUpload.customer_timezone }}</dd></div>
           </dl>
         </article>
 
         <article class="comparison-column agent-column">
-          <header><span>02</span><div><h3>Agent 原始提取</h3><p>只读候选，不是已确认事实</p></div></header>
+          <header><span>02</span><div><h3>智能助手原始提取</h3><p>只读候选，不是已确认事实</p></div></header>
           <div
             v-if="!extraction"
             class="empty compact"
@@ -432,7 +433,7 @@ onUnmounted(releasePreview);
                 :key="index"
                 class="extract-card"
               >
-                <span>{{ item.fact_type }}</span><strong>{{ item.value }}</strong><blockquote>{{ item.evidence_quote }}</blockquote>
+                <span>{{ codeLabel(item.fact_type) }}</span><strong>{{ item.value }}</strong><blockquote>{{ item.evidence_quote }}</blockquote>
               </article><p
                 v-if="!extraction.payload.facts.length"
                 class="muted"
@@ -441,12 +442,12 @@ onUnmounted(releasePreview);
               </p>
             </section>
             <section class="extract-group">
-              <h4>Need 字段候选</h4><article
+              <h4>需求字段候选</h4><article
                 v-for="(item, index) in extraction.payload.need_field_updates"
                 :key="index"
                 class="extract-card inference-card"
               >
-                <span>{{ item.field_name }}</span><strong>{{ displayNeedValue(item.value) }}</strong><blockquote>{{ item.evidence_quote }}</blockquote>
+                <span>{{ codeLabel(item.field_name) }}</span><strong>{{ displayNeedValue(item.value) }}</strong><blockquote>{{ item.evidence_quote }}</blockquote>
               </article><p
                 v-if="!extraction.payload.need_field_updates.length"
                 class="muted"
@@ -460,7 +461,7 @@ onUnmounted(releasePreview);
                 :key="index"
                 class="extract-card commitment-extract"
               >
-                <span>{{ item.commitment_type }}</span><strong>{{ item.action }}</strong><small>{{ item.due_at }}</small><blockquote>{{ item.verbatim }}</blockquote>
+                <span>{{ codeLabel(item.commitment_type) }}</span><strong>{{ item.action }}</strong><small>{{ item.due_at }}</small><blockquote>{{ item.verbatim }}</blockquote>
               </article><p
                 v-if="!extraction.payload.commitments.length"
                 class="muted"
@@ -472,12 +473,12 @@ onUnmounted(releasePreview);
         </article>
 
         <article class="comparison-column revision-column">
-          <header><span>03</span><div><h3>员工修订版本</h3><p>确认将追加新版本，不覆盖 Agent 结果</p></div></header>
+          <header><span>03</span><div><h3>员工修订版本</h3><p>确认将追加新版本，不覆盖智能助手结果</p></div></header>
           <div
             v-if="!revision"
             class="empty compact"
           >
-            等待 Agent 提取后才能修订
+            等待智能助手提取后才能修订
           </div>
           <template v-else>
             <div
@@ -517,7 +518,7 @@ onUnmounted(releasePreview);
               </article>
             </section>
             <section class="revision-group">
-              <h4>Need 字段更新</h4><article
+              <h4>需求字段更新</h4><article
                 v-for="(item, index) in revision.need_field_updates"
                 :key="index"
                 class="revision-card"

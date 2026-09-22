@@ -47,7 +47,7 @@ defineExpose({ refresh });
       研究运行摘要读取失败，请刷新；已有摘要仅为上次读取结果。
     </p>
     <p v-else-if="!run">
-      最近记录中暂无研究 Run 摘要。
+      最近记录中暂无研究运行记录摘要。
     </p>
     <ResearchRunSummary
       v-if="run?.research"
@@ -57,7 +57,7 @@ defineExpose({ refresh });
       v-if="run"
       :to="{ path: '/runs', query: { run: run.run_id } }"
     >
-      查看最近研究 Run 的完整审计 →
+      查看最近研究运行记录的完整审计 →
     </RouterLink>
   </div>
 </template>

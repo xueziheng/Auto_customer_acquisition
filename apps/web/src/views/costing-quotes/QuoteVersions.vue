@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { codeLabel } from "../../components/displayLabels";
 /* global URL, document */
 import { computed, inject, ref, watch } from "vue";
 import { RouterLink, useRouter } from "vue-router";
@@ -87,7 +88,7 @@ async function fileAction(kind: "generate" | "reconcile"): Promise<void> {
       : await client.POST("/costing-quotes/quotes/{quote_id}/files/reconcile", { params: { path: { quote_id: props.quoteId } }, body: { quote_id: props.quoteId, original_generation_call_id: originalCall.value }, signal: op.signal });
     if (!valid()) return;
     if (result.data) {
-      if ("outcome" in result.data) { files.value = [result.data.file]; recoveryCall.value = result.data.recovery_call_id; notice.value = "仅恢复 metadata 关联；未证明文件 bytes 可读，原调用仍未决"; }
+      if ("outcome" in result.data) { files.value = [result.data.file]; recoveryCall.value = result.data.recovery_call_id; notice.value = "仅恢复摘要信息关联；未证明文件字节可读，原调用仍未决"; }
       else { files.value = [result.data]; notice.value = "文件已生成；未发送"; }
     } else {
       fileError.value = quoteError(result.response.status, result.error);
@@ -97,7 +98,7 @@ async function fileAction(kind: "generate" | "reconcile"): Promise<void> {
         if (kind === "reconcile") recoveryCall.value = result.error.tool_call_id ?? "";
       }
     }
-  } catch { if (valid()) fileError.value = "文件请求结果未知，待核对。请读取文件记录；不自动生成、不伪造原调用 ID"; }
+  } catch { if (valid()) fileError.value = "文件请求结果未知，待核对。请读取文件记录；不自动生成、不伪造原调用编号"; }
   finally { if (valid()) { working.value = false; recovering = false; } }
 }
 async function download(file: components["schemas"]["QuoteFileView"], history = false, preview = false): Promise<void> {
@@ -122,9 +123,9 @@ async function submit(): Promise<void> {
   try {
     const result = await client.POST("/costing-quotes/quotes/{quote_id}/submit", { params: { path: { quote_id: props.quoteId } }, body: {}, signal: op.signal });
     if (!op.valid()) return;
-    if (result.data) { submittedRunId.value = result.data.run_id; notice.value = `已提交审批，尚未批准、更未发送。Run ${result.data.run_id}`; void loadQuote(); }
+    if (result.data) { submittedRunId.value = result.data.run_id; notice.value = `已提交审批，尚未批准、更未发送。运行记录 ${result.data.run_id}`; void loadQuote(); }
     else internalError.value = quoteError(result.response.status, result.error);
-  } catch { if (op.valid()) internalError.value = "审批提交结果未知，待核对指定版本与 Run"; }
+  } catch { if (op.valid()) internalError.value = "审批提交结果未知，待核对指定版本与运行记录"; }
   finally { if (op.valid()) working.value = false; }
 }
 watch(() => [props.opportunityId, props.quoteId], () => { reset(); emit("selected", null); refresh(); }, { immediate: true, flush: "sync" });
@@ -151,7 +152,7 @@ watch(() => [props.opportunityId, props.quoteId], () => { reset(); emit("selecte
       v-if="submittedRunId"
       :to="{ path: '/runs', query: { run: submittedRunId } }"
     >
-      查看本次报价审批 Run
+      查看本次报价审批运行记录
     </RouterLink>
     <p v-if="!internal.length && !current && !internalError">
       暂无已加载内部报价
@@ -167,7 +168,7 @@ watch(() => [props.opportunityId, props.quoteId], () => { reset(); emit("selecte
       v-if="current"
       class="internal-quote"
     >
-      <h3>指定版本 V{{ current.version }} · {{ stateLabels[current.state] }}</h3><p>{{ current.quote_id }} · {{ current.content_hash }}</p><p>贸易机会 {{ current.opportunity_id }} · 成本 {{ current.cost_sheet_id }} · basis {{ current.basis_id }} / {{ current.basis_hash }}</p><p>有效期 {{ current.valid_until }} · 起草 {{ current.prepared_by }} · 负责人 {{ current.owner_id }}</p><p v-if="current.replaces_quote_id">
+      <h3>指定版本 V{{ current.version }} · {{ stateLabels[current.state] }}</h3><p>{{ current.quote_id }} · {{ current.content_hash }}</p><p>贸易机会 {{ current.opportunity_id }} · 成本 {{ current.cost_sheet_id }} · 依据 {{ current.basis_id }} / {{ current.basis_hash }}</p><p>有效期 {{ current.valid_until }} · 起草 {{ current.prepared_by }} · 负责人 {{ current.owner_id }}</p><p v-if="current.replaces_quote_id">
         替代前版 {{ current.replaces_quote_id }} / V{{ current.replaced_quote_version }}；前版停用，不覆盖成本引用
       </p>
       <RouterLink :to="{ path: '/costing-quotes', query: { opportunity_id: current.opportunity_id, cost_sheet_id: current.cost_sheet_id } }">
@@ -194,11 +195,11 @@ watch(() => [props.opportunityId, props.quoteId], () => { reset(); emit("selecte
         v-for="quote in customer"
         :key="quote.quote_id"
       >
-        <h4>V{{ quote.version }} · {{ stateLabels[quote.state] }} · {{ quote.quote_id }}</h4><p>有效期 {{ quote.valid_until }} {{ quote.is_past_valid_until ? '已过期' : '' }}</p><p>后端 allowed_actions：{{ quote.allowed_actions.join(' / ') || '无' }}</p><p
+        <h4>V{{ quote.version }} · {{ stateLabels[quote.state] }} · {{ quote.quote_id }}</h4><p>有效期 {{ quote.valid_until }} {{ quote.is_past_valid_until ? '已过期' : '' }}</p><p>后端可用操作：{{ quote.allowed_actions.map(action => codeLabel(action)).join(' / ') || '无' }}</p><p
           v-for="blocker in quote.blockers"
           :key="`${blocker.action}-${blocker.code}`"
         >
-          {{ blocker.action }}：{{ blocker.code }}
+          {{ codeLabel(blocker.action) }}：{{ codeLabel(blocker.code) }}
         </p><button @click="router.push(`/costing-quotes/quotes/${quote.quote_id}`)">
           查看指定版本
         </button><div
@@ -237,7 +238,7 @@ watch(() => [props.opportunityId, props.quoteId], () => { reset(); emit("selecte
           v-for="file in files"
           :key="file.file_id"
         >
-          <p>{{ file.file_id }} · V{{ file.quote_version }} · {{ file.content_hash }} · {{ file.size_bytes }} bytes</p><button
+          <p>{{ file.file_id }} · V{{ file.quote_version }} · {{ file.content_hash }} · {{ file.size_bytes }} 字节</p><button
             :disabled="!hasIdentity || !allowed('download_current')"
             @click="download(file)"
           >
@@ -256,16 +257,16 @@ watch(() => [props.opportunityId, props.quoteId], () => { reset(); emit("selecte
         </div>
         <p v-if="!files.length && !fileError">
           尚无已加载文件
-        </p><label>原生成调用 ID（未知结果人工核对）<input
+        </p><label>原生成调用编号（未知结果人工核对）<input
           v-model="originalCall"
           name="original-generation-call"
         ></label><p v-if="recoveryCall">
-          本次恢复调用 ID：{{ recoveryCall }}
+          本次恢复调用编号：{{ recoveryCall }}
         </p><button
           :disabled="!hasIdentity || working || !originalCall"
           @click="fileAction('reconcile')"
         >
-          仅恢复原调用 metadata 关联
+          仅恢复原调用摘要信息关联
         </button>
       </div><iframe
         v-if="previewing && blobUrl"
