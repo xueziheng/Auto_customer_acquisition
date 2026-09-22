@@ -5896,3 +5896,76 @@ class AuthRateLimitRow(Base):
     bucket: Mapped[str] = mapped_column(String(16))
     count: Mapped[int] = mapped_column(Integer)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ModelInvocationRow(Base):
+    """模型调用安全账本，不存原始请求、响应或秘密引用。"""
+    __tablename__ = "model_invocations"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "invocation_id", name="pk_model_invocations"),
+        UniqueConstraint("tenant_id", "run_id", "capability", "configuration_version", "sequence", name="uq_model_invocation_identity"),
+        CheckConstraint("state IN ('reserved','dispatched','succeeded','rejected','invalid','unknown')", name="ck_model_invocation_state"),
+        CheckConstraint("sequence >= 0 AND request_hmac ~ '^[0-9a-f]{64}$'", name="ck_model_invocation_identity"),
+        CheckConstraint("(input_tokens IS NULL OR input_tokens >= 0) AND (cached_input_tokens IS NULL OR cached_input_tokens >= 0) AND (output_tokens IS NULL OR output_tokens >= 0) AND (input_tokens IS NULL OR cached_input_tokens IS NULL OR cached_input_tokens <= input_tokens)", name="ck_model_invocation_usage"),
+        Index("ix_model_invocations_quota", "tenant_id", "created_at", "employee_id"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    invocation_id: Mapped[str] = mapped_column(String(40))
+    user_id: Mapped[str] = mapped_column(String(128))
+    employee_id: Mapped[str] = mapped_column(String(128))
+    run_id: Mapped[str] = mapped_column(String(128))
+    turn_id: Mapped[str | None] = mapped_column(String(128))
+    capability: Mapped[str] = mapped_column(String(40))
+    configuration_version: Mapped[str] = mapped_column(String(128))
+    sequence: Mapped[int] = mapped_column(Integer)
+    request_hmac: Mapped[str] = mapped_column(String(64))
+    provider: Mapped[str] = mapped_column(String(16))
+    model: Mapped[str] = mapped_column(String(128))
+    state: Mapped[str] = mapped_column(String(16))
+    input_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    cached_input_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    output_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    slot_released: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ModelQuotaBucketRow(Base):
+    """稳定租户/员工技术锁及当前计数快照；事实源是调用账本。"""
+    __tablename__ = "model_quota_buckets"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "scope_key", name="pk_model_quota_buckets"),
+        CheckConstraint("calls >= 0", name="ck_model_quota_calls"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    scope_key: Mapped[str] = mapped_column(String(160))
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    calls: Mapped[int] = mapped_column(BigInteger)
+
+
+class ModelSlotReleaseRow(Base):
+    """未知执行显式解除并发槽的只增审计，不退款或覆盖原调用。"""
+    __tablename__ = "model_slot_releases"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "invocation_id", name="pk_model_slot_releases"),
+        ForeignKeyConstraint(["tenant_id", "invocation_id"], ["model_invocations.tenant_id", "model_invocations.invocation_id"], name="fk_model_slot_release_invocation", ondelete="RESTRICT"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    invocation_id: Mapped[str] = mapped_column(String(40))
+    operator_id: Mapped[str] = mapped_column(String(128))
+    reason: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ModelConfigurationVersionRow(Base):
+    """不可变非秘密配置；验证与进程装配事实另行投影。"""
+    __tablename__ = "model_configuration_versions"
+    __table_args__ = (PrimaryKeyConstraint("tenant_id", "version", name="pk_model_configuration_versions"),)
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    version: Mapped[str] = mapped_column(String(128))
+    model: Mapped[str] = mapped_column(String(128))
+    limits: Mapped[dict[str, object]] = mapped_column(postgresql.JSONB)
+    export_enabled: Mapped[bool] = mapped_column(Boolean)
+    created_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
