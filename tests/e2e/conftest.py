@@ -632,6 +632,7 @@ async def _seed_controlled_public_research_policy(
     tenant_id: TenantId,
     boss_id: EmployeeId,
     approver_id: EmployeeId,
+    *, country: str = "XZ",
 ) -> None:
     """以真实合规服务激活虚构 XZ 市场的只读研究政策。"""
 
@@ -658,7 +659,7 @@ async def _seed_controlled_public_research_policy(
         tenant_id,
         CountryPolicyProposalCreate.model_validate(
             {
-                "country": "XZ",
+                "country": country,
                 "public_research_allowed": True,
                 "contact_enrichment_allowed": False,
                 "cold_b2b_email_allowed": False,
@@ -695,7 +696,7 @@ async def _seed_controlled_public_research_policy(
     )
     decision = await service.get_country_policy_decision(
         tenant_id,
-        "XZ",
+        country,
         CountryPolicyAction.PUBLIC_RESEARCH,
         actor=system,
     )

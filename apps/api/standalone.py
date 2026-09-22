@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 
@@ -27,6 +28,9 @@ def create_standalone_app(
     profile: PilotConfig, settings: StandaloneModelSettings, build: Path
 ) -> FastAPI:
     runtime = runtime_settings(profile)
+    if settings.research is not None:
+        runtime = replace(runtime, tavily_api_key_ref=settings.research.secret_ref,
+                          tavily_exclusive_account_confirmed=settings.research.exclusive_account_confirmed)
     fingerprints = HmacFingerprintProvider(
         runtime.tool_call_fingerprint_key_version,
         profile.resolve(runtime.tool_call_fingerprint_key_ref).encode(),

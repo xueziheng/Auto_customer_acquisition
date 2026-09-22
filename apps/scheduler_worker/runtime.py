@@ -1054,6 +1054,7 @@ class SchedulerRuntimeFactory:
         inbound_ports: InboundRuntimePorts | None = None,
         resolver_factory: Callable[[], AsyncTxtResolver] = DnsPythonAsyncResolver,
         pilot_config: SchedulerWorkerConfig | None = None,
+        standalone_research: bool = False,
         secret_resolver: SecretResolver | None = None,
         unconfigured_dns_step: StepHandler | None = None,
         health_server_factory: Callable[
@@ -1073,6 +1074,12 @@ class SchedulerRuntimeFactory:
             )
         ):
             raise ValidationError("scheduler runtime factory 依赖无效")
+        if type(standalone_research) is not bool or (standalone_research and (
+            pilot_config is None or bootstrap is None
+            or getattr(bootstrap, "research_factory", None) is None
+            or getattr(bootstrap, "assistant_factory", None) is None
+        )):
+            raise ValidationError("独立研究必须显式配置会话与研究工厂")
         if pilot_config is not None and (
             pilot_config.dkim_selector is not None
             or pilot_config.gmail_oauth_token_ref is not None
@@ -1083,7 +1090,7 @@ class SchedulerRuntimeFactory:
             or bootstrap is None
             or any(
                 getattr(bootstrap, name, True)
-                for name in ("research_enabled", "contacts_enabled", "campaign_enabled")
+                for name in (("contacts_enabled", "campaign_enabled") if standalone_research else ("research_enabled", "contacts_enabled", "campaign_enabled"))
             )
         ):
             raise ValidationError("本机 scheduler 外部能力必须未配置")

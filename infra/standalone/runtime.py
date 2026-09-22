@@ -17,6 +17,7 @@ class ModelRuntimeLifecycle:
         tenant_id: TenantId,
         process: Literal["api", "scheduler"],
         recovery: Callable[[str], Awaitable[int]] | None = None,
+        instance_id: str | None = None,
     ) -> None:
         self._repository, self._settings, self._tenant_id, self._process = (
             repository,
@@ -25,7 +26,7 @@ class ModelRuntimeLifecycle:
             process,
         )
         self._recovery = recovery
-        self._instance_id = new_id("mrt").lower()
+        self._instance_id = instance_id or new_id("mrt").lower()
         self._task: asyncio.Task[None] | None = None
         self._started = False
 

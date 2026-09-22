@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -28,7 +29,7 @@ from infra.pilot.config import PilotConfig
 from infra.secrets import EnvironmentSecretResolver
 from infra.standalone.runtime import ModelRuntimeLifecycle
 from infra.standalone.settings import StandaloneModelSettings, load_model_settings
-from shared.schemas.identifiers import TenantId
+from shared.schemas.identifiers import TenantId, UserId, new_id
 from shared.schemas.money import CurrencyCode, Money
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.model_generate import ModelProvider
@@ -36,8 +37,9 @@ from tool_gateway.repository import ToolGatewayUnitOfWork
 from workflows.assistant.ports import AssistantRuntimePorts
 from workflows.engine.audit import Phase1RunAuditAuthorizer, RunAuditService
 
-from .bootstrap import CanonicalSchedulerBootstrap
+from .bootstrap import CanonicalSchedulerBootstrap, ResearchRuntimePorts
 from .config import SchedulerWorkerConfig
+from .main import SchedulerRuntime
 from .main import main as run_worker
 from .pilot import UnconfiguredDnsResolver, UnconfiguredDnsStep
 from .runtime import (
@@ -45,14 +47,17 @@ from .runtime import (
     SchedulerHealthServer,
     SchedulerRuntimeFactory,
 )
+from .standalone_research import bind_research
 
 
-def create_standalone_factory(
+def _create_standalone_factory(
     profile: PilotConfig,
     settings: StandaloneModelSettings,
     model_resolver: SecretResolver,
     *,
     provider_factory: Callable[[], ModelProvider] | None = None,
+    research_ports: ResearchRuntimePorts | None = None,
+    instance_id: str,
 ) -> SchedulerRuntimeFactory:
     env = profile.runtime_environment()
     tenant = TenantId(profile.tenant_id)
@@ -84,6 +89,7 @@ def create_standalone_factory(
         lifecycle = ModelRuntimeLifecycle(
             shared.repository, settings, tenant, "scheduler",
             recovery=lambda owner: usage.recover_abandoned(tenant, owner, now()),
+            instance_id=instance_id,
         )
         model = build_model_composition(
             settings=settings,
@@ -118,6 +124,7 @@ def create_standalone_factory(
     return SchedulerRuntimeFactory(
         env,
         pilot_config=SchedulerWorkerConfig.from_pilot_environ(env),
+        standalone_research=research_ports is not None,
         secret_resolver=profile,
         unconfigured_dns_step=UnconfiguredDnsStep(),
         bootstrap=CanonicalSchedulerBootstrap(
@@ -131,12 +138,52 @@ def create_standalone_factory(
             ),
             HandoffPolicy(handoff.sla_seconds, handoff.backlog_threshold),
             assistant_factory=assistant,
+            research_enabled=research_ports is not None,
+            research_factory=(lambda core, sessions: bind_research(core, sessions, settings, model_resolver, fingerprints, instance_id, research_ports, provider_factory)) if research_ports is not None else None,
         ),
         resolver_factory=UnconfiguredDnsResolver,
         health_server_factory=lambda state, port: SchedulerHealthServer(
             state, port, host="127.0.0.1"
         ),
     )
+
+
+class UnboundResearchClient:
+    async def complete_json(self, *, model: str, system_prompt: str, payload: object, max_output_tokens: int) -> str:
+        raise ValueError("研究模型必须绑定已确认 Run")
+
+
+def create_standalone_factory(
+    profile: PilotConfig, settings: StandaloneModelSettings, model_resolver: SecretResolver, *,
+    provider_factory: Callable[[], ModelProvider] | None = None,
+    research_ports: ResearchRuntimePorts | None = None,
+) -> Callable[[], AbstractAsyncContextManager[SchedulerRuntime]]:
+    """构造无 IO；对象 SDK 在进入进程生命周期后拥有并对称关闭。"""
+    @asynccontextmanager
+    async def resources() -> AsyncIterator[SchedulerRuntime]:
+        from connectors.object_store.config import S3ObjectStoreSettings
+        from connectors.object_store.s3 import S3ObjectBlobTransport
+        from connectors.tavily.transport import TavilySearchApiTransport
+        from connectors.web_search.transport import SafePublicPageHttpTransport
+        ports = research_ports
+        owned: S3ObjectBlobTransport | None = None
+        research = settings.research
+        if ports is not None and research is None:
+            raise ValueError("研究端口缺少显式部署配置")
+        try:
+            if research is not None and ports is None:
+                owned = S3ObjectBlobTransport(S3ObjectStoreSettings.from_pilot_environ(profile.runtime_environment()), profile)
+                ports = ResearchRuntimePorts(UnboundResearchClient(), settings.model, UserId(research.playbook_reader_user_id),
+                    TavilySearchApiTransport(timeout_seconds=research.search_timeout_seconds),
+                    SafePublicPageHttpTransport(timeout_seconds=research.page_timeout_seconds), owned,
+                    research.maximum_artifact_bytes, research.secret_ref, model_resolver, research.exclusive_account_confirmed)
+            factory = _create_standalone_factory(profile, settings, model_resolver, provider_factory=provider_factory, research_ports=ports, instance_id=new_id("mrt").lower())
+            async with factory() as runtime:
+                yield runtime
+        finally:
+            if owned is not None:
+                await owned.aclose()
+    return resources
 
 
 def main() -> int:

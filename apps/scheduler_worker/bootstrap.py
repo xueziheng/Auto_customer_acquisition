@@ -76,6 +76,7 @@ from shared.schemas.identifiers import (
 )
 from workflows.account_discovery.ports import ContactEnricher, ContactVerifier
 from workflows.assistant.ports import AssistantRuntimePorts
+from workflows.demand_discovery.ports import DemandIntelligenceCapability
 
 from .account_discovery import (
     BossAccountDiscoveryActorResolver,
@@ -187,6 +188,7 @@ class ResearchRuntimePorts:
     secret_ref: str
     secret_resolver: SecretResolver
     exclusive_account_confirmed: bool
+    capability: DemandIntelligenceCapability | None = None
 
 
 @dataclass(frozen=True)
@@ -256,6 +258,7 @@ class CanonicalSchedulerBootstrap:
     assistant_factory: Callable[[SchedulerCoreServices, async_sessionmaker[AsyncSession], OpportunityService], AssistantRuntimePorts] | None = None
     research_enabled: bool = False
     research: ResearchRuntimePorts | None = None
+    research_factory: Callable[[SchedulerCoreServices, async_sessionmaker[AsyncSession]], ResearchRuntimePorts] | None = None
     contacts_enabled: bool = False
     contacts: ContactRuntimePorts | None = None
     contacts_factory: (
@@ -277,7 +280,9 @@ class CanonicalSchedulerBootstrap:
     ) = None
 
     def __post_init__(self) -> None:
-        if self.research_enabled and not isinstance(
+        if self.research_factory is not None and (not self.research_enabled or self.research is not None):
+            raise ValidationError("研究工厂必须显式启用且不能同时指定旧端口")
+        if self.research_enabled and self.research_factory is None and not isinstance(
             self.research, ResearchRuntimePorts
         ):
             raise ValidationError("scheduler 研究依赖未完整配置")
@@ -363,7 +368,7 @@ class CanonicalSchedulerBootstrap:
             account = self._account_composition(core, contacts)
         discovery = None
         if self.research_enabled:
-            research = self.research
+            research = self.research_factory(core, sessions) if self.research_factory is not None else self.research
             if research is None:
                 raise ValidationError("scheduler 研究依赖未完整配置")
             actor = EmployeeActor(
@@ -391,7 +396,7 @@ class CanonicalSchedulerBootstrap:
             )
             discovery = DemandDiscoveryComposition(
                 DirectiveDemandDiscoveryTaskReader(core.directives, users),
-                DemandIntelligenceAgent(
+                research.capability or DemandIntelligenceAgent(
                     research.model,
                     StructuredDemandIntelligenceModelPort(
                         research.model_client, research.model
