@@ -6,6 +6,7 @@ import { useRoute } from "vue-router";
 import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import AgentConversation from "./AgentConversation.vue";
 import ResearchAccessCard from "../../components/ResearchAccessCard.vue";
 import { laneLabel, stopLabel } from "../../components/researchLabels";
 
@@ -18,6 +19,7 @@ type AdmissionConfirmation = components["schemas"]["SourcingAdmissionConfirmatio
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
 const route=useRoute();
+const assistantAvailable = ref(false);
 const message = ref("");
 const proposal = ref<Proposal | null>(null);
 const confirmation = ref<Confirmation | null>(null);
@@ -433,7 +435,9 @@ onMounted(() => void loadPage());
       </p>
     </div>
 
+    <AgentConversation @available="value=>assistantAvailable=value" />
     <section
+      v-if="!assistantAvailable"
       class="composer"
       aria-labelledby="command-composer-title"
     >

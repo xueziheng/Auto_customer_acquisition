@@ -4,6 +4,7 @@ import { computed, inject, onMounted, reactive, ref, type CSSProperties } from "
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
 import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
+import ModelSettingsPanel from "./ModelSettingsPanel.vue";
 import ResearchAccessCard from "../../components/ResearchAccessCard.vue";
 
 type ApiClient = ReturnType<typeof createApiClient>;
@@ -743,6 +744,7 @@ onMounted(() => void refreshSettings());
       </div>
     </div>
 
+    <ModelSettingsPanel :style="settingsFlowItemLayout" />
     <p
       v-if="researchError"
       role="alert"

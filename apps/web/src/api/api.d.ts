@@ -4,6 +4,93 @@
  */
 
 export interface paths {
+    "/agent/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Sessions */
+        get: operations["list_sessions_agent_sessions_get"];
+        put?: never;
+        /** Create Session */
+        post: operations["create_session_agent_sessions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/sessions/{session_id}/turns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Turns */
+        get: operations["list_turns_agent_sessions__session_id__turns_get"];
+        put?: never;
+        /** Accept Turn */
+        post: operations["accept_turn_agent_sessions__session_id__turns_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/sessions/{session_id}/turns/{turn_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Turn */
+        get: operations["get_turn_agent_sessions__session_id__turns__turn_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/sessions/{session_id}/turns/{turn_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Turn */
+        post: operations["cancel_turn_agent_sessions__session_id__turns__turn_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/sessions/{session_id}/turns/{turn_id}/regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Regenerate */
+        post: operations["regenerate_agent_sessions__session_id__turns__turn_id__regenerate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/approvals/pending": {
         parameters: {
             query?: never;
@@ -1994,6 +2081,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/settings/model": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Model Settings */
+        get: operations["get_model_settings_settings_model_get"];
+        put?: never;
+        /** Save Model Settings */
+        post: operations["save_model_settings_settings_model_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/settings/model/probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Probe Model */
+        post: operations["probe_model_settings_model_probe_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/settings/playbook": {
         parameters: {
             query?: never;
@@ -2539,6 +2661,23 @@ export interface components {
             /** Type Label */
             type_label: string;
         };
+        /** AssistantReadQuery */
+        AssistantReadQuery: {
+            /** Cursor */
+            cursor?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "need" | "opportunity" | "handoff" | "run";
+            /** Limit */
+            limit: number;
+        };
+        /** AssistantRegenerateInput */
+        AssistantRegenerateInput: {
+            /** Idempotency Key */
+            idempotency_key: string;
+        };
         /**
          * AuthCheck
          * @enum {string}
@@ -2618,6 +2757,18 @@ export interface components {
          * @enum {string}
          */
         AuthenticationFixInstruction: "configure_spf" | "configure_dkim" | "configure_dmarc" | "fix_alignment" | "strengthen_policy" | "retry_lookup";
+        /** AuthorizedFragment */
+        AuthorizedFragment: {
+            /** Dependencies */
+            dependencies: components["schemas"]["ObjectRef"][];
+            /**
+             * Source Turn Ids
+             * @default []
+             */
+            source_turn_ids: string[];
+            /** Text */
+            text: string;
+        };
         /**
          * CalculationSnapshot
          * @description 一次可重现计算的不可变输出快照。
@@ -3036,6 +3187,18 @@ export interface components {
              * @enum {string}
              */
             status: "passed" | "failed" | "unknown" | "not_required";
+        };
+        /** Clarification */
+        Clarification: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "clarify";
+            /** Missing Fields */
+            missing_fields: string[];
+            /** Questions */
+            questions: string[];
         };
         /**
          * ClassificationCorrectionAccepted
@@ -3964,6 +4127,11 @@ export interface components {
             user_id?: string | null;
         };
         /**
+         * EmptyAssistantCommand
+         * @description 无附加控制字段的命令。
+         */
+        EmptyAssistantCommand: Record<string, never>;
+        /**
          * EnrollmentState
          * @enum {string}
          */
@@ -4245,6 +4413,16 @@ export interface components {
             source: components["schemas"]["PricingSourceSummary"];
             /** Valid Until */
             valid_until: string | null;
+        };
+        /** Explanation */
+        Explanation: {
+            /** Fragments */
+            fragments: components["schemas"]["AuthorizedFragment"][];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "explain";
         };
         /** ExtractedCommitment */
         ExtractedCommitment: {
@@ -4847,6 +5025,78 @@ export interface components {
             updated_at: string;
         };
         /**
+         * ModelLimits
+         * @description 部署方必须逐项提供，不能用测试阈值开启付费服务。
+         */
+        ModelLimits: {
+            /** Employee Calls */
+            employee_calls: number;
+            /** Employee Concurrency */
+            employee_concurrency: number;
+            /** Max Input Bytes */
+            max_input_bytes: number;
+            /** Max Output Tokens */
+            max_output_tokens: number;
+            /** Tenant Calls */
+            tenant_calls: number;
+            /** Tenant Concurrency */
+            tenant_concurrency: number;
+            /** Timeout Seconds */
+            timeout_seconds: number;
+            /** Window Seconds */
+            window_seconds: number;
+        };
+        /** ModelSettingsUpdate */
+        ModelSettingsUpdate: {
+            /** Expected Version */
+            expected_version: string;
+            limits: components["schemas"]["ModelLimits"];
+            /** Model */
+            model: string;
+        };
+        /** ModelSettingsView */
+        ModelSettingsView: {
+            /**
+             * Can Probe
+             * @default false
+             */
+            can_probe: boolean;
+            /** Configuration Version */
+            configuration_version?: string | null;
+            /** Failure Code */
+            failure_code?: ("permission" | "configuration" | "quota" | "authentication" | "insufficient_balance" | "invalid_request" | "rate_limit" | "provider_error" | "invalid_response" | "unknown") | null;
+            limits?: components["schemas"]["ModelLimits"] | null;
+            /** Model */
+            model?: string | null;
+            /**
+             * Model Data Export Enabled
+             * @default false
+             */
+            model_data_export_enabled: boolean;
+            /** Probe State */
+            probe_state?: ("queued" | "running" | "awaiting_input" | "proposal_ready" | "completed" | "blocked" | "failed" | "unknown" | "cancelled") | null;
+            /** Probe Turn Id */
+            probe_turn_id?: string | null;
+            /**
+             * Provider
+             * @default deepseek
+             * @constant
+             */
+            provider: "deepseek";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "missing" | "pending_restart" | "unverified" | "verified" | "failed";
+            /** Verified At */
+            verified_at?: string | null;
+            /**
+             * Worker Available
+             * @default false
+             */
+            worker_available: boolean;
+        };
+        /**
          * Money
          * @description 金额。不可变。
          *
@@ -5071,6 +5321,18 @@ export interface components {
          * @enum {string}
          */
         NotificationPriority: "urgent" | "normal" | "low";
+        /** ObjectRef */
+        ObjectRef: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "need" | "opportunity" | "handoff" | "run" | "product_doc";
+            /** Object Id */
+            object_id: string;
+            /** Version */
+            version?: string | null;
+        };
         /**
          * OpportunityCreateRequest
          * @description 从已验证需求创建机会的入参。
@@ -6536,6 +6798,20 @@ export interface components {
          * @enum {string}
          */
         RawArtifactKind: "email_raw" | "chat_screenshot" | "pdf" | "word" | "excel" | "web_snapshot" | "image" | "audio";
+        /** ReadRequest */
+        ReadRequest: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "read";
+            query?: components["schemas"]["AssistantReadQuery"] | null;
+            /**
+             * Refs
+             * @default []
+             */
+            refs: components["schemas"]["ObjectRef"][];
+        };
         /**
          * ReplyCategory
          * @description 回复分类 —— 设计稿第十二节的 14 类，每类对应确定的系统动作。
@@ -6643,6 +6919,16 @@ export interface components {
              * @enum {string}
              */
             state: "not_configured" | "configured_unverified" | "free_last_verified" | "usage_unknown" | "paid_enabled" | "quota_exhausted" | "snapshot_unavailable";
+        };
+        /** ResearchDraft */
+        ResearchDraft: {
+            /** Fields */
+            fields: components["schemas"]["SourcedField"][];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "research";
         };
         /**
          * ResearchEvidence
@@ -7125,7 +7411,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "research" | "contacts" | "campaign" | "reply" | "sourcing" | "quotation" | "inbound_body" | "full_reply" | "agent" | "browser";
+            name: "builtin_assistant" | "model" | "research" | "contacts" | "campaign" | "reply" | "sourcing" | "quotation" | "inbound_body" | "full_reply" | "agent" | "browser";
             /**
              * Reason
              * @enum {string}
@@ -7199,6 +7485,18 @@ export interface components {
              */
             expires_at: string;
         };
+        /** SessionView */
+        SessionView: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Session Id */
+            session_id: string;
+            /** Version */
+            version: number;
+        };
         /**
          * SortKey
          * @description 打分排序键：09 文档「字典序、证据主导」的落地。
@@ -7232,6 +7530,17 @@ export interface components {
          * @enum {string}
          */
         SourceType: "conversation" | "web_page" | "upload" | "employee_input" | "agent_inference" | "external_api";
+        /** SourcedField */
+        SourcedField: {
+            /** Name */
+            name: string;
+            /** Policy Version */
+            policy_version?: string | null;
+            /** Source Turn Id */
+            source_turn_id?: string | null;
+            /** Value */
+            value: string;
+        };
         /**
          * SourcingAdmissionConfirmationResponse
          * @description 确认后返回实际生效版本，不包含或启动 Workflow。
@@ -7941,6 +8250,71 @@ export interface components {
             /** Tenant Id */
             tenant_id: string;
         };
+        /** TurnInput */
+        TurnInput: {
+            /** Idempotency Key */
+            idempotency_key: string;
+            /**
+             * Object Refs
+             * @default []
+             */
+            object_refs: components["schemas"]["ObjectRef"][];
+            /** Text */
+            text: string;
+        };
+        /** TurnView */
+        TurnView: {
+            /** Attempt Of */
+            attempt_of?: string | null;
+            /**
+             * Content Hidden
+             * @default false
+             */
+            content_hidden: boolean;
+            /**
+             * Context Refs
+             * @default []
+             */
+            context_refs: components["schemas"]["ObjectRef"][];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Error Code */
+            error_code?: ("permission" | "configuration" | "quota" | "authentication" | "insufficient_balance" | "invalid_request" | "rate_limit" | "provider_error" | "invalid_response" | "unknown") | null;
+            /**
+             * Input Text
+             * @default
+             */
+            input_text: string;
+            /**
+             * Object Refs
+             * @default []
+             */
+            object_refs: components["schemas"]["ObjectRef"][];
+            /** Proposal Id */
+            proposal_id?: string | null;
+            /** Result */
+            result?: (components["schemas"]["Clarification"] | components["schemas"]["ReadRequest"] | components["schemas"]["Explanation"] | components["schemas"]["ResearchDraft"]) | null;
+            /** Run Id */
+            run_id: string;
+            /** Session Id */
+            session_id: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "running" | "awaiting_input" | "proposal_ready" | "completed" | "blocked" | "failed" | "unknown" | "cancelled";
+            /** Turn Id */
+            turn_id: string;
+            /**
+             * Turn Kind
+             * @default conversation
+             * @enum {string}
+             */
+            turn_kind: "conversation" | "model_probe";
+        };
         /**
          * ValidatedNeedEvidence
          * @description 已验证需求的证据契约（S3-6 R5/F6）。
@@ -8233,6 +8607,616 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_sessions_agent_sessions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    create_session_agent_sessions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmptyAssistantCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_turns_agent_sessions__session_id__turns_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    accept_turn_agent_sessions__session_id__turns_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TurnInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_turn_agent_sessions__session_id__turns__turn_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    cancel_turn_agent_sessions__session_id__turns__turn_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmptyAssistantCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    regenerate_agent_sessions__session_id__turns__turn_id__regenerate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistantRegenerateInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
     list_pending_approvals_approvals_pending_get: {
         parameters: {
             query?: {
@@ -14453,6 +15437,236 @@ export interface operations {
             };
             /** @description 请求参数无效 */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_model_settings_settings_model_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    save_model_settings_settings_model_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    probe_model_settings_model_probe_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistantRegenerateInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
