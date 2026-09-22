@@ -2173,6 +2173,8 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
     async with factory() as runtime:
         assert runtime.outbox._max_attempts == 7
         assert set(runtime.workflow._handlers) == {
+            "human_handoff.notify_pending_owner",
+            "human_handoff.remind_owner",
             "human_handoff.notify_owner",
             "human_handoff.accept",
             "human_handoff.escalate_manager",

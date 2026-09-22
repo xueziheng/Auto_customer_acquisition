@@ -813,3 +813,17 @@ docs/architecture/00-overview.md    # 总体架构
 docs/adr/                            # 决策与理由
 GLOSSARY.md                          # 术语（写代码前对一遍用词）
 ```
+
+
+## 内置 DeepSeek Agent（首批）
+
+独立入口为 `apps.api.standalone` 与 `apps.scheduler_worker.standalone`，复用已有持久存储、
+真实账号与 canonical scheduler。初次配置、显式迁移、启动、probe、对话及停止步骤见
+[操作说明](docs/operations/builtin-deepseek-agent.md)。默认验收命令为
+`python -m scripts.accept_builtin_agent`；没有管理员明确输入与配置，不执行 live 调用。
+
+首批只开放私有会话、当前权限资料读取和人工确认的 research_only；模型走 `model.generate`
+网关，使用持久调用额度与序列身份。unknown 不自动重发，历史来源撤权后重新裁剪。
+模型配置保存后必须同步私有部署文件、重启两进程并显式探测；Web 不接收真实密钥。
+本地独立后台不等于共享 HTTPS 或全部业务自动执行，最终证据与未运行项见
+[同版本验收](docs/operations/2026-09-22-builtin-deepseek-acceptance.md)。

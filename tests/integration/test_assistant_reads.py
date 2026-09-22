@@ -12,16 +12,19 @@ from domains.assistant.schemas import AuthorizedFragment, Explanation, ObjectRef
 from domains.employees.schemas import EmployeeView
 from shared.errors import PermissionDenied
 from tests.integration.test_assistant import actor, input_text, service
+from tests.integration.test_need_units import (
+    unit_engine as unit_engine,  # noqa: PLC0414
+)
 
 
 async def test_persisted_summary_and_followup_hidden_after_revocation(
-    integration_engine,
+    unit_engine,
 ):
     from infra.db.assistant import SqlAssistantRepository
     from tests.unit.test_assistant_context import A, B, Identity, Reads
 
     owner = actor()
-    app = service(integration_engine)
+    app = service(unit_engine)
     session = await app.create_session(owner)
     first = await app.accept_turn(owner, session.session_id, input_text())
     await app.deliver(owner, session.session_id, first.turn_id, "running")
@@ -38,7 +41,7 @@ async def test_persisted_summary_and_followup_hidden_after_revocation(
     )
     second = await app.accept_turn(owner, session.session_id, input_text(key="second"))
     repo = SqlAssistantRepository(
-        async_sessionmaker(integration_engine, expire_on_commit=False)
+        async_sessionmaker(unit_engine, expire_on_commit=False)
     )
     reads = Reads()
     projector = HistoryProjector(Identity(), reads, repo)
@@ -149,3 +152,5 @@ async def test_need_access_is_checked_before_need_fetch_and_list_is_owner_scoped
     assert seen == [frozenset({owner.employee_id})]
     with pytest.raises(PermissionDenied):
         await reader.read(owner, ObjectRef(kind="run", object_id="other_run"))
+
+

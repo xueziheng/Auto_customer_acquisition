@@ -107,7 +107,7 @@ def test_bridge_errors_are_not_success_and_no_logs(monkeypatch, capsys, failure,
     runner = SimpleNamespace(id="a" * 64, attrs={"ExecIDs": None}, reload=lambda: None)
     monkeypatch.setattr(bridge.RelayPool, "request", lambda *_: (_ for _ in ()).throw(failure))
     with bridge.http_bridge(runner) as origin:
-        response = httpx.get(origin + "/costing-quotes")
+        response = httpx.get(origin + "/costing-quotes", trust_env=False)
         assert response.status_code == status and response.content == b""
     assert capsys.readouterr() == ("", "")
 
@@ -125,7 +125,7 @@ def test_bridge_body_limit_and_eight_concurrency(monkeypatch):
         return 200, [], b"ok"
 
     monkeypatch.setattr(bridge.RelayPool, "request", request)
-    with bridge.http_bridge(runner) as origin, httpx.Client(timeout=10) as client:
+    with bridge.http_bridge(runner) as origin, httpx.Client(timeout=10, trust_env=False) as client:
         assert client.post(origin + "/", content=b"x" * (relay.MAX_BYTES + 1)).status_code == 413
         threads = [threading.Thread(target=lambda: client.get(origin + "/")) for _ in range(8)]
         for thread in threads:

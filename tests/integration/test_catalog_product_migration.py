@@ -1114,7 +1114,7 @@ def test_0057_is_the_only_script_head() -> None:
         check=False,
     )
     assert result.returncode == 0
-    assert result.stdout.strip().splitlines() == ["0059 (head)"]
+    assert result.stdout.strip().splitlines() == ["0066 (head)"]
 
 
 async def test_0057_policy_binding_requires_exact_subject_and_approved_state(
@@ -2301,7 +2301,7 @@ async def test_0057_downgrade_refuses_catalog_approval_before_any_ddl(
             )
         assert set(_TABLES) <= names
         assert "recurring_requirement" in recurring
-        assert revision == "0059"
+        assert revision == "0066"
     finally:
         async with engine.begin() as connection:
             await _delete_approvals(connection, tenant=tenant)

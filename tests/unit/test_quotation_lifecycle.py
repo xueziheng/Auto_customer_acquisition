@@ -146,6 +146,9 @@ async def test_actual_api_lifespan_closes_quotation_before_database_even_before_
         ),
     )
     monkeypatch.setattr(runtime, "assert_database_schema_current", schema)
+    async def reminder_compatibility(*args):
+        pass
+    monkeypatch.setattr(runtime, "assert_handoff_reminder_compatibility", reminder_compatibility)
     monkeypatch.setattr(
         runtime,
         "create_app",

@@ -12,6 +12,9 @@ from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from shared.schemas.identifiers import TenantId, new_id
 from shared.schemas.model_invocation import ModelRequest, ModelResponse, ModelUsage
 from tests.integration.test_model_usage import identity, limits
+from tests.integration.test_need_units import (
+    unit_engine as unit_engine,  # noqa: PLC0414
+)
 from tool_gateway.fingerprint import HmacFingerprintProvider
 
 
@@ -73,7 +76,7 @@ def request():
 
 
 async def test_call_replay_is_not_reexecuted_and_ledgers_have_no_content(
-    integration_engine,
+    unit_engine,
 ):
     from infra.db.tables import ModelInvocationRow, ToolCallRow
     from shared.schemas.model_invocation import ModelGenerationError
@@ -81,7 +84,7 @@ async def test_call_replay_is_not_reexecuted_and_ledgers_have_no_content(
     tenant = TenantId(new_id("tn"))
     actor = identity(tenant)
     provider = Provider()
-    generator, sessions = assemble(integration_engine, Authority(), provider)
+    generator, sessions = assemble(unit_engine, Authority(), provider)
     response = await generator.generate(actor, request())
     assert response.text == '{"message":"PRIVATE_RESPONSE"}'
     with pytest.raises(ModelGenerationError) as caught:
@@ -104,13 +107,13 @@ async def test_call_replay_is_not_reexecuted_and_ledgers_have_no_content(
                 assert private not in serialized
 
 
-async def test_permission_and_quota_refuse_before_provider(integration_engine):
+async def test_permission_and_quota_refuse_before_provider(unit_engine):
     from shared.schemas.model_invocation import ModelGenerationError
 
     authority = Authority()
     authority.allowed = False
     provider = Provider()
-    generator, _ = assemble(integration_engine, authority, provider)
+    generator, _ = assemble(unit_engine, authority, provider)
     tenant = TenantId(new_id("tn"))
     with pytest.raises(ModelGenerationError):
         await generator.generate(identity(tenant), request())
@@ -123,14 +126,14 @@ async def test_permission_and_quota_refuse_before_provider(integration_engine):
     assert provider.calls == 1
 
 
-async def test_unknown_is_not_retried_and_usage_stays_unknown(integration_engine):
+async def test_unknown_is_not_retried_and_usage_stays_unknown(unit_engine):
     from infra.db.tables import ModelInvocationRow
     from shared.schemas.model_invocation import ModelGenerationError
 
     tenant = TenantId(new_id("tn"))
     actor = identity(tenant)
     provider = Provider(fail=True)
-    generator, sessions = assemble(integration_engine, Authority(), provider)
+    generator, sessions = assemble(unit_engine, Authority(), provider)
     for _ in range(2):
         with pytest.raises(ModelGenerationError) as caught:
             await generator.generate(actor, request())
@@ -149,11 +152,11 @@ async def test_unknown_is_not_retried_and_usage_stays_unknown(integration_engine
         )
 
 
-async def test_wrong_config_and_input_limit_never_calls_provider(integration_engine):
+async def test_wrong_config_and_input_limit_never_calls_provider(unit_engine):
     from shared.schemas.model_invocation import ModelGenerationError
 
     provider = Provider()
-    generator, _ = assemble(integration_engine, Authority(), provider)
+    generator, _ = assemble(unit_engine, Authority(), provider)
     tenant = TenantId(new_id("tn"))
     with pytest.raises(ModelGenerationError):
         await generator.generate(identity(tenant, version="v2"), request())
@@ -166,3 +169,30 @@ async def test_wrong_config_and_input_limit_never_calls_provider(integration_eng
     with pytest.raises(ModelGenerationError):
         await generator.generate(identity(tenant), large)
     assert provider.calls == 0
+
+
+
+
+async def test_missing_credential_does_not_consume_call_or_slot(unit_engine):
+    from connectors.deepseek.client import DeepSeekClient
+    from infra.db.tables import ModelInvocationRow
+    from shared.schemas.model_invocation import ModelGenerationError
+
+    class MissingSecret:
+        def resolve(self, ref):
+            raise ValueError("PRIVATE_ERROR")
+
+    tenant = TenantId(new_id("tn"))
+    generator, sessions = assemble(unit_engine, Authority(), DeepSeekClient(
+        "TEST_KEY", MissingSecret(), timeout_seconds=5))
+    with pytest.raises(ModelGenerationError) as caught:
+        await generator.generate(identity(tenant), request())
+    assert caught.value.code == "authentication"
+    async with sessions() as session:
+        row = (await session.scalars(select(ModelInvocationRow).where(
+            ModelInvocationRow.tenant_id == tenant))).one()
+        assert row.state == "rejected" and row.slot_released
+    provider = Provider()
+    generator, _ = assemble(unit_engine, Authority(), provider)
+    await generator.generate(identity(tenant), request())
+    assert provider.calls == 1

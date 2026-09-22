@@ -62,6 +62,13 @@ _SALES_READ_GATE = Depends(
     )
 )
 _EXPECTED_API_PATHS = {
+    "/agent/sessions",
+    "/agent/sessions/{session_id}/turns",
+    "/agent/sessions/{session_id}/turns/{turn_id}",
+    "/agent/sessions/{session_id}/turns/{turn_id}/cancel",
+    "/agent/sessions/{session_id}/turns/{turn_id}/regenerate",
+    "/settings/model",
+    "/settings/model/probe",
     "/auth/login",
     "/auth/session",
     "/auth/logout",
@@ -648,7 +655,7 @@ def test_factory_openapi_matches_s3_15_crm_runtime_contracts() -> None:
     assert "ManualEmailSendResponse" in schema["components"]["schemas"]
     for path, path_item in schema["paths"].items():
         for method, operation in path_item.items():
-            if (path, method) in {
+            if path.startswith(("/agent/", "/settings/model")) or (path, method) in {
                 ("/settings/country-policies/proposals", "post"),
                 ("/products/catalog-policies", "post"),
                 ("/sourcing-cases/{case_id}/reconcile-uncertain-request", "post"),

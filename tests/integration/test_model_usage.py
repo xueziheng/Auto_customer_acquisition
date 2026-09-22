@@ -14,6 +14,9 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from shared.schemas.model_invocation import InvocationIdentity, ModelLimits, ModelUsage
+from tests.integration.test_need_units import (
+    unit_engine as unit_engine,  # noqa: PLC0414
+)
 
 
 def limits(**changes):
@@ -44,11 +47,11 @@ def identity(tenant, employee="emp_test", run=None, version="test-v1"):
     )
 
 
-async def test_last_quota_is_atomic_and_replay_does_not_consume(integration_engine):
+async def test_last_quota_is_atomic_and_replay_does_not_consume(unit_engine):
     from infra.db.model_usage import SqlModelUsageRepository
 
     repo = SqlModelUsageRepository(
-        async_sessionmaker(integration_engine, expire_on_commit=False)
+        async_sessionmaker(unit_engine, expire_on_commit=False)
     )
     tenant = TenantId(new_id("tn"))
     now = datetime.now(UTC)
@@ -70,10 +73,10 @@ async def test_last_quota_is_atomic_and_replay_does_not_consume(integration_engi
     assert conflict.outcome == "conflict"
 
 
-async def test_unknown_survives_restart_and_midnight(integration_engine):
+async def test_unknown_survives_restart_and_midnight(unit_engine):
     from infra.db.model_usage import SqlModelUsageRepository
 
-    sessions = async_sessionmaker(integration_engine, expire_on_commit=False)
+    sessions = async_sessionmaker(unit_engine, expire_on_commit=False)
     repo = SqlModelUsageRepository(sessions)
     tenant = TenantId(new_id("tn"))
     start = datetime(2026, 9, 22, 23, 59, tzinfo=UTC)
@@ -115,11 +118,11 @@ async def test_unknown_survives_restart_and_midnight(integration_engine):
     assert (await restarted.get(tenant, claim.invocation_id)).state == "unknown"
 
 
-async def test_completed_call_stays_in_original_window_and_tenant(integration_engine):
+async def test_completed_call_stays_in_original_window_and_tenant(unit_engine):
     from infra.db.model_usage import SqlModelUsageRepository
 
     repo = SqlModelUsageRepository(
-        async_sessionmaker(integration_engine, expire_on_commit=False)
+        async_sessionmaker(unit_engine, expire_on_commit=False)
     )
     tenant = TenantId(new_id("tn"))
     other = TenantId(new_id("tn"))
@@ -153,12 +156,12 @@ async def test_completed_call_stays_in_original_window_and_tenant(integration_en
 
 
 async def test_predispatch_rejection_releases_budget_and_conflicting_finish_fails(
-    integration_engine,
+    unit_engine,
 ):
     from infra.db.model_usage import SqlModelUsageRepository
 
     repo = SqlModelUsageRepository(
-        async_sessionmaker(integration_engine, expire_on_commit=False)
+        async_sessionmaker(unit_engine, expire_on_commit=False)
     )
     tenant = TenantId(new_id("tn"))
     now = datetime.now(UTC)
@@ -176,14 +179,14 @@ async def test_predispatch_rejection_releases_budget_and_conflicting_finish_fail
         await repo.mark_dispatched(tenant, claim.invocation_id)
 
 
-async def test_employee_limit_and_independent_workflow_lock(integration_engine):
+async def test_employee_limit_and_independent_workflow_lock(unit_engine):
     from sqlalchemy import select
 
     from infra.db.model_usage import SqlModelUsageRepository
     from infra.db.tables import WorkflowRunRow
     from tests.integration.test_search_quota import _workflow_run
 
-    sessions = async_sessionmaker(integration_engine, expire_on_commit=False)
+    sessions = async_sessionmaker(unit_engine, expire_on_commit=False)
     repo = SqlModelUsageRepository(sessions)
     tenant = TenantId(new_id("tn"))
     run = await _workflow_run(sessions, tenant)
@@ -210,3 +213,5 @@ async def test_employee_limit_and_independent_workflow_lock(integration_engine):
         identity(tenant, "emp_other"), "c" * 64, policy, now, model="test-model"
     )
     assert allowed.outcome == "reserved"
+
+

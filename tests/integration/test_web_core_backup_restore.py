@@ -403,7 +403,7 @@ async def test_owned_static_pg_and_original_restore_to_distinct_empty_target(
             if (
                 original != restored
                 or original["row_count"] != 1
-                or original["schema_head"] != "0059"
+                or original["schema_head"] != "0066"
             ):
                 raise ControlledError("backup_integrity_mismatch")
             try:

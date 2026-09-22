@@ -8,8 +8,14 @@ from domains.employees.models import OwnershipLock, OwnershipTransfer
 from infra.db.repositories.employees import OwnershipRepositoryImpl
 from infra.db.tables import EmployeeRow, OwnershipLockRow
 from shared.schemas.identifiers import EmployeeId, ProspectAccountId, new_id
-from tests.integration.conftest import db_url, integration_engine  # noqa: F401
-from tests.integration.test_owner_handoff_reminders import NOW, scenario  # noqa: F401
+from tests.integration.conftest import db_url as db_url  # noqa: PLC0414
+from tests.integration.conftest import (
+    integration_engine as integration_engine,  # noqa: PLC0414
+)
+from tests.integration.test_owner_handoff_reminders import NOW
+from tests.integration.test_owner_handoff_reminders import (
+    scenario as scenario,  # noqa: PLC0414
+)
 
 
 def _state(error):
@@ -47,7 +53,7 @@ async def test_probe_detects_transfer_reminder_deadlock(scenario, integration_en
                 transfer_updated.set()
                 await asyncio.wait_for(owner_locked.wait(), 3)
             return "ok"
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - 受控探针只归类失败，不输出原文
             return _state(error)
 
     async def reminder():
@@ -56,7 +62,7 @@ async def test_probe_detects_transfer_reminder_deadlock(scenario, integration_en
             async with service.handoff_notification_scope(tenant, hand, opp, owner, actor=system):
                 pass
             return "ok"
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - 受控探针只归类失败，不输出原文
             return _state(error)
 
     try:

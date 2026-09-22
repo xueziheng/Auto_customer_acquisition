@@ -183,7 +183,7 @@ async def test_owned_api_scheduler_enabled_binding_restart(
                     await session.scalar(
                         text("SELECT version_num FROM alembic_version")
                     )
-                    == "0059"
+                    == "0066"
                 )
             await asyncio.to_thread(s.restart)
             after = (await client.get("/email-inbound/status")).json()

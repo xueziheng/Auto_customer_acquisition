@@ -160,6 +160,10 @@ class DeepSeekClient:
                     raise DeepSeekFailure("authentication", dispatched=False) from None
             return self._client
 
+    async def prepare(self) -> None:
+        """只解析凭证并构造 SDK，不发出请求，失败不消耗模型调用。"""
+        await self._sdk()
+
     async def generate(self, request: ModelRequest) -> ModelResponse:
         """单次调用，不自行重试；所有返回均经本地完成状态与 JSON 校验。"""
         sdk = await self._sdk()

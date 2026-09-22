@@ -53,6 +53,7 @@ async def directive_persistence(
         yield service, engine
     finally:
         async with engine.begin() as connection:
+            await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
             await connection.execute(
                 text(
                     "DELETE FROM boss_directives WHERE tenant_id IN "

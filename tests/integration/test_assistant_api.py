@@ -19,6 +19,9 @@ from tests.integration.test_api_session_authentication import (
 )
 from tests.integration.test_assistant import actor as new_actor
 from tests.integration.test_assistant_recovery import Reads
+from tests.integration.test_need_units import (
+    unit_engine as unit_engine,  # noqa: PLC0414
+)
 from tool_gateway.fingerprint import HmacFingerprintProvider
 
 
@@ -39,7 +42,7 @@ async def configured(engine):
     return app, auth, factory, tenant, employee, password, service, repo
 
 
-async def test_authenticated_accept_replay_conflict_and_csrf(integration_engine):
+async def test_authenticated_accept_replay_conflict_and_csrf(unit_engine):
     (
         app,
         _auth,
@@ -49,7 +52,7 @@ async def test_authenticated_accept_replay_conflict_and_csrf(integration_engine)
         password,
         _service,
         _repo,
-    ) = await configured(integration_engine)
+    ) = await configured(unit_engine)
     async with AsyncClient(transport=ASGITransport(app), base_url=ORIGIN) as client:
         assert (
             await client.post("/api/agent/sessions", headers=TRUSTED, json={})
@@ -86,10 +89,10 @@ async def test_authenticated_accept_replay_conflict_and_csrf(integration_engine)
 
 
 async def test_other_private_session_hidden_and_disabled_user_denied(
-    integration_engine,
+    unit_engine,
 ):
     app, _auth, factory, tenant, employee, password, _service, repo = await configured(
-        integration_engine
+        unit_engine
     )
     outsider = new_actor(tenant=tenant)
     session = await repo.create(outsider)
@@ -109,9 +112,9 @@ async def test_other_private_session_hidden_and_disabled_user_denied(
         assert (await client.get("/api/agent/sessions")).status_code in {401, 403}
 
 
-async def test_unconfigured_model_has_no_accept_path(integration_engine):
+async def test_unconfigured_model_has_no_accept_path(unit_engine):
     app, _auth, _factory, _tenant, _employee, password = await setup_api(
-        integration_engine
+        unit_engine
     )
     async with AsyncClient(transport=ASGITransport(app), base_url=ORIGIN) as client:
         logged = await login(client, password)
@@ -124,7 +127,7 @@ async def test_unconfigured_model_has_no_accept_path(integration_engine):
 
 
 async def test_cancel_response_also_applies_current_history_projection(
-    integration_engine,
+    unit_engine,
 ):
     (
         app,
@@ -135,7 +138,7 @@ async def test_cancel_response_also_applies_current_history_projection(
         password,
         service,
         _repo,
-    ) = await configured(integration_engine)
+    ) = await configured(unit_engine)
     async with AsyncClient(transport=ASGITransport(app), base_url=ORIGIN) as client:
         logged = await login(client, password)
         headers = {**TRUSTED, "X-CSRF-Token": logged.json()["csrf_token"]}
@@ -159,3 +162,5 @@ async def test_cancel_response_also_applies_current_history_projection(
         )
         assert result.status_code == 200
         assert "PRIVATE_TEXT" not in result.text
+
+

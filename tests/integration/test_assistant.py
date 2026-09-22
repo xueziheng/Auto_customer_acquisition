@@ -7,6 +7,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
 from shared.schemas.identifiers import EmployeeId, TenantId, UserId, new_id
+from tests.integration.test_need_units import (
+    unit_engine as unit_engine,  # noqa: PLC0414
+)
 from tool_gateway.fingerprint import HmacFingerprintProvider
 
 
@@ -50,11 +53,11 @@ def input_text(text="只研究美国铰链", key="first"):
 
 
 async def test_accept_replays_same_turn_run_and_rejects_different_payload(
-    integration_engine,
+    unit_engine,
 ):
     from domains.assistant.errors import AssistantConflict
 
-    app = service(integration_engine)
+    app = service(unit_engine)
     user = actor()
     session = await app.create_session(user)
     first = await app.accept_turn(user, session.session_id, input_text())
@@ -67,11 +70,11 @@ async def test_accept_replays_same_turn_run_and_rejects_different_payload(
 
 
 async def test_other_employee_even_boss_and_other_tenant_cannot_read(
-    integration_engine,
+    unit_engine,
 ):
     from domains.assistant.errors import AssistantNotFound
 
-    app = service(integration_engine)
+    app = service(unit_engine)
     owner = actor()
     session = await app.create_session(owner)
     turn = await app.accept_turn(owner, session.session_id, input_text())
@@ -82,11 +85,11 @@ async def test_other_employee_even_boss_and_other_tenant_cannot_read(
 
 
 async def test_concurrent_inputs_one_active_and_cancel_preserves_attempt(
-    integration_engine,
+    unit_engine,
 ):
     from domains.assistant.errors import AssistantConflict
 
-    app = service(integration_engine)
+    app = service(unit_engine)
     user = actor()
     session = await app.create_session(user)
     results = await asyncio.gather(
@@ -102,10 +105,10 @@ async def test_concurrent_inputs_one_active_and_cancel_preserves_attempt(
     assert second.turn_id != first.turn_id and second.state == "queued"
 
 
-async def test_credentials_rejected_before_persistence(integration_engine):
+async def test_credentials_rejected_before_persistence(unit_engine):
     from shared.errors import ValidationError
 
-    app = service(integration_engine)
+    app = service(unit_engine)
     user = actor()
     session = await app.create_session(user)
     with pytest.raises(ValidationError):
@@ -116,11 +119,11 @@ async def test_credentials_rejected_before_persistence(integration_engine):
 
 
 async def test_delivered_clarification_releases_slot_and_replay_is_projected(
-    integration_engine,
+    unit_engine,
 ):
     from domains.assistant.schemas import Clarification
 
-    app = service(integration_engine)
+    app = service(unit_engine)
     user = actor()
     session = await app.create_session(user)
     first = await app.accept_turn(user, session.session_id, input_text())
@@ -147,11 +150,11 @@ async def test_delivered_clarification_releases_slot_and_replay_is_projected(
 
 
 async def test_regenerate_preserves_unknown_and_completed_turn_cannot_be_overwritten(
-    integration_engine,
+    unit_engine,
 ):
     from domains.assistant.errors import AssistantConflict
 
-    app = service(integration_engine)
+    app = service(unit_engine)
     user = actor()
     session = await app.create_session(user)
     first = await app.accept_turn(user, session.session_id, input_text())
@@ -169,3 +172,5 @@ async def test_regenerate_preserves_unknown_and_completed_turn_cannot_be_overwri
     ).state == "unknown"
     with pytest.raises(AssistantConflict):
         await app.deliver(user, session.session_id, first.turn_id, "completed")
+
+

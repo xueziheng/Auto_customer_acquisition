@@ -7,7 +7,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, cast
+from typing import Protocol, cast, runtime_checkable
 
 from connectors.deepseek.client import DeepSeekFailure
 from shared.schemas.identifiers import IdempotencyKey, TenantId, new_id
@@ -76,6 +76,13 @@ UNKNOWN_USAGE = ModelUsage(
 class ModelProvider(Protocol):
     async def generate(self, request: ModelRequest) -> ModelResponse: ...
     async def aclose(self) -> None: ...
+
+
+@runtime_checkable
+class PreparedModelProvider(Protocol):
+    async def prepare(self) -> None:
+        """仅准备本地凭证与客户端，禁止网络 IO。"""
+        ...
 
 
 class ModelResponseSlot:
@@ -166,11 +173,15 @@ class ModelGenerateHandler:
             self.failure = exc
             await self._usage.finish(tenant_id, invocation, UNKNOWN_USAGE, "rejected")
             raise ToolGatewayError(ToolErrorCategory.PERMISSION_DENIED) from None
-        await self._usage.mark_dispatched(tenant_id, invocation)
+        dispatched = False
         provider: ModelProvider | None = None
         settled = False
         try:
             provider = self._provider_factory()
+            if isinstance(provider, PreparedModelProvider):
+                await provider.prepare()
+            await self._usage.mark_dispatched(tenant_id, invocation)
+            dispatched = True
             response = await provider.generate(self._request)
             await self._usage.finish(tenant_id, invocation, response.usage, "succeeded")
             settled = True
@@ -182,12 +193,16 @@ class ModelGenerateHandler:
             raise ToolGatewayError(ToolErrorCategory.PERMISSION_DENIED) from None
         except DeepSeekFailure as exc:
             self.failure = ModelGenerationError(exc.code)
-            uncertain = exc.code in {"unknown", "rate_limit", "provider_error"}
+            uncertain = dispatched and exc.code in {
+                "unknown",
+                "rate_limit",
+                "provider_error",
+            }
             await self._usage.finish(
                 tenant_id,
                 invocation,
                 UNKNOWN_USAGE,
-                "unknown" if uncertain else "invalid",
+                "unknown" if uncertain else "invalid" if dispatched else "rejected",
             )
             settled = True
             raise ToolGatewayError(
@@ -198,7 +213,12 @@ class ModelGenerateHandler:
         except BaseException:
             if not settled:
                 await asyncio.shield(
-                    self._usage.finish(tenant_id, invocation, UNKNOWN_USAGE, "unknown")
+                    self._usage.finish(
+                        tenant_id,
+                        invocation,
+                        UNKNOWN_USAGE,
+                        "unknown" if dispatched else "rejected",
+                    )
                 )
             raise
         finally:
@@ -258,7 +278,13 @@ class GatewayModelGenerator:
         )
         slot = ModelResponseSlot()
         quota = ModelQuotaCheck(
-            identity, self._usage, self._limits, self._model, self._now, self._owner, self._lease
+            identity,
+            self._usage,
+            self._limits,
+            self._model,
+            self._now,
+            self._owner,
+            self._lease,
         )
         handler = ModelGenerateHandler(
             identity,

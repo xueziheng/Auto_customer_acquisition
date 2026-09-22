@@ -178,6 +178,7 @@ def _source_paths(
             "connectors/dns_auth",
             "connectors/object_store",
             "connectors/openai",
+            "connectors/deepseek",
             "connectors/quote_pdf",
             "connectors/tavily",
             "connectors/web_search",
@@ -192,6 +193,9 @@ def _source_paths(
         for name in (
             "apps/composition_support/__init__.py",
             "apps/composition_support/quotations.py",
+            "apps/composition_support/handoff_notifications.py",
+            "apps/composition_support/assistant.py",
+            "apps/composition_support/model.py",
             "apps/composition_support/email_inbound.py",
             "apps/composition_support/campaign_approval_reader.py",
             "apps/composition_support/delivery_material_reader.py",
