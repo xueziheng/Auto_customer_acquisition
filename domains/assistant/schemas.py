@@ -134,6 +134,7 @@ class TurnView(AssistantDTO):
     proposal_id: str | None = None
     error_code: ModelFailureCode | None = None
     content_hidden: bool = False
+    can_view_run: bool = False
     turn_kind: Literal["conversation", "model_probe"] = "conversation"
 
 

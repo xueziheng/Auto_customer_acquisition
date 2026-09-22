@@ -8269,6 +8269,11 @@ export interface components {
             /** Attempt Of */
             attempt_of?: string | null;
             /**
+             * Can View Run
+             * @default false
+             */
+            can_view_run: boolean;
+            /**
              * Content Hidden
              * @default false
              */

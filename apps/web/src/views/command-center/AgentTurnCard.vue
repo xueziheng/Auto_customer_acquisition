@@ -73,7 +73,7 @@ function sourceLink(ref: components['schemas']['ObjectRef']) {
         停止生成
       </button>
       <button
-        v-if="['failed','blocked','unknown','cancelled'].includes(turn.state)"
+        v-if="['failed','unknown'].includes(turn.state)"
         type="button"
         :disabled="busy"
         @click="$emit('regenerate',turn)"
@@ -81,6 +81,7 @@ function sourceLink(ref: components['schemas']['ObjectRef']) {
         重新生成（再次消耗额度）
       </button>
       <button
+        v-if="turn.can_view_run"
         type="button"
         @click="$emit('openRun',turn.run_id)"
       >

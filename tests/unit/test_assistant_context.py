@@ -105,3 +105,24 @@ async def test_changed_version_hides_old_fragment():
     item = turn("one", object_refs=(A.model_copy(update={"version": "old"}),))
     p = HistoryProjector(Identity(), Changed(), History([item]))
     assert (await p.project(ACTOR, item)).content_hidden
+
+
+async def test_run_navigation_uses_current_role_and_is_removed_when_content_hidden():
+    class MutableIdentity:
+        role = "boss"
+
+        async def resolve(self, actor):
+            return self.role, frozenset({"product_help"})
+
+    identity = MutableIdentity()
+    item = turn("one", object_refs=(A,))
+    reads = Reads()
+    projector = HistoryProjector(identity, reads, History([item]))
+    assert (await projector.project(ACTOR, item)).model_dump().get("can_view_run") is True
+    identity.role = "sales"
+    assert (await projector.project(ACTOR, item)).model_dump().get("can_view_run") is False
+    identity.role = "boss"
+    reads.allowed = set()
+    hidden = await projector.project(ACTOR, item)
+    assert hidden.content_hidden
+    assert hidden.model_dump().get("can_view_run") is False

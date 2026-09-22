@@ -57,7 +57,7 @@ class HistoryProjector:
         self._identity, self._reads, self._history = identity, reads, history
 
     async def project(self, actor: AssistantActor, turn: TurnView) -> TurnView:
-        await self._identity.resolve(actor)
+        role, _ = await self._identity.resolve(actor)
         history = await self._history.turns(actor, turn.session_id)
         # 必须能确定从第一轮起的依赖；仓储在超过上限时失败而不静默丢失早期限制。
         refs: set[ObjectRef] = set()
@@ -85,9 +85,12 @@ class HistoryProjector:
                     "result": None,
                     "proposal_id": None,
                     "content_hidden": True,
+                    "can_view_run": False,
                 }
             )
-        return turn
+        return turn.model_copy(
+            update={"can_view_run": role == "boss" and not turn.content_hidden}
+        )
 
 
 @dataclass(frozen=True)

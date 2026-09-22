@@ -46,9 +46,9 @@ async def test_authenticated_accept_replay_conflict_and_csrf(unit_engine):
     (
         app,
         _auth,
-        _factory,
-        _tenant,
-        _employee,
+        factory,
+        tenant,
+        employee,
         password,
         _service,
         _repo,
@@ -86,6 +86,16 @@ async def test_authenticated_accept_replay_conflict_and_csrf(unit_engine):
             and history.headers["cache-control"] == "no-store"
         )
         assert len(history.json()) == 1
+        for role, can_view_run in (("boss", True), ("sales", False)):
+            async with factory.begin() as db:
+                await db.execute(
+                    update(EmployeeRow)
+                    .where(EmployeeRow.tenant_id == tenant, EmployeeRow.employee_id == employee)
+                    .values(role=role)
+                )
+            current = await client.get(path)
+            assert current.status_code == 200
+            assert current.json()[0]["can_view_run"] is can_view_run
 
 
 async def test_other_private_session_hidden_and_disabled_user_denied(

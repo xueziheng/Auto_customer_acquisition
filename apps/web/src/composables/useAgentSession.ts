@@ -8,7 +8,7 @@ type Session = components['schemas']['SessionView'];
 export function useAgentSession(client: ReturnType<typeof createApiClient>) {
   const sessions = ref<Session[]>([]), turns = ref<Turn[]>([]);
   const sessionId = ref<string | null>(null), error = ref(''), loading = ref(false);
-  const available = ref(false), uncertain = ref(false);
+  const available = ref(false), uncertain = ref(false), historyError = ref('');
   let pending: { text: string; idempotency_key: string } | null = null;
   let generation = 0, disposed = false;
   const requests = new Map<string, AbortController>();
@@ -20,7 +20,7 @@ export function useAgentSession(client: ReturnType<typeof createApiClient>) {
   }
   function clear() {
     invalidate(); sessions.value = []; turns.value = []; sessionId.value = null;
-    pending = null; uncertain.value = false; loading.value = false; error.value = ''; available.value = false;
+    pending = null; uncertain.value = false; loading.value = false; error.value = ''; historyError.value = ''; available.value = false;
   }
   const unsubscribe = client.subscribeIdentity(() => { clear(); void refreshSessions(); });
   function begin(channel: string) {
@@ -51,7 +51,7 @@ export function useAgentSession(client: ReturnType<typeof createApiClient>) {
     } catch { if (op.valid()) { sessions.value = []; error.value = '会话列表读取失败'; } }
   }
   async function selectSession(id: string) {
-    invalidate(); sessionId.value = id; turns.value = []; pending = null; uncertain.value = false; loading.value = false; error.value = '';
+    invalidate(); sessionId.value = id; turns.value = []; pending = null; uncertain.value = false; loading.value = false; error.value = ''; historyError.value = '';
     await refreshTurns();
   }
   async function refreshTurns() {
@@ -60,8 +60,8 @@ export function useAgentSession(client: ReturnType<typeof createApiClient>) {
       const r = await client.GET('/agent/sessions/{session_id}/turns', {params:{path:{session_id:id}},signal:op.signal});
       if (!op.valid()) return;
       turns.value = r.data ?? [];
-      if (!r.data) error.value = message(r.response.status);
-    } catch { if (op.valid()) { turns.value = []; error.value = '历史读取失败，已隐藏旧内容'; } }
+      historyError.value = r.data ? '' : message(r.response.status);
+    } catch { if (op.valid()) { turns.value = []; historyError.value = '历史读取失败，已隐藏旧内容'; } }
     finally { if (op.valid()) schedule(); }
   }
   async function startSession() {
@@ -111,7 +111,7 @@ export function useAgentSession(client: ReturnType<typeof createApiClient>) {
   }
   function dispose() { disposed = true; clear(); unsubscribe(); retry = null; }
   onBeforeUnmount(dispose);
-  return { sessions, turns, sessionId, loading, error, available, uncertain, active,
+  return { sessions, turns, sessionId, loading, error:computed(()=>error.value||historyError.value), available, uncertain, active,
     startSession, selectSession, refreshSessions, refreshTurns, send,
     cancel:(t:Turn)=>act(t,'cancel'), regenerate:(t:Turn)=>act(t,'regenerate'), dispose };
 }
