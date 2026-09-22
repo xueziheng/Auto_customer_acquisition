@@ -33,6 +33,7 @@ connectors/<name>/
 | `web_search/` | 公开搜索 | 1 |
 | `tavily/` | 固定 basic 的免费搜索候选；必须经后续额度门禁 | 2 |
 | `playwright/` | 浏览器操作（合规边界见 docs/architecture/08） | 1（受限） |
+| `deepseek/` | 内置 Agent 的受限 Responses 调用，统一经 Gateway 计量 | 1 |
 | `openai/` | 结构化模型调用（统一封装、惰性取密钥） | 1 |
 | `fx/` | 汇率快照 | 1 |
 | `files/` | 本地/上传文件接入 | 1 |

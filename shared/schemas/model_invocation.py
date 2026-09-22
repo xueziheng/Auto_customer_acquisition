@@ -34,8 +34,14 @@ class InvocationIdentity(ModelDTO):
     configuration_version: str = Field(min_length=1, max_length=128)
     sequence: NonnegativeInt
 
-    @field_validator("tenant_id", "user_id", "employee_id", "run_id", "turn_id",
-                     "configuration_version")
+    @field_validator(
+        "tenant_id",
+        "user_id",
+        "employee_id",
+        "run_id",
+        "turn_id",
+        "configuration_version",
+    )
     @classmethod
     def clean_identity(cls, value: str | None) -> str | None:
         if value is not None and (not value.strip() or value != value.strip()):
@@ -83,8 +89,11 @@ class ModelUsage(ModelDTO):
 
     @model_validator(mode="after")
     def check_cache(self) -> ModelUsage:
-        if (self.input_tokens is not None and self.cached_input_tokens is not None
-                and self.cached_input_tokens > self.input_tokens):
+        if (
+            self.input_tokens is not None
+            and self.cached_input_tokens is not None
+            and self.cached_input_tokens > self.input_tokens
+        ):
             raise ValueError("缓存用量超过输入用量")
         return self
 
@@ -100,6 +109,8 @@ class ModelResponse(ModelDTO):
 class ModelGenerationPort(Protocol):
     """受信上层唯一的模型出口，由 Tool Gateway 实现。"""
 
-    async def generate(self, identity: InvocationIdentity, request: ModelRequest) -> ModelResponse:
+    async def generate(
+        self, identity: InvocationIdentity, request: ModelRequest
+    ) -> ModelResponse:
         """重核权限、预留额度后调用；未知执行不能自动重试。"""
         ...
