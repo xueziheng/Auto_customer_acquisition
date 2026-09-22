@@ -1,0 +1,28 @@
+{
+  "checked_at": "2026-09-22T07:29:14.024128+00:00",
+  "model": "deepseek-flash",
+  "scope": "isolated_gateway_probe",
+  "max_calls": 1,
+  "max_output_tokens": 64,
+  "http_statuses": [
+    200
+  ],
+  "result": "passed",
+  "product_login_and_chat": "not_run",
+  "live_research": "not_run",
+  "usage": {
+    "input_tokens": 50,
+    "cached_input_tokens": 0,
+    "output_tokens": 5
+  },
+  "json_ok": true,
+  "invocation_count": 1,
+  "invocation_states": [
+    "succeeded"
+  ],
+  "gateway_call_count": 1,
+  "gateway_states": [
+    "succeeded"
+  ],
+  "source_commit": "23f1cc263207d84ace87f18c34259ec226cf40c6"
+}

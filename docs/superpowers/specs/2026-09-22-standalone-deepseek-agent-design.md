@@ -1,7 +1,7 @@
 # 公司统一部署的 DeepSeek Trade Agent 设计
 
 日期：2026-09-22。
-状态：用户已批准设计与首批实施。首批实现已完成，最终回归及独立审查结果见[验收记录](../../operations/2026-09-22-builtin-deepseek-acceptance.md)；真实模型调用与公司共享部署尚未验收。
+状态：用户已批准设计与首批实施。首批实现已完成，最终回归及独立审查结果见[验收记录](../../operations/2026-09-22-builtin-deepseek-acceptance.md)；真实网关连接探测已通过；真实产品全流程和公司共享部署尚未验收。
 源码基线：`codex/web-internal-pilot`，`bae9c6c1dd7368a5fc90c1bd476a8b6f565aa921`。
 
 ## 1. 已确认的目标与交付口径
