@@ -114,3 +114,25 @@ class ModelGenerationPort(Protocol):
     ) -> ModelResponse:
         """重核权限、预留额度后调用；未知执行不能自动重试。"""
         ...
+
+
+ModelFailureCode = Literal[
+    "permission",
+    "configuration",
+    "quota",
+    "authentication",
+    "insufficient_balance",
+    "invalid_request",
+    "rate_limit",
+    "provider_error",
+    "invalid_response",
+    "unknown",
+]
+
+
+class ModelGenerationError(RuntimeError):
+    """固定安全失败分类；不能据此自动重新发送可能已经执行的请求。"""
+
+    def __init__(self, code: ModelFailureCode) -> None:
+        super().__init__("模型调用未能交付可用结果")
+        self.code = code
