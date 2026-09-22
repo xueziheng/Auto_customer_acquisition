@@ -25,7 +25,11 @@ from apps.composition_support.employee_readers import (
     RequestScopedDirectiveEmployeeReader,
     employee_service_scope,
 )
-from apps.scheduler_worker.assistant import AssistantDispatcher, AssistantDriver
+from apps.scheduler_worker.assistant import (
+    AssistantDispatcher,
+    AssistantDriver,
+    AssistantRuntimeActivation,
+)
 from artifact_store.repository import ArtifactUnitOfWorkFactory
 from artifact_store.service_impl import GeneratedArtifactStoreImpl, RawArtifactStoreImpl
 from connectors.dns_auth.client import (
@@ -1121,6 +1125,7 @@ class SchedulerRuntimeFactory:
         primary: BaseException | None = None
         quotation = None
         inbound = None
+        assistant_ports = None
         try:
             factory = async_sessionmaker(bind=engine, expire_on_commit=False)
             await assert_database_schema_current(engine)
@@ -1795,7 +1800,7 @@ class SchedulerRuntimeFactory:
             assistant_driver = None
             if assistant_ports is not None:
                 workflow.register(build_assistant_definition())
-                assistant_driver = AssistantDriver(AssistantDispatcher(assistant_ports.assistant_service, workflow), config.tenant_id, config.batch_limit)
+                assistant_driver = AssistantDriver(AssistantDispatcher(assistant_ports.assistant_service, workflow), config.tenant_id, config.batch_limit, assistant_ports.lifecycle)
             sourcing_admission_driver = (
                 SourcingAdmissionDriver(
                     policy=sourcing_policy_reader,
@@ -1936,6 +1941,8 @@ class SchedulerRuntimeFactory:
                 runtime_activation = _QuoteRuntimeActivation(
                     runtime_activation, quotation.lifecycle
                 )
+            if assistant_ports is not None and assistant_ports.lifecycle is not None:
+                runtime_activation = AssistantRuntimeActivation(runtime_activation, assistant_ports.lifecycle)
             health_server = self._health_server_factory(health, config.health_port)
             health_task = asyncio.create_task(health_server.serve())
             await asyncio.wait_for(health_server.wait_started(), timeout=10)
@@ -1968,7 +1975,8 @@ class SchedulerRuntimeFactory:
                 else None,
                 lifecycle=health,
                 capabilities=(
-                    RuntimeCapability(
+                    RuntimeCapability(name="builtin_assistant",status="enabled" if assistant_ports else "disabled",reason="composed" if assistant_ports else "not_requested"),
+                    RuntimeCapability(name="model",status="enabled" if assistant_ports else "disabled",reason="composed" if assistant_ports else "not_requested"),                    RuntimeCapability(
                         name="research",
                         status="enabled"
                         if dependencies.demand_discovery
@@ -2042,6 +2050,11 @@ class SchedulerRuntimeFactory:
         finally:
             health.stopped()
             cleanup_error: BaseException | None = None
+            if assistant_ports is not None and assistant_ports.lifecycle is not None:
+                try:
+                    await assistant_ports.lifecycle.aclose()
+                except BaseException as error:  # noqa: BLE001 - 清理资源后统一失败
+                    cleanup_error = error
             if inbound is not None:
                 try:
                     await inbound.aclose()

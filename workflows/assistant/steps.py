@@ -57,6 +57,8 @@ class AssistantStepHandler:
             return "complete", None, {}
         try:
             await self._ports.current_identity.resolve(actor)
+            if turn.turn_kind == "model_probe":
+                return await self._probe(execution)
             if self._step == "load_context":
                 await self._ports.context_builder.build(
                     actor, turn.session_id, turn.turn_id
@@ -113,6 +115,67 @@ class AssistantStepHandler:
                 "unknown" if state == "unknown" else "invalid_response",
             )
             return "fail", "assistant_result_unavailable", {}
+
+    async def _probe(
+        self, execution: TurnExecution
+    ) -> tuple[str, str | None, dict[str, Any]]:
+        import json
+
+        p = self._ports
+        service = p.configuration_service
+        if service is None:
+            raise ModelGenerationError("configuration")
+        actor, turn = execution.actor, execution.turn
+        version = await service.probe_version(actor.tenant_id, turn.turn_id)
+        if version != p.configuration_version:
+            raise ModelGenerationError("configuration")
+        await service.authorize(actor, version, probe=True)
+        if self._step == "load_context":
+            await p.assistant_service.deliver(
+                actor, turn.session_id, turn.turn_id, "running"
+            )
+            return "advance", "generate", {}
+        if self._step == "generate":
+            if execution.checkpoint_sequence is None:
+                response = await p.model_generator.generate(
+                    InvocationIdentity(
+                        tenant_id=actor.tenant_id,
+                        user_id=actor.user_id,
+                        employee_id=actor.employee_id,
+                        run_id=turn.run_id,
+                        turn_id=turn.turn_id,
+                        capability="model_probe",
+                        configuration_version=version,
+                        sequence=0,
+                    ),
+                    ModelRequest(
+                        model=p.model,
+                        system_prompt='Return exactly {"ok":true} as JSON.',
+                        payload={"probe": "tradeos"},
+                        max_output_tokens=p.max_output_tokens,
+                    ),
+                )
+                value = json.loads(response.text)
+                if (
+                    not isinstance(value, dict)
+                    or set(value) != {"ok"}
+                    or value["ok"] is not True
+                ):
+                    raise ValidationError("模型探测响应不符合契约")
+                await service.authorize(actor, version, probe=True)
+                await p.assistant_service.checkpoint(
+                    actor,
+                    turn.session_id,
+                    turn.turn_id,
+                    0,
+                    Clarification(questions=("模型连接检查已完成",), missing_fields=()),
+                    (),
+                )
+            return "advance", "apply_result", {}
+        if self._step == "apply_result":
+            await service.complete_probe(actor, turn.turn_id, version)
+            return "advance", "complete", {}
+        return "complete", None, {}
 
     async def _generate(
         self, execution: TurnExecution

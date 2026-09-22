@@ -258,7 +258,7 @@ class GatewayModelGenerator:
         )
         slot = ModelResponseSlot()
         quota = ModelQuotaCheck(
-            identity, self._usage, self._limits, self._model, self._now
+            identity, self._usage, self._limits, self._model, self._now, self._owner, self._lease
         )
         handler = ModelGenerateHandler(
             identity,

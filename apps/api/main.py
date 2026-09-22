@@ -25,6 +25,7 @@ from fastapi.openapi.utils import get_openapi
 from starlette.types import Lifespan
 
 from apps.api.routers.assistant import router as assistant_router
+from apps.api.routers.model_settings import router as model_settings_router
 from shared.authentication import AuthenticationService
 from shared.schemas.runtime_capabilities import CapabilityName, RuntimeCapability
 from workflows.email_feedback.unsubscribe import UnsubscribeService
@@ -205,6 +206,7 @@ def create_app(
     app.include_router(demand_radar_router, prefix="/demand")
     app.include_router(command_center_router, prefix="/commands")
     app.include_router(assistant_router)
+    app.include_router(model_settings_router)
     app.include_router(approvals_router)
     app.include_router(notifications_router)
     app.include_router(inbox_router)

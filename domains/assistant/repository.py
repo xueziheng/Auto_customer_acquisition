@@ -1,3 +1,5 @@
+from collections.abc import Awaitable, Callable
+
 """会话持久化公开给组合层，身份包含租户且每次校验会话归属。"""
 
 from typing import Protocol
@@ -5,6 +7,8 @@ from typing import Protocol
 from domains.assistant.schemas import (
     AssistantActor,
     AssistantDecision,
+    ModelConfigurationSnapshot,
+    ModelSettingsUpdate,
     ObjectRef,
     SessionView,
     TurnExecution,
@@ -69,4 +73,20 @@ class AssistantRepository(Protocol):
         turn_id: AgentTurnId,
         state: TurnState,
         code: ModelFailureCode,
+    ) -> None: ...
+
+
+class AssistantConfigurationRepository(Protocol):
+    async def get(self, tenant_id: TenantId) -> ModelConfigurationSnapshot | None: ...
+    async def save(self, actor: AssistantActor, input: ModelSettingsUpdate) -> None: ...
+    async def probe(
+        self, actor: AssistantActor, configuration_version: str, idempotency_key: str
+    ) -> TurnView: ...
+    async def probe_version(self, tenant_id: TenantId, turn_id: AgentTurnId) -> str: ...
+    async def complete_probe(
+        self,
+        actor: AssistantActor,
+        turn_id: AgentTurnId,
+        configuration_version: str,
+        authorize: Callable[[], Awaitable[None]],
     ) -> None: ...

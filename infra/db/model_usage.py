@@ -58,6 +58,8 @@ class SqlModelUsageRepository:
         now: datetime,
         *,
         model: str,
+        owner_id: str | None = None,
+        lease_expires_at: datetime | None = None,
     ) -> Reservation:
         """租户锁→员工锁→幂等→两级额度，全部在一笔独立事务内完成。"""
         if (
@@ -146,6 +148,8 @@ class SqlModelUsageRepository:
                     request_hmac=request_hmac,
                     provider="deepseek",
                     model=model,
+                    owner_id=owner_id,
+                    lease_expires_at=lease_expires_at,
                     state="reserved",
                     input_tokens=None,
                     cached_input_tokens=None,
@@ -162,6 +166,26 @@ class SqlModelUsageRepository:
             return Reservation(
                 invocation_id=invocation_id, outcome="reserved", state="reserved"
             )
+
+    async def recover_abandoned(
+        self, tenant_id: TenantId, current_owner: str, now: datetime
+    ) -> int:
+        """只供持有规范 scheduler 单例锁的当前 owner 调用；未知费用不退款。"""
+        async with self._factory() as session, session.begin():
+            rows = (await session.scalars(
+                TenantScopedRepository(tenant_id).scoped_query(ModelInvocationRow)
+                .where(ModelInvocationRow.state.in_(("reserved", "dispatched")),
+                       ModelInvocationRow.owner_id.is_not(None),
+                       ModelInvocationRow.owner_id != current_owner,
+                       ModelInvocationRow.lease_expires_at <= now)
+                .with_for_update()
+            )).all()
+            for row in rows:
+                # dispatched 在 Provider IO 前独立提交；reserved 因此可证明尚未发送。
+                row.slot_released = row.state == "reserved"
+                row.state = "rejected" if row.slot_released else "unknown"
+                row.finished_at = now
+            return len(rows)
 
     async def _row(
         self,

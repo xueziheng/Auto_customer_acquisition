@@ -5,6 +5,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 CapabilityName = Literal[
+    "builtin_assistant",
+    "model",
     "research",
     "contacts",
     "campaign",

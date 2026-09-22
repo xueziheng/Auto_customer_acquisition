@@ -107,6 +107,7 @@ class SqlAssistantRepository:
                     .scoped_query(AgentSessionRow)
                     .where(
                         AgentSessionRow.employee_id == actor.employee_id,
+                        AgentSessionRow.session_kind == "conversation",
                         AgentSessionRow.user_id == actor.user_id,
                     )
                     .order_by(AgentSessionRow.created_at.desc())

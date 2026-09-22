@@ -44,6 +44,8 @@ class ModelUsageRepository(Protocol):
         now: datetime,
         *,
         model: str,
+        owner_id: str | None = None,
+        lease_expires_at: datetime | None = None,
     ) -> Reservation: ...
     async def mark_dispatched(
         self, tenant_id: TenantId, invocation_id: ModelInvocationId

@@ -10,6 +10,7 @@ from domains.assistant.service import (
     AssistantExecutionService,
     AssistantFingerprints,
     AssistantService,
+    ModelConfigurationService,
 )
 from domains.directives.service import DirectiveService
 from shared.schemas.model_invocation import ModelGenerationPort
@@ -17,6 +18,12 @@ from shared.schemas.model_invocation import ModelGenerationPort
 
 class AssistantRuntimeService(AssistantService, AssistantExecutionService, Protocol):
     pass
+
+
+class AssistantLifecycle(Protocol):
+    async def startup(self) -> None: ...
+    async def heartbeat(self) -> None: ...
+    async def aclose(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -32,3 +39,5 @@ class AssistantRuntimePorts:
     model: str
     configuration_version: str
     max_output_tokens: int
+    configuration_service: ModelConfigurationService | None = None
+    lifecycle: AssistantLifecycle | None = None

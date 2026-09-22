@@ -13,7 +13,7 @@ from agent_runtime.trade_manager import TradeManagerAgent
 from apps.composition_support.email_inbound import InboundComposition
 from artifact_store.store import RawArtifactKind, RawArtifactMeta
 from domains.approvals.service import ApprovalService
-from domains.assistant.service import AssistantService
+from domains.assistant.service import AssistantService, ModelConfigurationService
 from domains.commitments.service import CommitmentService
 from domains.compliance.service import ComplianceService
 from domains.conversations.service import ConversationService
@@ -282,6 +282,7 @@ class ConfiguredApiDependencies:
     provider_readiness: ProviderReadinessService
     provider_readiness_actor: ProviderReadinessActor
     assistant: AssistantService | None = None
+    model_configuration: ModelConfigurationService | None = None
     prospecting: ProspectingService | None = None
     demand_radar: DemandRadarService | None = None
     directives: DirectiveService | None = None

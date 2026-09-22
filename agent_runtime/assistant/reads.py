@@ -97,6 +97,10 @@ class CurrentEmployeeIdentity:
     async def check(self, actor: AssistantActor) -> None:
         await self.employee(actor)
 
+    async def require_admin(self, actor: AssistantActor) -> None:
+        if (await self.employee(actor)).role != "boss":
+            raise PermissionDenied("模型配置仅限当前老板")
+
     async def resolve(self, actor: AssistantActor) -> tuple[str, frozenset[str]]:
         employee = await self.employee(actor)
         capabilities = {"product_help"}

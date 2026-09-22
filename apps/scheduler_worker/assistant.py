@@ -1,8 +1,11 @@
 """单副本 scheduler 内认领会话意图；使用同一规范 engine。"""
 
+from typing import Protocol
+
 from domains.assistant.service import AssistantExecutionService
 from shared.errors import ValidationError
 from shared.schemas.identifiers import TenantId
+from workflows.assistant.ports import AssistantLifecycle
 from workflows.engine.runner import StepStatus, WorkflowEngine
 
 
@@ -51,9 +54,32 @@ class AssistantDispatcher:
 
 class AssistantDriver:
     def __init__(
-        self, dispatcher: AssistantDispatcher, tenant_id: TenantId, limit: int
+        self,
+        dispatcher: AssistantDispatcher,
+        tenant_id: TenantId,
+        limit: int,
+        lifecycle: AssistantLifecycle | None = None,
     ) -> None:
         self._dispatcher, self._tenant_id, self._limit = dispatcher, tenant_id, limit
+        self._lifecycle = lifecycle
 
     async def scan_once(self) -> int:
+        if self._lifecycle is not None:
+            await self._lifecycle.heartbeat()
         return await self._dispatcher.dispatch(self._tenant_id, self._limit)
+
+
+class ExistingActivation(Protocol):
+    async def activate(self) -> None: ...
+
+
+class AssistantRuntimeActivation:
+    def __init__(
+        self, existing: ExistingActivation | None, lifecycle: AssistantLifecycle
+    ) -> None:
+        self._existing, self._lifecycle = existing, lifecycle
+
+    async def activate(self) -> None:
+        if self._existing is not None:
+            await self._existing.activate()
+        await self._lifecycle.startup()

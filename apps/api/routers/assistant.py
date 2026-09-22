@@ -27,6 +27,7 @@ from domains.assistant.schemas import (
 from domains.assistant.service import AssistantService
 from shared.authentication import AuthPrincipal
 from shared.schemas.identifiers import AgentSessionId, AgentTurnId
+from shared.schemas.model_invocation import ModelGenerationError
 
 router = APIRouter(
     prefix="/agent",
@@ -46,6 +47,10 @@ async def _safe[T](result: Awaitable[T]) -> T:
         raise HTTPException(404) from None
     except AssistantConflict:
         raise HTTPException(409) from None
+    except ModelGenerationError as error:
+        raise HTTPException(
+            429 if error.code == "quota" else 403 if error.code == "permission" else 503
+        ) from None
 
 
 async def _access(

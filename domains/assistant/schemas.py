@@ -15,7 +15,7 @@ from shared.schemas.identifiers import (
     TenantId,
     UserId,
 )
-from shared.schemas.model_invocation import ModelFailureCode
+from shared.schemas.model_invocation import ModelFailureCode, ModelLimits
 
 
 class AssistantDTO(BaseModel):
@@ -150,3 +150,43 @@ class AssistantRegenerateInput(AssistantDTO):
     idempotency_key: str = Field(
         min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$"
     )
+
+
+class ModelRuntimeStatus(AssistantDTO):
+    api_version: str | None = None
+    scheduler_version: str | None = None
+    api_heartbeat_at: datetime | None = None
+    scheduler_heartbeat_at: datetime | None = None
+    verified_at: datetime | None = None
+    failure_code: ModelFailureCode | None = None
+    probe_turn_id: AgentTurnId | None = None
+    probe_state: TurnState | None = None
+
+
+class ModelConfigurationSnapshot(AssistantDTO):
+    configuration_version: str
+    model: str
+    limits: ModelLimits
+    model_data_export_enabled: bool
+    runtime: ModelRuntimeStatus
+
+
+class ModelSettingsView(AssistantDTO):
+    provider: Literal["deepseek"] = "deepseek"
+    model: str | None = None
+    configuration_version: str | None = None
+    status: Literal["missing", "pending_restart", "unverified", "verified", "failed"]
+    verified_at: datetime | None = None
+    failure_code: ModelFailureCode | None = None
+    limits: ModelLimits | None = None
+    can_probe: bool = False
+    worker_available: bool = False
+    model_data_export_enabled: bool = False
+    probe_turn_id: AgentTurnId | None = None
+    probe_state: TurnState | None = None
+
+
+class ModelSettingsUpdate(AssistantDTO):
+    expected_version: str = Field(min_length=1, max_length=128)
+    model: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._/-]+$")
+    limits: ModelLimits

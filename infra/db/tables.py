@@ -5921,6 +5921,8 @@ class ModelInvocationRow(Base):
     request_hmac: Mapped[str] = mapped_column(String(64))
     provider: Mapped[str] = mapped_column(String(16))
     model: Mapped[str] = mapped_column(String(128))
+    owner_id: Mapped[str | None] = mapped_column(String(128))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     state: Mapped[str] = mapped_column(String(16))
     input_tokens: Mapped[int | None] = mapped_column(BigInteger)
     cached_input_tokens: Mapped[int | None] = mapped_column(BigInteger)
@@ -5975,6 +5977,7 @@ class AgentSessionRow(Base):
     """员工私有会话，不保存可能泄露业务信息的生成标题。"""
     __tablename__ = "agent_sessions"
     __table_args__ = (PrimaryKeyConstraint("tenant_id","session_id",name="pk_agent_sessions"),)
+    session_kind: Mapped[str] = mapped_column(String(16), server_default=text("'conversation'"))
     tenant_id: Mapped[str] = mapped_column(String(128))
     session_id: Mapped[str] = mapped_column(String(40))
     user_id: Mapped[str] = mapped_column(String(128))
@@ -6031,3 +6034,38 @@ class AssistantProposalSourceRow(Base):
     proposal_id: Mapped[str] = mapped_column(String(40))
     request_hmac: Mapped[str] = mapped_column(String(256))
     payload_hash: Mapped[str] = mapped_column(String(64))
+
+
+class ModelConfigurationHeadRow(Base):
+    """当前非秘密配置指针；版本内容不原地修改。"""
+    __tablename__ = "model_configuration_heads"
+    __table_args__ = (PrimaryKeyConstraint("tenant_id"),ForeignKeyConstraint(["tenant_id","version"],["model_configuration_versions.tenant_id","model_configuration_versions.version"]),)
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    version: Mapped[str] = mapped_column(String(128))
+
+
+class ModelRuntimeProcessRow(Base):
+    """进程的实际装配版本与有界存活心跳。"""
+    __tablename__ = "model_runtime_processes"
+    __table_args__ = (PrimaryKeyConstraint("tenant_id","process"),CheckConstraint("process IN ('api','scheduler')",name="ck_model_runtime_process"),)
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    process: Mapped[str] = mapped_column(String(16))
+    version: Mapped[str] = mapped_column(String(128))
+    instance_id: Mapped[str] = mapped_column(String(40))
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ModelProbeRow(Base):
+    """显式管理员探测，单独轮次并绑定配置版本。"""
+    __tablename__ = "model_probes"
+    __table_args__ = (PrimaryKeyConstraint("tenant_id","turn_id"),
+        UniqueConstraint("tenant_id","employee_id","configuration_version","idempotency_key"),
+        ForeignKeyConstraint(["tenant_id","turn_id"],["agent_turns.tenant_id","agent_turns.turn_id"]),
+        ForeignKeyConstraint(["tenant_id","configuration_version"],["model_configuration_versions.tenant_id","model_configuration_versions.version"]),)
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    turn_id: Mapped[str] = mapped_column(String(40))
+    employee_id: Mapped[str] = mapped_column(String(128))
+    configuration_version: Mapped[str] = mapped_column(String(128))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

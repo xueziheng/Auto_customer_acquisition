@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from agent_runtime.model_client import StructuredJsonModelClient
 from apps.composition_support.email_inbound import InboundMailbox
@@ -28,8 +29,11 @@ from infra.db.session import create_engine_from
 from infra.secrets import EnvironmentSecretResolver
 from shared.authentication import AuthenticationService
 from shared.schemas.identifiers import TenantId
+from shared.schemas.runtime_capabilities import RuntimeCapability
 
+from .composition.assistant import AssistantApiComposition
 from .composition.runtime import ManualSendComposition, build_phase1_dependencies
+from .dependencies import ConfiguredApiDependencies
 from .main import create_app
 from .middleware import ApiSettings
 from .runtime_config import (
@@ -112,6 +116,7 @@ def create_runtime_app_from_settings(
     inbound_mailbox: InboundMailbox | None = None,
     authentication: AuthenticationService | None = None,
     authentication_origin: str | None = None,
+    assistant_factory: Callable[[async_sessionmaker[AsyncSession], ConfiguredApiDependencies], AssistantApiComposition] | None = None,
 ) -> FastAPI:
     """按显式配置与端口装配；借用注入模型，自有资源只在 lifespan 关闭。
 
@@ -131,6 +136,10 @@ def create_runtime_app_from_settings(
             gmail_transport=gmail_transport,
             inbound_mailbox=inbound_mailbox,
         )
+        assistant = assistant_factory(factory, dependencies) if assistant_factory is not None else None
+        if assistant is not None:
+            dependencies = replace(dependencies, assistant=assistant.service, model_configuration=assistant.configuration, trade_manager=None,
+                runtime_capabilities=(*dependencies.runtime_capabilities,RuntimeCapability(name="builtin_assistant",status="enabled",reason="composed"),RuntimeCapability(name="model",status="enabled",reason="composed")))
     except Exception as exc:  # noqa: BLE001 装配异常只记录类型并固定映射
         logger.error("API runtime 装配失败", extra={"error_type": type(exc).__name__})
         raise RuntimeStartupError() from None
@@ -149,6 +158,8 @@ def create_runtime_app_from_settings(
                 if settings.owner_reminder_interval is None
                 else settings.owner_reminder_interval // timedelta(seconds=1),
             )
+            if assistant is not None:
+                await assistant.lifecycle.startup()
             if dependencies.quotation is not None:
                 await dependencies.quotation.lifecycle.startup()
             yield
@@ -158,6 +169,7 @@ def create_runtime_app_from_settings(
         finally:
             cleanup_error: BaseException | None = None
             resources = (
+                assistant.lifecycle if assistant is not None else None,
                 dependencies.email_inbound,
                 dependencies.quotation.lifecycle
                 if dependencies.quotation is not None

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from shared.schemas.model_invocation import (
@@ -59,6 +59,8 @@ class ModelQuotaCheck:
         limits: ModelLimits,
         model: str,
         now: Callable[[], datetime],
+        owner_id: str | None = None,
+        lease_duration: timedelta | None = None,
     ) -> None:
         self._identity, self._usage, self._limits, self._model, self._now = (
             identity,
@@ -67,6 +69,7 @@ class ModelQuotaCheck:
             model,
             now,
         )
+        self._owner, self._lease = owner_id, lease_duration
         self.reservation: Reservation | None = None
         self.failure: ModelGenerationError | None = None
 
@@ -81,6 +84,8 @@ class ModelQuotaCheck:
             self._limits,
             self._now(),
             model=self._model,
+            owner_id=self._owner,
+            lease_expires_at=self._now() + self._lease if self._lease else None,
         )
         if self.reservation.outcome != "reserved":
             code: ModelFailureCode = (

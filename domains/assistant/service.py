@@ -5,6 +5,8 @@ from typing import Protocol
 from domains.assistant.schemas import (
     AssistantActor,
     AssistantDecision,
+    ModelSettingsUpdate,
+    ModelSettingsView,
     ObjectRef,
     SessionView,
     TurnExecution,
@@ -93,4 +95,25 @@ class AssistantExecutionService(Protocol):
         turn_id: AgentTurnId,
         state: TurnState,
         code: ModelFailureCode,
+    ) -> None: ...
+
+
+class AssistantModelAdministration(AssistantAuthority, Protocol):
+    async def require_admin(self, actor: AssistantActor) -> None: ...
+
+
+class ModelConfigurationService(Protocol):
+    async def get_public(self, actor: AssistantActor) -> ModelSettingsView: ...
+    async def save_nonsecret(
+        self, actor: AssistantActor, input: ModelSettingsUpdate
+    ) -> ModelSettingsView: ...
+    async def request_probe(
+        self, actor: AssistantActor, idempotency_key: str
+    ) -> TurnView: ...
+    async def authorize(
+        self, actor: AssistantActor, configuration_version: str, *, probe: bool
+    ) -> None: ...
+    async def probe_version(self, tenant_id: TenantId, turn_id: AgentTurnId) -> str: ...
+    async def complete_probe(
+        self, actor: AssistantActor, turn_id: AgentTurnId, configuration_version: str
     ) -> None: ...
