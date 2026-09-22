@@ -257,6 +257,12 @@ async def test_committed_proposal_before_turn_binding_is_reused(unit_engine):
     app, wf, dispatcher, db, handlers, _identity = assemble(unit_engine, provider)
     owner = actor(employee=BOSS)
     session = await app.create_session(owner)
+    for index in range(2):
+        private = await app.accept_turn(owner, session.session_id,
+            input_text(text="PRIVATE_HISTORY " + "内部随记" * 1400, key=f"private-{index}"))
+        await dispatcher.dispatch(owner.tenant_id, 10)
+        await drain(wf, owner.tenant_id)
+        assert (await app.get_turn(owner, session.session_id, private.turn_id)).state == "awaiting_input"
     fields = {
         "objective": "研究铰链需求",
         "target_countries": "US",
@@ -311,4 +317,77 @@ async def test_committed_proposal_before_turn_binding_is_reused(unit_engine):
             )
         ).all()
         assert len(rows) == 1 and rows[0].proposal_id == result.proposal_id
+    from infra.db.tables import DirectiveProposalRow
+    async with db() as connection:
+        proposal = (await connection.scalars(select(DirectiveProposalRow).where(
+            DirectiveProposalRow.tenant_id == owner.tenant_id,
+            DirectiveProposalRow.proposal_id == result.proposal_id))).one()
+        assert "PRIVATE_HISTORY" not in proposal.raw_text
+        assert len(proposal.raw_text) <= 10000 and turn.turn_id in proposal.raw_text
+    assert provider.calls == 3
+
+
+@pytest.mark.parametrize('window', ['checkpoint', 'before_checkpoint', 'export_revoked'])
+async def test_changed_configuration_never_applies_or_replays_old_generation(unit_engine, window):
+    from dataclasses import replace
+
+    from shared.schemas.model_invocation import ModelGenerationError
+    from workflows.assistant.steps import AssistantStepHandler
+
+    provider = Provider()
+    app, wf, dispatcher, _db, handlers, _identity = assemble(unit_engine, provider)
+    owner = actor()
+    session = await app.create_session(owner)
+    turn = await app.accept_turn(owner, session.session_id, input_text())
+    await dispatcher.dispatch(owner.tenant_id, 10)
+    await wf.poll_due(owner.tenant_id, 1)
+    run = await wf.get_run(owner.tenant_id, turn.run_id)
+    if window == 'before_checkpoint':
+        original = app.checkpoint
+        async def crash(*args, **kwargs): raise KeyboardInterrupt()
+        app.checkpoint = crash
+        with pytest.raises(KeyboardInterrupt): await handlers['assistant.generate'].execute(run)
+        app.checkpoint = original
+    else:
+        await handlers['assistant.generate'].execute(run)
     assert provider.calls == 1
+    class Revoked:
+        async def authorize(self, *args, **kwargs): raise ModelGenerationError('configuration')
+    ports = handlers['assistant.generate']._ports
+    if window == 'export_revoked': ports = replace(ports, configuration_service=Revoked())
+    else: ports = replace(ports, configuration_version='test-v2')
+    handler = AssistantStepHandler(ports, 'generate' if window == 'before_checkpoint' else 'apply_result')
+    outcome = await handler.execute(run)
+    result = (await app.execution(owner.tenant_id, turn.turn_id)).turn
+    assert outcome[0] == 'fail' and result.state == 'blocked'
+    assert result.result is None and provider.calls == 1
+
+
+@pytest.mark.parametrize('count,expected_calls,expected_state', [(50,1,'awaiting_input'),(256,0,'failed')])
+async def test_source_budget_is_checked_before_paid_generation(unit_engine, count, expected_calls, expected_state):
+    from dataclasses import replace
+
+    from domains.assistant.schemas import (
+        AssistantReadQuery,
+        AuthorizedFragment,
+        ObjectRef,
+        ReadRequest,
+    )
+    from workflows.assistant.steps import AssistantStepHandler
+
+    provider = Provider()
+    app, wf, dispatcher, _db, handlers, _identity = assemble(unit_engine, provider)
+    owner=actor(); session=await app.create_session(owner)
+    turn=await app.accept_turn(owner,session.session_id,input_text())
+    await dispatcher.dispatch(owner.tenant_id,10); await wf.poll_due(owner.tenant_id,1)
+    await app.checkpoint(owner,session.session_id,turn.turn_id,0,
+        ReadRequest(query=AssistantReadQuery(kind='need',limit=50)),())
+    class ManyReads(Reads):
+        async def list(self, actor, query):
+            return tuple(AuthorizedFragment(text='已授权来源',dependencies=(ObjectRef(kind='need',object_id=f'need_{i}'),)) for i in range(count))
+    handler=AssistantStepHandler(replace(handlers['assistant.generate']._ports,read_port=ManyReads()),'generate_explanation')
+    run=await wf.get_run(owner.tenant_id,turn.run_id)
+    result=await handler.execute(run)
+    if result[0]=='advance': await AssistantStepHandler(handler._ports,'apply_result').execute(run)
+    assert provider.calls==expected_calls
+    assert (await app.execution(owner.tenant_id,turn.turn_id)).turn.state==expected_state

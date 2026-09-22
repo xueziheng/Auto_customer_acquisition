@@ -1,5 +1,6 @@
 """会话流程的受信公开依赖，不持有密钥或跨进程实例。"""
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -23,6 +24,10 @@ class AssistantRuntimeService(AssistantService, AssistantExecutionService, Proto
 class AssistantLifecycle(Protocol):
     async def startup(self) -> None: ...
     async def heartbeat(self) -> None: ...
+    async def start_heartbeat(
+        self, guard: Callable[[], Awaitable[None]] | None
+    ) -> None: ...
+    async def stop_heartbeat(self) -> None: ...
     async def aclose(self) -> None: ...
 
 

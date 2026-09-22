@@ -199,7 +199,7 @@ async function eventually(assertion: () => void): Promise<void> {
   throw latestError;
 }
 
-async function mountBoard(fetch: ReturnType<typeof vi.fn<typeof globalThis.fetch>>): Promise<{
+async function mountBoard(fetch: ReturnType<typeof vi.fn<typeof globalThis.fetch>>, expectedCount=2): Promise<{
   app: VueApp;
   root: HTMLElement;
 }> {
@@ -212,7 +212,7 @@ async function mountBoard(fetch: ReturnType<typeof vi.fn<typeof globalThis.fetch
   app.mount(root);
   await router.replace("/crm/opportunities");
   await eventually(() => {
-    expect(root.querySelectorAll('ol[aria-label="机会列表"] > li > button')).toHaveLength(2);
+    expect(root.querySelectorAll('ol[aria-label="机会列表"] > li > button')).toHaveLength(expectedCount);
   });
   return { app, root };
 }
@@ -1229,5 +1229,20 @@ it("Task10 关键字段和金额有来源不代表已验证事实", async () => 
   expect([...record.querySelectorAll('.fact-label')].length).toBeGreaterThan(0);
   expect([...record.querySelectorAll('.fact-label')].every((label) => label.textContent?.includes("来源记录"))).toBe(true);
   expect(record.textContent).not.toContain("已验证事实");
+  app.unmount();
+});
+
+
+it("来源链接读取精确机会，即使该对象不在当前列表", async () => {
+  const requests:string[]=[];
+  const fetch=vi.fn<typeof globalThis.fetch>(async input=>{
+    const request=asRequest(input);requests.push(new URL(request.url).pathname);
+    if(new URL(request.url).pathname==="/crm/opportunities")return jsonResponse([firstOpportunity]);
+    return opportunityForRequest(request,[firstOpportunity,secondOpportunity])??jsonResponse({},500);
+  });
+  const {app,root}=await mountBoard(fetch,1);
+  await router.push("/crm/opportunities?opportunity="+secondOpportunity.opportunity_id);
+  await eventually(()=>expect(requests).toContain("/crm/opportunities/"+secondOpportunity.opportunity_id));
+  await eventually(()=>expect(root.textContent).toContain(secondOpportunity.spec_summary!));
   app.unmount();
 });

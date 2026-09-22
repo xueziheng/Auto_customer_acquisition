@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from domains.assistant.errors import AssistantConflict, AssistantNotFound
 from domains.assistant.models import can_transition
 from domains.assistant.schemas import (
+    MAX_CONTEXT_REFS,
     AssistantActor,
     AssistantDecision,
     ObjectRef,
@@ -19,7 +20,7 @@ from domains.assistant.schemas import (
     TurnView,
 )
 from infra.db.base import TenantScopedRepository
-from infra.db.tables import AgentSessionRow, AgentTurnRow
+from infra.db.tables import AgentSessionRow, AgentTurnRow, ModelInvocationRow
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     AgentSessionId,
@@ -268,6 +269,16 @@ class SqlAssistantRepository:
                 .where(AgentSessionRow.session_id == row.session_id)
             )
         ).one()
+        # 以网关先于外部请求落库的不可变调用版本作为恢复绑定，不能用重启后的配置猜测。
+        versions = tuple(
+            (
+                await db.scalars(
+                    TenantScopedRepository(tenant_id)
+                    .scoped_query(ModelInvocationRow)
+                    .where(ModelInvocationRow.turn_id == row.turn_id)
+                )
+            ).all()
+        )
         return TurnExecution.model_validate(
             {
                 "actor": {
@@ -278,6 +289,9 @@ class SqlAssistantRepository:
                 "turn": self._view(row),
                 "dispatch_state": row.dispatch_state,
                 "checkpoint_sequence": row.checkpoint_sequence,
+                "configuration_versions": tuple(
+                    sorted({v.configuration_version for v in versions})
+                ),
             }
         )
 
@@ -323,7 +337,7 @@ class SqlAssistantRepository:
         result: AssistantDecision,
         refs: tuple[ObjectRef, ...],
     ) -> None:
-        if sequence not in {0, 1} or len(refs) > 50:
+        if sequence not in {0, 1} or len(refs) > MAX_CONTEXT_REFS:
             raise AssistantConflict()
         async with self._factory() as db, db.begin():
             await self._session(db, actor, session_id, lock=True)

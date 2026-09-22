@@ -8,6 +8,7 @@ type View=components['schemas']['ModelSettingsView'];
 type Limits=components['schemas']['ModelLimits'];
 const client=inject('tradeos-api-client',apiClient);
 const view=ref<View|null>(null),error=ref(''),busy=ref(false),visible=ref(true);
+const exportEnabled=ref(false);
 const model=ref(''),limits=ref<Limits|null>(null),dirty=ref(false);
 let key:string|null=null, timer:ReturnType<typeof setTimeout>|undefined;
 const labels:Record<View['status'],string>={missing:'尚未配置',pending_restart:'已保存，等待进程重启',unverified:'已装配，尚未验证',verified:'连接验证通过',failed:'连接测试未通过'};
@@ -16,11 +17,13 @@ const scope=useQuoteRequestScope(client,()=>[],()=>{view.value=null;limits.value
 async function load() {
   const op=scope.begin('load');if(!op)return;
   try {
+    const capabilities=await client.GET('/health/capabilities',{signal:op.signal});if(!op.valid())return;
+    if(!capabilities.data?.some(c=>c.name==='model'&&c.status==='enabled')){view.value=null;visible.value=false;return;}
     const r=await client.GET('/settings/model',{signal:op.signal});if(!op.valid())return;
     visible.value=r.response.status!==403;
     if(!r.data){view.value=null;error.value=r.response.status===503?'独立模型服务尚未装配':'无法读取当前模型设置';return;}
     view.value=r.data;error.value='';
-    if(!dirty.value){model.value=r.data.model??'';limits.value=r.data.limits?{...r.data.limits}:null;}
+    if(!dirty.value){model.value=r.data.model??'';exportEnabled.value=r.data.model_data_export_enabled;limits.value=r.data.limits?{...r.data.limits}:null;}
   }catch{if(op.valid()){view.value=null;error.value='设置读取失败，请刷新';}}
   finally{if(op.valid()){if(timer)clearTimeout(timer);timer=setTimeout(()=>void load(),globalThis.document.hidden?15000:4000);}}
 }
@@ -39,7 +42,7 @@ async function save(){
   const op=scope.begin('write');if(!op)return;
   busy.value=true;
   try{
-    const r=await client.POST('/settings/model',{body:{expected_version:view.value.configuration_version,model:model.value,limits:limits.value},signal:op.signal});if(!op.valid())return;
+    const r=await client.POST('/settings/model',{body:{expected_version:view.value.configuration_version,model:model.value,limits:limits.value,model_data_export_enabled:exportEnabled.value},signal:op.signal});if(!op.valid())return;
     if(r.data){view.value=r.data;dirty.value=false;key=null;}else error.value='保存未完成，请核对正整数额度和当前配置版本';
   }catch{if(op.valid())error.value='保存回执未收到，请刷新核对版本后再操作';}
   finally{if(op.valid())busy.value=false;}
@@ -97,6 +100,7 @@ onMounted(()=>void load());onBeforeUnmount(()=>{if(timer)clearTimeout(timer);});
         @submit.prevent="save"
         @input="dirty=true"
       >
+        <label><input v-model="exportEnabled" type="checkbox" :disabled="busy">允许业务资料发送至模型服务（保存新版本）</label>
         <label>模型 ID<input
           v-model="model"
           required

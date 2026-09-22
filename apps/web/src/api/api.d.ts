@@ -5053,6 +5053,8 @@ export interface components {
             limits: components["schemas"]["ModelLimits"];
             /** Model */
             model: string;
+            /** Model Data Export Enabled */
+            model_data_export_enabled?: boolean | null;
         };
         /** ModelSettingsView */
         ModelSettingsView: {

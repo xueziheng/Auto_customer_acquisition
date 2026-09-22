@@ -17,6 +17,8 @@ from shared.schemas.identifiers import (
 )
 from shared.schemas.model_invocation import ModelFailureCode, ModelLimits
 
+MAX_CONTEXT_REFS = 256
+
 
 class AssistantDTO(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
@@ -140,6 +142,7 @@ class TurnExecution(AssistantDTO):
     turn: TurnView
     dispatch_state: Literal["pending", "bound"]
     checkpoint_sequence: int | None = None
+    configuration_versions: tuple[str, ...] = ()
 
 
 class EmptyAssistantCommand(AssistantDTO):
@@ -190,3 +193,4 @@ class ModelSettingsUpdate(AssistantDTO):
     expected_version: str = Field(min_length=1, max_length=128)
     model: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._/-]+$")
     limits: ModelLimits
+    model_data_export_enabled: bool | None = Field(default=None, strict=True)

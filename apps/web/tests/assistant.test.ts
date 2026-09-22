@@ -64,3 +64,16 @@ it('身份改变时清空历史并拒绝旧身份迟到响应',async()=>{
   deliver(new Response(JSON.stringify([{input_text:'旧身份秘密'}]),{headers:{'content-type':'application/json'}}));await pending;
   expect(state.turns.value).toEqual([]);expect(state.sessionId.value).toBeNull();app.unmount();
 });
+
+it('未装配助手时不探测登录专属会话接口，保留旧工作台身份',async()=>{
+ const paths:string[]=[];
+ const provider={generation:()=>0,current:()=>({employeeId:'emp',tenantId:'tn',mode:'fixed-dev' as const}),subscribe:()=>()=>{}};
+ const client=createApiClient({baseUrl:'https://test.local',fetch:async input=>{
+  paths.push(new URL((input as Request).url).pathname);
+  return new Response('[]',{headers:{'content-type':'application/json'}});
+ }},provider);
+ let state!:ReturnType<typeof useAgentSession>;
+ const app=createApp({setup(){state=useAgentSession(client);return()=>null;}});app.mount(document.createElement('div'));
+ await state.refreshSessions();
+ expect(paths).toEqual(['/health/capabilities']);expect(state.available.value).toBe(false);app.unmount();
+});

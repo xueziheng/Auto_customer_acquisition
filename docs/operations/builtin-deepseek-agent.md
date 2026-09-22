@@ -41,7 +41,7 @@ npm --prefix apps/web run build
 
 - `provider` 固定为 `deepseek`；`model` 填管理员选定、账号可访问的准确模型 ID。
 - `secret_ref` 是 scheduler 环境变量名，例如 `DEEPSEEK_API_KEY`；文件只存引用，**不存密钥值**。
-- `configuration_version` 是新的可追踪版本。改模型、限额或外发许可时使用新版本。
+- `configuration_version` 是新的可追踪版本。改模型、密钥、限额或外发许可时使用新版本。
 - `model_data_export_enabled` 明确设为 `true` 才允许业务上下文外发；关闭时业务调用拒绝。
 - `limits` 中的窗口秒数、租户/员工调用数、并发数、输入字节数、输出 token 数和超时秒数，
   都由管理员明确填写正整数。它们是调用与资源上限，不是人民币钱包，不保证固定账单金额。
@@ -88,7 +88,7 @@ export DEEPSEEK_API_KEY
 boss 登录后主动点击模型连接探测。探测也消耗一次调用额度，页面轮询不会自行触发探测。
 两个进程使用相同配置版本、心跳活跃且本版本 probe 成功，才显示已验证并允许业务调用。
 
-Web 可修改非秘密模型配置，保存后显示待重启。管理员必须同步更新 MODEL_SETTINGS 为页面保存的
+Web 可修改非秘密模型配置和业务资料外发许可，保存后显示待重启。管理员必须同步更新 MODEL_SETTINGS 为页面保存的
 同一模型、版本、限额和许可，重启 API/scheduler，再显式探测。界面不会替你改本机文件或安装密钥。
 保存新版本也不会清零已消耗的调用次数。
 

@@ -250,7 +250,9 @@ class SqlModelConfigurationRepository:
                     version=version,
                     model=input.model,
                     limits=input.limits.model_dump(),
-                    export_enabled=prior.export_enabled,
+                    export_enabled=prior.export_enabled
+                    if input.model_data_export_enabled is None
+                    else input.model_data_export_enabled,
                     created_by=actor.user_id,
                     created_at=self._now(),
                 )

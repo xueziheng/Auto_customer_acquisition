@@ -12,6 +12,7 @@ from pydantic import ValidationError as SchemaError
 from agent_runtime.assistant.decision import parse_decision, validate_decision
 from domains.assistant.errors import AssistantConflict
 from domains.assistant.schemas import (
+    MAX_CONTEXT_REFS,
     AssistantDecision,
     Clarification,
     ReadRequest,
@@ -59,6 +60,15 @@ class AssistantStepHandler:
             await self._ports.current_identity.resolve(actor)
             if turn.turn_kind == "model_probe":
                 return await self._probe(execution)
+            if any(
+                v != self._ports.configuration_version
+                for v in execution.configuration_versions
+            ):
+                raise ModelGenerationError("configuration")
+            if self._ports.configuration_service is not None:
+                await self._ports.configuration_service.authorize(
+                    actor, self._ports.configuration_version, probe=False
+                )
             if self._step == "load_context":
                 await self._ports.context_builder.build(
                     actor, turn.session_id, turn.turn_id
@@ -203,6 +213,14 @@ class AssistantStepHandler:
                 else tuple([await p.read_port.read(actor, ref) for ref in request.refs])
             )
             context = replace(context, fragments=(*context.fragments, *fragments))
+        refs = tuple(
+            sorted(
+                {r for f in context.fragments for r in f.dependencies},
+                key=lambda r: (r.kind, r.object_id, r.version or ""),
+            )
+        )
+        if len(refs) > MAX_CONTEXT_REFS:
+            raise ModelGenerationError("invalid_request")
         payload = context.payload()
         payload["decision_schema"] = TypeAdapter(AssistantDecision).json_schema()
         identity = InvocationIdentity(
@@ -239,12 +257,6 @@ class AssistantStepHandler:
         if sequence and isinstance(result, ReadRequest):
             raise ValidationError("只读阶段不能循环")
         # 交付前重新核验所有来源；迟到取消由仓储状态闸门拒绝。
-        refs = tuple(
-            sorted(
-                {r for f in context.fragments for r in f.dependencies},
-                key=lambda r: (r.kind, r.object_id, r.version or ""),
-            )
-        )
         for ref in refs:
             await p.read_port.read(actor, ref)
         await p.assistant_service.checkpoint(
@@ -272,10 +284,18 @@ class AssistantStepHandler:
                 fingerprint, _ = p.fingerprints.fingerprint(
                     (turn.turn_id.encode(), result.model_dump_json().encode())
                 )
-                raw_text = "；".join(
-                    t.input_text.replace("\n", "；").replace("\r", " ")
-                    for t in context.turns
+                import json
+
+                # 共享提案只包含已校验研究字段及来源标识，完整聊天仍留在私有会话。
+                raw_text = json.dumps(
+                    [
+                        field.model_dump(mode="json", exclude_none=True)
+                        for field in result.fields
+                    ],
+                    ensure_ascii=False,
                 )
+                if len(raw_text) > 10000:
+                    raise ValidationError("研究字段过长，请精简研究范围")
                 proposal_id = await p.directive_service.submit_discovery_proposal_once(
                     actor.tenant_id,
                     turn.turn_id,

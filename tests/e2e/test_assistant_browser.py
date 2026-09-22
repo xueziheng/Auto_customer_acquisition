@@ -37,7 +37,9 @@ async def test_assistant_create_clarify_refresh_and_source(width,height):
                     request=route.request
                     path=request.url.split('/api',1)[1]
                     data={}
-                    if path=='/agent/sessions':
+                    if path=='/health/capabilities':
+                        data=[{'name':'builtin_assistant','status':'enabled','reason':'composed'}]
+                    elif path=='/agent/sessions':
                         if request.method=='POST':
                             sessions.append({'session_id':'session_test','created_at':'2026-09-22T00:00:00Z','version':1})
                             data=sessions[-1]

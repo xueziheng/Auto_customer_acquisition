@@ -52,6 +52,11 @@ class CampaignDriver(Protocol):
     async def scan_once(self) -> int: ...
 
 
+class AssistantDriverProtocol(CampaignDriver, Protocol):
+    async def start_heartbeat(self, guard: Callable[[], Awaitable[None]]) -> None: ...
+    async def stop_heartbeat(self) -> None: ...
+
+
 class SourcingAdmissionDriverProtocol(Protocol):
     """老板策略门禁后的 durable 寻源准入驱动。"""
 
@@ -130,7 +135,7 @@ class SchedulerRuntime:
     workflow: WorkflowPoller
     tenant_id: TenantId
     config: SchedulerConfig
-    assistant_driver: CampaignDriver | None = None
+    assistant_driver: AssistantDriverProtocol | None = None
     campaign_driver: CampaignDriver | None = None
     activation: RuntimeActivation | None = None
     quote_expiry_driver: QuoteExpiryDriver | None = None
@@ -350,7 +355,9 @@ async def _run_cycle(
         try:
             await runtime.assistant_driver.scan_once()
         except Exception as error:  # noqa: BLE001 - 阶段独立，日志不含原文
-            _log_phase_error(phase="assistant", error=error, tenant_id=runtime.tenant_id, cycle=cycle)
+            _log_phase_error(
+                phase="assistant", error=error, tenant_id=runtime.tenant_id, cycle=cycle
+            )
         await confirm_lock()
 
     workflow_succeeded = False
@@ -578,21 +585,18 @@ async def _run_scheduler_worker(
         running_pending = True
         primary: BaseException | None = None
 
+        lock_check = asyncio.Lock()
+
         async def confirm_lock() -> None:
-            if not await _same_lock_backend(connection, lock_backend_pid):
-                raise _SchedulerLockLost()
+            async with lock_check:
+                if not await _same_lock_backend(connection, lock_backend_pid):
+                    raise _SchedulerLockLost()
 
         try:
             if install_signal_handlers:
                 cleanup_signals = _install_stop_signals(stop)
             while not stop.is_set():
-                if not await _same_lock_backend(connection, lock_backend_pid):
-                    lock_owned = False
-                    logger.error(
-                        "scheduler worker 单副本锁已丢失",
-                        extra={"tenant_id": str(runtime.tenant_id)},
-                    )
-                    return WorkerRunResult(WorkerStartStatus.LOCK_LOST, cycles)
+                await confirm_lock()
                 if stop.is_set():
                     break
                 if activation_pending:
@@ -603,6 +607,8 @@ async def _run_scheduler_worker(
                 if stop.is_set():
                     break
                 if running_pending:
+                    if runtime.assistant_driver is not None:
+                        await runtime.assistant_driver.start_heartbeat(confirm_lock)
                     on_running()
                     running_pending = False
                 await _run_cycle(runtime, cycles + 1, confirm_lock=confirm_lock)
@@ -622,6 +628,8 @@ async def _run_scheduler_worker(
             primary = error
             raise
         finally:
+            if runtime.assistant_driver is not None:
+                await runtime.assistant_driver.stop_heartbeat()
             on_stopping()
             cleanup_signals()
             if lock_owned:

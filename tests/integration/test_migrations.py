@@ -173,6 +173,7 @@ async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
     try:
         _run_alembic(db_url, "downgrade", "0051")
         async with engine.begin() as connection:
+            await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
             await connection.execute(
                 insert_legacy,
                 {
@@ -221,6 +222,7 @@ async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
 
         with pytest.raises(IntegrityError):
             async with engine.begin() as connection:
+                await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
                 await connection.execute(
                     text(
                         "INSERT INTO directive_proposals "
@@ -235,6 +237,7 @@ async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
                 )
 
         async with engine.begin() as connection:
+            await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
             await connection.execute(
                 text(
                     "INSERT INTO directive_proposals "
@@ -254,6 +257,7 @@ async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
             )
         with pytest.raises(DBAPIError):
             async with engine.begin() as connection:
+                await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
                 await connection.execute(
                     text(
                         "UPDATE directive_proposals SET base_directive_version=1 "
@@ -271,6 +275,7 @@ async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
             )
 
         async with engine.begin() as connection:
+            await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
             await connection.execute(
                 text(
                     "ALTER TABLE directive_proposals DISABLE TRIGGER "
@@ -302,6 +307,7 @@ async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
     finally:
         _run_alembic(db_url, "upgrade", "head")
         async with engine.begin() as connection:
+            await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
             await connection.execute(
                 text(
                     "ALTER TABLE directive_proposals DISABLE TRIGGER "

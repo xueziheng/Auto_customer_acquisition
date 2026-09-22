@@ -52,7 +52,7 @@ function sourceLink(ref: components['schemas']['ObjectRef']) {
         请求可能已执行。重新生成将再次消耗额度。
       </p>
       <p v-if="turn.error_code">
-        原因：{{ ({quota:'额度不足',permission:'当前权限不足',configuration:'模型配置未就绪',authentication:'连接凭证无效',insufficient_balance:'模型余额不足',invalid_response:'返回内容未通过校验',unknown:'结果无法确认'} as Record<string,string>)[turn.error_code] ?? '服务暂时未完成请求' }}
+        原因：{{ ({quota:'额度不足',permission:'当前权限不足',configuration:'模型配置未就绪',authentication:'连接凭证无效',insufficient_balance:'模型余额不足',invalid_request:'请求参数或上下文不符合限制，请缩小范围或检查模型设置',invalid_response:'返回内容未通过校验',unknown:'结果无法确认'} as Record<string,string>)[turn.error_code] ?? '服务暂时未完成请求' }}
       </p>
       <p v-if="turn.proposal_id">
         研究提案需要单独核对并确认；发现信号不代表客户需求已验证。

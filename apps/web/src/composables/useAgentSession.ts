@@ -41,6 +41,9 @@ export function useAgentSession(client: ReturnType<typeof createApiClient>) {
   async function refreshSessions() {
     const op = begin('sessions'); if (!op) return;
     try {
+      const capabilities = await client.GET('/health/capabilities', {signal:op.signal});
+      if (!op.valid()) return;
+      if (!capabilities.data?.some(c => c.name === 'builtin_assistant' && c.status === 'enabled')) { available.value = false; sessions.value = []; error.value = '当前服务未启用内置助手'; return; }
       const r = await client.GET('/agent/sessions', {signal:op.signal}); if (!op.valid()) return;
       if (!r.data) { error.value = message(r.response.status); sessions.value = []; return; }
       sessions.value = r.data; available.value = true;

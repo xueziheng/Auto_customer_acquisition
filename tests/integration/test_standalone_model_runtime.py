@@ -295,3 +295,20 @@ def test_real_standalone_factories_authenticated_probe_and_chat(owned_profiles):
                 stage += 1
             await run_scheduler_worker(runtime, stop_event=stop, wait=next_cycle, install_signal_handlers=False)
     asyncio.run(exercise())
+
+
+async def test_admin_can_change_export_permission_with_version_and_restart(unit_engine):
+    owner, _app, _wf, _dispatcher, repo, service, config, _authority = await configured(unit_engine, Provider())
+    for enabled in (False, True, False):
+        before=await service.get_public(owner)
+        updated=await service.save_nonsecret(owner,ModelSettingsUpdate(expected_version=before.configuration_version,
+            model=config.model,limits=config.limits,model_data_export_enabled=enabled))
+        assert updated.model_data_export_enabled is enabled
+        assert updated.configuration_version != before.configuration_version
+        assert updated.status=='pending_restart'
+        await repo.initialize(owner.tenant_id,updated.configuration_version,config.model,config.limits,enabled)
+        for process in ('api','scheduler'):
+            await repo.register_process(owner.tenant_id,process,updated.configuration_version,f'new-{process}')
+        current=await service.get_public(owner)
+        assert current.worker_available and current.status=='unverified'
+        assert current.model_data_export_enabled is enabled

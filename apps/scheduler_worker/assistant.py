@@ -1,5 +1,6 @@
 """单副本 scheduler 内认领会话意图；使用同一规范 engine。"""
 
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from domains.assistant.service import AssistantExecutionService
@@ -62,6 +63,14 @@ class AssistantDriver:
     ) -> None:
         self._dispatcher, self._tenant_id, self._limit = dispatcher, tenant_id, limit
         self._lifecycle = lifecycle
+
+    async def start_heartbeat(self, guard: Callable[[], Awaitable[None]]) -> None:
+        if self._lifecycle is not None:
+            await self._lifecycle.start_heartbeat(guard)
+
+    async def stop_heartbeat(self) -> None:
+        if self._lifecycle is not None:
+            await self._lifecycle.stop_heartbeat()
 
     async def scan_once(self) -> int:
         if self._lifecycle is not None:
