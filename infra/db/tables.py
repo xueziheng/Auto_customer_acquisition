@@ -6012,3 +6012,20 @@ class AgentTurnRow(Base):
     attempt_of: Mapped[str|None] = mapped_column(String(40))
     proposal_id: Mapped[str|None] = mapped_column(String(128))
     error_code: Mapped[str|None] = mapped_column(String(40))
+
+
+class AssistantProposalSourceRow(Base):
+    """研究提案唯一来源；和提案同一事务提交，复合外键禁止跨租户。"""
+    __tablename__ = "assistant_proposal_sources"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "source_turn_id", "source_version"),
+        UniqueConstraint("tenant_id", "proposal_id"),
+        CheckConstraint("source_version >= 1", name="ck_assistant_proposal_source_version"),
+        ForeignKeyConstraint(["tenant_id", "proposal_id"], ["directive_proposals.tenant_id", "directive_proposals.proposal_id"], deferrable=True, initially="DEFERRED"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    source_turn_id: Mapped[str] = mapped_column(String(40))
+    source_version: Mapped[int] = mapped_column(Integer)
+    proposal_id: Mapped[str] = mapped_column(String(40))
+    request_hmac: Mapped[str] = mapped_column(String(256))
+    payload_hash: Mapped[str] = mapped_column(String(64))

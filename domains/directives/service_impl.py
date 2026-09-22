@@ -34,9 +34,48 @@ from domains.directives.service import DirectiveEmployeeReader
 from shared.errors import InvalidStateTransition, PermissionDenied, ValidationError
 from shared.events.catalog import DirectiveActivated
 from shared.schemas.evidence import ConfidenceTier
-from shared.schemas.identifiers import DirectiveId, EmployeeId, TenantId, new_id
+from shared.schemas.identifiers import (
+    AgentTurnId,
+    DirectiveId,
+    EmployeeId,
+    TenantId,
+    new_id,
+)
 
 _PROPOSAL_TTL = timedelta(days=7)
+
+
+def _discovery_content(plan: DemandDiscoveryPlanInput) -> DirectiveContent:
+    return DirectiveContent(
+        objective=DirectiveObjective.DISCOVER_AND_VALIDATE_DEMAND,
+        demand_discovery=DemandDiscoveryConfig(
+            objective=plan.objective,
+            queries=[
+                DiscoverySearchQueryConfig(
+                    query=item.query,
+                    country=item.country,
+                    category=item.category,
+                    limit=item.limit,
+                    discovery_lane=item.discovery_lane,
+                )
+                for item in plan.queries
+            ],
+            target_countries=list(plan.target_countries),
+            target_categories=list(plan.target_categories),
+            excluded_countries=list(plan.excluded_countries),
+            excluded_categories=list(plan.excluded_categories),
+            max_search_queries=plan.max_search_queries,
+            max_pages_read=plan.max_pages_read,
+            max_signals=plan.max_signals,
+            max_hypotheses=plan.max_hypotheses,
+            minimum_confidence_tier=plan.minimum_confidence_tier,
+            strategy_group=plan.strategy_group,
+            campaign_id=plan.campaign_id,
+            role_hints=list(plan.role_hints),
+            assessment_ref=plan.assessment_ref,
+            execution_mode=plan.execution_mode,
+        ),
+    )
 
 
 def _text(value: object, message: str, *, maximum: int) -> str:
@@ -61,9 +100,7 @@ def _strings(
 ) -> list[str]:
     if not isinstance(values, list) or len(values) > maximum_items:
         raise ValidationError(message)
-    normalized = [
-        _text(value, message, maximum=maximum_length) for value in values
-    ]
+    normalized = [_text(value, message, maximum=maximum_length) for value in values]
     if not allow_empty and not normalized:
         raise ValidationError(message)
     if len(set(normalized)) != len(normalized):
@@ -76,9 +113,10 @@ def _validate_content(content: DirectiveContent) -> DirectiveContent:
         content.objective, DirectiveObjective
     ):
         raise ValidationError("指令结构无效")
-    if not isinstance(content.market_assignments, list) or len(
-        content.market_assignments
-    ) > 100:
+    if (
+        not isinstance(content.market_assignments, list)
+        or len(content.market_assignments) > 100
+    ):
         raise ValidationError("市场分配无效")
     countries: set[str] = set()
     for assignment in content.market_assignments:
@@ -192,12 +230,8 @@ def _parsed_fields(content: DirectiveContent) -> dict[str, str]:
         )
     if content.discovery is not None:
         fields["need_first_ratio"] = str(content.discovery.need_first_ratio)
-        fields["catalog_assisted_ratio"] = str(
-            content.discovery.catalog_assisted_ratio
-        )
-        fields["focus_categories"] = ", ".join(
-            content.discovery.focus_categories
-        )
+        fields["catalog_assisted_ratio"] = str(content.discovery.catalog_assisted_ratio)
+        fields["focus_categories"] = ", ".join(content.discovery.focus_categories)
     if content.demand_discovery is not None:
         plan = content.demand_discovery
         fields.update(
@@ -234,9 +268,7 @@ def _parsed_fields(content: DirectiveContent) -> dict[str, str]:
             }
         )
     if content.outreach is not None:
-        fields["max_sequence_messages"] = str(
-            content.outreach.max_sequence_messages
-        )
+        fields["max_sequence_messages"] = str(content.outreach.max_sequence_messages)
         fields["stop_on_reply"] = "true"
     if content.handoff is not None:
         fields["handoff_manager"] = str(content.handoff.manager)
@@ -303,7 +335,9 @@ def _validate_demand_discovery(config: DemandDiscoveryConfig) -> None:
         (config.max_signals, 100),
         (config.max_hypotheses, 100),
     )
-    if any(type(value) is not int or not 1 <= value <= maximum for value, maximum in caps):
+    if any(
+        type(value) is not int or not 1 <= value <= maximum for value, maximum in caps
+    ):
         raise ValidationError("需求探索硬上限无效")
     if (
         not isinstance(config.queries, list)
@@ -338,11 +372,9 @@ def _validate_demand_discovery(config: DemandDiscoveryConfig) -> None:
     if config.execution_mode not in {"research_only", "outreach_preparation"}:
         raise ValidationError("需求探索执行模式无效")
     if config.execution_mode == "research_only":
-        if (
-            len(config.queries) > config.max_search_queries
-            or {q.discovery_lane for q in config.queries}
-            != {"importer", "distributor", "ecommerce"}
-        ):
+        if len(config.queries) > config.max_search_queries or {
+            q.discovery_lane for q in config.queries
+        } != {"importer", "distributor", "ecommerce"}:
             raise ValidationError("研究计划必须在确认预算内覆盖三线路")
         return
     _text(config.campaign_id, "需求探索 Campaign 无效", maximum=40)
@@ -380,6 +412,26 @@ class DirectiveServiceImpl:
         expected_behavior_changes: list[str],
         parsed_by: str,
     ) -> str:
+        return await self._submit_proposal(
+            tenant_id,
+            raw_text,
+            parsed,
+            interpretation_summary,
+            expected_behavior_changes,
+            parsed_by,
+        )
+
+    async def _submit_proposal(
+        self,
+        tenant_id: TenantId,
+        raw_text: str,
+        parsed: DirectiveContent,
+        interpretation_summary: str,
+        expected_behavior_changes: list[str],
+        parsed_by: str,
+        *,
+        source: tuple[AgentTurnId, int, str] | None = None,
+    ) -> str:
         self._validate_tenant(tenant_id)
         _text(raw_text, "老板指令原话无效", maximum=10_000)
         _validate_content(parsed)
@@ -401,9 +453,7 @@ class DirectiveServiceImpl:
                 replace(
                     parsed,
                     sourcing_admission=(
-                        None
-                        if active is None
-                        else active.content.sourcing_admission
+                        None if active is None else active.content.sourcing_admission
                     ),
                 )
             )
@@ -416,10 +466,12 @@ class DirectiveServiceImpl:
                 expected_behavior_changes=changes,
                 parsed_by=parsed_by,
                 created_at=now,
-                base_directive_version=(
-                    0 if active is None else active.version
-                ),
+                base_directive_version=(0 if active is None else active.version),
             )
+            if source is not None:
+                return await uow.proposals.add_once(
+                    proposal, source[0], source[1], source[2]
+                )
             await uow.proposals.add(proposal)
         return proposal.proposal_id
 
@@ -437,39 +489,45 @@ class DirectiveServiceImpl:
         return await self.submit_proposal(
             tenant_id,
             raw_text,
-            DirectiveContent(
-                objective=DirectiveObjective.DISCOVER_AND_VALIDATE_DEMAND,
-                demand_discovery=DemandDiscoveryConfig(
-                    objective=plan.objective,
-                    queries=[
-                        DiscoverySearchQueryConfig(
-                            query=item.query,
-                            country=item.country,
-                            category=item.category,
-                            limit=item.limit,
-                            discovery_lane=item.discovery_lane,
-                        )
-                        for item in plan.queries
-                    ],
-                    target_countries=list(plan.target_countries),
-                    target_categories=list(plan.target_categories),
-                    excluded_countries=list(plan.excluded_countries),
-                    excluded_categories=list(plan.excluded_categories),
-                    max_search_queries=plan.max_search_queries,
-                    max_pages_read=plan.max_pages_read,
-                    max_signals=plan.max_signals,
-                    max_hypotheses=plan.max_hypotheses,
-                    minimum_confidence_tier=plan.minimum_confidence_tier,
-                    strategy_group=plan.strategy_group,
-                    campaign_id=plan.campaign_id,
-                    role_hints=list(plan.role_hints),
-                    assessment_ref=plan.assessment_ref,
-                    execution_mode=plan.execution_mode,
-                ),
-            ),
+            _discovery_content(plan),
             interpretation_summary,
             expected_behavior_changes,
             parsed_by,
+        )
+
+    async def submit_discovery_proposal_once(
+        self,
+        tenant_id: TenantId,
+        source_turn_id: AgentTurnId,
+        source_version: int,
+        request_hmac: str,
+        raw_text: str,
+        plan: DemandDiscoveryPlanInput,
+        interpretation_summary: str,
+        expected_behavior_changes: list[str],
+        parsed_by: str,
+        *,
+        submitted_by: EmployeeId,
+    ) -> str:
+        """当前老板授权后，在同一事务保存提案和不可变来源；不做确认。"""
+        await self._require_boss(tenant_id, submitted_by)
+        _text(source_turn_id, "提案来源无效", maximum=40)
+        _text(request_hmac, "提案请求指纹无效", maximum=256)
+        if type(source_version) is not int or source_version < 1:
+            raise ValidationError("提案来源版本无效")
+        if (
+            not isinstance(plan, DemandDiscoveryPlanInput)
+            or plan.execution_mode != "research_only"
+        ):
+            raise ValidationError("助手只能准备研究提案")
+        return await self._submit_proposal(
+            tenant_id,
+            raw_text,
+            _discovery_content(plan),
+            interpretation_summary,
+            expected_behavior_changes,
+            parsed_by,
+            source=(source_turn_id, source_version, request_hmac),
         )
 
     async def submit_sourcing_admission_proposal(
@@ -569,9 +627,7 @@ class DirectiveServiceImpl:
                 expired = True
             else:
                 if active is not None:
-                    await uow.directives.mark_superseded(
-                        tenant_id, active.directive_id
-                    )
+                    await uow.directives.mark_superseded(tenant_id, active.directive_id)
                 activated = Directive(
                     directive_id=DirectiveId(new_id("dir")),
                     tenant_id=tenant_id,
@@ -656,9 +712,7 @@ class DirectiveServiceImpl:
                 raise ValidationError("指令历史版本不存在")
             active = await uow.directives.get_active_for_update(tenant_id)
             if active is not None:
-                await uow.directives.mark_superseded(
-                    tenant_id, active.directive_id
-                )
+                await uow.directives.mark_superseded(tenant_id, active.directive_id)
             directive = Directive(
                 directive_id=DirectiveId(new_id("dir")),
                 tenant_id=tenant_id,
@@ -691,9 +745,7 @@ class DirectiveServiceImpl:
         names = await self._employee_names(tenant_id, directive)
         return self._directive_view(directive, names)
 
-    async def get_proposal(
-        self, tenant_id: TenantId, proposal_id: str
-    ) -> ProposalView:
+    async def get_proposal(self, tenant_id: TenantId, proposal_id: str) -> ProposalView:
         self._validate_tenant(tenant_id)
         _text(proposal_id, "指令提案标识无效", maximum=40)
         async with self._uow_factory(tenant_id) as uow:
@@ -702,9 +754,7 @@ class DirectiveServiceImpl:
             raise DirectiveProposalNotFoundError("指令提案不存在")
         names: dict[EmployeeId, str] = {}
         if proposal.decided_by is not None:
-            names = await self._employees.names_for(
-                tenant_id, (proposal.decided_by,)
-            )
+            names = await self._employees.names_for(tenant_id, (proposal.decided_by,))
             if set(names) != {proposal.decided_by}:
                 raise ValidationError("指令员工展示名结果无效")
         return ProposalView(
@@ -717,14 +767,10 @@ class DirectiveServiceImpl:
             created_at=proposal.created_at,
             decided_at=proposal.decided_at,
             decided_by_id=(
-                None
-                if proposal.decided_by is None
-                else str(proposal.decided_by)
+                None if proposal.decided_by is None else str(proposal.decided_by)
             ),
             decided_by_name=(
-                None
-                if proposal.decided_by is None
-                else names[proposal.decided_by]
+                None if proposal.decided_by is None else names[proposal.decided_by]
             ),
             sourcing_admission_mode=(
                 None
@@ -817,9 +863,7 @@ class DirectiveServiceImpl:
     def _validate_tenant(tenant_id: TenantId) -> None:
         _text(str(tenant_id), "指令租户无效", maximum=64)
 
-    async def _require_boss(
-        self, tenant_id: TenantId, employee_id: EmployeeId
-    ) -> None:
+    async def _require_boss(self, tenant_id: TenantId, employee_id: EmployeeId) -> None:
         self._validate_tenant(tenant_id)
         _text(str(employee_id), "指令决策员工无效", maximum=64)
         if not await self._employees.is_active_boss(tenant_id, employee_id):
@@ -881,12 +925,8 @@ class DirectiveServiceImpl:
             max_sequence_messages=(
                 None if outreach is None else outreach.max_sequence_messages
             ),
-            handoff_manager_name=(
-                None if handoff is None else names[handoff.manager]
-            ),
-            handoff_triggers=(
-                [] if handoff is None else list(handoff.triggers)
-            ),
+            handoff_manager_name=(None if handoff is None else names[handoff.manager]),
+            handoff_triggers=([] if handoff is None else list(handoff.triggers)),
             monthly_budget_credits=content.monthly_budget_credits,
             is_rollback=directive.rollback_of is not None,
             rollback_of_version=directive.rollback_of,
@@ -900,9 +940,7 @@ class DirectiveServiceImpl:
                 else sourcing_admission.automatic_admission_enabled
             ),
             sourcing_admission_batch_limit=(
-                None
-                if sourcing_admission is None
-                else sourcing_admission.batch_limit
+                None if sourcing_admission is None else sourcing_admission.batch_limit
             ),
         )
 
