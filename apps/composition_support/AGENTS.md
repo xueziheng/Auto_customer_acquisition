@@ -30,3 +30,10 @@ ADR0027允许email_inbound.py的InboundComposition公开其同一BoundedRawArtif
 允许 handoff_notifications.py 供 API 与 scheduler 复用既有 notice→持久 notification job 映射；
 每个进程注入独立仓储/时钟，不读取环境、不建 engine、不投递渠道、不判断接管当前事实。
 scheduler 保留原导出以兼容现有调用；当前事实与并发边界仍由机会公开 scope 与投递装配负责。
+
+## ADR0070 模型机械装配
+
+允许 model.py 显式构造独立 model.generate Gateway、handler、slot 和绑定 generator；
+只消费进程注入的配置、凭证 resolver、当前授权端口、账本、配额仓储与 fingerprint provider。
+构造不做 IO，不读环境、不建 engine/workflow、不判断业务角色、不导入任何进程模块。
+各进程独立创建并对称关闭资源，不缓存跨请求或跨进程的正文、凭证与可变身份。

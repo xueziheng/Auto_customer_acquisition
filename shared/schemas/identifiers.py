@@ -26,6 +26,9 @@ Phase 1 单租户期间是恒定值，但**不得省略**：省略它等于把�
 UserId = NewType("UserId", str)
 EmployeeId = NewType("EmployeeId", str)
 TeamId = NewType("TeamId", str)
+AgentSessionId = NewType("AgentSessionId", str)
+AgentTurnId = NewType("AgentTurnId", str)
+ModelInvocationId = NewType("ModelInvocationId", str)
 
 # --- 需求四层 -----------------------------------------------------------
 
