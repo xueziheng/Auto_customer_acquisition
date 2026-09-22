@@ -59,6 +59,18 @@ async function settle() {
 }
 
 describe("公开研究展示", () => {
+  it.each([
+    ["model_unknown", "模型请求结果不确定，禁止自动重试"],
+    ["model_quota", "本地模型调用额度或并发上限已触发"],
+  ])("研究模型失败仍显示摘要和明确原因 %s", async (reason, label) => {
+    const { root, requests } = await mount(DemandRadar, {
+      "/runs": [{ ...run, status: "failed", research: { ...research, reserved_credits: 0, uncertain_credits: 0, stop_reason: reason, completion_reason: reason } }],
+    });
+    expect(root.textContent).toContain(label);
+    expect(root.textContent).not.toContain("状态待核实");
+    expect(root.textContent).not.toContain("免费额度耗尽");
+    expect(requests.every((request) => request.startsWith("GET "))).toBe(true);
+  });
   it.each([new TypeError("network"), new Response("{}", { status: 503 })])("摘要读取失败和空记录可区分 %s", async (failure) => {
     const routes: Record<string, unknown> = { "/runs": failure };
     const { root } = await mount(DemandRadar, routes);

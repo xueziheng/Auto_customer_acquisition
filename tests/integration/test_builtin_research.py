@@ -59,7 +59,7 @@ class Provider:
             if len(history)==1:
                 value={'kind':'clarify','questions':['请补全国家与预算。'],'missing_fields':list(FIELDS)}
             else:
-                value={'kind':'research','fields':[{'name':k,'value':v,'source_turn_id':history[-1]['turn_id']} for k,v in FIELDS.items()]}
+                value={'kind':'research'}
         else:
             if self.unknown: raise DeepSeekFailure('unknown')
             value={'signals':[{'signal_type':'marketplace_seller_activity','source_page_index':0,'source_excerpt':PAGE,'possible_need':'hinges','evidence_level':'agent_industry_inference'}],
@@ -124,6 +124,16 @@ def test_product_confirmed_research_persists_sourced_signals_without_outbound(ow
                     if stage==29:
                         run=await runtime.workflow.get_run(tenant,research_run)
                         assert run.status.value==('failed' if unknown else 'completed'),(run.status.value,run.last_error,run.context)
+                        detail=await client.get('/api/runs/'+research_run)
+                        assert detail.status_code==200, 'RESEARCH_RUN_DETAIL_UNAVAILABLE'
+                        summary=detail.json()['summary']
+                        assert summary['status']==('failed' if unknown else 'completed')
+                        if unknown:
+                            assert summary['research']['completion_reason']=='model_unknown'
+                            assert summary['research']['stop_reason']=='model_unknown'
+                        listed=await client.get('/api/runs',params={'workflow_type':'demand_discovery'})
+                        assert listed.status_code==200, 'RESEARCH_RUN_LIST_UNAVAILABLE'
+                        assert any(item['run_id']==research_run for item in listed.json())
                         async with sessions() as db:
                             signals=(await db.scalars(select(DemandSignalRow).where(DemandSignalRow.tenant_id==tenant))).all()
                             hypotheses=(await db.scalars(select(NeedHypothesisRow).where(NeedHypothesisRow.tenant_id==tenant))).all()

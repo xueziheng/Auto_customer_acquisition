@@ -36,6 +36,16 @@ ResearchStopReason = Literal[
     "paid_enabled",
     "request_uncertain",
     "unsupported",
+    "model_permission",
+    "model_configuration",
+    "model_quota",
+    "model_authentication",
+    "model_insufficient_balance",
+    "model_invalid_request",
+    "model_rate_limit",
+    "model_provider_error",
+    "model_invalid_response",
+    "model_unknown",
 ]
 
 

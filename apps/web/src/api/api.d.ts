@@ -7149,7 +7149,7 @@ export interface components {
          */
         RunResearchView: {
             /** Completion Reason */
-            completion_reason?: ("plan_completed" | "budget_exhausted" | "no_results" | "page_disallowed" | "no_readable_pages" | "pending_verification" | "no_supported_signals" | "quota_exhausted" | "usage_unknown" | "paid_enabled" | "request_uncertain" | "unsupported") | null;
+            completion_reason?: ("plan_completed" | "budget_exhausted" | "no_results" | "page_disallowed" | "no_readable_pages" | "pending_verification" | "no_supported_signals" | "quota_exhausted" | "usage_unknown" | "paid_enabled" | "request_uncertain" | "unsupported" | "model_permission" | "model_configuration" | "model_quota" | "model_authentication" | "model_insufficient_balance" | "model_invalid_request" | "model_rate_limit" | "model_provider_error" | "model_invalid_response" | "model_unknown") | null;
             /**
              * Consumed Credits
              * @default 0
@@ -7212,7 +7212,7 @@ export interface components {
              */
             signal_count: number;
             /** Stop Reason */
-            stop_reason?: ("plan_completed" | "budget_exhausted" | "no_results" | "page_disallowed" | "no_readable_pages" | "pending_verification" | "no_supported_signals" | "quota_exhausted" | "usage_unknown" | "paid_enabled" | "request_uncertain" | "unsupported") | null;
+            stop_reason?: ("plan_completed" | "budget_exhausted" | "no_results" | "page_disallowed" | "no_readable_pages" | "pending_verification" | "no_supported_signals" | "quota_exhausted" | "usage_unknown" | "paid_enabled" | "request_uncertain" | "unsupported" | "model_permission" | "model_configuration" | "model_quota" | "model_authentication" | "model_insufficient_balance" | "model_invalid_request" | "model_rate_limit" | "model_provider_error" | "model_invalid_response" | "model_unknown") | null;
             /**
              * Uncertain Credits
              * @default 0

@@ -5,10 +5,15 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any, Self
+from typing import Any, Self, cast, get_args
+
+import pytest
+from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.db.run_audit import PostgresRunAuditRepository
 from shared.schemas.identifiers import RunId, TenantId
+from shared.schemas.model_invocation import ModelFailureCode
 
 TENANT = TenantId("tn_01K39P9M5D6K4A91YEQ80EJZ0X")
 RUN_ID = RunId("run_01K39P9M5D6K4A91YEQ80EJZ0X")
@@ -69,7 +74,7 @@ def _run_row() -> SimpleNamespace:
 
 def test_list_runs_maps_only_safe_summary_and_binds_tenant() -> None:
     session = _Session([_Result([_run_row()])])
-    repository = PostgresRunAuditRepository(lambda: session)
+    repository = PostgresRunAuditRepository(lambda: cast(AsyncSession, session))
 
     result = asyncio.run(
         repository.list_runs(
@@ -84,6 +89,48 @@ def test_list_runs_maps_only_safe_summary_and_binds_tenant() -> None:
     assert "context" not in result[0].model_dump()
     assert "must-not-leak" not in result[0].model_dump_json()
     assert session.tenant_bound_statements == 1
+
+
+@pytest.mark.parametrize("code", get_args(ModelFailureCode))
+def test_failed_research_remains_readable_in_list_and_detail(code: str) -> None:
+    row = _run_row()
+    row.status = "failed"
+    row.research_metadata = {
+        "execution_mode": "research_only",
+        "completion_reason": "model_" + code,
+    }
+    session = _Session([_Result([row]), _Result([row]), *[_Result([]) for _ in range(5)]])
+    repository = PostgresRunAuditRepository(lambda: cast(AsyncSession, session))
+
+    async def exercise() -> None:
+        listed = await repository.list_runs(
+            TENANT, workflow_type="demand_discovery", status=None, limit=20,
+        )
+        detail = await repository.get_run(TENANT, RUN_ID)
+        assert detail is not None
+        for summary in (listed[0], detail.summary):
+            assert summary.status == "failed"
+            assert summary.research is not None
+            assert summary.research.completion_reason == "model_" + code
+            assert summary.research.stop_reason == "model_" + code
+            assert "must-not-leak" not in summary.model_dump_json()
+
+    asyncio.run(exercise())
+
+
+def test_research_failure_projection_rejects_arbitrary_provider_text() -> None:
+    row = _run_row()
+    row.research_metadata = {
+        "execution_mode": "research_only",
+        "completion_reason": "model_provider_private_response",
+    }
+    repository = PostgresRunAuditRepository(
+        lambda: cast(AsyncSession, _Session([_Result([row])])),
+    )
+    with pytest.raises(ValidationError):
+        asyncio.run(repository.list_runs(
+            TENANT, workflow_type="demand_discovery", status=None, limit=20,
+        ))
 
 
 def test_get_run_queries_every_audit_source_with_tenant_and_omits_payload_columns() -> None:
@@ -138,7 +185,7 @@ def test_get_run_queries_every_audit_source_with_tenant_and_omits_payload_column
         _Result([approval]),
         _Result([]),
     ])
-    repository = PostgresRunAuditRepository(lambda: session)
+    repository = PostgresRunAuditRepository(lambda: cast(AsyncSession, session))
 
     result = asyncio.run(repository.get_run(TENANT, RUN_ID))
 

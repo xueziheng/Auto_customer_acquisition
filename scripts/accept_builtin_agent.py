@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from infra.pilot.config import private_read
 from infra.standalone.settings import load_model_settings
+from workflows.assistant.steps import PROMPT_VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTROLLED = [
@@ -197,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
         "source_commit": source,
         "configuration_version": None,
         "model_id": None,
-        "prompt_version": "assistant-v1",
+        "prompt_version": PROMPT_VERSION,
         "controlled": "not_run",
         "live_model": "not_run",
         "live_sources": "not_run",
