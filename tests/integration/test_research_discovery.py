@@ -122,24 +122,22 @@ async def test_confirmed_research_v2_runs_without_contacts_and_reuses_account_ac
 
     from agent_runtime.demand_intelligence.agent import DemandIntelligenceAgent
     from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
-    from apps.scheduler_worker.directive_reader import (
-        DirectiveDemandDiscoveryTaskReader,
+    from apps.scheduler_worker.research_acceptance_dependencies import (
+        build_acceptance_readers,
     )
     from connectors.web_search.client import PageSnapshot, WebSearchResult
     from domains.directives.schemas import (
         DemandDiscoveryPlanInput,
         DiscoverySearchQueryInput,
     )
-    from domains.directives.service_impl import DirectiveServiceImpl
     from domains.prospecting.service_impl import ProspectingServiceImpl
-    from infra.db.directive_uow import SqlAlchemyDirectiveUnitOfWork
     from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
+    from infra.db.tables import EmployeeRow
     from infra.db.workflow_engine import PostgresWorkflowEngine
-    from shared.errors import InvalidStateTransition
+    from shared.errors import ValidationError
     from shared.schemas.identifiers import ArtifactId, EmployeeId, UserId
     from tests.integration.test_demand_signals import PAGE_HASH, SNAPSHOT_ARTIFACT_REF
     from tests.integration.test_phase1_closed_loop import (
-        _DirectiveEmployees,
         _StableHasher,
     )
     from tests.unit.workflows.test_research_discovery import research_plan
@@ -155,11 +153,12 @@ async def test_confirmed_research_v2_runs_without_contacts_and_reuses_account_ac
         join_transaction_mode="create_savepoint",
     )
     tenant, boss = TenantId(new_id("tn")), EmployeeId(new_id("emp"))
-    directives = DirectiveServiceImpl(
-        lambda bound: SqlAlchemyDirectiveUnitOfWork(factory, bound, now=lambda: NOW),
-        _DirectiveEmployees(tenant, boss),
-        now=lambda: NOW,
-    )
+    user = UserId(new_id("usr"))
+    async with factory() as session, session.begin():
+        session.add(EmployeeRow(tenant_id=tenant, employee_id=boss, user_id=user,
+                               name="Boss", role="boss", is_active=True, created_at=NOW))
+    reader, _, _ = build_acceptance_readers(factory, tenant)
+    directives = reader.directives
     plan = replace(
         research_plan(),
         max_pages_read=3,
@@ -183,12 +182,11 @@ async def test_confirmed_research_v2_runs_without_contacts_and_reuses_account_ac
         ["三查询三页面上限"],
         "model-v2",
     )
-    reader = DirectiveDemandDiscoveryTaskReader(directives)
     assert await directives.get_active(tenant) is None
-    with pytest.raises(InvalidStateTransition):
-        await reader.load_confirmed(tenant, proposal, UserId(str(boss)))
+    with pytest.raises(ValidationError):
+        await reader.load_confirmed(tenant, proposal, user)
     await directives.confirm_proposal(tenant, proposal, boss)
-    assert await reader.load_confirmed(tenant, proposal, UserId(str(boss))) == plan
+    assert await reader.load_confirmed(tenant, proposal, user) == plan
     view = await directives.get_proposal(tenant, proposal)
     assert view.parsed_fields["execution_mode"] == "research_only"
     assert "discovery_lane" in view.parsed_fields["queries"]
@@ -287,7 +285,7 @@ async def test_confirmed_research_v2_runs_without_contacts_and_reuses_account_ac
         proposal,
         {
             "proposal_id": proposal,
-            "acting_user_id": str(boss),
+            "acting_user_id": str(user),
         },
         f"research:{proposal}",
     )

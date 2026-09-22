@@ -2,20 +2,23 @@
 
 ## 职责
 
-七个已实现进程和一个未来桌面进程（见 `docs/architecture/00-overview.md`）。**这一层只做编排与呈现**：装配依赖、暴露 HTTP、驱动 worker 循环。业务规则一律在 `domains/`，出现业务 if 就是放错了。
+七个进程边界和一个未来桌面进程（见 `docs/architecture/00-overview.md`）。**这一层只做编排与呈现**：装配依赖、暴露 HTTP、驱动 worker 循环。业务规则一律在 `domains/`，出现业务 if 就是放错了。
 
 ## 进程清单
 
 | 目录 | 进程 | Phase |
 |---|---|---|
 | `api/` | FastAPI 服务 | 1（深） |
-| `web/` | Vue 3 前端 | 1（浅骨架） |
-| `agent_worker/` | Agent 任务执行 | 1 |
+| `web/` | Vue 3 前端 | 本机受控 Web 闭环已验收，含已实现 Phase 2 工作台 |
+| `agent_worker/` | Agent 任务执行 | 组件可注入；生产任务源未装配，disabled |
 | `scheduler_worker/` | 状态机扫描与定时任务 | 1（**单副本**） |
-| `browser_worker/` | Playwright 隔离进程 | 1（受限） |
+| `browser_worker/` | 公开页面任务执行边界 | 生产任务源未装配，disabled |
 | `notification_worker/` | 通知投递 | 1 |
 | `email_feedback_worker/` | Gmail 投递反馈拉取与整页提交 | 1（**按租户＋邮箱别名单副本**） |
 | desktop-tauri | macOS 桌面端 | 3（不建目录，边界见 ROADMAP） |
+
+当前受控入口仅启动 API、scheduler、notification、Web。真实 Provider、多人认证和部署未验收；
+各进程/平台开启条件见[能力矩阵](../docs/operations/web-core-capability-matrix.md)。
 
 ## 装配规则
 

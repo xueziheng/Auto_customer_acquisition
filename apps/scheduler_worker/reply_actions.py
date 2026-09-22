@@ -78,6 +78,7 @@ _SYSTEM_ACTOR = OpportunityActor(
     "system",
 )
 
+
 def _bounded_verbatim_excerpt(
     body: str,
     candidate_fields: tuple[ReplyFieldSnapshot, ...],
@@ -278,12 +279,8 @@ class ComposedReplyActionPorts:
                     "apply_complaint",
                 )
             )
-            or not callable(
-                getattr(sending_identities, "record_delivery_event", None)
-            )
-            or not callable(
-                getattr(conversations, "enqueue_reply_work_action", None)
-            )
+            or not callable(getattr(sending_identities, "record_delivery_event", None))
+            or not callable(getattr(conversations, "enqueue_reply_work_action", None))
         ):
             raise ValidationError("回复动作生产组合依赖未完整配置")
         self._tenant_id = tenant_id
@@ -341,9 +338,8 @@ class ComposedReplyActionPorts:
             or evidence.category != category
             or not isinstance(evidence.classified_at, datetime)
             or evidence.classified_at.tzinfo is None
-            or evidence.classified_at.utcoffset() != UTC.utcoffset(
-                evidence.classified_at
-            )
+            or evidence.classified_at.utcoffset()
+            != UTC.utcoffset(evidence.classified_at)
         ):
             raise ValidationError("回复投递反馈证据无效")
         enrollment = await self._outreach.get_enrollment(
@@ -356,8 +352,7 @@ class ComposedReplyActionPorts:
             getattr(enrollment, "tenant_id", None) != tenant_id
             or getattr(enrollment, "enrollment_id", None) != context.enrollment_id
             or getattr(enrollment, "account_id", None) != context.account_id
-            or getattr(enrollment, "contact_point_id", None)
-            != context.contact_point_id
+            or getattr(enrollment, "contact_point_id", None) != context.contact_point_id
             or not isinstance(identity_id, str)
             or not identity_id
         ):
@@ -420,9 +415,7 @@ class ComposedReplyActionPorts:
         context: ReplyActionContext,
         idempotency_key: str,
     ) -> None:
-        self._require_call(
-            tenant_id, context, idempotency_key, "extract_need_fields"
-        )
+        self._require_call(tenant_id, context, idempotency_key, "extract_need_fields")
         evidence, business = await self._facts(tenant_id, context)
         if not evidence.candidate_fields:
             raise ValidationError("回复没有可应用的字段证据")
@@ -441,13 +434,26 @@ class ComposedReplyActionPorts:
         )
         if business.need_id is not None:
             need_id = ValidatedNeedId(str(business.need_id))
-            await self._demand.update_need_fields(
-                tenant_id,
-                need_id,
-                fields,
-                context.message_id,
-                None,
-            )
+            current_need = await self._demand.get_need(tenant_id, need_id)
+            if (
+                current_need.need_id != need_id
+                or current_need.account_id != context.account_id
+            ):
+                raise ValidationError("回复需求关联不匹配")
+            category_field = fields.pop("product_category", None)
+            if (
+                category_field is not None
+                and category_field["value"] != current_need.product_category
+            ):
+                raise ValidationError("回复产品类别与不可变需求不一致，需人工核对")
+            if fields:
+                await self._demand.update_need_fields(
+                    tenant_id,
+                    need_id,
+                    fields,
+                    context.message_id,
+                    None,
+                )
             if self._opportunity_intake is None:
                 return
         else:
@@ -498,13 +504,28 @@ class ComposedReplyActionPorts:
         self._require_call(tenant_id, context, idempotency_key, "handoff")
         evidence, business = await self._facts(tenant_id, context)
         if business.opportunity_id is None:
+            if business.need_id is not None and business.missing_information:
+                await self.create_follow_up(
+                    tenant_id, context, f"reply:create_follow_up:{context.message_id}"
+                )
+                return
             raise ValidationError("回复机会关联不存在")
         content = await self._content.load(tenant_id, context.message_id)
         if content is None:
             raise ValidationError("回复消息原文不可读")
-        verbatim = _bounded_verbatim_excerpt(
-            content.body, evidence.candidate_fields
+        segments = content.evidence_segments if content.projected else (content.body,)
+        if not segments:
+            raise ValidationError("回复当前表达不可读")
+        source = next(
+            (
+                segment
+                for candidate in evidence.candidate_fields
+                for segment in segments
+                if candidate.quote in segment
+            ),
+            next((segment for segment in segments if segment.strip()), ""),
         )
+        verbatim = _bounded_verbatim_excerpt(source, evidence.candidate_fields)
         trigger = {
             "requests_materials": "materials_requested",
             "requests_quote": "quote_requested",

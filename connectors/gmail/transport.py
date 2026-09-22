@@ -107,6 +107,14 @@ class GmailNetworkError(Exception):
         Exception.__init__(self, "Gmail 网络调用失败")
 
 
+class GmailMalformedResponse(Exception):
+    """正文专用永久协议错误，无原始响应。"""
+
+
+class GmailResponseTooLarge(Exception):
+    """正文专用永久预算失败，不携带响应。"""
+
+
 class GmailApiHttpTransport:
     """使用标准库访问 Gmail messages.list/send 的受限适配器。"""
 
@@ -327,6 +335,7 @@ class GmailApiHttpTransport:
         body: bytes | None,
         may_have_written: bool,
         max_response_bytes: int = _MAX_RESPONSE_BYTES,
+        permanent_overflow: bool = False,
     ) -> dict[str, object]:
         headers = {
             "Authorization": f"Bearer {token}",
@@ -339,6 +348,12 @@ class GmailApiHttpTransport:
             with self._opener.open(
                 request, timeout=self._timeout_seconds
             ) as response:
+                length = response.headers.get("Content-Length")
+                if permanent_overflow and length is not None:
+                    if len(length) > 20 or not length.isascii() or not length.isdigit():
+                        raise GmailMalformedResponse()
+                    if int(length) > max_response_bytes:
+                        raise GmailResponseTooLarge()
                 raw = response.read(max_response_bytes + 1)
         except HTTPError as error:
             status = error.code
@@ -358,12 +373,18 @@ class GmailApiHttpTransport:
         except (URLError, TimeoutError, OSError):
             raise GmailNetworkError(may_have_written=may_have_written) from None
         if len(raw) > max_response_bytes:
+            if permanent_overflow:
+                raise GmailResponseTooLarge()
             raise GmailNetworkError(may_have_written=may_have_written)
         try:
             payload = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        except (UnicodeDecodeError, ValueError, TypeError, RecursionError):
+            if permanent_overflow:
+                raise GmailMalformedResponse() from None
             raise GmailNetworkError(may_have_written=may_have_written) from None
         if not isinstance(payload, dict):
+            if permanent_overflow:
+                raise GmailMalformedResponse()
             raise GmailNetworkError(may_have_written=may_have_written)
         return payload
 

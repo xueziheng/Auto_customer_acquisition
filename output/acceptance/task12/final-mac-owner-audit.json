@@ -1,0 +1,34 @@
+[
+  {
+    "owner": "a55106905696428aaba16696c302b057",
+    "initial_status": "stopped",
+    "initial_cleanup_errors": [],
+    "matching_pids": [],
+    "container_ids": [],
+    "open_ports": []
+  },
+  {
+    "owner": "631e187e57144938a1c9d4baf30ea341",
+    "initial_status": "stopped",
+    "initial_cleanup_errors": [],
+    "matching_pids": [],
+    "container_ids": [],
+    "open_ports": []
+  },
+  {
+    "owner": "fe99b028cb53465cb6d6780460eb84ee",
+    "initial_status": "stopped",
+    "initial_cleanup_errors": [],
+    "matching_pids": [],
+    "container_ids": [],
+    "open_ports": []
+  },
+  {
+    "owner": "8d234c0956fb498e9f171342c3b72f51",
+    "initial_status": "stopped",
+    "initial_cleanup_errors": [],
+    "matching_pids": [],
+    "container_ids": [],
+    "open_ports": []
+  }
+]

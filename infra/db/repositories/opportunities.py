@@ -4,6 +4,7 @@
 注入（构造时绑定租户，仓储永不查询绑定租户之外的行，硬边界 8）。
 金额以 ``Numeric(18,2)`` + ``CHAR(3)`` 成对存取，无 float（硬边界 2）。
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -11,7 +12,7 @@ from decimal import Decimal
 from typing import cast
 
 from sqlalchemy import CursorResult, Select, and_, func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from domains.opportunities.models import (
     HandoffPacket,
@@ -25,16 +26,20 @@ from domains.opportunities.models import (
     SortKey,
 )
 from domains.opportunities.permissions import OpportunityScope, ScopeLevel
+from domains.opportunities.repository import HandoffNotificationFacts
 from infra.db.base import TenantScopedRepository
 from infra.db.tables import (
+    EmployeeRow,
     HandoffEscalationRow,
     HandoffRow,
     LossRecordRow,
     OpportunityRow,
+    OwnershipLockRow,
     ProvenanceRecordRow,
     ScoreSnapshotRow,
+    WorkflowRunRow,
 )
-from shared.errors import InvalidStateTransition
+from shared.errors import InvalidStateTransition, ValidationError
 from shared.schemas.evidence import ConfidenceTier
 from shared.schemas.identifiers import (
     EmployeeId,
@@ -559,6 +564,69 @@ class HandoffRepositoryImpl(TenantScopedRepository):
             )
         self._session.add(_handoff_to_row(packet))
 
+    async def lock_notification_facts(
+        self,
+        tenant_id: TenantId,
+        handoff_id: HandoffId,
+        opportunity_id: OpportunityId,
+        recipient: EmployeeId,
+    ) -> HandoffNotificationFacts | None:
+        """固定 employee → opportunity → ownership → handoff 锁序，与接受 UPDATE 串行。"""
+        if tenant_id != self._tenant_id:
+            raise ValueError("通知租户不匹配")
+        employee = (
+            await self._session.execute(
+                select(EmployeeRow)
+                .where(
+                    EmployeeRow.tenant_id == str(tenant_id),
+                    EmployeeRow.employee_id == str(recipient),
+                )
+                # 兼容转移历史 FK 的 KEY SHARE，同时仍阻塞员工停用 UPDATE（ADR0069）。
+                .with_for_update(key_share=True)
+            )
+        ).scalar_one_or_none()
+        opportunity = (
+            await self._session.execute(
+                select(OpportunityRow)
+                .where(
+                    OpportunityRow.tenant_id == str(tenant_id),
+                    OpportunityRow.opportunity_id == str(opportunity_id),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if employee is None or opportunity is None:
+            return None
+        ownership = (
+            await self._session.execute(
+                select(OwnershipLockRow)
+                .where(
+                    OwnershipLockRow.tenant_id == str(tenant_id),
+                    OwnershipLockRow.account_id == opportunity.account_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        handoff = (
+            await self._session.execute(
+                self._scoped()
+                .where(
+                    HandoffRow.handoff_id == str(handoff_id),
+                    HandoffRow.opportunity_id == str(opportunity_id),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if ownership is None or handoff is None:
+            return None
+        return HandoffNotificationFacts(
+            handoff.state,
+            EmployeeId(handoff.assigned_to) if handoff.assigned_to else None,
+            EmployeeId(opportunity.owner) if opportunity.owner else None,
+            EmployeeId(ownership.owner),
+            employee.is_active,
+        )
+
     async def get(self, tenant_id: TenantId, handoff_id: HandoffId) -> HandoffPacket | None:
         if tenant_id != self._tenant_id:
             return None
@@ -840,3 +908,30 @@ class FieldProvenanceRepositoryImpl(TenantScopedRepository):
             )
         ).scalars().all()
         return [(row.field_name, _row_to_provenance(row)) for row in rows]
+
+
+async def assert_handoff_reminder_compatibility(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: TenantId,
+    owner_reminder_interval_seconds: int | None,
+) -> None:
+    """仅核对持久定义版本，不迁移旧 Run；不一致必须在启动前失败关闭。"""
+    seconds = owner_reminder_interval_seconds
+    if seconds is not None and (
+        type(seconds) is not int or not 1 <= seconds <= 2147483646
+    ):
+        raise ValidationError("handoff_reminder_policy_invalid")
+    version = 1 if seconds is None else seconds + 1
+    async with factory() as session:
+        conflict = await session.scalar(
+            select(WorkflowRunRow.run_id)
+            .where(
+                WorkflowRunRow.tenant_id == str(tenant_id),
+                WorkflowRunRow.workflow_type == "human_handoff",
+                WorkflowRunRow.status.not_in(("completed", "failed", "cancelled")),
+                WorkflowRunRow.workflow_version != version,
+            )
+            .limit(1)
+        )
+        if conflict is not None:
+            raise ValidationError("handoff_reminder_policy_conflict")

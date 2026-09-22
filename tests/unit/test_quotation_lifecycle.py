@@ -141,10 +141,14 @@ async def test_actual_api_lifespan_closes_quotation_before_database_even_before_
         runtime,
         "build_phase1_dependencies",
         lambda *a, **kw: SimpleNamespace(
-            quotation=SimpleNamespace(lifecycle=Lifecycle())
+            quotation=SimpleNamespace(lifecycle=Lifecycle()), email_inbound=None,
+            model_lifecycle=None, object_store_lifecycle=None
         ),
     )
     monkeypatch.setattr(runtime, "assert_database_schema_current", schema)
+    async def reminder_compatibility(*args):
+        pass
+    monkeypatch.setattr(runtime, "assert_handoff_reminder_compatibility", reminder_compatibility)
     monkeypatch.setattr(
         runtime,
         "create_app",
@@ -161,12 +165,12 @@ async def test_actual_api_lifespan_closes_quotation_before_database_even_before_
             if failure == "body":
                 raise RuntimeError("controlled body failure")
 
-    if failure is None and cleanup_failure != "cancel":
+    if failure is None and cleanup_failure is None:
         await enter()
     else:
         with pytest.raises(
             asyncio.CancelledError
-            if failure == "cancel" or failure is None
+            if failure == "cancel" or (failure is None and cleanup_failure == "cancel")
             else RuntimeError
         ):
             await enter()

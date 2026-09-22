@@ -215,9 +215,11 @@ async def test_runtime_lifespan_builds_real_registered_components_and_disposes(
     app = module.create_runtime_app()
     async with app.router.lifespan_context(app):
         from domains.demand.service_impl import DemandServiceImpl
+        from domains.products.catalog_service_impl import CatalogProposalServiceImpl
         from infra.db.outbox_delivery import OutboxDeliverer
         from infra.db.repositories.notifications import PostgresNotificationDedupStore
         from infra.db.workflow_engine import PostgresWorkflowEngine
+        from workflows.catalog_product_proposal import CatalogProductApplication
         from workflows.sourcing_case.application import (
             DirectiveSourcingAdmissionPolicyReader,
             SourcingAdmissionApplication,
@@ -241,6 +243,17 @@ async def test_runtime_lifespan_builds_real_registered_components_and_disposes(
         )
         assert snapshot.state is ProviderReadinessState.PROVIDER_NOT_CONFIGURED
         assert isinstance(dependencies.workflow_engine, PostgresWorkflowEngine)
+        assert isinstance(dependencies.catalog_products, CatalogProposalServiceImpl)
+        assert isinstance(
+            dependencies.catalog_product_application, CatalogProductApplication
+        )
+        assert (
+            dependencies.catalog_product_application._engine
+            is dependencies.workflow_engine
+        )
+        assert type(dependencies.approvals._catalog_actor_reader).__name__ == (
+            "RequestScopedCatalogApprovalActorReader"
+        )
         assert isinstance(dependencies.demand_radar._demand, DemandServiceImpl)
         assert callable(
             getattr(
@@ -282,7 +295,24 @@ async def test_runtime_lifespan_builds_real_registered_components_and_disposes(
         assert {
             definition.workflow_type
             for definition in dependencies.workflow_engine._definitions.values()
-        } >= {"country_policy_change"}
+        } >= {
+            "country_policy_change",
+            "catalog_proposal_policy_change",
+            "catalog_cluster_evaluation",
+            "catalog_product_cultivation",
+        }
+        assert {
+            "catalog_product_policy.assemble",
+            "catalog_product_evaluation.evaluate",
+            "catalog_product_cultivation.assemble",
+        } <= set(dependencies.workflow_engine._handlers)
+        assert (
+            await dependencies.catalog_products.get_active_policy(
+                TenantId(env["TRADEOS_TENANT_ID"]),
+                actor=dependencies.catalog_product_application._system_actor,
+            )
+            is None
+        )
         assert isinstance(
             dependencies.notification_dedup_store,
             PostgresNotificationDedupStore,

@@ -45,8 +45,9 @@ from ..dependencies import (
 )
 from ..identity import RequestIdentity
 from ..middleware import ApiErrorResponse
+from ..validation_route import ExplicitValidationRoute
 
-router = APIRouter()
+router = APIRouter(route_class=ExplicitValidationRoute)
 
 _CASE_ID = re.compile(r"src_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _ADMISSION_ID = re.compile(r"sad_[0-7][0-9A-HJKMNP-TV-Z]{25}")
@@ -443,7 +444,7 @@ async def submit_review(
 
 @router.post(
     "/sourcing-cases/{case_id}/reconcile-uncertain-request",
-    responses=_ERRORS,
+    responses={**_ERRORS, 422: {"model": ApiErrorResponse}},
     dependencies=[Depends(document_idempotency_header)],
 )
 async def reconcile_uncertain_request(

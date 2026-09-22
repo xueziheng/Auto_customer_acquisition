@@ -3,8 +3,7 @@
 GET  /inbox/conversations        会话列表（按分类/负责人过滤）
 GET  /inbox/conversations/{id}   线程：消息 + 分类 + 提取的需求字段
 POST /inbox/messages/{id}/correct-classification   人工纠正（原判保留）
-POST /inbox/conversations/{id}/draft-reply         请求追问草稿
-                                 （qualification_agent，最多两个主题）
+GET /inbox/conversations/{id}/messages/{id}/next-questions 受权下一问建议
 """
 
 from __future__ import annotations
@@ -12,13 +11,14 @@ from __future__ import annotations
 import re
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from domains.conversations.schemas import (
     ConversationInboxDetail,
     ConversationInboxItem,
     ReplyCategory,
+    ReplyNextQuestionsView,
 )
 from domains.conversations.service import ConversationService
 from shared.errors import PermissionDenied, TransientError, ValidationError
@@ -36,9 +36,8 @@ router = APIRouter()
 
 _CONVERSATION_ID_RE = re.compile(r"con_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _MESSAGE_ID_RE = re.compile(r"msg_[0-7][0-9A-HJKMNP-TV-Z]{25}")
-# 会话尚未携带 ownership 投影；在接入负责人范围前只开放租户级 boss，
-# 否则 manager/sales 会读到整租户回复，违反最小权限。
-_INBOX_ROLES = frozenset({"boss"})
+# 当前范围由Conversations同事务重验；路由只做角色第一道门。
+_INBOX_ROLES = frozenset({"boss", "manager", "sales"})
 
 
 class ClassificationCorrectionBody(BaseModel):
@@ -97,7 +96,10 @@ async def list_inbox_conversations(
 ) -> list[ConversationInboxItem]:
     _require_inbox_role(identity)
     return await _conversation_service(dependencies).list_inbox(
-        identity.tenant_id, category=category, limit=limit
+        identity.tenant_id,
+        actor=identity.conversation_inbox_actor,
+        category=category,
+        limit=limit,
     )
 
 
@@ -113,7 +115,9 @@ async def get_inbox_conversation(
 ) -> ConversationInboxDetail:
     _require_inbox_role(identity)
     return await _conversation_service(dependencies).get_inbox_detail(
-        identity.tenant_id, _conversation_id(conversation_id)
+        identity.tenant_id,
+        _conversation_id(conversation_id),
+        actor=identity.conversation_inbox_actor,
     )
 
 
@@ -135,9 +139,76 @@ async def correct_inbox_classification(
         typed_id,
         body.category,
         str(identity.employee.employee_id),
+        actor=identity.conversation_inbox_actor,
     )
     return ClassificationCorrectionAccepted(
         message_id=str(typed_id),
         category=body.category,
         corrected_by=str(identity.employee.employee_id),
+    )
+
+
+@router.get(
+    "/inbox/conversations/{conversation_id}/messages/{message_id}/next-questions",
+    response_model=ReplyNextQuestionsView,
+)
+async def get_next_questions(
+    request: Request,
+    conversation_id: str,
+    message_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> ReplyNextQuestionsView:
+    _require_inbox_role(identity)
+    if request.query_params or await request.body():
+        raise ValidationError("回复建议不接受客户端需求字段")
+    if dependencies.reply_suggestions is None:
+        raise TransientError("回复建议服务未配置")
+    return await dependencies.reply_suggestions.read(
+        identity.tenant_id,
+        identity.employee.employee_id,
+        _conversation_id(conversation_id),
+        _message_id(message_id),
+        actor=identity.conversation_inbox_actor,
+    )
+
+
+@router.get(
+    "/inbox/messages/{message_id}/evidence",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            }
+        },
+        403: {"model": ApiErrorResponse},
+    },
+)
+async def get_message_evidence(
+    request: Request,
+    message_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> Response:
+    """仅安全下载原MIME，当前不提供独立附件或HTML执行预览。"""
+    _require_inbox_role(identity)
+    if request.query_params or await request.body():
+        raise ValidationError("消息原件不接受额外参数")
+    if dependencies.inbox_evidence is None:
+        raise TransientError("消息原件服务未配置")
+    typed_id = _message_id(message_id)
+    content = await dependencies.inbox_evidence.read(
+        identity.tenant_id, typed_id, actor=identity.conversation_inbox_actor
+    )
+    return Response(
+        content,
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f'attachment; filename="{typed_id}.eml"',
+        },
     )

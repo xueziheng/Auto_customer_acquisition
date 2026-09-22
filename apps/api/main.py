@@ -24,8 +24,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from starlette.types import Lifespan
 
+from apps.api.routers.assistant import router as assistant_router
+from apps.api.routers.model_settings import router as model_settings_router
+from shared.authentication import AuthenticationService
+from shared.schemas.runtime_capabilities import CapabilityName, RuntimeCapability
 from workflows.email_feedback.unsubscribe import UnsubscribeService
 
+from .authentication import (
+    LoginRequest,
+    SessionAuthenticationMiddleware,
+    session_cookie_name,
+    validate_authentication_configuration,
+)
 from .dependencies import (
     ApiDependencies,
     ConfiguredApiDependencies,
@@ -39,6 +49,8 @@ from .middleware import (
     install_error_handlers,
 )
 from .routers.approvals import router as approvals_router
+from .routers.authentication import install_authentication_errors
+from .routers.authentication import router as authentication_router
 from .routers.campaigns import router as campaigns_router
 from .routers.command_center import router as command_center_router
 from .routers.commitments import router as commitments_router
@@ -47,7 +59,8 @@ from .routers.crm import OpportunityIntakeBody
 from .routers.crm import router as crm_router
 from .routers.customer_discovery import router as customer_discovery_router
 from .routers.demand_radar import router as demand_radar_router
-from .routers.health import ReadinessProbe, build_health_router
+from .routers.email_inbound import router as email_inbound_router
+from .routers.health import ReadinessProbe, build_capability_router, build_health_router
 from .routers.inbox import router as inbox_router
 from .routers.notifications import router as notifications_router
 from .routers.products import router as products_router
@@ -83,6 +96,7 @@ def _install_openapi_contract(app: FastAPI) -> None:
         definitions = intake_schema.pop("$defs", {})
         components.update(definitions)
         components["OpportunityIntakeBody"] = intake_schema
+        components["LoginRequest"] = LoginRequest.model_json_schema()
         components["ApiErrorResponse"] = ApiErrorResponse.model_json_schema(
             ref_template="#/components/schemas/{model}"
         )
@@ -119,6 +133,8 @@ def create_app(
     cors_allowed_origins: tuple[str, ...] = (),
     readiness_probe: ReadinessProbe | None = None,
     unsubscribe_service: UnsubscribeService | None = None,
+    authentication: AuthenticationService | None = None,
+    authentication_origin: str | None = None,
 ) -> FastAPI:
     """构造互相隔离的 API app。
 
@@ -129,6 +145,9 @@ def create_app(
         tenant_id=_UNCONFIGURED_TENANT,
         dev_mode=False,
         retry_after_seconds=_DEFAULT_RETRY_AFTER_SECONDS,
+    )
+    validate_authentication_configuration(
+        resolved_settings, authentication, authentication_origin
     )
     resolved_dependencies = dependencies or UnconfiguredApiDependencies()
     resolved_unsubscribe_service = unsubscribe_service
@@ -141,13 +160,31 @@ def create_app(
     app.state.settings = resolved_settings
     app.state.dependencies = resolved_dependencies
     app.state.unsubscribe_service = resolved_unsubscribe_service
-    install_error_handlers(app, resolved_settings)
-    app.add_middleware(
-        TenantAssertionMiddleware,
-        settings=resolved_settings,
-        anonymous_route_matcher=is_anonymous_unsubscribe_route,
+    app.state.authentication = authentication
+    app.state.authentication_cookie_name = (
+        session_cookie_name(authentication_origin)
+        if authentication_origin is not None
+        else None
     )
-    if cors_allowed_origins:
+    install_error_handlers(app, resolved_settings)
+    install_authentication_errors(app)
+    app.include_router(authentication_router)
+    if authentication is not None:
+        assert authentication_origin is not None
+        app.add_middleware(
+            SessionAuthenticationMiddleware,
+            settings=resolved_settings,
+            authentication=authentication,
+            origin=authentication_origin,
+            anonymous_route_matcher=is_anonymous_unsubscribe_route,
+        )
+    else:
+        app.add_middleware(
+            TenantAssertionMiddleware,
+            settings=resolved_settings,
+            anonymous_route_matcher=is_anonymous_unsubscribe_route,
+        )
+    if cors_allowed_origins and authentication is None:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=list(cors_allowed_origins),
@@ -168,9 +205,12 @@ def create_app(
     app.include_router(customer_discovery_router, prefix="/prospects")
     app.include_router(demand_radar_router, prefix="/demand")
     app.include_router(command_center_router, prefix="/commands")
+    app.include_router(assistant_router)
+    app.include_router(model_settings_router)
     app.include_router(approvals_router)
     app.include_router(notifications_router)
     app.include_router(inbox_router)
+    app.include_router(email_inbound_router)
     app.include_router(products_router, prefix="/products")
     app.include_router(sourcing_router)
     app.include_router(costing_quotes_router, prefix="/costing-quotes")
@@ -181,6 +221,28 @@ def create_app(
     app.include_router(runs_router, prefix="/runs")
     app.include_router(settings_router, prefix="/settings")
     app.include_router(unsubscribe_router)
+    names: tuple[CapabilityName, ...] = (
+        "research",
+        "contacts",
+        "campaign",
+        "reply",
+        "sourcing",
+        "quotation",
+        "inbound_body",
+        "full_reply",
+        "agent",
+        "browser",
+    )
+    capabilities = (
+        resolved_dependencies.runtime_capabilities
+        if isinstance(resolved_dependencies, ConfiguredApiDependencies)
+        and resolved_dependencies.runtime_capabilities
+        else tuple(
+            RuntimeCapability(name=name, status="disabled", reason="not_requested")
+            for name in names
+        )
+    )
+    app.include_router(build_capability_router(capabilities))
     if readiness_probe is not None:
         app.include_router(build_health_router(readiness_probe))
     _install_openapi_contract(app)

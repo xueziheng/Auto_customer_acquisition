@@ -1,9 +1,12 @@
 <script setup lang="ts">
 /* global Response */
-import { computed, inject, onMounted, ref } from "vue";
+import { computed, inject, onMounted, ref, watch } from "vue";
 
+import { useRoute } from "vue-router";
+import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import AgentConversation from "./AgentConversation.vue";
 import ResearchAccessCard from "../../components/ResearchAccessCard.vue";
 import { laneLabel, stopLabel } from "../../components/researchLabels";
 
@@ -15,6 +18,8 @@ type AdmissionProposal = components["schemas"]["ProposalView"];
 type AdmissionConfirmation = components["schemas"]["SourcingAdmissionConfirmationResponse"];
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
+const route=useRoute();
+const assistantAvailable = ref(false);
 const message = ref("");
 const proposal = ref<Proposal | null>(null);
 const confirmation = ref<Confirmation | null>(null);
@@ -37,6 +42,23 @@ const admissionConfirming = ref(false);
 const admissionError = ref<string | null>(null);
 const admissionConfirmKey = ref<string | null>(null);
 
+function clearPage(): void {
+ message.value=""; proposal.value=null;confirmation.value=null;execution.value=null;
+ submitting.value=false;deciding.value=false;decisionUncertain.value=false;error.value=null;
+ admissionProposal.value=null;admissionConfirmation.value=null;admissionConfirmKey.value=null;
+ admissionSubmitting.value=false;admissionConfirming.value=false;admissionError.value=null;
+ admissionPolicy.value={status:"policy_status_unknown"};statusMessage.value="请以当前身份读取或创建提案";
+}
+const gate=useQuoteRequestScope(client,()=>[route.fullPath],()=>{clearPage();globalThis.queueMicrotask(()=>void loadPage());});
+async function loadPage():Promise<void>{
+ const op=gate.begin("page");if(!op?.valid())return;
+ await loadAdmissionPolicy();
+ if(!op.valid())return;
+ const id=typeof route.query.proposal_id==="string"?route.query.proposal_id:null;
+ if(id)await loadProposal(id);
+}
+watch(()=>route.fullPath,()=>{clearPage();void loadPage();},{flush:"sync"});
+
 const admissionPolicyLabel = computed(() => ({
   automatic_admission_disabled: "已关闭",
   enabled: "已启用",
@@ -52,26 +74,31 @@ function admissionSafeError(status: number): string {
 }
 
 async function loadAdmissionPolicy(): Promise<void> {
+  const op=gate.begin("loadAdmissionPolicy");if(!op?.valid())return ;
   try {
     const result = await client.GET("/sourcing-admissions", {
       params: { query: { limit: 1, state: "waiting" } },
     });
+    if(!op.valid())return ;
     if (result.response.status === 200 && result.data) {
       admissionPolicy.value = result.data.policy;
       admissionPolicyVisible.value = true;
       return;
     }
+    if(!op.valid())return ;
     if (result.response.status === 403) {
       admissionPolicyVisible.value = false;
       return;
     }
-  } catch { /* 策略读取失败与“未配置”不同。 */ }
-  admissionPolicy.value = { status: "policy_status_unknown" };
+  } catch {
+    if(!op.valid())return ; /* 策略读取失败与“未配置”不同。 */ }
+  if(op.valid()) admissionPolicy.value = { status: "policy_status_unknown" };
 }
 
 async function createAdmissionProposal(): Promise<void> {
   const raw = admissionMessage.value.trim();
   if (!raw || admissionSubmitting.value || !Number.isInteger(admissionBatchLimit.value)) return;
+  const op=gate.begin("createAdmissionProposal");if(!op?.valid())return ;
   admissionSubmitting.value = true;
   admissionError.value = null;
   admissionProposal.value = null;
@@ -86,22 +113,26 @@ async function createAdmissionProposal(): Promise<void> {
         mode: "cluster_ranked",
       },
     });
+    if(!op.valid())return ;
     if (result.response.status === 200 && result.data) {
       admissionProposal.value = result.data;
       return;
     }
+    if(!op.valid())return ;
     if (result.response.status === 403) admissionPolicyVisible.value = false;
     admissionError.value = admissionSafeError(result.response.status);
   } catch {
+    if(!op.valid())return ;
     admissionError.value = "无法连接寻源准入策略服务";
   } finally {
-    admissionSubmitting.value = false;
+    if(op.valid()) admissionSubmitting.value = false;
   }
 }
 
 async function confirmAdmissionProposal(): Promise<void> {
   const current = admissionProposal.value;
   if (!current || current.state !== "pending_confirmation" || admissionConfirming.value) return;
+  const op=gate.begin("confirmAdmissionProposal");if(!op?.valid())return ;
   admissionConfirming.value = true;
   admissionError.value = null;
   admissionConfirmKey.value ??= globalThis.crypto.randomUUID();
@@ -115,6 +146,7 @@ async function confirmAdmissionProposal(): Promise<void> {
         },
       },
     );
+    if(!op.valid())return ;
     if (result.response.status === 200 && result.data) {
       admissionConfirmation.value = result.data;
       admissionProposal.value = { ...current, state: "confirmed" };
@@ -130,9 +162,10 @@ async function confirmAdmissionProposal(): Promise<void> {
     }
     admissionError.value = admissionSafeError(result.response.status);
   } catch {
+    if(!op.valid())return ;
     admissionError.value = "无法连接寻源准入策略服务";
   } finally {
-    admissionConfirming.value = false;
+    if(op.valid()) admissionConfirming.value = false;
   }
 }
 
@@ -224,6 +257,8 @@ function displayValue(key: string, value: string): string {
 }
 
 function resetDraft(): void {
+  gate.invalidate();
+  submitting.value=false;deciding.value=false;
   proposal.value = null;
   confirmation.value = null;
   execution.value = null;
@@ -233,37 +268,46 @@ function resetDraft(): void {
 }
 
 async function loadProposal(proposalId: string): Promise<boolean> {
+  const op=gate.begin("loadProposal");if(!op?.valid())return false;
   try {
     const result = await client.GET("/commands/discovery-proposals/{proposal_id}", {
       params: { path: { proposal_id: proposalId } },
     });
+    if(!op.valid())return false;
     if (result.response.status === 200 && result.data) {
       proposal.value = result.data;
       decisionUncertain.value = false;
       if (result.data.state === "confirmed") await loadExecution(proposalId);
-      return true;
+      return op.valid();
     }
-  } catch { /* 读取失败不撤销已经收到的 POST 成功回执。 */ }
+    if ([403,404].includes(result.response.status)) { proposal.value=null; confirmation.value=null; execution.value=null; error.value="提案不存在或当前身份无权读取"; }
+  } catch {
+    if(!op.valid())return false; /* 读取失败不撤销已经收到的 POST 成功回执。 */ }
   return false;
 }
 
 async function loadExecution(proposalId: string): Promise<void> {
+  const op=gate.begin("loadExecution");if(!op?.valid())return ;
   try {
     const result = await client.GET("/commands/discovery-proposals/{proposal_id}/execution", {
       params: { path: { proposal_id: proposalId } },
     });
+    if(!op.valid())return;
     execution.value = result.response.status === 200 && result.data
       ? result.data : { state: "unknown", can_resume: false };
   } catch {
+    if(!op.valid())return ;
     execution.value = { state: "unknown", can_resume: false };
   }
 }
 
 async function refreshProposal(): Promise<void> {
   if (!proposal.value || deciding.value) return;
+  const op=gate.begin("refreshProposal");if(!op?.valid())return ;
   deciding.value = true;
   error.value = null;
   const refreshed = await loadProposal(proposal.value.proposal_id);
+  if(!op.valid())return;
   statusMessage.value = refreshed ? "已重新读取提案状态。" : "状态刷新未完成；保留最近已知回执，请稍后只读刷新。";
   deciding.value = false;
 }
@@ -277,6 +321,7 @@ function markDecisionUncertain(): void {
 async function createProposal(): Promise<void> {
   const raw = message.value.trim();
   if (!raw || submitting.value) return;
+  const op=gate.begin("createProposal");if(!op?.valid())return ;
   submitting.value = true;
   proposal.value = null;
   confirmation.value = null;
@@ -288,6 +333,7 @@ async function createProposal(): Promise<void> {
     const result = await client.POST("/commands/discovery-proposals", {
       body: { message: raw },
     });
+    if(!op.valid())return ;
     if (result.response.status === 200 && result.data) {
       proposal.value = result.data;
       statusMessage.value = "提案已生成。请逐项核对，确认前不会启动工作流。";
@@ -296,10 +342,11 @@ async function createProposal(): Promise<void> {
     error.value = safeError(result.response);
     statusMessage.value = "提案未生成。";
   } catch {
+    if(!op.valid())return ;
     error.value = "无法连接服务，请稍后重试";
     statusMessage.value = "提案未生成。";
   } finally {
-    submitting.value = false;
+    if(op.valid()) submitting.value = false;
   }
 }
 
@@ -308,6 +355,7 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
   if (!current || deciding.value || decisionUncertain.value) return;
   if (current.state !== "pending_confirmation" && !(current.state === "confirmed" && action === "confirm" && execution.value?.can_resume && !receiptRunId.value)) return;
   if (action === "confirm" && current.can_confirm !== true) return;
+  const op=gate.begin("decide");if(!op?.valid())return ;
   deciding.value = true;
   error.value = null;
   statusMessage.value = action === "confirm" ? "正在确认并启动受限工作流…" : "正在拒绝提案…";
@@ -319,17 +367,20 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
           params: { path: { proposal_id: current.proposal_id } },
         },
       );
-      if (result.response.status === 200 && result.data) {
+      if(!op.valid())return ;
+    if (result.response.status === 200 && result.data) {
         confirmation.value = result.data;
         execution.value = { state: "started", run_id: result.data.run_id, can_resume: false };
         proposal.value = { ...current, state: "confirmed", can_confirm: false };
         const refreshed = await loadProposal(current.proposal_id);
-        statusMessage.value = refreshed
+        if(!op.valid())return;
+  statusMessage.value = refreshed
           ? "提案已确认；系统只会在页面列明的范围和上限内执行。"
           : "确认已成功，Run 回执已保留；详情刷新未完成，可只读刷新提案状态。";
         return;
       }
-      if (result.response.status >= 500 || result.response.status === 200) {
+      if(!op.valid())return ;
+    if (result.response.status >= 500 || result.response.status === 200) {
         markDecisionUncertain();
         return;
       }
@@ -341,15 +392,18 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
           params: { path: { proposal_id: current.proposal_id } },
         },
       );
-      if (result.response.status === 200) {
+      if(!op.valid())return ;
+    if (result.response.status === 200) {
         proposal.value = { ...current, state: "rejected", can_confirm: false };
         const refreshed = await loadProposal(current.proposal_id);
-        statusMessage.value = refreshed
+        if(!op.valid())return;
+  statusMessage.value = refreshed
           ? "提案已拒绝；没有启动工作流。"
           : "拒绝已成功；详情刷新未完成，可只读刷新提案状态。";
         return;
       }
-      if (result.response.status >= 500) {
+      if(!op.valid())return ;
+    if (result.response.status >= 500) {
         markDecisionUncertain();
         return;
       }
@@ -357,13 +411,14 @@ async function decide(action: "confirm" | "reject"): Promise<void> {
     }
     statusMessage.value = "决定未提交。";
   } catch {
+    if(!op.valid())return ;
     markDecisionUncertain();
   } finally {
-    deciding.value = false;
+    if(op.valid()) deciding.value = false;
   }
 }
 
-onMounted(() => void loadAdmissionPolicy());
+onMounted(() => void loadPage());
 </script>
 
 <template>
@@ -380,7 +435,9 @@ onMounted(() => void loadAdmissionPolicy());
       </p>
     </div>
 
+    <AgentConversation @available="value=>assistantAvailable=value" />
     <section
+      v-if="!assistantAvailable"
       class="composer"
       aria-labelledby="command-composer-title"
     >

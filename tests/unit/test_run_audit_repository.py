@@ -136,6 +136,7 @@ def test_get_run_queries_every_audit_source_with_tenant_and_omits_payload_column
         _Result([tool_call]),
         _Result([artifact]),
         _Result([approval]),
+        _Result([]),
     ])
     repository = PostgresRunAuditRepository(lambda: session)
 
@@ -148,4 +149,4 @@ def test_get_run_queries_every_audit_source_with_tenant_and_omits_payload_column
     assert result.artifacts[0].kind == "email_draft"
     assert result.approvals[0].state == "approved"
     assert "must-not-leak" not in serialized
-    assert session.tenant_bound_statements == 5
+    assert session.tenant_bound_statements == 6

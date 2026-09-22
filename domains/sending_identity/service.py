@@ -76,6 +76,12 @@ class SendingIdentityService(Protocol):
         self, tenant_id: TenantId, request: IdentityRegisterRequest, *, actor: Actor
     ) -> SendingIdentityId: ...
 
+    async def authorize_inbound_binding(
+        self, tenant_id: TenantId, identity_id: SendingIdentityId, *, actor: Actor
+    ) -> None:
+        """只授权真人boss绑定真实当前租户身份；不修改邮箱配置或游标。"""
+        ...
+
     async def begin_authentication(
         self, tenant_id: TenantId, identity_id: SendingIdentityId, *, actor: Actor
     ) -> None: ...
@@ -185,6 +191,12 @@ class SendingIdentityService(Protocol):
     async def get(
         self, tenant_id: TenantId, identity_id: SendingIdentityId, *, actor: Actor
     ) -> IdentityView: ...
+
+    async def list_for_management(
+        self, tenant_id: TenantId, *, limit: int, actor: Actor
+    ) -> list[IdentityView]:
+        """仅 boss/TENANT 有界读取全部状态；不改变 Campaign 可用列表。"""
+        ...
 
     async def list_available_for_campaign(
         self, tenant_id: TenantId, *, limit: int, actor: Actor

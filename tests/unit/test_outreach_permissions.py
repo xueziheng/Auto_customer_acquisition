@@ -63,12 +63,14 @@ _ALL_ACTIONS = {
     "SUPPRESSION_LIST",
     "MESSAGE_DELIVERY_BIND",
     "DELIVERY_FEEDBACK_RESOLVE",
+    "REPLY_SOURCE_READ",
     "HARD_BOUNCE_APPLY",
     "COMPLAINT_APPLY",
 }
 
 _ALLOWED = {
     ("boss", "TENANT"): {
+        "REPLY_SOURCE_READ",
         "CAMPAIGN_CREATE",
         "CAMPAIGN_SUBMIT",
         "CAMPAIGN_REVISE",
@@ -86,6 +88,7 @@ _ALLOWED = {
         "SUPPRESSION_LIST",
     },
     ("manager", "MANAGER"): {
+        "REPLY_SOURCE_READ",
         "CAMPAIGN_SUBMIT",
         "CAMPAIGN_REVISE",
         "CAMPAIGN_PAUSE",
@@ -113,6 +116,7 @@ _ALLOWED = {
         "COMPLAINT_APPLY",
     },
     ("sales", "SELF"): {
+        "REPLY_SOURCE_READ",
         "CAMPAIGN_READ",
         "CAMPAIGN_LIST",
         "ENROLLMENT_READ",
@@ -132,6 +136,13 @@ def _scope_for(role: str, action: object) -> object:
             allowed_account_ids={ACCOUNT},
             allowed_enrollment_ids={ENROLLMENT},
             allowed_suppression_targets={TARGET},
+        )
+    if role in {"sales", "manager"} and action.name == "REPLY_SOURCE_READ":
+        return permissions.OutreachScope(
+            level=permissions.ScopeLevel.SELF
+            if role == "sales"
+            else permissions.ScopeLevel.MANAGER,
+            allowed_account_ids={ACCOUNT},
         )
     if role == "sales":
         return permissions.OutreachScope(
@@ -206,9 +217,21 @@ def test_manager_resource_authorization_applies_every_configured_dimension() -> 
         enrollment_id=ENROLLMENT,
     ).startswith("phase1:manager:")
     mutations = (
-        {"campaign_id": OTHER_CAMPAIGN, "account_id": ACCOUNT, "enrollment_id": ENROLLMENT},
-        {"campaign_id": CAMPAIGN, "account_id": OTHER_ACCOUNT, "enrollment_id": ENROLLMENT},
-        {"campaign_id": CAMPAIGN, "account_id": ACCOUNT, "enrollment_id": OTHER_ENROLLMENT},
+        {
+            "campaign_id": OTHER_CAMPAIGN,
+            "account_id": ACCOUNT,
+            "enrollment_id": ENROLLMENT,
+        },
+        {
+            "campaign_id": CAMPAIGN,
+            "account_id": OTHER_ACCOUNT,
+            "enrollment_id": ENROLLMENT,
+        },
+        {
+            "campaign_id": CAMPAIGN,
+            "account_id": ACCOUNT,
+            "enrollment_id": OTHER_ENROLLMENT,
+        },
     )
     for resources in mutations:
         with pytest.raises(PermissionDenied):
@@ -311,7 +334,9 @@ def test_scope_defensively_freezes_sets_and_rejects_unrestricted_levels() -> Non
         permissions.OutreachScope(level=permissions.ScopeLevel.SYSTEM)
 
 
-def test_system_scope_requires_one_target_and_cannot_expand_after_actor_creation() -> None:
+def test_system_scope_requires_one_target_and_cannot_expand_after_actor_creation() -> (
+    None
+):
     """SYSTEM 多 target 或 mutable target 是直接写权限突破。"""
     permissions = _permissions()
     targets = {ENROLLMENT}
@@ -458,3 +483,41 @@ def test_standard_audit_logger_uses_fixed_message_and_safe_fields(caplog) -> Non
         "scope": "tenant",
         "rule": "phase1:boss:tenant:campaign:read",
     }
+
+
+@pytest.mark.parametrize("role,level", [("sales", "SELF"), ("manager", "MANAGER")])
+def test_reply_source_scope_requires_one_account_and_cannot_read_other_account(
+    role, level
+):
+    p = _permissions()
+    authorizer = p.Phase1OutreachAuthorizer(TENANT)
+    for accounts in (None, {ACCOUNT, OTHER_ACCOUNT}):
+        scope = p.OutreachScope(
+            level=getattr(p.ScopeLevel, level),
+            allowed_campaign_ids={CAMPAIGN},
+            allowed_account_ids=accounts,
+        )
+        with pytest.raises(PermissionDenied):
+            authorizer.preauthorize(
+                _actor(role, scope), p.OutreachAction.REPLY_SOURCE_READ, scope, TENANT
+            )
+    scope = p.OutreachScope(
+        level=getattr(p.ScopeLevel, level), allowed_account_ids={ACCOUNT}
+    )
+    actor = _actor(role, scope)
+    with pytest.raises(PermissionDenied):
+        authorizer.require(
+            actor,
+            p.OutreachAction.REPLY_SOURCE_READ,
+            scope,
+            TENANT,
+            account_id=OTHER_ACCOUNT,
+        )
+    if role == "sales":
+        for action in (
+            p.OutreachAction.ENROLLMENT_READ,
+            p.OutreachAction.CAMPAIGN_READ,
+            p.OutreachAction.DELIVERY_FEEDBACK_RESOLVE,
+        ):
+            with pytest.raises(PermissionDenied):
+                authorizer.preauthorize(actor, action, scope, TENANT)

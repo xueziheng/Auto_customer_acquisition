@@ -52,3 +52,10 @@
 read_unsupported，实际下载只经独立bounded reader。开始对象写后的SDK/close/deadline未知
 固定outcome_unknown，不把取消当作未写；线程收口后传播取消。adapter不判winner、不删除
 未知candidate、不改metadata补偿规则，安全错误不含endpoint/bucket/key/SDK原文。见ADR0021。
+
+## 持久本机内测
+
+仅真实本机 `pilot` 入口可显式调用 `S3ObjectStoreSettings.from_pilot_environ`，
+保留 `dev_mode=False`，只接受带显式端口的精确 `http://127.0.0.1` endpoint。
+此例外仅用于本 profile 对象存储，不开放远端 HTTP、任意 HTTPS 或开发身份断言；
+默认 `from_environ` 的全部校验保持不变。原 Gateway/凭证/预算/传输契约不变。

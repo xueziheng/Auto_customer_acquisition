@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Self
@@ -20,17 +21,25 @@ PROPOSER = EmployeeId("emp_01K00000000000000000000000")
 APPROVER = EmployeeId("emp_01K00000000000000000000001")
 CHANGE_SET = "playbook:pbv_01K00000000000000000000000:" + "a" * 64
 COUNTRY_POLICY_CHANGE_SET = "country_policy:cpp_01K00000000000000000000000:" + "b" * 64
+CATALOG_EVIDENCE_REF = (
+    "catalog-evidence-v1:conversation:msg_01K00000000000000000000000:"
+    + "c" * 64
+)
 
 
 class _Bus:
+    def __init__(self, store: _Store) -> None:
+        self._store = store
+
     async def publish(self, event: object) -> None:
-        del event
+        self._store.events.append(event)
 
 
 class _Store:
     def __init__(self) -> None:
         self.packages: dict[ApprovalId, object] = {}
         self.application_keys: dict[ApprovalId, str] = {}
+        self.events: list[object] = []
 
 
 class _Approvals:
@@ -41,8 +50,12 @@ class _Approvals:
         self._store.packages[package.approval_id] = package  # type: ignore[attr-defined]
 
     async def get(self, tenant_id: TenantId, approval_id: ApprovalId) -> object | None:
-        del tenant_id
-        return self._store.packages.get(approval_id)
+        package = self._store.packages.get(approval_id)
+        return (
+            package
+            if package is not None and package.tenant_id == tenant_id  # type: ignore[attr-defined]
+            else None
+        )
 
     async def get_for_update(
         self, tenant_id: TenantId, approval_id: ApprovalId
@@ -55,12 +68,12 @@ class _Approvals:
     async def find_pending_by_change_set(
         self, tenant_id: TenantId, change_set_ref: str
     ) -> object | None:
-        del tenant_id
         return next(
             (
                 package
                 for package in self._store.packages.values()
-                if package.change_set_ref == change_set_ref  # type: ignore[attr-defined]
+                if package.tenant_id == tenant_id  # type: ignore[attr-defined]
+                and package.change_set_ref == change_set_ref  # type: ignore[attr-defined]
                 and package.state.value == "pending"  # type: ignore[attr-defined]
             ),
             None,
@@ -69,12 +82,12 @@ class _Approvals:
     async def find_by_change_set(
         self, tenant_id: TenantId, change_set_ref: str
     ) -> object | None:
-        del tenant_id
         return next(
             (
                 package
                 for package in self._store.packages.values()
-                if package.change_set_ref == change_set_ref  # type: ignore[attr-defined]
+                if package.tenant_id == tenant_id  # type: ignore[attr-defined]
+                and package.change_set_ref == change_set_ref  # type: ignore[attr-defined]
             ),
             None,
         )
@@ -94,6 +107,37 @@ class _Approvals:
 
     async def find_quote_by_change_set(self, tenant_id, change_set_ref):
         return await self.find_by_change_set(tenant_id, change_set_ref)
+
+    async def lock_catalog_change_set(self, tenant_id, change_set_ref):
+        del tenant_id, change_set_ref
+
+    async def find_catalog_by_change_set(self, tenant_id, change_set_ref):
+        package = await self.find_by_change_set(tenant_id, change_set_ref)
+        return (
+            package
+            if package is not None
+            and package.contract_namespace
+            in {"catalog-policy-v1", "catalog-cultivation-v1"}
+            else None
+        )
+
+    async def list_catalog_pending_candidates(
+        self, tenant_id, *, scan_started_at, after, limit
+    ):
+        values = sorted(
+            (
+                p
+                for p in self._store.packages.values()
+                if p.tenant_id == tenant_id
+                and p.contract_namespace
+                in {"catalog-policy-v1", "catalog-cultivation-v1"}
+                and p.created_at <= scan_started_at
+                and p.state.value == "pending"
+                and (after is None or (p.expires_at, p.approval_id) > after)
+            ),
+            key=lambda p: (p.expires_at, p.approval_id),
+        )
+        return tuple(values[:limit])
 
     async def list_quote_pending_candidates(
         self, tenant_id, *, scan_started_at, after, limit
@@ -126,7 +170,7 @@ class _Approvals:
 class _Uow:
     def __init__(self, store: _Store) -> None:
         self.approvals = _Approvals(store)
-        self.bus = _Bus()
+        self.bus = _Bus(store)
 
     async def __aenter__(self) -> Self:
         return self
@@ -661,6 +705,47 @@ async def test_country_policy_change_has_exact_label_and_seven_day_validity() ->
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("approval_value", "expected_validity", "expected_label"),
+    [
+        (
+            "catalog_proposal_policy_change",
+            timedelta(days=7),
+            "目录产品提案策略变更",
+        ),
+        (
+            "catalog_product_cultivation",
+            timedelta(days=3),
+            "目录产品培养审批",
+        ),
+    ],
+)
+async def test_catalog_approval_types_have_exact_validity_label_and_self_approval_guard(
+    approval_value: str,
+    expected_validity: timedelta,
+    expected_label: str,
+) -> None:
+    actors = _CatalogActorReader()
+    service = ApprovalServiceImpl(
+        _Factory(), catalog_actor_reader=actors, now=lambda: NOW
+    )
+    command = (
+        _catalog_policy_command()
+        if approval_value == "catalog_proposal_policy_change"
+        else _catalog_cultivation_command()
+    )
+    approval_id = await service.submit_catalog(command)
+
+    view = await service.get(TENANT, approval_id)
+    assert view.expires_at - view.created_at == expected_validity
+    assert view.type_label == expected_label
+    actors.employee_id = PROPOSER
+    with pytest.raises(SelfApprovalError):
+        await service.decide(TENANT, approval_id, True, PROPOSER)
+    assert (await service.get(TENANT, approval_id)).state == "pending"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "code",
     [
         "COUNTRY_POLICY_BASE_VERSION_CONFLICT",
@@ -742,3 +827,547 @@ async def test_quote_fact_lookup_is_strict_internal_and_revalidates_original_req
     package.title = "篡改原请求"
     with pytest.raises(QuoteContractError):
         await svc.find_quote_fact(payload.tenant_id,package.change_set_ref)
+
+
+def _catalog_policy_command(*, expires_at_limit=NOW + timedelta(days=7)):
+    from domains.approvals.catalog_contract import (
+        CatalogPolicyApprovalCommand,
+        CatalogPolicyContentFact,
+        catalog_policy_content_hash,
+        catalog_policy_request_hash,
+    )
+    from shared.schemas.identifiers import CatalogProposalPolicyVersionId
+
+    content = CatalogPolicyContentFact(
+        minimum_distinct_accounts=3,
+        minimum_recurring_accounts=None,
+        minimum_distinct_countries=None,
+        minimum_quantity_unit_accounts=None,
+        require_unified_unit=False,
+    )
+    content_hash = catalog_policy_content_hash(content)
+    policy_id = CatalogProposalPolicyVersionId(
+        "cpv_01K00000000000000000000000"
+    )
+    return CatalogPolicyApprovalCommand(
+        tenant_id=TENANT,
+        policy_version_id=policy_id,
+        content=content,
+        content_hash=content_hash,
+        base_active_version=None,
+        proposed_by_employee=PROPOSER,
+        owner_employee=PROPOSER,
+        change_set_ref=f"catalog-policy:{policy_id}:{content_hash}",
+        request_hash=catalog_policy_request_hash(content, PROPOSER, None),
+        expires_at_limit=expires_at_limit,
+    )
+
+
+def _catalog_base_policy():
+    from domains.approvals.catalog_contract import (
+        CatalogPolicyVersionFact,
+        catalog_policy_content_hash,
+    )
+
+    content = _catalog_policy_command().content
+    return CatalogPolicyVersionFact(
+        policy_version_id="cpv_01K00000000000000000000009",
+        content=content,
+        content_hash=catalog_policy_content_hash(content),
+    )
+
+
+def _catalog_rules():
+    from domains.approvals.catalog_contract import CatalogRuleResultFact
+
+    values = (
+        ("membership_integrity", "passed", True, True, "成员关系与品类完整一致"),
+        ("distinct_accounts", "passed", 3, 3, "去重客户数达到策略门槛"),
+        ("recurring_accounts", "not_required", 1, None, "策略不要求复购客户数"),
+        ("distinct_countries", "not_required", 2, None, "策略不要求已知国家数"),
+        ("quantity_unit_coverage", "not_required", 3, None, "策略不要求数量单位覆盖"),
+        ("unified_unit", "not_required", "pcs", None, "策略不要求统一单位"),
+    )
+    return tuple(
+        CatalogRuleResultFact(
+            rule=rule,
+            status=status,
+            actual_value=actual,
+            required_value=required,
+            explanation_code=code,
+        )
+        for rule, status, actual, required, code in values
+    )
+
+
+def _catalog_cultivation_command(*, expires_at_limit=NOW + timedelta(days=3)):
+    from domains.approvals.catalog_contract import (
+        CATALOG_CULTIVATION_WARNING,
+        CatalogCultivationApprovalCommand,
+        catalog_cultivation_request_hash,
+    )
+
+    values = {
+        "tenant_id": TENANT,
+        "proposal_id": "cpr_01K00000000000000000000000",
+        "cluster_id": "ncl_01K00000000000000000000000",
+        "policy_version_id": "cpv_01K00000000000000000000000",
+        "policy_content_hash": "a" * 64,
+        "facts_hash": "b" * 64,
+        "rule_results": _catalog_rules(),
+        "evidence_refs": (CATALOG_EVIDENCE_REF,),
+        "proposed_by_run": "run_01K00000000000000000000000",
+        "owner_employee": PROPOSER,
+        "change_set_ref": (
+            "catalog-cultivation:cpr_01K00000000000000000000000:"
+            "cpv_01K00000000000000000000000:" + "b" * 64
+        ),
+        "expires_at_limit": expires_at_limit,
+        "warning": CATALOG_CULTIVATION_WARNING,
+    }
+    return CatalogCultivationApprovalCommand(
+        **values,
+        request_hash=catalog_cultivation_request_hash(**values),
+    )
+
+
+class _CatalogActorReader:
+    def __init__(self) -> None:
+        self.role = "boss"
+        self.active = True
+        self.eligible = True
+        self.tenant_id = TENANT
+        self.employee_id = APPROVER
+        self.error: Exception | None = None
+
+    async def read_actor(self, tenant_id, employee_id):
+        from domains.approvals.catalog_contract import CatalogApprovalActorFact
+
+        if self.error is not None:
+            raise self.error
+        del tenant_id, employee_id
+        return CatalogApprovalActorFact(
+            tenant_id=self.tenant_id,
+            employee_id=self.employee_id,
+            current_role=self.role,
+            active=self.active,
+            eligible=self.eligible,
+        )
+
+
+@pytest.mark.asyncio
+async def test_catalog_link_state_is_a_strict_four_role_projection() -> None:
+    from domains.approvals.schemas import (
+        ApprovalReaderIdentity,
+        CatalogApprovalLinkState,
+    )
+    from shared.errors import PermissionDenied
+
+    factory = _Factory()
+    actors = _CatalogActorReader()
+    service = ApprovalServiceImpl(
+        factory, catalog_actor_reader=actors, now=lambda: NOW
+    )
+    approval_id = await service.submit_catalog(_catalog_policy_command())
+
+    for role in ("boss", "product", "sourcing", "finance"):
+        actors.role = role
+        linked = await service.get_catalog_link_state_for_reader(
+            TENANT,
+            approval_id,
+            reader=ApprovalReaderIdentity(employee_id=APPROVER, role=role),
+        )
+        assert type(linked) is CatalogApprovalLinkState
+        assert linked.model_dump(mode="json") == {
+            "approval_id": str(approval_id),
+            "approval_type": "catalog_proposal_policy_change",
+            "state": "pending",
+        }
+
+    for role in ("manager", "sales", "viewer"):
+        actors.role = role
+        with pytest.raises(PermissionDenied):
+            await service.get_catalog_link_state_for_reader(
+                TENANT,
+                approval_id,
+                reader=ApprovalReaderIdentity(employee_id=APPROVER, role=role),
+            )
+
+    actors.role = "product"
+    product = ApprovalReaderIdentity(employee_id=APPROVER, role="product")
+    with pytest.raises(PermissionDenied):
+        await service.get_for_reader(TENANT, approval_id, reader=product)
+    assert await service.list_for_reader(TENANT, reader=product) == []
+
+
+@pytest.mark.asyncio
+async def test_catalog_link_state_revalidates_current_employee_and_catalog_subject() -> None:
+    from domains.approvals.catalog_contract import CatalogApprovalContractError
+    from domains.approvals.schemas import ApprovalReaderIdentity
+    from shared.errors import PermissionDenied
+
+    factory = _Factory()
+    actors = _CatalogActorReader()
+    actors.role = "product"
+    service = ApprovalServiceImpl(
+        factory, catalog_actor_reader=actors, now=lambda: NOW
+    )
+    approval_id = await service.submit_catalog(_catalog_policy_command())
+    reader = ApprovalReaderIdentity(employee_id=APPROVER, role="product")
+
+    for mutation in (
+        {"error": RuntimeError("postgres://secret-password")},
+        {"tenant_id": TenantId("tn_other")},
+        {"employee_id": EmployeeId("emp_other")},
+        {"role": "finance"},
+        {"active": False},
+        {"eligible": False},
+    ):
+        current = _CatalogActorReader()
+        current.role = "product"
+        for field, value in mutation.items():
+            setattr(current, field, value)
+        guarded = ApprovalServiceImpl(
+            factory, catalog_actor_reader=current, now=lambda: NOW
+        )
+        with pytest.raises(PermissionDenied) as denied:
+            await guarded.get_catalog_link_state_for_reader(
+                TENANT, approval_id, reader=reader
+            )
+        assert "password" not in str(denied.value)
+
+    without_reader = ApprovalServiceImpl(factory, now=lambda: NOW)
+    with pytest.raises(PermissionDenied):
+        await without_reader.get_catalog_link_state_for_reader(
+            TENANT, approval_id, reader=reader
+        )
+
+    missing = ApprovalId("apr_01K00000000000000000000009")
+    with pytest.raises(CatalogApprovalContractError) as missing_error:
+        await service.get_catalog_link_state_for_reader(TENANT, missing, reader=reader)
+    assert missing_error.value.code == "catalog_approval_not_found"
+
+    legacy_id = await service.submit(
+        TENANT,
+        ApprovalType.PLAYBOOK_CHANGE,
+        "legacy",
+        {"version": "one"},
+        "legacy",
+        BlastRadius(["playbook"], "apply", "keep", True),
+        proposed_by_employee=PROPOSER,
+        owner_employee=PROPOSER,
+    )
+    with pytest.raises(CatalogApprovalContractError) as type_error:
+        await service.get_catalog_link_state_for_reader(
+            TENANT, legacy_id, reader=reader
+        )
+    assert type_error.value.code == "catalog_contract_invalid"
+
+
+@pytest.mark.asyncio
+async def test_catalog_submit_uses_strict_command_and_exact_fact_reads() -> None:
+    from domains.approvals.catalog_contract import CatalogApprovalContractError
+
+    factory = _Factory()
+    actors = _CatalogActorReader()
+    service = ApprovalServiceImpl(
+        factory, catalog_actor_reader=actors, now=lambda: NOW
+    )
+    policy = _catalog_policy_command()
+    cultivation = _catalog_cultivation_command()
+
+    policy_id = await service.submit_catalog(policy)
+    cultivation_id = await service.submit_catalog(cultivation)
+    assert await service.submit_catalog(policy) == policy_id
+    assert await service.submit_catalog(cultivation) == cultivation_id
+    policy_fact = await service.read_catalog_fact(TENANT, policy_id)
+    cultivation_fact = await service.find_catalog_fact(
+        TENANT, cultivation.change_set_ref
+    )
+    assert policy_fact.contract_namespace == "catalog-policy-v1"
+    assert policy_fact.proposed_change.policy_version_id == policy.policy_version_id
+    assert policy_fact.expires_at - policy_fact.created_at == timedelta(days=7)
+    assert cultivation_fact is not None
+    assert cultivation_fact.contract_namespace == "catalog-cultivation-v1"
+    assert cultivation_fact.request_hash == cultivation.request_hash
+    assert cultivation_fact.expires_at - cultivation_fact.created_at == timedelta(days=3)
+    assert await service.find_catalog_fact(TenantId("tn_other"), cultivation.change_set_ref) is None
+    with pytest.raises(CatalogApprovalContractError) as error:
+        await service.read_catalog_fact(TenantId("tn_other"), cultivation_id)
+    assert error.value.code == "catalog_approval_not_found"
+
+
+@pytest.mark.asyncio
+async def test_catalog_trusted_reads_hide_storage_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from domains.approvals.catalog_contract import CatalogApprovalContractError
+
+    service = ApprovalServiceImpl(_Factory(), now=lambda: NOW)
+    command = _catalog_policy_command()
+    approval_id = await service.submit_catalog(command)
+
+    async def broken_get(self, tenant_id, requested_id):
+        del self, tenant_id, requested_id
+        raise RuntimeError("postgres://secret-password")
+
+    monkeypatch.setattr(_Approvals, "get", broken_get)
+    with pytest.raises(CatalogApprovalContractError) as read_error:
+        await service.read_catalog_fact(TENANT, approval_id)
+    assert read_error.value.code == "catalog_storage_unavailable"
+    assert "password" not in str(read_error.value)
+
+    monkeypatch.undo()
+
+    async def broken_find(self, tenant_id, change_set_ref):
+        del self, tenant_id, change_set_ref
+        raise RuntimeError("postgres://secret-password")
+
+    monkeypatch.setattr(_Approvals, "find_catalog_by_change_set", broken_find)
+    with pytest.raises(CatalogApprovalContractError) as find_error:
+        await service.find_catalog_fact(TENANT, command.change_set_ref)
+    assert find_error.value.code == "catalog_storage_unavailable"
+    assert "password" not in str(find_error.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "mutation"),
+    [
+        ("policy", {"policy_version_id": "cpv_other"}),
+        (
+            "policy",
+            {
+                "content": _catalog_policy_command().content.model_copy(
+                    update={"minimum_distinct_accounts": 4}
+                )
+            },
+        ),
+        ("policy", {"content_hash": "c" * 64}),
+        ("policy", {"base_active_version": _catalog_base_policy()}),
+        ("policy", {"proposed_by_employee": APPROVER}),
+        ("policy", {"owner_employee": APPROVER}),
+        ("policy", {"request_hash": "d" * 64}),
+        ("policy", {"expires_at_limit": NOW + timedelta(days=6)}),
+        ("cultivation", {"proposal_id": "cpr_other"}),
+        ("cultivation", {"cluster_id": "ncl_other"}),
+        ("cultivation", {"policy_version_id": "cpv_other"}),
+        ("cultivation", {"policy_content_hash": "c" * 64}),
+        ("cultivation", {"facts_hash": "d" * 64}),
+        ("cultivation", {"rule_results": tuple(reversed(_catalog_rules()))}),
+        ("cultivation", {"evidence_refs": ("msg_other",)}),
+        ("cultivation", {"proposed_by_run": "run_other"}),
+        ("cultivation", {"owner_employee": APPROVER}),
+        ("cultivation", {"request_hash": "e" * 64}),
+        ("cultivation", {"expires_at_limit": NOW + timedelta(days=2)}),
+        ("cultivation", {"warning": "不是完整的固定风险提示"}),
+    ],
+)
+async def test_catalog_same_reference_never_reuses_a_mutated_subject(
+    kind: str, mutation: dict[str, object]
+) -> None:
+    from domains.approvals.catalog_contract import CatalogApprovalContractError
+
+    service = ApprovalServiceImpl(
+        _Factory(), catalog_actor_reader=_CatalogActorReader(), now=lambda: NOW
+    )
+    command = (
+        _catalog_policy_command()
+        if kind == "policy"
+        else _catalog_cultivation_command()
+    )
+    await service.submit_catalog(command)
+    changed = command.model_copy(update=mutation)
+
+    with pytest.raises(CatalogApprovalContractError) as error:
+        await service.submit_catalog(changed)
+    assert error.value.code == "catalog_request_conflict"
+
+
+@pytest.mark.asyncio
+async def test_catalog_full_persisted_package_is_checked_before_exact_replay() -> None:
+    from domains.approvals.catalog_contract import (
+        CatalogApprovalContractError,
+        catalog_package_fact,
+        same_catalog_request,
+    )
+
+    factory = _Factory()
+    service = ApprovalServiceImpl(factory, now=lambda: NOW)
+    command = _catalog_policy_command()
+    approval_id = await service.submit_catalog(command)
+    package = factory.store.packages[approval_id]
+    mutations = (
+        {"approval_type": ApprovalType.PLAYBOOK_CHANGE},
+        {"contract_namespace": "catalog-cultivation-v1"},
+        {"title": "被替换的标题"},
+        {
+            "proposed_change": package.proposed_change
+            | {"external_action": "外部发送"}
+        },
+        {"reason": "被替换的理由"},
+        {
+            "blast_radius": BlastRadius(
+                ["other"], "被替换的批准效果", "被替换的拒绝效果", False
+            )
+        },
+        {"proposed_by_run": "run_01K00000000000000000000009"},
+        {"proposed_by_employee": APPROVER},
+        {"owner_employee": APPROVER},
+        {"evidence_refs": ["msg_01K00000000000000000000009"]},
+        {
+            "change_set_ref": (
+                f"catalog-policy:{command.policy_version_id}:" + "f" * 64
+            )
+        },
+        {"request_hash": "f" * 64},
+        {"expires_at_limit": command.expires_at_limit + timedelta(days=1)},
+        {"expires_at": package.expires_at - timedelta(seconds=1)},
+    )
+
+    for mutation in mutations:
+        changed = replace(package, **mutation)
+        try:
+            catalog_package_fact(changed)
+        except CatalogApprovalContractError:
+            continue
+        assert not same_catalog_request(changed, package), mutation
+
+
+@pytest.mark.asyncio
+async def test_catalog_decision_requires_current_eligible_independent_boss() -> None:
+    from shared.errors import PermissionDenied
+
+    factory = _Factory()
+    command = _catalog_policy_command()
+    without_reader = ApprovalServiceImpl(factory, now=lambda: NOW)
+    approval_id = await without_reader.submit_catalog(command)
+    with pytest.raises(PermissionDenied, match="目录审批决定人事实不可用"):
+        await without_reader.decide(TENANT, approval_id, True, APPROVER)
+    assert factory.store.events == []
+    assert (await without_reader.read_catalog_fact(TENANT, approval_id)).state.value == "pending"
+
+    for mutation in (
+        {"error": RuntimeError("database password must not escape")},
+        {"tenant_id": TenantId("tn_other")},
+        {"employee_id": EmployeeId("emp_other")},
+        {"role": "manager"},
+        {"active": False},
+        {"eligible": False},
+    ):
+        actors = _CatalogActorReader()
+        for field, value in mutation.items():
+            setattr(actors, field, value)
+        service = ApprovalServiceImpl(
+            factory, catalog_actor_reader=actors, now=lambda: NOW
+        )
+        with pytest.raises(PermissionDenied) as denied:
+            await service.decide(TENANT, approval_id, True, APPROVER)
+        assert "password" not in str(denied.value)
+        assert factory.store.events == []
+        assert (await service.read_catalog_fact(TENANT, approval_id)).state.value == "pending"
+
+    actors = _CatalogActorReader()
+    service = ApprovalServiceImpl(factory, catalog_actor_reader=actors, now=lambda: NOW)
+    actors.employee_id = PROPOSER
+    with pytest.raises(SelfApprovalError):
+        await service.decide(TENANT, approval_id, True, PROPOSER)
+    assert factory.store.events == []
+    actors.employee_id = APPROVER
+    await service.decide(TENANT, approval_id, True, APPROVER)
+    assert len(factory.store.events) == 1
+    assert (await service.read_catalog_fact(TENANT, approval_id)).state.value == "approved"
+
+
+@pytest.mark.asyncio
+async def test_catalog_pending_list_and_detail_share_the_current_boss_guard() -> None:
+    from domains.approvals.schemas import ApprovalReaderIdentity
+    from shared.errors import PermissionDenied
+
+    factory = _Factory()
+    actors = _CatalogActorReader()
+    service = ApprovalServiceImpl(
+        factory, catalog_actor_reader=actors, now=lambda: NOW
+    )
+    policy_id = await service.submit_catalog(_catalog_policy_command())
+    cultivation_id = await service.submit_catalog(_catalog_cultivation_command())
+    boss = ApprovalReaderIdentity(employee_id=APPROVER, role="boss")
+
+    pending = await service.list_for_reader(TENANT, reader=boss)
+    assert {item.approval_id for item in pending} == {
+        str(policy_id),
+        str(cultivation_id),
+    }
+    assert all(item.can_current_user_decide for item in pending)
+    assert (
+        await service.get_for_reader(TENANT, policy_id, reader=boss)
+    ).can_current_user_decide
+
+    actors.active = False
+    with pytest.raises(PermissionDenied):
+        await service.list_for_reader(TENANT, reader=boss)
+    with pytest.raises(PermissionDenied):
+        await service.get_for_reader(TENANT, policy_id, reader=boss)
+
+    actors.active = True
+    actors.role = "manager"
+    manager = ApprovalReaderIdentity(employee_id=APPROVER, role="manager")
+    assert await service.list_for_reader(TENANT, reader=manager) == []
+    with pytest.raises(PermissionDenied):
+        await service.get_for_reader(TENANT, policy_id, reader=manager)
+
+
+@pytest.mark.asyncio
+async def test_catalog_pending_reader_without_actor_source_fails_closed() -> None:
+    from domains.approvals.schemas import ApprovalReaderIdentity
+    from shared.errors import PermissionDenied
+
+    factory = _Factory()
+    service = ApprovalServiceImpl(factory, now=lambda: NOW)
+    approval_id = await service.submit_catalog(_catalog_policy_command())
+    boss = ApprovalReaderIdentity(employee_id=APPROVER, role="boss")
+
+    with pytest.raises(PermissionDenied, match="目录审批决定人事实不可用"):
+        await service.list_for_reader(TENANT, reader=boss)
+    with pytest.raises(PermissionDenied, match="目录审批决定人事实不可用"):
+        await service.get_for_reader(TENANT, approval_id, reader=boss)
+
+
+@pytest.mark.asyncio
+async def test_catalog_owner_can_read_but_never_sees_a_decide_button() -> None:
+    from domains.approvals.schemas import ApprovalReaderIdentity
+
+    factory = _Factory()
+    actors = _CatalogActorReader()
+    actors.employee_id = PROPOSER
+    service = ApprovalServiceImpl(
+        factory, catalog_actor_reader=actors, now=lambda: NOW
+    )
+    approval_id = await service.submit_catalog(_catalog_policy_command())
+    owner = ApprovalReaderIdentity(employee_id=PROPOSER, role="boss")
+
+    pending = await service.list_for_reader(TENANT, reader=owner)
+    assert [item.approval_id for item in pending] == [str(approval_id)]
+    assert pending[0].can_current_user_decide is False
+    assert (
+        await service.get_for_reader(TENANT, approval_id, reader=owner)
+    ).can_current_user_decide is False
+
+
+@pytest.mark.asyncio
+async def test_generic_submit_cannot_create_a_catalog_approval_shape() -> None:
+    from domains.approvals.catalog_contract import CatalogApprovalContractError
+
+    service = _service()
+    with pytest.raises(CatalogApprovalContractError) as error:
+        await service.submit(
+            TENANT,
+            ApprovalType.CATALOG_PROPOSAL_POLICY_CHANGE,
+            "unsafe",
+            {"change": "untyped"},
+            "unsafe",
+            BlastRadius(["unsafe"], "unsafe", "unsafe", False),
+            proposed_by_employee=PROPOSER,
+            owner_employee=PROPOSER,
+        )
+    assert error.value.code == "catalog_contract_invalid"

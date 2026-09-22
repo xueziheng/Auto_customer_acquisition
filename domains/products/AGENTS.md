@@ -52,3 +52,16 @@ V2 投影的 Product 固定为 `source_only`，保留 canonical public evidence 
 ## Phase 1 范围
 
 三池模型、三视图 DTO、匹配查询接口（供匹配梯子前五级查询）。不做：淘宝式卡片 UI 细节（那在 apps/web）、多语言产品文案生成（agent_runtime）、自动铺货（明确永不做）。
+
+## Catalog Product Proposal 边界
+
+- 策略、评估、提案与培养 Case 归本域；Demand 只通过 workflow 显式映射的 Products DTO 提供事实，本域不得导入 Demand。
+- 策略没有生产默认值。`minimum_distinct_accounts` 至少为 2；受控验收的 3 个客户只是显式测试数据，不是 Kenya 或任何市场的业务默认。
+- 评估只使用固定顺序的确定性规则与固定中文 explanation code，不输出概率、模型解释或自由文本判断。损坏事实统一失败关闭，禁止把缺失或损坏值猜成 0。
+- Catalog Product Proposal 只是内部培养建议。批准后的唯一效果是创建一个 `queued` 培养 Case；不得创建或升级 Product、修改候选池状态、启动寻源、联系供应商、询价、报价或发送。
+- 策略和提案的审批决定只能由 workflow 以可信 Products 输入应用；HTTP 不得接受客户端自报 tenant、actor、facts hash、Provenance、审批人或状态。
+- 安全视图不得包含创建幂等键、请求 hash、原始 Provenance、客户原话、供应商联系人、价格或 workflow context。
+- 非硬门槛事实缺失仍显式为 `unknown`，只是不阻断整体通过；不得为了让提案通过而把未知伪写为 `not_required`、0 或已确认。
+- 培养审批所引用的 conversation/web/upload Evidence 必须是可路由定位符；测试数据也不得绕过该契约。
+- 同一 facts hash 的事件重放、审批重投和 runtime 重启必须收敛到同一 evaluation、proposal、Approval 和 Case；批准前必须重读当前 Demand 事实，hash 已变只能转 `stale`。
+- `CatalogCultivationQueued` 是 metadata-only 事实，不得在本域偷偷补外部动作；下游消费者未独立设计和授权前，培养队列就是终点。

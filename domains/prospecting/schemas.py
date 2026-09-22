@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from pydantic import BaseModel, ConfigDict
+
 from domains.prospecting.models import (
     ContactPointKind,
     ContactType,
@@ -186,3 +188,19 @@ class ProspectAccountDetailView:
 
     account: ProspectAccountView
     contacts: tuple[ProspectContactDetailView, ...] = ()
+
+
+class OutreachContactFacts(BaseModel):
+    """不含地址的当前联系方式资格事实；企业及法律依据来自精确关联。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    tenant_id: TenantId
+    account_id: ProspectAccountId
+    contact_point_id: ContactPointId
+    kind: ContactPointKind
+    verification: VerificationStatus
+    verified_at: datetime | None
+    legal_basis: LegalBasisType
+    legal_basis_ref: str
+    country: str
+    entity_type: str | None

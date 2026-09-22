@@ -1148,6 +1148,9 @@ class SourcingUncertainExecutionReadView(BaseModel):
     created_at: AwareDatetime
     reconciliation: SourcingReconciliationReadView | None = None
     can_current_user_reconcile: bool
+    recovery_action: Literal[
+        "unavailable", "record_reconciliation", "resume_reconciliation", "event_delivered"
+    ] = "unavailable"
 
 
 @dataclass(frozen=True)

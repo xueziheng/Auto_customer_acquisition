@@ -12,6 +12,7 @@ from domains.prospecting.schemas import AccountResolveRequest
 from domains.prospecting.service import ProspectingService
 from shared.errors import TenantIsolationViolation, ValidationError
 from shared.schemas.identifiers import NeedHypothesisId, ProspectAccountId
+from shared.schemas.model_invocation import ModelGenerationError
 from shared.schemas.provenance import Provenance, SourceType
 from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
 from tool_gateway.free_search_contracts import FreeSearchError
@@ -303,26 +304,29 @@ class ResearchExecuteSearchStep:
                     else "no_readable_pages"
                 )
             return "complete", None, {**result, "completion_reason": stop_reason}
-        changes = await self._capability.run(
-            AgentTask(
-                tenant_id=run.tenant_id,
-                run_id=run.run_id,
-                acting_user=acting_user,
-                objective=plan.objective,
-                inputs={
-                    "pages": tuple(pages),
-                    "execution_mode": "research_only",
-                    "target_countries": plan.target_countries,
-                    "target_categories": plan.target_categories,
-                    "excluded_countries": plan.excluded_countries,
-                    "excluded_categories": plan.excluded_categories,
-                    "max_signals": plan.max_signals,
-                    "max_hypotheses": plan.max_hypotheses,
-                    "strategy_group": plan.strategy_group,
-                },
-            ),
-            None,
-        )
+        try:
+            changes = await self._capability.run(
+                AgentTask(
+                    tenant_id=run.tenant_id,
+                    run_id=run.run_id,
+                    acting_user=acting_user,
+                    objective=plan.objective,
+                    inputs={
+                        "pages": tuple(pages),
+                        "execution_mode": "research_only",
+                        "target_countries": plan.target_countries,
+                        "target_categories": plan.target_categories,
+                        "excluded_countries": plan.excluded_countries,
+                        "excluded_categories": plan.excluded_categories,
+                        "max_signals": plan.max_signals,
+                        "max_hypotheses": plan.max_hypotheses,
+                        "strategy_group": plan.strategy_group,
+                    },
+                ),
+                None,
+            )
+        except ModelGenerationError as error:
+            return "fail", "research_model_blocked", {**result, "completion_reason": "model_" + error.code}
         if changes.tenant_id != run.tenant_id or changes.run_id != run.run_id:
             raise TenantIsolationViolation("研究变更集租户或Run不一致")
         signals, hypotheses = _split_changes(changes.changes)

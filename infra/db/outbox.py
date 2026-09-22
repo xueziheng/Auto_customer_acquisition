@@ -34,9 +34,13 @@ from infra.db.tables import OutboxEventRow
 from shared.errors import ValidationError
 from shared.events.bus import E_contra, EventEnvelope, EventHandler
 from shared.events.catalog import (
+    AccountCountryFactsChanged,
     ApprovalDecided,
     AuthenticationCheckRequested,
     CampaignStateChanged,
+    CatalogCultivationQueued,
+    CatalogProductProposalCreated,
+    CatalogProposalPolicyActivated,
     CommitmentCreated,
     CommitmentOverdue,
     ComplaintReceived,
@@ -51,6 +55,7 @@ from shared.events.catalog import (
     InboundMessageStored,
     MessageSent,
     NeedBecameSourcingReady,
+    NeedCatalogFactsChanged,
     NeedClusterFormed,
     NeedClusterMembershipChanged,
     NeedHypothesisCreated,
@@ -117,6 +122,11 @@ EVENT_REGISTRY: dict[str, type[DomainEvent]] = {
     # scheduler 已订阅 ReplyReceived（停序列 + 唤醒 wait_for_reply）：共享
     # outbox 入口对回复管道（切片 6 producer）开放，接线可端到端验证
     "ReplyReceived": ReplyReceived,
+    "NeedCatalogFactsChanged": NeedCatalogFactsChanged,
+    "AccountCountryFactsChanged": AccountCountryFactsChanged,
+    "CatalogProposalPolicyActivated": CatalogProposalPolicyActivated,
+    "CatalogProductProposalCreated": CatalogProductProposalCreated,
+    "CatalogCultivationQueued": CatalogCultivationQueued,
 }
 """显式发布白名单（手工维护，见模块 docstring）：新事件必须先经契约评审。"""
 
@@ -341,11 +351,90 @@ def _validate_need_cluster_membership_changed(event: DomainEvent) -> None:
         raise _invalid_need_cluster_membership_changed()
 
 
+_CATALOG_PRODUCT_EVENTS = (
+    NeedCatalogFactsChanged,
+    AccountCountryFactsChanged,
+    CatalogProposalPolicyActivated,
+    CatalogProductProposalCreated,
+    CatalogCultivationQueued,
+)
+_CATALOG_CHANGE_KINDS = frozenset({"quantity", "unit", "recurring_requirement"})
+_CATALOG_ID_PATTERNS = {
+    prefix: re.compile(rf"{prefix}_[^\s]+\Z")
+    for prefix in ("cpv", "cpe", "cpr", "ccc")
+}
+
+
+def _invalid_catalog_product_event() -> ValidationError:
+    return ValidationError("目录产品提案事件载荷无效")
+
+
+def _is_nonblank_id(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _matches_catalog_id(value: object, prefix: str) -> bool:
+    return isinstance(value, str) and _CATALOG_ID_PATTERNS[prefix].fullmatch(value) is not None
+
+
+def _validate_catalog_product_event(event: DomainEvent) -> None:
+    """校验目录产品提案事件只含可安全定位事实读取入口的元数据。"""
+    if not isinstance(event, _CATALOG_PRODUCT_EVENTS):
+        return
+    if (
+        not _is_nonblank_id(event.tenant_id)
+        or (event.run_id is not None and not _is_nonblank_id(event.run_id))
+        or not isinstance(event.occurred_at, datetime)
+        or not _is_utc_aware(event.occurred_at)
+    ):
+        raise _invalid_catalog_product_event()
+    if isinstance(event, NeedCatalogFactsChanged):
+        if (
+            not _is_nonblank_id(event.need_id)
+            or (
+                event.cluster_id is not None
+                and not _is_nonblank_id(event.cluster_id)
+            )
+            or event.change_kind not in _CATALOG_CHANGE_KINDS
+        ):
+            raise _invalid_catalog_product_event()
+        return
+    if isinstance(event, AccountCountryFactsChanged):
+        if not _is_nonblank_id(event.account_id):
+            raise _invalid_catalog_product_event()
+        return
+    if isinstance(event, CatalogProposalPolicyActivated):
+        if (
+            not _matches_catalog_id(event.policy_version_id, "cpv")
+            or not isinstance(event.content_hash, str)
+            or _LOWER_HEX_64_RE.fullmatch(event.content_hash) is None
+        ):
+            raise _invalid_catalog_product_event()
+        return
+    if isinstance(event, CatalogProductProposalCreated):
+        if (
+            not _matches_catalog_id(event.proposal_id, "cpr")
+            or not _matches_catalog_id(event.evaluation_id, "cpe")
+            or not _is_nonblank_id(event.cluster_id)
+            or not _matches_catalog_id(event.policy_version_id, "cpv")
+            or not isinstance(event.facts_hash, str)
+            or _LOWER_HEX_64_RE.fullmatch(event.facts_hash) is None
+        ):
+            raise _invalid_catalog_product_event()
+        return
+    if (
+        not _matches_catalog_id(event.cultivation_case_id, "ccc")
+        or not _matches_catalog_id(event.proposal_id, "cpr")
+    ):
+        raise _invalid_catalog_product_event()
+
+
 def serialize(event: DomainEvent) -> dict[str, object]:
     """事件 → JSON 可序列化 dict（Round-trip 的序列化半边）。"""
     _validate_sending_identity_event(event)
     _validate_outreach_event(event)
     _validate_need_cluster_membership_changed(event)
+    _validate_catalog_product_event(event)
     return {
         f.name: _to_jsonable(getattr(event, f.name)) for f in dataclasses.fields(event)
     }
@@ -419,6 +508,7 @@ def deserialize(
     }
     event = cast(DomainEvent, cast(Callable[..., object], event_cls)(**kwargs))
     _validate_need_cluster_membership_changed(event)
+    _validate_catalog_product_event(event)
     return event
 
 

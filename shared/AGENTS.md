@@ -58,3 +58,6 @@ shared/
 
 - 事件用**过去式**：`NeedValidated`、`OpportunityQualified`、`QuoteApproved`。事件描述已经发生的事实，不是命令。
 - ID 类型用 `XxxId`，全部是 `NewType`，不用裸 `str`——裸 `str` 会导致把 `need_id` 传进要 `opportunity_id` 的参数而类型检查不报错。
+
+ADR0026新增email_inbound frozen DTO/Protocol：Provider含进程内原件，Archived仅必要关联与Raw元数据。
+header/cursor/subject/body/bytes必须repr=False且默认序列化排除，不进入模型或日志；不新增业务事件。

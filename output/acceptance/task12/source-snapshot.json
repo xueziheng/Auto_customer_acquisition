@@ -1,0 +1,30 @@
+{
+  "base": "6cdb40d8019d560d1490925df72a58d14f4881d6",
+  "implementation_digest": "fa21469003d1391487e0f093c33c1adf046bca1d44d4c3037ff0e3f7421b055d",
+  "files": {
+    "apps/scheduler_worker/bootstrap.py": "5ce26e7fbdf0604fa067a02f65dfb7c7ccc259edd67a51f2b4541b619c69e9f5",
+    "apps/scheduler_worker/controlled.py": "07df331430f1dc275ec343134b2f27fd554de6150335f2f776a2200caa9e625f",
+    "apps/scheduler_worker/runtime.py": "562715bd5409b1de5c9c7e7cd4bd4be70ab37bff49bd75ae9a66d94ef0fdfef2",
+    "apps/scheduler_worker/contact_binding.py": "eefaddc30ff50619bb3146c2174ef9152242601a95e1d99dfcd38f74d50de43c",
+    "apps/scheduler_worker/controlled_contacts.py": "3ad29796ece452a8b91683b7813f2bc7ae86e116bdb8be04769f42d74a971bea",
+    "apps/web/tests/web-core-state-recovery.test.ts": "f405c6cfd733a9b1c860e69ee3bb8ff5a78aa66c56046db84b0f03af78fff957",
+    "connectors/gmail/inbound_mime.py": "941e637d5acb40beed77eea5fd4f06e1205e5d01c9390e15d0defc25681b82b3",
+    "infra/controlled/config.py": "44be90ac39e6a943df73968ce114ebca28df8d38b9329abc78e5a08e1ba80f77",
+    "infra/controlled/contacts.py": "bab09489dad5af6379500f1165ecf68dbb997bfb64de2807619b25db3835384e",
+    "infra/controlled/research.py": "beb5aeeb11123785e2f25860dc79fea8784b9cf8207c561fadbfe6c2b214264c",
+    "scripts/controlled_web_supervisor.py": "d2ad6430e5ed9f05b2de09637aa316fb919c514fe17d27bfe05a2267f6bebbcf",
+    "tests/integration/test_reply_completion.py": "c930ad3ab49a50f57680d512220eae938cde392c66321fbe076afe9dd92057fe",
+    "tests/integration/test_web_core_launcher.py": "709f21816d2ce1611920a5ac61d837179742f7a5b13970e2e44fead7b753629b",
+    "tests/integration/test_web_core_observability.py": "726347f50bf6bc51cff028ffc0ffcb418840cc3a756a1a51cbbae226b6878d01",
+    "tests/integration/test_web_core_settings_recovery.py": "17a7517fb560c652b83b4f1e0ed23446ce384365ac54ca1bc6c7714b07fd919d",
+    "tests/unit/test_agent_worker.py": "a6375bbd1520fee240dcd29359d8740def428dd4b22b5f0c45b595054de3e286",
+    "tests/unit/test_context_builder.py": "14b17238e9c77181450fa18830eb000731cb8473354254dc0c58296e9e0fb439",
+    "tests/unit/test_reply_current_evidence.py": "9d375e37cf4deed439b89a5ce2cfebfca3508e24a95bd1e23a8c8d7814d79fbc",
+    "tests/unit/test_web_core_private_cleanup.py": "f49193ab9c22238b16db9449c1363cd58e1434617b2ca61e5ce0bd6004707b06",
+    "tests/unit/test_contact_runtime_binding.py": "a0b47d9a2c115ee8b7c2a75c95ff187a62507952ba35eb76df3836be492e2920",
+    "tests/unit/test_controlled_contact_ports.py": "60ade9f24523dc195e515c39c2c43caacee2290aa5fd4648475d70df25334426",
+    "tests/unit/test_controlled_research_ports.py": "9d2514aaaf16aab7e37b2852e853fb68cf4eebb9fd7abd19eade8ef607e67023",
+    "tests/e2e/test_web_core_controlled.py": "d119235eb545b2169af4224e7a5277abba49e4ce098ffb920ed181be691d7cae",
+    "tests/e2e/web_core_contacts.py": "da10844fb6f166c6a0629f1c2c6241916d50d623ad709bfd8641056dc9860555"
+  }
+}

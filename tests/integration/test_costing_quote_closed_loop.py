@@ -139,3 +139,53 @@ async def test_approved_pdf_does_not_send_or_create_a_won_deal(quote_case):
             OutreachMessageAttemptRow.tenant_id == quote_case.tenant,
             OutreachMessageAttemptRow.state == "sent",
         )) == 1  # 显式模拟历史回执，不是本次Quote发送。
+
+
+@pytest.mark.parametrize("state", ["no_reply", "replied", "unknown"])
+async def test_history_reply_eligibility_uses_current_scoped_fact_reader(state):
+    from domains.prospecting.schemas import ContactPointKind
+    from shared.errors import TransientError
+    from tests.integration.costing_quote_case import NOW, HistoricalEligibility
+
+    tenant, account, point = (new_id(prefix) for prefix in ("tn", "acc", "cp"))
+    conversations = SimpleNamespace(get_account_reply_status=AsyncMock(return_value=SimpleNamespace(
+        tenant_id=tenant, account_id=account, state=state,
+        replied_at=NOW if state == "replied" else None,
+    )))
+    prospecting = SimpleNamespace(get_outreach_contact_facts=AsyncMock(return_value=SimpleNamespace(
+        tenant_id=tenant, account_id=account, contact_point_id=point, kind=ContactPointKind.EMAIL,
+    )))
+    reader = HistoricalEligibility(SimpleNamespace(
+        tenant=tenant, dependencies=SimpleNamespace(conversations=conversations, prospecting=prospecting),
+    ))
+    if state == "unknown":
+        with pytest.raises(TransientError):
+            await reader.get_reply_status(tenant, point, account)
+    else:
+        result = await reader.get_reply_status(tenant, point, account)
+        assert result.state.value == state
+        assert result.replied_at == (NOW if state == "replied" else None)
+    prospecting.get_outreach_contact_facts.assert_awaited_once_with(tenant, account, point)
+    conversations.get_account_reply_status.assert_awaited_once_with(tenant, account)
+
+
+@pytest.mark.parametrize("mismatch", ["tenant", "contact_point"])
+async def test_history_reply_eligibility_rejects_mismatched_binding(mismatch):
+    from domains.prospecting.schemas import ContactPointKind
+    from tests.integration.costing_quote_case import HistoricalEligibility
+
+    tenant, account, point = (new_id(prefix) for prefix in ("tn", "acc", "cp"))
+    conversations = SimpleNamespace(get_account_reply_status=AsyncMock(return_value=SimpleNamespace(
+        tenant_id=tenant, account_id=account, state="no_reply", replied_at=None,
+    )))
+    prospecting = SimpleNamespace(get_outreach_contact_facts=AsyncMock(return_value=SimpleNamespace(
+        tenant_id=tenant, account_id=account, contact_point_id=new_id("cp"), kind=ContactPointKind.EMAIL,
+    )))
+    reader = HistoricalEligibility(SimpleNamespace(
+        tenant=tenant, dependencies=SimpleNamespace(conversations=conversations, prospecting=prospecting),
+    ))
+    with pytest.raises(ValidationError):
+        await reader.get_reply_status(new_id("tn") if mismatch == "tenant" else tenant, point, account)
+    if mismatch == "tenant":
+        prospecting.get_outreach_contact_facts.assert_not_awaited()
+        conversations.get_account_reply_status.assert_not_awaited()

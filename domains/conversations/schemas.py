@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from domains.conversations.models import (
     MAX_REPLY_FIELD_QUOTE_CODEPOINTS,
@@ -28,6 +31,7 @@ from shared.schemas.identifiers import (
     MessageId,
     OutboundMessageId,
     ProspectAccountId,
+    TenantId,
 )
 
 
@@ -152,3 +156,37 @@ __all__ = (
     "ReplyWorkQueue",
     "ReplyWorkStatus",
 )
+
+
+class AccountReplyStatus(BaseModel):
+    """当前账户入站快照；unknown 禁止解释为没有回复。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    tenant_id: TenantId
+    account_id: ProspectAccountId
+    state: Literal["unknown", "replied", "no_reply"]
+    replied_at: datetime | None = None
+
+
+class ReplyNextQuestionsView(BaseModel):
+    """受权只读建议；真实引用和队列状态不被英文措辞替代。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    conversation_id: str
+    source_message_id: str
+    need_id: str | None
+    state: Literal["suggested", "need_unavailable", "no_missing_fields"]
+    completeness: int | None = Field(ge=0, le=5)
+    topics: tuple[str, ...] = Field(max_length=2)
+    suggestions: tuple[str, ...] = Field(max_length=2)
+
+
+class InboxEvidenceRef(BaseModel):
+    """仅服务端Message授权后使用的不可变原件关联。"""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    tenant_id: str
+    message_id: str
+    conversation_id: str
+    account_id: str
+    artifact_id: str

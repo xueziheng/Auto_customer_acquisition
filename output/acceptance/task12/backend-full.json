@@ -1,0 +1,17 @@
+{
+  "command": [
+    ".venv/bin/python3",
+    "-m",
+    "pytest",
+    "-q",
+    "-rs",
+    "--tb=short"
+  ],
+  "environment": {
+    "TEST_DATABASE_URL": "unset",
+    "PYTHON_DOTENV_DISABLED": "1",
+    "TRADEOS_REQUIRE_E2E": "1"
+  },
+  "exit_code": 1,
+  "elapsed_seconds": 2083.9
+}

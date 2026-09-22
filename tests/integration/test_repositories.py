@@ -865,6 +865,7 @@ def test_orm_metadata_parity_with_head() -> None:
             "destination", "required_by", "target_price", "current_supply_issue",
             "certification_required", "confirmed_by", "cluster_id",
             "unit", "unit_quantity_fact_hash", "unit_confirmation_id",
+            "recurring_requirement",
         },
         "prospect_accounts": {
             "tenant_id", "account_id", "name", "country", "website_domain",
@@ -1061,13 +1062,16 @@ def test_orm_metadata_parity_with_head() -> None:
         "uq_need_hypotheses_active_account_category": (
             "tenant_id", "account_id", "category",
         ),
-        "ix_need_clusters_tenant_category": (
-            "tenant_id", "category", "created_at", "cluster_id",
-        ),
-        "uq_need_cluster_members_need": ("tenant_id", "need_id"),
-        "ix_validated_need_field_history_need": (
-            "tenant_id", "need_id", "changed_at",
-        ),
+            "ix_need_clusters_tenant_category": (
+                "tenant_id", "category", "created_at", "cluster_id",
+            ),
+            "uq_need_cluster_members_need": ("tenant_id", "need_id"),
+            "uq_catalog_policy_active": ("tenant_id",),
+            "uq_catalog_policy_approval": ("tenant_id", "approval_id"),
+            "uq_catalog_product_proposal_approval": ("tenant_id", "approval_id"),
+            "ix_validated_need_field_history_need": (
+                "tenant_id", "need_id", "changed_at",
+            ),
         "uq_prospect_accounts_domain": ("tenant_id", "website_domain"),
         "ix_prospect_accounts_name": ("tenant_id", "country", "name"),
         "ix_prospect_contacts_account": (
@@ -1129,6 +1133,11 @@ def test_orm_metadata_parity_with_head() -> None:
                 "tenant_id", "activated_at", "activation_id",
             ),
         }
+    expected_indexes.update({
+        "ix_auth_sessions_account": ("tenant_id", "username", "created_at"),
+        "ix_model_invocations_quota": ("tenant_id", "created_at", "employee_id"),
+        "uq_agent_turn_active": ("tenant_id", "session_id"),
+    })
     actual_indexes: dict[str, tuple[str, ...]] = {}
     for tbl in metadata.tables.values():
         for idx in tbl.indexes:
@@ -2020,14 +2029,15 @@ async def test_loss_record_add_and_count_2d(repo_session: AsyncSession) -> None:
     LossRecordRepositoryImpl = _load("LossRecordRepositoryImpl")
     await _seed_opp(repo_session, "opp-loss-a", "tLoss1", "need-loss-a")
     repo = LossRecordRepositoryImpl(repo_session, TenantId("tLoss1"))
+    recent = datetime.now(UTC) - timedelta(days=1)
     await repo.add(
-        TenantId("tLoss1"), _loss("loss-a1", "tLoss1", "opp-loss-a", reason="price_too_high", died="quoted")
+        TenantId("tLoss1"), _loss("loss-a1", "tLoss1", "opp-loss-a", reason="price_too_high", died="quoted", recorded_at=recent)
     )
     await repo.add(
-        TenantId("tLoss1"), _loss("loss-a2", "tLoss1", "opp-loss-a", reason="price_too_high", died="quoted")
+        TenantId("tLoss1"), _loss("loss-a2", "tLoss1", "opp-loss-a", reason="price_too_high", died="quoted", recorded_at=recent)
     )
     await repo.add(
-        TenantId("tLoss1"), _loss("loss-a3", "tLoss1", "opp-loss-a", reason="no_reply", died="contacted")
+        TenantId("tLoss1"), _loss("loss-a3", "tLoss1", "opp-loss-a", reason="no_reply", died="contacted", recorded_at=recent)
     )
     await repo_session.commit()
 

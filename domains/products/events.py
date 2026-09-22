@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
-from shared.events.catalog import SourcingCandidatesVerified
+from shared.events.catalog import (
+    CatalogCultivationQueued,
+    CatalogProductProposalCreated,
+    CatalogProposalPolicyActivated,
+    SourcingCandidatesVerified,
+)
 
-PUBLISHES = ()
+PUBLISHES = (
+    CatalogProposalPolicyActivated,
+    CatalogProductProposalCreated,
+    CatalogCultivationQueued,
+)
 
 SUBSCRIBES = (SourcingCandidatesVerified,)
 """封存的精确候选 generation → source_only 产品卡。

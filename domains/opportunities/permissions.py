@@ -16,15 +16,17 @@
 
 不 import 其他 domains/*；只依赖 shared.*。
 """
+
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
 from shared.errors import PermissionDenied, ValidationError
-from shared.schemas.identifiers import EmployeeId, TenantId
+from shared.schemas.identifiers import EmployeeId, OpportunityId, TenantId
 
 
 class OpportunityAction(str, Enum):
@@ -36,6 +38,7 @@ class OpportunityAction(str, Enum):
     OPPORTUNITY_MARK_LOST = "opportunity:mark_lost"
     OPPORTUNITY_MARK_WON = "opportunity:mark_won"
     OPPORTUNITY_READ = "opportunity:read"
+    NOTIFICATION_AUDIENCE_READ = "opportunity:notification_audience_read"
     SOURCING_HANDOFF_READ = "opportunity:sourcing_handoff_read"
     OPPORTUNITY_LIST = "opportunity:list"
     HANDOFF_REQUEST = "handoff:request"
@@ -75,6 +78,7 @@ class OpportunityScope:
     allowed_owners: frozenset[EmployeeId] | None = None
     allowed_countries: frozenset[str] | None = None
     allowed_categories: frozenset[str] | None = None
+    notification_opportunity_id: OpportunityId | None = None
 
     def __post_init__(self) -> None:
         if self.level is ScopeLevel.SELF and not self.allowed_owners:
@@ -227,6 +231,7 @@ class Phase1OpportunityAuthorizer:
             ("system", ScopeLevel.SYSTEM): frozenset(
                 {
                     OpportunityAction.SOURCING_HANDOFF_READ,
+                    OpportunityAction.NOTIFICATION_AUDIENCE_READ,
                     OpportunityAction.HANDOFF_REQUEST,
                     OpportunityAction.HANDOFF_ESCALATION_RECORD,
                 }
@@ -236,6 +241,26 @@ class Phase1OpportunityAuthorizer:
             scope, OpportunityScope
         ):
             raise PermissionDenied("Phase 1 机会授权拒绝")
+        if action is OpportunityAction.NOTIFICATION_AUDIENCE_READ:
+            if (
+                not isinstance(scope.notification_opportunity_id, str)
+                or re.fullmatch(
+                    r"opp_[0-7][0-9A-HJKMNP-TV-Z]{25}",
+                    scope.notification_opportunity_id,
+                )
+                is None
+                or any(
+                    value is not None
+                    for value in (
+                        scope.allowed_owners,
+                        scope.allowed_countries,
+                        scope.allowed_categories,
+                    )
+                )
+            ):
+                raise PermissionDenied("通知受众必须限定单一机会")
+        elif scope.notification_opportunity_id is not None:
+            raise PermissionDenied("通知机会scope不得用于其他操作")
         level = scope.level
         key = (actor.role, level)
         if (

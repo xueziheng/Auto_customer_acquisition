@@ -1,6 +1,8 @@
 <script setup lang="ts">
 /* global Event, HTMLSelectElement, Response */
-import { computed, inject, onMounted, ref } from "vue";
+import { computed, inject, onMounted, ref, watch } from "vue";
+
+import { useRoute } from "vue-router";
 
 import { apiClient, createApiClient } from "../../api/client";
 import type { components } from "../../api/api";
@@ -13,6 +15,8 @@ type OpportunityView = components["schemas"]["OpportunityView"];
 type RefreshChannels = { detail: boolean; list: boolean };
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
+const route = useRoute();
+const requestedId = computed(() => typeof route.query.opportunity === "string" ? route.query.opportunity : null);
 const opportunities = ref<OpportunityView[]>([]);
 const selectedId = ref<string | null>(null);
 const selectedOpportunity = ref<OpportunityView | null>(null);
@@ -120,6 +124,8 @@ async function selectOpportunity(opportunityId: string): Promise<void> {
   await loadDetail(opportunityId);
 }
 
+watch(requestedId, id => { if (id) { selectedId.value = id; void loadDetail(id); } });
+
 async function loadList(loadSelectedDetail = true): Promise<boolean> {
   const requestVersion = ++listRequestVersion;
   listLoading.value = opportunities.value.length === 0;
@@ -138,9 +144,9 @@ async function loadList(loadSelectedDetail = true): Promise<boolean> {
     if (result.response.status === 200 && result.data) {
       opportunities.value = result.data;
       stale.value = false;
-      const retained = selectedId.value && result.data.some((item) => item.opportunity_id === selectedId.value)
+      const retained = requestedId.value ?? (selectedId.value && result.data.some((item) => item.opportunity_id === selectedId.value)
         ? selectedId.value
-        : result.data[0]?.opportunity_id ?? null;
+        : result.data[0]?.opportunity_id ?? null);
       selectedId.value = retained;
       if (!retained) {
         selectedOpportunity.value = null;
@@ -539,7 +545,6 @@ onMounted(() => void loadList());
 }
 
 :global(body) {
-  min-width: 1080px;
   color: #172323;
   background: #f5f7f7;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -550,7 +555,9 @@ onMounted(() => void loadList());
 .board-shell {
   display: grid;
   grid-template-rows: 68px minmax(0, 1fr);
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
+  height: auto;
   overflow: hidden;
   color: #172323;
   background: #f5f7f7;
@@ -915,6 +922,16 @@ h1 {
   .detail-layout {
     padding: 10px;
   }
+}
+
+@media (max-width: 700px) {
+  .board-shell { display: flex; flex-direction: column; overflow-y: auto; }
+  .board-shell > .topbar { display: none; }
+  .workspace { display: flex; flex-direction: column; flex-shrink: 0; overflow: visible; }
+  .list-pane, .detail-pane { flex-shrink: 0; overflow: visible; }
+  .opportunity-list { max-height: 320px; }
+  .detail-layout { min-height: 0; padding: 10px; }
+  .metadata, .account-name, .next-action { overflow-wrap: anywhere; }
 }
 
 @media (prefers-reduced-motion: reduce) {

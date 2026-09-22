@@ -51,7 +51,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0056"
+_ALEMBIC_HEAD = "0066"
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -61,6 +61,10 @@ def _type_key(value: str) -> str:
 
 
 EXPECTED_TABLES: tuple[str, ...] = (
+    "catalog_proposal_policy_versions",
+    "catalog_proposal_evaluations",
+    "catalog_product_proposals",
+    "catalog_cultivation_cases",
     "need_unit_confirmations",
     "costing_policies",
     "costing_price_evidence",
@@ -169,6 +173,7 @@ async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
     try:
         _run_alembic(db_url, "downgrade", "0051")
         async with engine.begin() as connection:
+            await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
             await connection.execute(
                 insert_legacy,
                 {
@@ -217,6 +222,7 @@ async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
 
         with pytest.raises(IntegrityError):
             async with engine.begin() as connection:
+                await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
                 await connection.execute(
                     text(
                         "INSERT INTO directive_proposals "
@@ -231,6 +237,7 @@ async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
                 )
 
         async with engine.begin() as connection:
+            await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
             await connection.execute(
                 text(
                     "INSERT INTO directive_proposals "
@@ -250,6 +257,7 @@ async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
             )
         with pytest.raises(DBAPIError):
             async with engine.begin() as connection:
+                await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
                 await connection.execute(
                     text(
                         "UPDATE directive_proposals SET base_directive_version=1 "
@@ -267,6 +275,7 @@ async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
             )
 
         async with engine.begin() as connection:
+            await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
             await connection.execute(
                 text(
                     "ALTER TABLE directive_proposals DISABLE TRIGGER "
@@ -298,6 +307,7 @@ async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
     finally:
         _run_alembic(db_url, "upgrade", "head")
         async with engine.begin() as connection:
+            await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
             await connection.execute(
                 text(
                     "ALTER TABLE directive_proposals DISABLE TRIGGER "

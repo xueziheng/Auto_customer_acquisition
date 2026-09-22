@@ -46,6 +46,7 @@ from domains.costing.permissions import (
 )
 from domains.costing.service import CostingService
 from domains.costing.service_impl import CostingServiceImpl
+from domains.demand.service import DemandService
 from domains.demand.service_impl import DemandServiceImpl
 from domains.opportunities.permissions import (
     Actor as OpportunityActor,
@@ -304,9 +305,7 @@ class PostgresSourcingNeedReader:
             required_by=cast(NeedFact | None, facts["required_by"]),
         )
         return snapshot.model_copy(
-            update={
-                "snapshot_hash": canonical_sourcing_need_snapshot_hash(snapshot)
-            }
+            update={"snapshot_hash": canonical_sourcing_need_snapshot_hash(snapshot)}
         )
 
 
@@ -817,6 +816,7 @@ def build_sourcing_case_composition(
     research: SourcingResearchChain,
     opportunities: OpportunityService,
     now: Callable[[], datetime],
+    demand: DemandService | None = None,
 ) -> SourcingCaseComposition:
     """装配真实服务；外部研究端口必须是 Tavily-free/Gateway 具体链。"""
     if (
@@ -828,7 +828,7 @@ def build_sourcing_case_composition(
     ):
         raise ValidationError("寻源 research-only 依赖绑定无效")
     need_reader = PostgresSourcingNeedReader(factory, tenant_id)
-    demand = DemandServiceImpl(
+    canonical_demand = demand or DemandServiceImpl(
         cast(Any, lambda bound: SqlAlchemyDemandUnitOfWork(factory, bound)),
         now=now,
     )
@@ -897,7 +897,7 @@ def build_sourcing_case_composition(
     return SourcingCaseComposition(
         tenant_id,
         handlers,
-        demand,
+        canonical_demand,
         sourcing,
         products,
         suppliers,

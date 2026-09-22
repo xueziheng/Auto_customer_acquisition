@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol, Self, runtime_checkable
 
+from domains.conversations.inbox_access import InboxAccessFactsReader, InboxActor
 from domains.conversations.models import (
     ClassificationCorrection,
     Conversation,
@@ -53,8 +54,14 @@ class ConversationRepository(Protocol):
         self, tenant_id: TenantId, account_id: ProspectAccountId, channel: str
     ) -> Conversation | None: ...
 
+    async def get_inbox(
+        self, tenant_id: TenantId, conversation_id: ConversationId, *, actor: InboxActor
+    ) -> Conversation | None:
+        """当前员工与归属SQL过滤的Inbox专用读取；内部工作流get不对HTTP暴露。"""
+        ...
+
     async def list_recent(
-        self, tenant_id: TenantId, *, limit: int
+        self, tenant_id: TenantId, *, actor: InboxActor, limit: int
     ) -> list[Conversation]:
         """按最近活动倒序列出本租户会话。"""
         ...
@@ -74,9 +81,7 @@ class ClassificationRepository(Protocol):
         """该 message 的分类记录（每 message 至多一条）。"""
         ...
 
-    async def add_correction(
-        self, correction: ClassificationCorrection
-    ) -> bool:
+    async def add_correction(self, correction: ClassificationCorrection) -> bool:
         """append 一条纠正记录；返回 True=新插入，False=DB 幂等冲突（同键已存在）。
 
         PostgreSQL ``INSERT ... ON CONFLICT DO NOTHING``，唯一键为
@@ -114,6 +119,7 @@ class ReplyWorkRepository(Protocol):
         limit: int,
     ) -> list[ReplyWorkRecord]: ...
 
+
 @runtime_checkable
 class ConversationsUnitOfWork(Protocol):
     """conversations 域事务边界（域级接口；实现为 SqlAlchemyConversationsUnitOfWork）。
@@ -121,6 +127,7 @@ class ConversationsUnitOfWork(Protocol):
     服务层只依赖本 Protocol——仓储、消息锁与事件总线都在事务内串行化。
     """
 
+    inbox_facts: InboxAccessFactsReader
     classifications: ClassificationRepository
     conversations: ConversationRepository
     messages: MessageRepository
@@ -163,6 +170,14 @@ class MessageRepository(Protocol):
     async def list_for_conversation(
         self, tenant_id: TenantId, conversation_id: ConversationId
     ) -> list[Message]: ...
+
+    async def account_reply_summary(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+    ) -> tuple[bool, datetime | None]:
+        """返回未分类存在性及有效真人回复最大时间；单 SQL 快照，无消息原文。"""
+        ...
 
     async def has_inbound_since(
         self, tenant_id: TenantId, conversation_id: ConversationId, since: str

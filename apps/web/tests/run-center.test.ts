@@ -104,7 +104,7 @@ async function eventually(assertion: () => void): Promise<void> {
 const mountedApps: VueApp[] = [];
 afterEach(() => { mountedApps.splice(0).forEach((app) => app.unmount()); });
 
-async function mountRuns(fetch: typeof globalThis.fetch, path = "/runs"): Promise<{
+async function mountRuns(fetch: typeof globalThis.fetch, path = "/runs", exerciseObservation = false): Promise<{
   app: VueApp;
   root: HTMLElement;
 }> {
@@ -119,6 +119,7 @@ async function mountRuns(fetch: typeof globalThis.fetch, path = "/runs"): Promis
         if (input instanceof Request && new URL(input.url).pathname === "/notifications") {
           return jsonResponse([]);
         }
+        if (!exerciseObservation && input instanceof Request && new URL(input.url).pathname === "/runs/observability") return jsonResponse(observation);
         return fetch(input);
       },
     }),
@@ -351,7 +352,7 @@ describe("RunCenter", () => {
     await nextTick();
     expect(root.querySelector(".run-detail")?.textContent).not.toContain("email_draft");
     expect(root.querySelector('[role="alert"]')?.textContent).toContain("Run 链接无效");
-    expect(requested.filter((path) => path.startsWith("/runs/"))).toHaveLength(1);
+    expect(requested.filter((path) => path.startsWith("/runs/") && path !== "/runs/observability")).toHaveLength(1);
   });
 
   it("移除深链参数恢复列表默认选择，不保留前一深链证据", async () => {
@@ -423,4 +424,101 @@ describe("RunCenter", () => {
       expect(root.textContent).toContain("只有老板可以查看 Run 审计记录");
     });
   });
+});
+
+it("Task10 Run审批链接只使用该Run返回的精确approval_id", async () => {
+  const { root } = await mountRuns(vi.fn(async (raw) => jsonResponse(new URL((raw as Request).url).pathname === '/runs' ? [firstRun] : firstDetail)), `/runs?run=${firstRun.run_id}`);
+  await eventually(() => expect(root.textContent).toContain(firstDetail.approvals[0]!.approval_id));
+  expect(root.querySelector(`a[href="/approvals?approval_id=${firstDetail.approvals[0]!.approval_id}"]`)).not.toBeNull();
+});
+
+const observation: components['schemas']['WebCoreObservation'] = {
+  scope: 'tenant_window', completeness: 'partial',
+  window_start: '2026-09-05T12:00:00Z', window_end: '2026-09-06T12:00:00Z', observed_at: '2026-09-06T12:00:00Z',
+  stages: [{ stage: 'validated_need', count: 2, source: 'validated_needs', time_field: 'created_at', missing_inputs: [] }],
+  qualified_opportunity_count: null,
+  missing_inputs: ['qualification_evidence_missing','run_entity_attribution_missing','supply_match_source_missing'],
+  inputs: { model_input_tokens: null, model_output_tokens: null, human_work_seconds: null,
+    total_cost: null, cost_per_qualified_opportunity: null,
+    missing_inputs: ['provider_token_usage_missing','human_time_records_missing','rate_card_missing','qualification_evidence_missing'] },
+  source_calls: [{ tool_id: 'web.search', call_count: 1, attempt_count: 1, duplicate_receipt_count: 3 }],
+  consumed_credits: 1, reserved_credits: 0, uncertain_credits: 1,
+  handoffs: { scope: 'tenant_current', source: 'handoffs.requested', queue_depth: 3, oldest_wait_seconds: null,
+    invalid_time_count: 1, by_employee: [{ employee_id: null, queue_depth: 3 }] },
+};
+
+it('renders independent tenant metrics with unknown costs and clears them after failed refresh', async () => {
+  let failed = false;
+  const { root } = await mountRuns(async (input) => {
+    const path = new URL((input as Request).url).pathname;
+    if (path === '/runs/observability') return jsonResponse(failed ? {} : observation, failed ? 503 : 200);
+    return jsonResponse(path === '/runs' ? [firstRun] : firstDetail);
+  }, "/runs", true);
+  await eventually(() => {
+    expect(root.querySelector('.observation-panel')?.textContent).toContain('各阶段独立窗口');
+    expect(root.querySelector('.observation-panel')?.textContent).toContain('费用总额：未知');
+    expect(root.querySelector('.observation-panel')?.textContent).toContain('时间异常 1');
+    expect(root.querySelector('.observation-panel')?.textContent).toContain('重放回执 3');
+  });
+  failed = true;
+  Array.from(root.querySelectorAll('button')).find(button => button.textContent?.includes('刷新记录'))!.click();
+  await eventually(() => {
+    expect(root.querySelector('.observation-panel')?.textContent).toContain('观测读取失败');
+    expect(root.querySelector('.observation-panel')?.textContent).not.toContain('重放回执 3');
+  });
+});
+
+it('uses only server verified Run object references and preserves unknown reversed clocks', async () => {
+  const safeDetail: RunDetail = { ...firstDetail, summary: secondRun, observation: {
+    scope: 'run', completeness: 'partial', source: 'workflow_steps_and_tool_calls',
+    call_count: 1, attempt_count: 2, duplicate_receipt_count: 0,
+    recorded_span_seconds: null, invalid_time_count: 1,
+    handoff_id: 'hand_verified', opportunity_id: 'opp_verified', need_id: 'need_verified',
+    responsible_employee_id: 'emp_handler', inputs: observation.inputs,
+  }};
+  const { root } = await mountRuns(async input => {
+    const path = new URL((input as Request).url).pathname;
+    if (path === '/runs/observability') return jsonResponse(observation);
+    return jsonResponse(path === '/runs' ? [secondRun] : safeDetail);
+  }, "/runs", true);
+  await eventually(() => {
+    expect(root.querySelector('a[href="/crm/handoffs/hand_verified"]')).not.toBeNull();
+    expect(root.querySelector('a[href="/demand/needs/need_verified"]')).not.toBeNull();
+    expect(root.querySelector('.run-observation')?.textContent).toContain('记录时间跨度：未知');
+    expect(root.querySelector('.run-observation')?.textContent).toContain('emp_handler');
+  });
+});
+
+it('observation permission failure clears already visible protected Run data', async () => {
+  const pending = deferredResponse();
+  const { root } = await mountRuns(async input => {
+    const path = new URL((input as Request).url).pathname;
+    if (path === '/runs/observability') return pending.promise;
+    return jsonResponse(path === '/runs' ? [firstRun] : firstDetail);
+  }, '/runs', true);
+  await eventually(() => expect(root.querySelector('.run-detail')?.textContent).toContain('email_draft'));
+  pending.resolve(jsonResponse({}, 403));
+  await eventually(() => {
+    expect(root.querySelector('.run-detail')?.textContent).not.toContain('email_draft');
+    expect(root.querySelector('.observation-panel')?.textContent).toContain('只有老板');
+  });
+});
+
+it.each([200, 503])('late observation %s cannot replace a refreshed snapshot', async status => {
+  const older = deferredResponse(); let reads = 0;
+  const { root } = await mountRuns(async input => {
+    const path = new URL((input as Request).url).pathname;
+    if (path === '/runs/observability') {
+      reads++;
+      return reads === 1 ? older.promise : jsonResponse({ ...observation, handoffs: { ...observation.handoffs, queue_depth: 7 } });
+    }
+    return jsonResponse(path === '/runs' ? [firstRun] : firstDetail);
+  }, '/runs', true);
+  await eventually(() => expect(root.querySelector('.run-detail')?.textContent).toContain('email_draft'));
+  Array.from(root.querySelectorAll('button')).find(button => button.textContent?.includes('刷新记录'))!.click();
+  await eventually(() => expect(root.querySelector('.observation-panel')?.textContent).toContain('当前租户待接管：7'));
+  older.resolve(jsonResponse(status === 200 ? observation : {}, status));
+  await settle();
+  expect(root.querySelector('.observation-panel')?.textContent).toContain('当前租户待接管：7');
+  expect(root.querySelector('.observation-panel')?.textContent).not.toContain('观测读取失败');
 });

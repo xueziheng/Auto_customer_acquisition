@@ -91,3 +91,47 @@ starting/admitted 不变，priority-invalid 可恢复，case-state-mismatch 只�
 永久非法排序结构在 readiness 路径只能形成固定 `priority_facts_invalid`，在 membership 路径必须复用
 精确 refresh targets 将同簇 waiting 固定阻断；valid 但当前 cluster 为空或不同才是 stale no-op。三类
 结果不得混同，且禁止保存原异常或自由文本。
+
+## Catalog Product Proposal 组合
+
+Catalog 恢复扫描只能在同一 singleton scheduler 专用锁下运行，位于
+Sourcing Admission 之后、workflow poll 之前。进入扫描前和返回后必须分别重新确认
+同一 backend；存在 Catalog 驱动却缺少确认回调时，任何 phase 开始前失败关闭。
+扫描普通失败只记录固定 `catalog_products` 阶段和类别/租户/cycle，不得记录异常原文、
+业务 ID、事实、证据、hash、URL、价格、凭证或 DSN。
+
+三流每轮依次处理：`pending_approval` 策略恢复、
+`awaiting_approval_submission` 提案恢复、存在活动策略时的真实需求簇扫描。
+游标 checkpoint 必须持久保存 tenant、固定 stream、`created_at`、稳定实体 ID 和 CAS
+version，按升序 keyset 有界翻页；进程或 driver 每轮重建仍从持久位置继续。只有读取和
+整页处理确定成功才以 version+旧位置 CAS 推进，末页耗尽写入 null 位置（不删行）后才归零。
+checkpoint 是恢复进度而不是锁或 leader election；生产仍必须持有同一 singleton scheduler
+专用锁。不得用首页重扫饿死历史行，不得在 checkpoint 存业务正文。
+
+评估必须先用 canonical context 和确定幂等键创建 durable
+`catalog_cluster_evaluation` Run，不得由 scheduler 直接调用 Products 评估。运行时只通过
+Demand/Products/Approvals 公开服务协作，不得导入其 repository、model 或 UoW 绕过领域服务。
+必须注册三个 Catalog workflow 定义及精确 metadata-only 事件 consumer；
+`NeedClusterMembershipChanged` 同时保留 `sourcing_case.cluster_membership` 与
+`catalog_products.need_cluster_membership_changed` 两个不同 durable consumer。`ApprovalDecided`
+继续按审批类型鉴别，不得以 Catalog handler 死信其他审批。组合与恢复不得创建
+Product、Sourcing、供应商/联系人、发送、报价、价格、外部 provider 或 Tool Gateway 动作，也不得创建测试策略。
+
+## 邮件入站阶段（ADR0026）
+
+InboundDriver只在本进程已注册完整reply_qualification及原InboundMessageStored消费者时启用。
+缺消费者时健康能力inbound_body为disabled/required_ports_missing，人工绑定仅代表固定邮箱配置，
+不表示自动抓取已启用；不得拉取后制造无人消费的入站事件。Task6完整组合后才自动启用。
+原singleton cycle在入站扫描前、返回后及后置outbox前核验同一backend；失锁零后续推进。
+driver不持有锁、不建循环，opaque游标只从tenant账本读取；永久错误等待真人带版本原位核对，
+429/暂态到期才能重试，不能绕过Retry-After、重置history或换身份。
+
+## Task6回复资源（ADR0027）
+
+reply工厂只借用本进程显式typed session/BoundedRaw及canonical服务；不挖private或另建engine。
+Demand的客户证据委托每runtime独立，仅允许绑定一次真实verifier，未绑定拒绝，ready前完成。
+内容复用5a纯解析，完整subject+原HTML候选及subject+文本各先guard再预算，超限拒绝不裁剪。
+
+ADR0066：canonical reply 必须注入当前分类资格端口，Raw 前/模型前/模型后重新核对受托员工。
+Raw 读取复用本进程独立 inbox.message.evidence.read Gateway；qualify 与原 Inbox 权限取交集，
+不扩 manager/sales 或技术 review 权限。分类写入传入当前 actor，由原领域事务持员工访问锁到提交。

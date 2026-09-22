@@ -1,0 +1,85 @@
+{
+  "date": "2026-09-06",
+  "status": "passed",
+  "scope": "static_owned_pg_and_raw_object_only",
+  "resource_cleanup_errors": [],
+  "source_owner": "25cfa8c8ff3445cfa969c9e5474df64f",
+  "target_owner": "f9e358faf5424a4cb2e6e619d36c225e",
+  "source": {
+    "metadata": {
+      "tenant_id": "tn_01M1VAH6NZW1FN9FRHJG1B1X2V",
+      "artifact_id": "art_01M1VAHAANYYXR9JG3103CTB4H",
+      "kind": "email_raw",
+      "content_hash": "fa9a230d284f919df4a6d374649935e4f4ad53ae95ade1a56a903f00b1d32de9",
+      "size_bytes": 75,
+      "mime_type": "message/rfc822",
+      "uploaded_by": null,
+      "uploaded_at": "2026-09-06T12:19:20.021527+00:00"
+    },
+    "metadata_sha256": "c1df0afa630f47c29dee24c67ea62822dc3939c96cf85e44021be51ddd345378",
+    "bytes_sha256": "fa9a230d284f919df4a6d374649935e4f4ad53ae95ade1a56a903f00b1d32de9",
+    "row_count": 1,
+    "schema_head": "0059"
+  },
+  "target": {
+    "metadata": {
+      "tenant_id": "tn_01M1VAH6NZW1FN9FRHJG1B1X2V",
+      "artifact_id": "art_01M1VAHAANYYXR9JG3103CTB4H",
+      "kind": "email_raw",
+      "content_hash": "fa9a230d284f919df4a6d374649935e4f4ad53ae95ade1a56a903f00b1d32de9",
+      "size_bytes": 75,
+      "mime_type": "message/rfc822",
+      "uploaded_by": null,
+      "uploaded_at": "2026-09-06T12:19:20.021527+00:00"
+    },
+    "metadata_sha256": "c1df0afa630f47c29dee24c67ea62822dc3939c96cf85e44021be51ddd345378",
+    "bytes_sha256": "fa9a230d284f919df4a6d374649935e4f4ad53ae95ade1a56a903f00b1d32de9",
+    "row_count": 1,
+    "schema_head": "0059"
+  },
+  "same_owner_rejected": true,
+  "nonempty_target_rejected": true,
+  "application_writers": 0,
+  "dump_retained": false,
+  "source_unchanged": true,
+  "cleanup": [
+    {
+      "owner": "f9e358faf5424a4cb2e6e619d36c225e",
+      "container_ids": [
+        "53d84d3ba7c67a4f3b3b50a7df06056d81fd50f09e0e619a1213f5bedb91b218",
+        "17ab7e1b4a887226ee37d866df76db2de22e795fabce4044c9a985ab1b24a736"
+      ],
+      "errors": [],
+      "private_config_removed": true,
+      "processes": [],
+      "listener_fds": [
+        -1,
+        -1,
+        -1,
+        -1
+      ]
+    },
+    {
+      "owner": "25cfa8c8ff3445cfa969c9e5474df64f",
+      "container_ids": [
+        "2dd00eba857f2de73780103d1bd451b9428bbba82a3fef1fb81db0b3f3e581d5",
+        "291be7aac382a21faa1c116cb615d510b8f0175c00fe9fd34e2178a8e2b12360"
+      ],
+      "errors": [],
+      "private_config_removed": true,
+      "processes": [],
+      "listener_fds": [
+        -1,
+        -1,
+        -1,
+        -1
+      ]
+    }
+  ],
+  "test_source": "tests/integration/test_web_core_backup_restore.py",
+  "test_source_sha256": "c199d9de1d8c3668d4f67d6407b21af9d2efea9fa61e4c2d447b5f8ab3c7a1d6",
+  "command": "env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest tests/integration/test_web_core_backup_restore.py -q --tb=short",
+  "exit_code": 0,
+  "pytest_elapsed_seconds": "9.67",
+  "review_fix": "I1/M1 round1"
+}

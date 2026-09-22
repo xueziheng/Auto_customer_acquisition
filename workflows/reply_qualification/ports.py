@@ -14,9 +14,10 @@ classify 步骤需要原文时经本端口按 message_id 只读加载，找不�
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+from domains.conversations.service import InboxActor
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ContactPointId,
@@ -36,10 +37,24 @@ class ReplyMessageContent:
     进模型前由调用方归一为固定非敏感占位，绝不让模型侧运行时意外失败。
     """
 
-    subject: str | None
-    body: str
+    subject: str | None = field(repr=False)
+    body: str = field(repr=False)
+    projected: bool = False
+    original_subject: str | None = field(default=None, repr=False)
+    original_body: str | None = field(default=None, repr=False)
+    evidence_segments: tuple[str, ...] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        # projected=False仅用于本身未经改写的可信旧reader；已投影不能缺原件。
+        if type(self.projected) is not bool or (
+            self.projected
+            and (
+                not isinstance(self.original_body, str)
+                or not self.original_body.strip()
+                or self.evidence_segments is None
+            )
+        ):
+            raise ValidationError("回复投影缺少可靠原件")
         if not isinstance(self.body, str) or not self.body.strip():
             raise ValidationError("回复消息正文无效")
         if self.subject is not None and (
@@ -121,3 +136,16 @@ class ReplyActionPorts(Protocol):
     async def intake_new_contact(
         self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
     ) -> None: ...
+
+
+class ReplyClassificationAccess(Protocol):
+    """受托分类的当前资格与真实 Message 检查；每个异步边界重新查询。"""
+
+    async def require(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+        outbound_message_id: OutboundMessageId | None,
+    ) -> InboxActor:
+        """仅返回通过当前 qualify 检查的身份；不返回原件或凭证。"""
+        ...

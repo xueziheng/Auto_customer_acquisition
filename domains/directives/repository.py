@@ -9,11 +9,19 @@ from typing import Protocol, Self, runtime_checkable
 
 from domains.directives.models import Directive, DirectiveProposal
 from shared.events.bus import EventBus
-from shared.schemas.identifiers import DirectiveId, TenantId
+from shared.schemas.identifiers import AgentTurnId, DirectiveId, TenantId
 
 
 @runtime_checkable
 class ProposalRepository(Protocol):
+    async def add_once(
+        self,
+        proposal: DirectiveProposal,
+        source_turn_id: AgentTurnId,
+        source_version: int,
+        request_hmac: str,
+    ) -> str: ...
+
     async def add(self, proposal: DirectiveProposal) -> None: ...
 
     async def get(
@@ -26,9 +34,7 @@ class ProposalRepository(Protocol):
 
     async def update(self, proposal: DirectiveProposal) -> None: ...
 
-    async def list_pending(
-        self, tenant_id: TenantId
-    ) -> list[DirectiveProposal]: ...
+    async def list_pending(self, tenant_id: TenantId) -> list[DirectiveProposal]: ...
 
     async def list_rejected(
         self, tenant_id: TenantId, limit: int
@@ -45,9 +51,7 @@ class DirectiveRepository(Protocol):
         唯一允许的更新是给前一版本盖 ``superseded_at`` 戳。"""
         ...
 
-    async def get_active(
-        self, tenant_id: TenantId
-    ) -> Directive | None:
+    async def get_active(self, tenant_id: TenantId) -> Directive | None:
         """当前生效版本（``superseded_at`` 为空的那个，有且最多一个）。
 
         这个查询全系统高频调用，值得缓存；但**缓存失效必须挂在
@@ -56,9 +60,7 @@ class DirectiveRepository(Protocol):
         """
         ...
 
-    async def get_active_for_update(
-        self, tenant_id: TenantId
-    ) -> Directive | None: ...
+    async def get_active_for_update(self, tenant_id: TenantId) -> Directive | None: ...
 
     async def get_version(
         self, tenant_id: TenantId, version: int

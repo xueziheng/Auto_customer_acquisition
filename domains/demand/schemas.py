@@ -32,6 +32,7 @@ from shared.schemas.identifiers import (
     EmployeeId,
     EnrollmentId,
     MessageId,
+    NeedClusterId,
     NeedHypothesisId,
     OpportunityId,
     OutboundMessageId,
@@ -40,8 +41,12 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
 )
 from shared.schemas.money import Money
-from shared.schemas.provenance import FactualField, SourceType
-from shared.schemas.quote_facts import NeedFactDTO, QuoteEmployeeFact
+from shared.schemas.provenance import FactualField, Provenance, SourceType
+from shared.schemas.quote_facts import (
+    NeedFactDTO,
+    QuoteEmployeeFact,
+    canonical_fact_hash,
+)
 from shared.schemas.quote_facts import (
     NeedQuoteFacts as NeedQuoteFacts,  # noqa: PLC0414 - 保持公开类型或测试fixture身份
 )
@@ -56,20 +61,38 @@ class NeedUnitScopeFacts(NeedFactDTO):
     account_id: ProspectAccountId
     actor: QuoteEmployeeFact
 
+
 NeedUnitAction = Literal["read", "confirm"]
 NeedUnitErrorCode = Literal[
-    "invalid_input", "unit_unspecified", "quantity_invalid", "source_mismatch",
-    "source_unsupported", "need_not_found", "confirmation_not_found", "need_terminal",
-    "quantity_changed", "unit_changed", "idempotency_conflict", "unit_missing",
-    "unit_stale", "fact_unconfirmed", "permission_denied", "source_unavailable",
-    "dependency_unavailable", "lock_timeout", "storage_unknown", "facts_corrupt",
+    "invalid_input",
+    "unit_unspecified",
+    "quantity_invalid",
+    "source_mismatch",
+    "source_unsupported",
+    "need_not_found",
+    "confirmation_not_found",
+    "need_terminal",
+    "quantity_changed",
+    "unit_changed",
+    "idempotency_conflict",
+    "unit_missing",
+    "unit_stale",
+    "fact_unconfirmed",
+    "permission_denied",
+    "source_unavailable",
+    "dependency_unavailable",
+    "lock_timeout",
+    "storage_unknown",
+    "facts_corrupt",
 ]
 
 
 def _unit_text(value: str) -> str:
     """输入不静默去空白或控制字符，摘录单独允许换行。"""
-    if value != value.strip() or not value or any(
-        ord(c) < 32 or 127 <= ord(c) < 160 for c in value
+    if (
+        value != value.strip()
+        or not value
+        or any(ord(c) < 32 or 127 <= ord(c) < 160 for c in value)
     ):
         raise ValueError("字符串必须非空且不含首尾空白或控制字符")
     return value
@@ -97,9 +120,15 @@ def _unit_identity(value: object) -> None:
     _unit_text(value)
 
 
-_UnitText = Annotated[str, Field(min_length=1, max_length=64), AfterValidator(_unit_text)]
-_UnitLocator = Annotated[str, Field(min_length=1, max_length=256), AfterValidator(_unit_text)]
-_UnitQuote = Annotated[str, Field(min_length=1, max_length=4096), AfterValidator(_unit_quote)]
+_UnitText = Annotated[
+    str, Field(min_length=1, max_length=64), AfterValidator(_unit_text)
+]
+_UnitLocator = Annotated[
+    str, Field(min_length=1, max_length=256), AfterValidator(_unit_text)
+]
+_UnitQuote = Annotated[
+    str, Field(min_length=1, max_length=4096), AfterValidator(_unit_quote)
+]
 _UnitHash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 _UnitTime = Annotated[datetime, AfterValidator(_unit_utc)]
 _UnitId = Annotated[str, Field(min_length=1, max_length=40), AfterValidator(_unit_text)]
@@ -121,9 +150,13 @@ class _NeedUnitDTO(BaseModel):
                 provenance = value.provenance
                 if provenance.confirmed_by is not None:
                     _unit_identity(provenance.confirmed_by)
-                updated = replace(provenance,
+                updated = replace(
+                    provenance,
                     extracted_at=_unit_utc(provenance.extracted_at),
-                    confirmed_at=_unit_utc(provenance.confirmed_at) if provenance.confirmed_at else None)
+                    confirmed_at=_unit_utc(provenance.confirmed_at)
+                    if provenance.confirmed_at
+                    else None,
+                )
                 object.__setattr__(self, name, replace(value, provenance=updated))
         return self
 
@@ -132,8 +165,9 @@ class NeedUnitConfirmationCommand(_NeedUnitDTO):
     """人工明确口径，确认身份只能由服务端绑定。"""
 
     unit: _UnitText
-    source_message_id: Annotated[MessageId, Field(min_length=1, max_length=40),
-                                 AfterValidator(_unit_text)]
+    source_message_id: Annotated[
+        MessageId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)
+    ]
     locator: _UnitLocator
     source_quote: _UnitQuote
     expected_quantity_fact_hash: _UnitHash
@@ -143,14 +177,23 @@ class NeedUnitConfirmationCommand(_NeedUnitDTO):
 class NeedUnitAccess(_NeedUnitDTO):
     """当前员工与机会范围授权，不存可伪造allowed标记。"""
 
-    tenant_id: Annotated[TenantId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)]
-    need_id: Annotated[ValidatedNeedId, Field(min_length=1, max_length=40),
-                       AfterValidator(_unit_text)]
-    opportunity_id: Annotated[OpportunityId, Field(min_length=1, max_length=40),
-                              AfterValidator(_unit_text)]
-    account_id: Annotated[ProspectAccountId, Field(min_length=1, max_length=40),
-                          AfterValidator(_unit_text)]
-    actor_id: Annotated[EmployeeId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)]
+    tenant_id: Annotated[
+        TenantId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)
+    ]
+    need_id: Annotated[
+        ValidatedNeedId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)
+    ]
+    opportunity_id: Annotated[
+        OpportunityId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)
+    ]
+    account_id: Annotated[
+        ProspectAccountId,
+        Field(min_length=1, max_length=40),
+        AfterValidator(_unit_text),
+    ]
+    actor_id: Annotated[
+        EmployeeId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)
+    ]
     authorization_ref: Annotated[str, Field(min_length=1), AfterValidator(_unit_text)]
 
 
@@ -172,14 +215,23 @@ class NeedUnitEvidenceQuery(_NeedUnitDTO):
 class VerifiedNeedUnitEvidence(_NeedUnitDTO):
     """可信reader输出客户入站消息的核验元数据，不含原始对象键。"""
 
-    tenant_id: Annotated[TenantId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)]
-    need_id: Annotated[ValidatedNeedId, Field(min_length=1, max_length=40),
-                       AfterValidator(_unit_text)]
-    account_id: Annotated[ProspectAccountId, Field(min_length=1, max_length=40),
-                          AfterValidator(_unit_text)]
-    source_message_id: Annotated[MessageId, Field(min_length=1, max_length=40),
-                                 AfterValidator(_unit_text)]
-    artifact_id: Annotated[ArtifactId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)]
+    tenant_id: Annotated[
+        TenantId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)
+    ]
+    need_id: Annotated[
+        ValidatedNeedId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)
+    ]
+    account_id: Annotated[
+        ProspectAccountId,
+        Field(min_length=1, max_length=40),
+        AfterValidator(_unit_text),
+    ]
+    source_message_id: Annotated[
+        MessageId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)
+    ]
+    artifact_id: Annotated[
+        ArtifactId, Field(min_length=1, max_length=40), AfterValidator(_unit_text)
+    ]
     content_hash: _UnitHash
     locator: _UnitLocator
     source_quote: _UnitQuote
@@ -204,14 +256,32 @@ class NeedUnitConfirmationView(_NeedUnitDTO):
     def _receipt_binding(self) -> Self:
         """确认receipt不能自相矛盾：单位、消息、人工身份与时间必须一致。"""
         provenance = self.unit.provenance
-        if (self.source.tenant_id, self.source.need_id, self.source.quantity_fact_hash,
-            self.source.unit, self.source.source_message_id, self.source.source_quote) != (
-            self.tenant_id, self.need_id, self.quantity_fact_hash,
-            self.unit.value, provenance.source_id, provenance.source_quote,
-        ) or (provenance.source_type, provenance.extracted_by, provenance.confirmed_by,
-              provenance.extracted_at, provenance.confirmed_at) != (
-            SourceType.CONVERSATION, self.confirmed_by, self.confirmed_by,
-            self.confirmed_at, self.confirmed_at,
+        if (
+            self.source.tenant_id,
+            self.source.need_id,
+            self.source.quantity_fact_hash,
+            self.source.unit,
+            self.source.source_message_id,
+            self.source.source_quote,
+        ) != (
+            self.tenant_id,
+            self.need_id,
+            self.quantity_fact_hash,
+            self.unit.value,
+            provenance.source_id,
+            provenance.source_quote,
+        ) or (
+            provenance.source_type,
+            provenance.extracted_by,
+            provenance.confirmed_by,
+            provenance.extracted_at,
+            provenance.confirmed_at,
+        ) != (
+            SourceType.CONVERSATION,
+            self.confirmed_by,
+            self.confirmed_by,
+            self.confirmed_at,
+            self.confirmed_at,
         ):
             raise ValueError("单位确认receipt的事实与来源绑定不一致")
         return self
@@ -221,36 +291,266 @@ class NeedUnitStoredConfirmation(_NeedUnitDTO):
     """内部操作记录，不将请求正文持久化或挂HTTP。"""
 
     view: NeedUnitConfirmationView
-    idempotency_key: Annotated[str, Field(min_length=1, max_length=128),
-                              AfterValidator(_unit_text)]
+    idempotency_key: Annotated[
+        str, Field(min_length=1, max_length=128), AfterValidator(_unit_text)
+    ]
     request_hash: _UnitHash
+
 
 # ISO 3166-1已分配alpha-2代码（2026-08-27核对），只识别来源文字，不授予市场许可。
 # 数据快照：pycountry/pycountry e974d00d5ead823a48d6944a6df1696e95e507e3
 # src/pycountry/databases/iso3166-1.json；仅取249个代码事实，不引入运行时依赖。
 _ISO_3166_ALPHA_2 = frozenset(
     [
-        "AD", "AE", "AF", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT",
-        "AU", "AW", "AX", "AZ", "BA", "BB", "BD", "BE", "BF", "BG", "BH", "BI",
-        "BJ", "BL", "BM", "BN", "BO", "BQ", "BR", "BS", "BT", "BV", "BW", "BY",
-        "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK", "CL", "CM", "CN",
-        "CO", "CR", "CU", "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM",
-        "DO", "DZ", "EC", "EE", "EG", "EH", "ER", "ES", "ET", "FI", "FJ", "FK",
-        "FM", "FO", "FR", "GA", "GB", "GD", "GE", "GF", "GG", "GH", "GI", "GL",
-        "GM", "GN", "GP", "GQ", "GR", "GS", "GT", "GU", "GW", "GY", "HK", "HM",
-        "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IN", "IO", "IQ", "IR",
-        "IS", "IT", "JE", "JM", "JO", "JP", "KE", "KG", "KH", "KI", "KM", "KN",
-        "KP", "KR", "KW", "KY", "KZ", "LA", "LB", "LC", "LI", "LK", "LR", "LS",
-        "LT", "LU", "LV", "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK",
-        "ML", "MM", "MN", "MO", "MP", "MQ", "MR", "MS", "MT", "MU", "MV", "MW",
-        "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI", "NL", "NO", "NP",
-        "NR", "NU", "NZ", "OM", "PA", "PE", "PF", "PG", "PH", "PK", "PL", "PM",
-        "PN", "PR", "PS", "PT", "PW", "PY", "QA", "RE", "RO", "RS", "RU", "RW",
-        "SA", "SB", "SC", "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM",
-        "SN", "SO", "SR", "SS", "ST", "SV", "SX", "SY", "SZ", "TC", "TD", "TF",
-        "TG", "TH", "TJ", "TK", "TL", "TM", "TN", "TO", "TR", "TT", "TV", "TW",
-        "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE", "VG", "VI",
-        "VN", "VU", "WF", "WS", "YE", "YT", "ZA", "ZM", "ZW",
+        "AD",
+        "AE",
+        "AF",
+        "AG",
+        "AI",
+        "AL",
+        "AM",
+        "AO",
+        "AQ",
+        "AR",
+        "AS",
+        "AT",
+        "AU",
+        "AW",
+        "AX",
+        "AZ",
+        "BA",
+        "BB",
+        "BD",
+        "BE",
+        "BF",
+        "BG",
+        "BH",
+        "BI",
+        "BJ",
+        "BL",
+        "BM",
+        "BN",
+        "BO",
+        "BQ",
+        "BR",
+        "BS",
+        "BT",
+        "BV",
+        "BW",
+        "BY",
+        "BZ",
+        "CA",
+        "CC",
+        "CD",
+        "CF",
+        "CG",
+        "CH",
+        "CI",
+        "CK",
+        "CL",
+        "CM",
+        "CN",
+        "CO",
+        "CR",
+        "CU",
+        "CV",
+        "CW",
+        "CX",
+        "CY",
+        "CZ",
+        "DE",
+        "DJ",
+        "DK",
+        "DM",
+        "DO",
+        "DZ",
+        "EC",
+        "EE",
+        "EG",
+        "EH",
+        "ER",
+        "ES",
+        "ET",
+        "FI",
+        "FJ",
+        "FK",
+        "FM",
+        "FO",
+        "FR",
+        "GA",
+        "GB",
+        "GD",
+        "GE",
+        "GF",
+        "GG",
+        "GH",
+        "GI",
+        "GL",
+        "GM",
+        "GN",
+        "GP",
+        "GQ",
+        "GR",
+        "GS",
+        "GT",
+        "GU",
+        "GW",
+        "GY",
+        "HK",
+        "HM",
+        "HN",
+        "HR",
+        "HT",
+        "HU",
+        "ID",
+        "IE",
+        "IL",
+        "IM",
+        "IN",
+        "IO",
+        "IQ",
+        "IR",
+        "IS",
+        "IT",
+        "JE",
+        "JM",
+        "JO",
+        "JP",
+        "KE",
+        "KG",
+        "KH",
+        "KI",
+        "KM",
+        "KN",
+        "KP",
+        "KR",
+        "KW",
+        "KY",
+        "KZ",
+        "LA",
+        "LB",
+        "LC",
+        "LI",
+        "LK",
+        "LR",
+        "LS",
+        "LT",
+        "LU",
+        "LV",
+        "LY",
+        "MA",
+        "MC",
+        "MD",
+        "ME",
+        "MF",
+        "MG",
+        "MH",
+        "MK",
+        "ML",
+        "MM",
+        "MN",
+        "MO",
+        "MP",
+        "MQ",
+        "MR",
+        "MS",
+        "MT",
+        "MU",
+        "MV",
+        "MW",
+        "MX",
+        "MY",
+        "MZ",
+        "NA",
+        "NC",
+        "NE",
+        "NF",
+        "NG",
+        "NI",
+        "NL",
+        "NO",
+        "NP",
+        "NR",
+        "NU",
+        "NZ",
+        "OM",
+        "PA",
+        "PE",
+        "PF",
+        "PG",
+        "PH",
+        "PK",
+        "PL",
+        "PM",
+        "PN",
+        "PR",
+        "PS",
+        "PT",
+        "PW",
+        "PY",
+        "QA",
+        "RE",
+        "RO",
+        "RS",
+        "RU",
+        "RW",
+        "SA",
+        "SB",
+        "SC",
+        "SD",
+        "SE",
+        "SG",
+        "SH",
+        "SI",
+        "SJ",
+        "SK",
+        "SL",
+        "SM",
+        "SN",
+        "SO",
+        "SR",
+        "SS",
+        "ST",
+        "SV",
+        "SX",
+        "SY",
+        "SZ",
+        "TC",
+        "TD",
+        "TF",
+        "TG",
+        "TH",
+        "TJ",
+        "TK",
+        "TL",
+        "TM",
+        "TN",
+        "TO",
+        "TR",
+        "TT",
+        "TV",
+        "TW",
+        "TZ",
+        "UA",
+        "UG",
+        "UM",
+        "US",
+        "UY",
+        "UZ",
+        "VA",
+        "VC",
+        "VE",
+        "VG",
+        "VI",
+        "VN",
+        "VU",
+        "WF",
+        "WS",
+        "YE",
+        "YT",
+        "ZA",
+        "ZM",
+        "ZW",
     ]
 )
 
@@ -270,7 +570,9 @@ class ResearchEvidence(BaseModel):
     discovery_lane: Literal["importer", "distributor", "ecommerce"]
     query_country: str = Field(pattern=r"^[A-Z]{2}$")
     query_category: str = Field(min_length=1, max_length=100)
-    source_kind: Literal["company_self_description", "directory_listing", "unverified_public_page"]
+    source_kind: Literal[
+        "company_self_description", "directory_listing", "unverified_public_page"
+    ]
     identity_status: Literal["self_described", "pending_verification"]
     company_name: str | None = None
     website_domain: str | None = None
@@ -283,48 +585,81 @@ class ResearchEvidence(BaseModel):
     def discovery_key(self) -> str:
         """同一提案、查询、线路、URL重放稳定，跨线路绝不吞证据。"""
         identity = (
-            self.proposal_id, self.query, self.discovery_lane,
-            self.query_country, self.query_category, self.source_url,
+            self.proposal_id,
+            self.query,
+            self.discovery_lane,
+            self.query_country,
+            self.query_category,
+            self.source_url,
         )
-        return hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()
+        return hashlib.sha256(
+            json.dumps(identity, ensure_ascii=False).encode()
+        ).hexdigest()
 
     @classmethod
     def from_page(
-        cls, *, proposal_id: str, query: str, discovery_lane: str,
-        query_country: str, query_category: str, text: str, url: str,
+        cls,
+        *,
+        proposal_id: str,
+        query: str,
+        discovery_lane: str,
+        query_country: str,
+        query_category: str,
+        text: str,
+        url: str,
     ) -> ResearchEvidence:
         """只提取受支持的自述，不从TLD、配送地、query country推断所在地。"""
         base: dict[str, object] = {
-            "proposal_id": proposal_id, "query": query, "discovery_lane": discovery_lane,
-            "query_country": query_country, "query_category": query_category, "source_url": url,
-            "identity_status": "pending_verification", "source_kind": "unverified_public_page",
+            "proposal_id": proposal_id,
+            "query": query,
+            "discovery_lane": discovery_lane,
+            "query_country": query_country,
+            "query_category": query_category,
+            "source_url": url,
+            "identity_status": "pending_verification",
+            "source_kind": "unverified_public_page",
         }
         if re.search(
             r"\b(?:directory|directories|dealer locator|find a dealer|dealer listings|"
             r"business listings|brand dealers)\b|经销商目录|企业名录|行业目录",
-            text, re.IGNORECASE,
-        ) or re.search(r"/(?:directory|directories|dealers|companies)(?:/|$)", urlsplit(url).path):
+            text,
+            re.IGNORECASE,
+        ) or re.search(
+            r"/(?:directory|directories|dealers|companies)(?:/|$)", urlsplit(url).path
+        ):
             return cls.model_validate({**base, "source_kind": "directory_listing"})
         identity = re.search(
             r"(?:^|[.\n]\s*)(We are ([A-Z][A-Za-z0-9 &'-]{1,100}), "
-            r"(?:an? |the )[^\n.]{1,200}[.])", text,
+            r"(?:an? |the )[^\n.]{1,200}[.])",
+            text,
         )
         if identity is None:
             return cls.model_validate(base)
         name = identity.group(2)
-        base.update(source_kind="company_self_description",
-                    company_name=name, identity_quote=identity.group(1))
+        base.update(
+            source_kind="company_self_description",
+            company_name=name,
+            identity_quote=identity.group(1),
+        )
         # 不接受第三方描述、目的地、分支机构地址或低写 us 等不完整证据。
         location = re.search(
             rf"(?:^|[.\n]\s*)((?:We are|{re.escape(name)} is) "
             r"(?:headquartered|based|located) in (?:the )?"
-            r"([A-Za-z][A-Za-z ]{1,60})(?=[.,\n]|$))", text,
+            r"([A-Za-z][A-Za-z ]{1,60})(?=[.,\n]|$))",
+            text,
         )
         aliases = {
-            "United States": "US", "United States of America": "US",
-            "Germany": "DE", "United Kingdom": "GB", "Canada": "CA",
-            "Australia": "AU", "New Zealand": "NZ", "France": "FR",
-            "Spain": "ES", "Italy": "IT", "Netherlands": "NL",
+            "United States": "US",
+            "United States of America": "US",
+            "Germany": "DE",
+            "United Kingdom": "GB",
+            "Canada": "CA",
+            "Australia": "AU",
+            "New Zealand": "NZ",
+            "France": "FR",
+            "Spain": "ES",
+            "Italy": "IT",
+            "Netherlands": "NL",
         }
         country = None
         if location is not None:
@@ -335,7 +670,8 @@ class ResearchEvidence(BaseModel):
         hostname = urlsplit(url).hostname
         if country is not None and hostname is not None:
             base.update(
-                identity_status="self_described", country=country,
+                identity_status="self_described",
+                country=country,
                 website_domain=hostname.lower().removeprefix("www."),
                 country_quote=location.group(1) if location else None,
             )
@@ -536,6 +872,294 @@ class ValidatedNeedView:
     destination: str | None = None
     required_by: date | None = None
     target_price: Money | None = None
+    recurring_requirement: bool | None = None
+
+
+@dataclass(frozen=True)
+class NeedCatalogEventLocator:
+    """目录事实事件的最小定位结果；租户只用于约束查询，不进入结果。"""
+
+    need_id: ValidatedNeedId
+    cluster_id: NeedClusterId | None
+
+
+@dataclass(frozen=True)
+class CatalogEvidenceSummary:
+    """目录聚合可公开携带的最小证据指纹，不含事实值或原始来源正文。"""
+
+    source_type: SourceType
+    source_id: str
+    extracted_by: str
+    confirmed_by: EmployeeId | None
+    confirmed_at: datetime | None
+    observed_at: datetime
+    content_hash: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.source_type, SourceType)
+            or self.source_type is SourceType.AGENT_INFERENCE
+            or not isinstance(self.source_id, str)
+            or not self.source_id
+            or self.source_id != self.source_id.strip()
+            or not isinstance(self.extracted_by, str)
+            or not self.extracted_by
+            or self.extracted_by != self.extracted_by.strip()
+            or not _is_strict_utc(self.observed_at)
+            or (self.confirmed_at is not None and not _is_strict_utc(self.confirmed_at))
+            or (self.confirmed_by is None) != (self.confirmed_at is None)
+            or not isinstance(self.content_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", self.content_hash) is None
+        ):
+            raise ValueError("目录证据摘要无效")
+
+
+@dataclass(frozen=True)
+class DemandCatalogAccountFact:
+    """Prospecting 经 workflow 映射给 Demand 的窄账户国家事实。"""
+
+    tenant_id: TenantId
+    account_id: ProspectAccountId
+    country_code: str | None
+    country_evidence: CatalogEvidenceSummary | None
+
+    def __post_init__(self) -> None:
+        evidence = self.country_evidence
+        if (
+            not _is_exact_identity(self.tenant_id)
+            or not _is_exact_identity(self.account_id)
+            or (self.country_code is None) != (evidence is None)
+            or (
+                self.country_code is not None
+                and self.country_code not in _ISO_3166_ALPHA_2
+            )
+            or (
+                evidence is not None
+                and evidence.content_hash
+                != _catalog_evidence_content_hash(
+                    tenant_id=self.tenant_id,
+                    subject_id=str(self.account_id),
+                    field_name="country",
+                    value=self.country_code,
+                    source_type=evidence.source_type,
+                    source_id=evidence.source_id,
+                    extracted_by=evidence.extracted_by,
+                    confirmed_by=evidence.confirmed_by,
+                    confirmed_at=evidence.confirmed_at,
+                    observed_at=evidence.observed_at,
+                )
+            )
+        ):
+            raise ValueError("目录账户事实无效")
+
+
+@dataclass(frozen=True)
+class NeedClusterCatalogFacts:
+    """经双向成员链核验、按账户聚合的目录候选决策事实。"""
+
+    tenant_id: TenantId
+    cluster_id: NeedClusterId
+    cluster_category: str
+    member_need_ids: tuple[ValidatedNeedId, ...]
+    distinct_account_ids: tuple[ProspectAccountId, ...]
+    member_count: int
+    distinct_account_count: int
+    known_country_codes: tuple[str, ...]
+    unknown_country_account_count: int
+    recurring_true_account_count: int
+    recurring_false_account_count: int
+    recurring_unknown_account_count: int
+    quantity_unit_covered_account_count: int
+    unified_unit: str | None
+    safe_total_quantity: int | None
+    evidence_summaries: tuple[CatalogEvidenceSummary, ...]
+    display_codes: tuple[str, ...]
+    facts_observed_at: datetime
+    facts_hash: str
+
+
+def _is_strict_utc(value: object) -> bool:
+    return (
+        isinstance(value, datetime)
+        and value.tzinfo is not None
+        and value.utcoffset() == UTC.utcoffset(value)
+    )
+
+
+def _is_exact_identity(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value == value.strip()
+        and len(value) <= 40
+    )
+
+
+class _CatalogCursorModel(BaseModel):
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+    )
+
+
+class CatalogClusterCursor(_CatalogCursorModel):
+    """真实需求簇的升序 keyset 游标；不保存需求事实正文。"""
+
+    tenant_id: TenantId
+    stream: Literal["catalog_clusters"]
+    created_at: datetime
+    cluster_id: NeedClusterId
+
+    @model_validator(mode="after")
+    def validate_cursor(self) -> Self:
+        if (
+            not _is_exact_identity(self.tenant_id)
+            or not self.tenant_id.startswith("tn_")
+            or not _is_exact_identity(self.cluster_id)
+            or not self.cluster_id.startswith("ncl_")
+            or not _is_strict_utc(self.created_at)
+        ):
+            raise ValueError("目录需求簇游标无效")
+        return self
+
+
+class CatalogClusterReconciliationItem(_CatalogCursorModel):
+    """真实需求簇稳定扫描页的最小定位元数据。"""
+
+    cluster_id: NeedClusterId
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def validate_item(self) -> Self:
+        if (
+            not _is_exact_identity(self.cluster_id)
+            or not self.cluster_id.startswith("ncl_")
+            or not _is_strict_utc(self.created_at)
+        ):
+            raise ValueError("目录需求簇页面项无效")
+        return self
+
+
+class CatalogClusterIdPage(_CatalogCursorModel):
+    """只携带真实簇 locator 的租户绑定稳定页。"""
+
+    tenant_id: TenantId
+    items: tuple[CatalogClusterReconciliationItem, ...]
+    next_cursor: CatalogClusterCursor | None
+
+    @model_validator(mode="after")
+    def validate_page(self) -> Self:
+        order = tuple((item.created_at, str(item.cluster_id)) for item in self.items)
+        cluster_ids = tuple(str(item.cluster_id) for item in self.items)
+        if (
+            not _is_exact_identity(self.tenant_id)
+            or not self.tenant_id.startswith("tn_")
+            or len(order) > 200
+            or tuple(sorted(order)) != order
+            or len(set(order)) != len(order)
+            or len(set(cluster_ids)) != len(cluster_ids)
+            or self.next_cursor is not None
+            and (
+                self.next_cursor.tenant_id != self.tenant_id
+                or self.next_cursor.stream != "catalog_clusters"
+                or not order
+                or (
+                    self.next_cursor.created_at,
+                    str(self.next_cursor.cluster_id),
+                )
+                != order[-1]
+            )
+        ):
+            raise ValueError("目录需求簇页面无效")
+        return self
+
+
+def catalog_country_code_or_none(value: object) -> str | None:
+    """只接受精确已分配大写 ISO-2；不维护别名或执行推断。"""
+
+    return value if isinstance(value, str) and value in _ISO_3166_ALPHA_2 else None
+
+
+def _catalog_evidence_content_hash(
+    *,
+    tenant_id: TenantId,
+    subject_id: str,
+    field_name: str,
+    value: object,
+    source_type: SourceType,
+    source_id: str,
+    extracted_by: str,
+    confirmed_by: EmployeeId | None,
+    confirmed_at: datetime | None,
+    observed_at: datetime,
+) -> str:
+    """将事实身份、值与安全来源字段绑定为不可重放承诺。"""
+    return canonical_fact_hash(
+        {
+            "version": "catalog-qualified-fact-v1",
+            "tenant_id": tenant_id,
+            "subject_id": subject_id,
+            "field_name": field_name,
+            "value": value,
+            "provenance": {
+                "source_type": source_type,
+                "source_id": source_id,
+                "extracted_by": extracted_by,
+                "confirmed_by": confirmed_by,
+                "confirmed_at": confirmed_at,
+                "observed_at": observed_at,
+            },
+        }
+    )
+
+
+def catalog_evidence_summary(
+    *,
+    tenant_id: TenantId,
+    subject_id: str,
+    field_name: str,
+    value: object,
+    provenance: Provenance,
+) -> CatalogEvidenceSummary:
+    """从完整事实生成安全摘要；哈希绑定值和白名单来源元数据。"""
+
+    if (
+        not _is_exact_identity(tenant_id)
+        or not _is_exact_identity(subject_id)
+        or not isinstance(field_name, str)
+        or not field_name
+        or field_name != field_name.strip()
+        or not isinstance(provenance, Provenance)
+        or provenance.source_type is SourceType.AGENT_INFERENCE
+        or not _is_strict_utc(provenance.extracted_at)
+        or (
+            provenance.confirmed_at is not None
+            and not _is_strict_utc(provenance.confirmed_at)
+        )
+    ):
+        raise ValueError("目录事实来源无效")
+    return CatalogEvidenceSummary(
+        source_type=provenance.source_type,
+        source_id=provenance.source_id,
+        extracted_by=provenance.extracted_by,
+        confirmed_by=provenance.confirmed_by,
+        confirmed_at=provenance.confirmed_at,
+        observed_at=provenance.extracted_at,
+        content_hash=_catalog_evidence_content_hash(
+            tenant_id=tenant_id,
+            subject_id=subject_id,
+            field_name=field_name,
+            value=value,
+            source_type=provenance.source_type,
+            source_id=provenance.source_id,
+            extracted_by=provenance.extracted_by,
+            confirmed_by=provenance.confirmed_by,
+            confirmed_at=provenance.confirmed_at,
+            observed_at=provenance.extracted_at,
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -574,3 +1198,12 @@ class NeedClusterPriorityFacts:
     cluster_id: str | None
     cluster_member_count: int
     facts_observed_at: datetime
+
+
+class OutreachHypothesisCategories(BaseModel):
+    """当前有证据活跃假设类别，仍是推断而非已验证需求。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    tenant_id: TenantId
+    account_id: ProspectAccountId
+    categories: tuple[str, ...]

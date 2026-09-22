@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -28,13 +30,18 @@ from domains.directives.models import (
     SourcingAdmissionConfig,
 )
 from domains.directives.repository import DirectiveRepository, ProposalRepository
-from infra.db.tables import BossDirectiveRow, DirectiveProposalRow, DirectiveVersionRow
+from infra.db.tables import (
+    AssistantProposalSourceRow,
+    BossDirectiveRow,
+    DirectiveProposalRow,
+    DirectiveVersionRow,
+)
 from shared.errors import (
     InvalidStateTransition,
     TenantIsolationViolation,
     ValidationError,
 )
-from shared.schemas.identifiers import DirectiveId, EmployeeId, TenantId
+from shared.schemas.identifiers import AgentTurnId, DirectiveId, EmployeeId, TenantId
 
 _logger = logging.getLogger("infra.db.repositories.directives")
 
@@ -68,9 +75,7 @@ def _content_to_json(content: DirectiveContent) -> dict[str, object]:
                 "need_first_ratio": content.discovery.need_first_ratio,
                 "catalog_assisted_ratio": content.discovery.catalog_assisted_ratio,
                 "focus_categories": list(content.discovery.focus_categories),
-                "excluded_buyer_types": list(
-                    content.discovery.excluded_buyer_types
-                ),
+                "excluded_buyer_types": list(content.discovery.excluded_buyer_types),
             }
         ),
         "demand_discovery": (
@@ -90,9 +95,7 @@ def _content_to_json(content: DirectiveContent) -> dict[str, object]:
                 ],
                 "target_countries": list(content.demand_discovery.target_countries),
                 "target_categories": list(content.demand_discovery.target_categories),
-                "excluded_countries": list(
-                    content.demand_discovery.excluded_countries
-                ),
+                "excluded_countries": list(content.demand_discovery.excluded_countries),
                 "excluded_categories": list(
                     content.demand_discovery.excluded_categories
                 ),
@@ -279,9 +282,7 @@ def _content_from_json(value: object) -> DirectiveContent:
         demand_discovery = DemandDiscoveryConfig(
             objective=cast(str, item["objective"]),
             queries=queries,
-            target_countries=_string_list(
-                item["target_countries"], "target_countries"
-            ),
+            target_countries=_string_list(item["target_countries"], "target_countries"),
             target_categories=_string_list(
                 item["target_categories"], "target_categories"
             ),
@@ -300,7 +301,9 @@ def _content_from_json(value: object) -> DirectiveContent:
             campaign_id=cast(str, item["campaign_id"]),
             role_hints=_string_list(item["role_hints"], "role_hints"),
             assessment_ref=cast(str, item["assessment_ref"]),
-            execution_mode=cast(str, item.get("execution_mode", "outreach_preparation")),
+            execution_mode=cast(
+                str, item.get("execution_mode", "outreach_preparation")
+            ),
         )
 
     outreach_raw = data["outreach"]
@@ -328,9 +331,7 @@ def _content_from_json(value: object) -> DirectiveContent:
     handoff = None
     if handoff_raw is not None:
         item = _mapping(handoff_raw, "handoff")
-        if set(item) != {"manager", "triggers"} or not isinstance(
-            item["manager"], str
-        ):
+        if set(item) != {"manager", "triggers"} or not isinstance(item["manager"], str):
             raise ValidationError("指令接管配置持久化字段无效")
         handoff = HandoffRules(
             manager=EmployeeId(item["manager"]),
@@ -425,6 +426,55 @@ def _row_to_directive(row: DirectiveVersionRow) -> Directive:
 
 
 class ProposalRepositoryImpl(_TenantBound, ProposalRepository):
+    async def add_once(
+        self,
+        proposal: DirectiveProposal,
+        source_turn_id: AgentTurnId,
+        source_version: int,
+        request_hmac: str,
+    ) -> str:
+        self._require_tenant(proposal.tenant_id, "assistant_proposal_add")
+        payload = {
+            "raw_text": proposal.raw_text,
+            "parsed": _content_to_json(proposal.parsed),
+            "summary": proposal.interpretation_summary,
+            "changes": proposal.expected_behavior_changes,
+            "parsed_by": proposal.parsed_by,
+        }
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()
+        inserted = await self._session.scalar(
+            pg_insert(AssistantProposalSourceRow)
+            .values(
+                tenant_id=str(self._tenant_id),
+                source_turn_id=str(source_turn_id),
+                source_version=source_version,
+                proposal_id=proposal.proposal_id,
+                request_hmac=request_hmac,
+                payload_hash=digest,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["tenant_id", "source_turn_id", "source_version"]
+            )
+            .returning(AssistantProposalSourceRow.proposal_id)
+        )
+        if inserted is not None:
+            await self.add(proposal)
+            return str(inserted)
+        existing = (
+            await self._session.scalars(
+                select(AssistantProposalSourceRow).where(
+                    AssistantProposalSourceRow.tenant_id == str(self._tenant_id),
+                    AssistantProposalSourceRow.source_turn_id == str(source_turn_id),
+                    AssistantProposalSourceRow.source_version == source_version,
+                )
+            )
+        ).one()
+        if existing.request_hmac != request_hmac or existing.payload_hash != digest:
+            raise ValidationError("同一研究来源不能提交不同提案")
+        return existing.proposal_id
+
     async def add(self, proposal: DirectiveProposal) -> None:
         self._require_tenant(proposal.tenant_id, "directive_proposal_add")
         self._session.add(
@@ -497,18 +547,23 @@ class ProposalRepositoryImpl(_TenantBound, ProposalRepository):
     async def list_pending(self, tenant_id: TenantId) -> list[DirectiveProposal]:
         self._require_tenant(tenant_id, "directive_proposal_list_pending")
         rows = (
-            await self._session.execute(
-                select(DirectiveProposalRow)
-                .where(
-                    DirectiveProposalRow.tenant_id == str(self._tenant_id),
-                    DirectiveProposalRow.state
-                    == ProposalState.PENDING_CONFIRMATION.value,
-                )
-                .order_by(
-                    DirectiveProposalRow.created_at, DirectiveProposalRow.proposal_id
+            (
+                await self._session.execute(
+                    select(DirectiveProposalRow)
+                    .where(
+                        DirectiveProposalRow.tenant_id == str(self._tenant_id),
+                        DirectiveProposalRow.state
+                        == ProposalState.PENDING_CONFIRMATION.value,
+                    )
+                    .order_by(
+                        DirectiveProposalRow.created_at,
+                        DirectiveProposalRow.proposal_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_row_to_proposal(row) for row in rows]
 
     async def list_rejected(
@@ -516,19 +571,23 @@ class ProposalRepositoryImpl(_TenantBound, ProposalRepository):
     ) -> list[DirectiveProposal]:
         self._require_tenant(tenant_id, "directive_proposal_list_rejected")
         rows = (
-            await self._session.execute(
-                select(DirectiveProposalRow)
-                .where(
-                    DirectiveProposalRow.tenant_id == str(self._tenant_id),
-                    DirectiveProposalRow.state == ProposalState.REJECTED.value,
+            (
+                await self._session.execute(
+                    select(DirectiveProposalRow)
+                    .where(
+                        DirectiveProposalRow.tenant_id == str(self._tenant_id),
+                        DirectiveProposalRow.state == ProposalState.REJECTED.value,
+                    )
+                    .order_by(
+                        DirectiveProposalRow.decided_at.desc(),
+                        DirectiveProposalRow.proposal_id,
+                    )
+                    .limit(limit)
                 )
-                .order_by(
-                    DirectiveProposalRow.decided_at.desc(),
-                    DirectiveProposalRow.proposal_id,
-                )
-                .limit(limit)
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_row_to_proposal(row) for row in rows]
 
 
@@ -563,9 +622,7 @@ class DirectiveRepositoryImpl(_TenantBound, DirectiveRepository):
     async def get_active(self, tenant_id: TenantId) -> Directive | None:
         return await self._get_active(tenant_id, for_update=False)
 
-    async def get_active_for_update(
-        self, tenant_id: TenantId
-    ) -> Directive | None:
+    async def get_active_for_update(self, tenant_id: TenantId) -> Directive | None:
         return await self._get_active(tenant_id, for_update=True)
 
     async def _get_active(
@@ -587,9 +644,7 @@ class DirectiveRepositoryImpl(_TenantBound, DirectiveRepository):
         row = (await self._session.execute(statement)).scalar_one_or_none()
         return _row_to_directive(row) if row is not None else None
 
-    async def get_version(
-        self, tenant_id: TenantId, version: int
-    ) -> Directive | None:
+    async def get_version(self, tenant_id: TenantId, version: int) -> Directive | None:
         self._require_tenant(tenant_id, "directive_get_version")
         row = (
             await self._session.execute(
@@ -606,9 +661,7 @@ class DirectiveRepositoryImpl(_TenantBound, DirectiveRepository):
         await self._session.execute(
             select(
                 func.pg_advisory_xact_lock(
-                    func.hashtextextended(
-                        f"directive-version:{self._tenant_id}", 0
-                    )
+                    func.hashtextextended(f"directive-version:{self._tenant_id}", 0)
                 )
             )
         )
@@ -655,21 +708,23 @@ class DirectiveRepositoryImpl(_TenantBound, DirectiveRepository):
             )
         )
 
-    async def list_versions(
-        self, tenant_id: TenantId, limit: int
-    ) -> list[Directive]:
+    async def list_versions(self, tenant_id: TenantId, limit: int) -> list[Directive]:
         self._require_tenant(tenant_id, "directive_list_versions")
         rows = (
-            await self._session.execute(
-                select(DirectiveVersionRow)
-                .where(DirectiveVersionRow.tenant_id == str(self._tenant_id))
-                .order_by(
-                    DirectiveVersionRow.version.desc(),
-                    DirectiveVersionRow.directive_id,
+            (
+                await self._session.execute(
+                    select(DirectiveVersionRow)
+                    .where(DirectiveVersionRow.tenant_id == str(self._tenant_id))
+                    .order_by(
+                        DirectiveVersionRow.version.desc(),
+                        DirectiveVersionRow.directive_id,
+                    )
+                    .limit(limit)
                 )
-                .limit(limit)
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_row_to_directive(row) for row in rows]
 
 

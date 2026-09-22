@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self, runtime_checkable
@@ -141,8 +142,29 @@ class ScoreSnapshotRepository(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class HandoffNotificationFacts:
+    """事务锁保护的接管、当前机会负责人和员工在职事实。"""
+
+    state: str
+    assigned_to: EmployeeId | None
+    owner: EmployeeId | None
+    account_owner: EmployeeId
+    recipient_active: bool
+
+
 @runtime_checkable
 class HandoffRepository(Protocol):
+    async def lock_notification_facts(
+        self,
+        tenant_id: TenantId,
+        handoff_id: HandoffId,
+        opportunity_id: OpportunityId,
+        recipient: EmployeeId,
+    ) -> HandoffNotificationFacts | None:
+        """先锁员工、机会、账户归属、接管行，返回事实；锁保持到 UoW 退出。"""
+        ...
+
     async def add(self, packet: HandoffPacket) -> None: ...
 
     async def get(

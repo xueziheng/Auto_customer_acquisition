@@ -11,7 +11,7 @@ from domains.directives.schemas import (
     ProposalView,
     SourcingAdmissionConfigInput,
 )
-from shared.schemas.identifiers import DirectiveId, EmployeeId, TenantId
+from shared.schemas.identifiers import AgentTurnId, DirectiveId, EmployeeId, TenantId
 
 
 @runtime_checkable
@@ -52,6 +52,23 @@ class DirectiveService(Protocol):
         parsed_by: str,
     ) -> str:
         """提交需求探索提案；域内转换为不可变指令内容并二次校验。"""
+        ...
+
+    async def submit_discovery_proposal_once(
+        self,
+        tenant_id: TenantId,
+        source_turn_id: AgentTurnId,
+        source_version: int,
+        request_hmac: str,
+        raw_text: str,
+        plan: DemandDiscoveryPlanInput,
+        interpretation_summary: str,
+        expected_behavior_changes: list[str],
+        parsed_by: str,
+        *,
+        submitted_by: EmployeeId,
+    ) -> str:
+        """当前老板授权后，在同一事务保存提案和不可变来源；不做确认。"""
         ...
 
     async def submit_sourcing_admission_proposal(
@@ -103,9 +120,7 @@ class DirectiveService(Protocol):
         """
         ...
 
-    async def get_active(
-        self, tenant_id: TenantId
-    ) -> DirectiveView | None:
+    async def get_active(self, tenant_id: TenantId) -> DirectiveView | None:
         """当前生效的指令。全系统读探索配比、市场分配、预算上限
         都从这里读。None 表示尚无指令（用 Playbook 默认值）。"""
         ...

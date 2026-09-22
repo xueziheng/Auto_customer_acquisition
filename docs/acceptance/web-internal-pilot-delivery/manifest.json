@@ -1,0 +1,211 @@
+{
+  "plan": "docs/superpowers/plans/2026-09-07-web-internal-pilot.md",
+  "branch": "codex/web-internal-pilot",
+  "baseline": "37e76497f23b016296d4c563312663d96a8582d4",
+  "reviewed_head": "6bb5f51d81df5e7f6d83f514bed5dac175efcca0",
+  "tested_e2e_commit": "63150da376b07414088f5c0f90bcb7ea5f22e075",
+  "production_source_commit": "ecfb4d2d959ade7ffa143b7b9ad1b8e29cde4242",
+  "records": [
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/final-review-brief.md",
+      "archive": "final-review-brief.md",
+      "sha256": "ceeb0c0e46a39bf63d5b33bd83144cf28e2ddec6a0ea56782e548ec0980ec148",
+      "bytes": 4713
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/final-review.md",
+      "archive": "final-review.md",
+      "sha256": "f0929d710d09876d126d1e8187b6d731c9766a3b44d9d0ecac4e89165b99f964",
+      "bytes": 13228
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/progress.md",
+      "archive": "progress.md",
+      "sha256": "250acb4cfee6466c5776f96f99def861205cb70a852fbfa0ffbe3690aa2739a7",
+      "bytes": 28170
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-1-brief.md",
+      "archive": "task-1-brief.md",
+      "sha256": "51cb9f1d31bc7e2ddf648795188dd85d95db7efd981c4bb542e3239dfd902542",
+      "bytes": 3085
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-1-fix-1-review.md",
+      "archive": "task-1-fix-1-review.md",
+      "sha256": "55a3c75ab16ce6b836467c44525d5a49b7a868c8329d97e44adf4d4b36ad67d7",
+      "bytes": 1596
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-1-report.md",
+      "archive": "task-1-report.md",
+      "sha256": "18a8f1efd751319ecdc723dd3b4ceb8f1b09fb390b156ed474ef8fc17c78fff7",
+      "bytes": 12040
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-1-review.md",
+      "archive": "task-1-review.md",
+      "sha256": "cc06f1f0d3c8c14c78445f0da0db8704420863fd4baa7cc25a17f03acde4e6a4",
+      "bytes": 6344
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-2-brief.md",
+      "archive": "task-2-brief.md",
+      "sha256": "ec44b3274dbcccbd98409c01ca39caa215037b5dcda99563350b5ec4ace65260",
+      "bytes": 7422
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-2-report.md",
+      "archive": "task-2-report.md",
+      "sha256": "1685cadef0b83a3112a68b66e459fd326dca69d315a057b62d2c75b253940a07",
+      "bytes": 12770
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-2-review.md",
+      "archive": "task-2-review.md",
+      "sha256": "ca4b4ef60b00a62e3f087abf6ba0edbf82c4bf19fb4c9ef56a329afb597c201d",
+      "bytes": 6083
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-3-brief.md",
+      "archive": "task-3-brief.md",
+      "sha256": "85d68e14e11319324bb9c91eddaaf0d8f7d50e20674abddc8dec7dd85104867b",
+      "bytes": 5113
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-3-fix-1-review.md",
+      "archive": "task-3-fix-1-review.md",
+      "sha256": "66d16fa288fe61555852b4596265b510dc0668114a9998440c513a3f5dfd749f",
+      "bytes": 2460
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-3-report.md",
+      "archive": "task-3-report.md",
+      "sha256": "16eac55d3bfbb2fe8181c99f692e084975c4217e1f2400c5a7fbce1f07d5065b",
+      "bytes": 18269
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-3-review.md",
+      "archive": "task-3-review.md",
+      "sha256": "9e20f97de423048d3f3bd6d2e0f595145227f6187bcb8aa6688104f9b8e3aacd",
+      "bytes": 5702
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-4-brief.md",
+      "archive": "task-4-brief.md",
+      "sha256": "9691360b005723d41f12c021d30925511b1be993d5e2b564082a9cb8e76ef566",
+      "bytes": 16021
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-4-fix-1-review.md",
+      "archive": "task-4-fix-1-review.md",
+      "sha256": "e3d470d50abcf5193069e30b6fa48b2f0691ad9a0ed646f3320491089ccae391",
+      "bytes": 3412
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-4-report.md",
+      "archive": "task-4-report.md",
+      "sha256": "9d40f994177663c3e451fbbb5f27a80bdf4b201eaa954e1e4e10e3c73b231d52",
+      "bytes": 23740
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-4-review.md",
+      "archive": "task-4-review.md",
+      "sha256": "074c223a86c7cd9cb04ca50f9bc7f93e0b17d961c73c2ba7a5d593643688e53a",
+      "bytes": 8772
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-5-brief.md",
+      "archive": "task-5-brief.md",
+      "sha256": "8f38513848770649d514624a6fc38d7194a8a0bdbd23969022eb70486fcfb87d",
+      "bytes": 13507
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-5-fix-1-review.md",
+      "archive": "task-5-fix-1-review.md",
+      "sha256": "9b1fd6ff4fe2ebc13c52cf0a97135af5195bb2c6a12a32dd72f8992a3c723ca0",
+      "bytes": 5099
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-5-report.md",
+      "archive": "task-5-report.md",
+      "sha256": "d48aa6a742a600743f019afbc5b9650663941bb364646a5dc2c175ec65e466d3",
+      "bytes": 8763
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-07-web-internal-pilot/task-5-review.md",
+      "archive": "task-5-review.md",
+      "sha256": "137313aeffb5bc2de7e1fdd288b8d7626ee0423d29dde057235ef90cb6799476",
+      "bytes": 8304
+    }
+  ],
+  "ruling_count": 24,
+  "review_packages": [
+    {
+      "historical_file": "review-0d370b1..ecfb4d2.diff",
+      "sha256": "9395307a3d204adca2a7dad4ccc2f3378bc535a67a68212b6603ec13aacf0cc2",
+      "bytes": 38083,
+      "range": "0d370b1..ecfb4d2"
+    },
+    {
+      "historical_file": "review-37e7649..6bb5f51.diff",
+      "sha256": "ce6ffb02a69fbb8c6d39350600738c54836eb6bc746b1cf3ed329384725f2e8c",
+      "bytes": 466109,
+      "range": "37e7649..6bb5f51"
+    },
+    {
+      "historical_file": "review-4bc696a..c669eec.diff",
+      "sha256": "fc9f040baf684636898bc9037f3d8c00d9532889ea5fbcaed2190e57fc9e0041",
+      "bytes": 13272,
+      "range": "4bc696a..c669eec"
+    },
+    {
+      "historical_file": "review-541bf2d..6bb5f51.diff",
+      "sha256": "0fcc46ee19d206ef4b04364b65e0f60bbaac53ab8d4958f0d24e7305c904115a",
+      "bytes": 39677,
+      "range": "541bf2d..6bb5f51"
+    },
+    {
+      "historical_file": "review-6c8a2de..cef101e.diff",
+      "sha256": "31687cb2ecd539db570269f9f50c348b7cd00f8324d765123723a4202f95965d",
+      "bytes": 23205,
+      "range": "6c8a2de..cef101e"
+    },
+    {
+      "historical_file": "review-b31b8d2..6c8a2de.diff",
+      "sha256": "377b52a7a135dca63fb4d71efbf80a9e79301fcb818bad16476a8cf4c72f44a9",
+      "bytes": 79394,
+      "range": "b31b8d2..6c8a2de"
+    },
+    {
+      "historical_file": "review-b31cffd..4bc696a.diff",
+      "sha256": "8b942a845934ebfa4a69a6979ec9a58a9e8ab31268ee84617888adf8d1b9e6b0",
+      "bytes": 79574,
+      "range": "b31cffd..4bc696a"
+    },
+    {
+      "historical_file": "review-cef101e..b31cffd.diff",
+      "sha256": "bbb84f17fa7479be6c0daba00f4596e9d408d11e084a4b5eda8e376e117be6ae",
+      "bytes": 104178,
+      "range": "cef101e..b31cffd"
+    },
+    {
+      "historical_file": "review-d0be8f9..0d370b1.diff",
+      "sha256": "2b2c0285a5067ad07be7a933acf5dffb2f0114c6990b00f752ad9d4bfdbef225",
+      "bytes": 117608,
+      "range": "d0be8f9..0d370b1"
+    },
+    {
+      "historical_file": "review-ecfb4d2..541bf2d.diff",
+      "sha256": "842ce6a1fce83e21d8b81a755da9809f318d069d313c9dc8d80159936025b9de",
+      "bytes": 65265,
+      "range": "ecfb4d2..541bf2d"
+    }
+  ],
+  "review_package_reproduction": "superpowers subagent-driven-development/scripts/review-package PLAN BASE HEAD; ranges refer to recorded Git commits; packages were not copied into this archive.",
+  "archive_validation": {
+    "record_sha256": "all copied records match original bytes",
+    "entry_links": "README and rulings links resolve",
+    "whitespace_exception": "task-1-brief.md preserves its original final blank line; standard diff check reports only that existing formatting; -blank-at-eof check passes"
+  }
+}

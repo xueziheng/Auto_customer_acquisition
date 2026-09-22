@@ -25,12 +25,23 @@ class DeferredS3ObjectBlobTransport:
         self._secret_resolver = secret_resolver
         self._delegate: S3ObjectBlobTransport | None = None
         self._lock = asyncio.Lock()
+        self._closed = False
 
     def __repr__(self) -> str:
         return "DeferredS3ObjectBlobTransport()"
 
+    async def aclose(self) -> None:
+        """不初始化未使用的对象 client；关闭失败保留 delegate 供重试。"""
+        async with self._lock:
+            self._closed = True
+            if self._delegate is not None:
+                await self._delegate.aclose()
+                self._delegate = None
+
     async def _get_delegate(self) -> S3ObjectBlobTransport:
         async with self._lock:
+            if self._closed:
+                raise TransientError("Artifact 对象存储已关闭")
             if self._delegate is None:
                 try:
                     delegate = S3ObjectBlobTransport(

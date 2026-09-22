@@ -13,6 +13,7 @@
 硬边界：只依赖 ``shared.*`` 与本域内部模块；不 import 其他 domains/*。
 所有返回类型都是 ``schemas.py`` 公共 View，不暴露内部 models。
 """
+
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
@@ -228,7 +229,9 @@ class EmployeeServiceImpl:
                 return last.to_owner, "2"
         # 预取各维度命中规则（L3/L4 与 L5/L6/L7 的并集共用；不再用 AND 查询当 backup 集合）
         need_rules = (
-            await self._territories.list_matching(tenant_id, country, need_category, None)
+            await self._territories.list_matching(
+                tenant_id, country, need_category, None
+            )
             if need_category is not None
             else None
         )
@@ -252,7 +255,9 @@ class EmployeeServiceImpl:
             tenant_id, country, need_category, buyer_type, need_rules, buyer_rules
         )
         backup_ids = {
-            r.backup_employee_id for r in matched_union if r.backup_employee_id is not None
+            r.backup_employee_id
+            for r in matched_union
+            if r.backup_employee_id is not None
         }
         pool_ids = set(self._manager_pool(tenant_id))
         # 5 语言和时区：仅 active SALES 常规池（排除 backup 与池成员，避免提前抢占 L7/8）；
@@ -285,7 +290,11 @@ class EmployeeServiceImpl:
         pool_candidates: list[EmployeeId] = []
         for eid in pool_ids:
             emp = await self._employees.get(tenant_id, eid)
-            if emp is not None and emp.is_active and emp.role in (Role.MANAGER, Role.BOSS):
+            if (
+                emp is not None
+                and emp.is_active
+                and emp.role in (Role.MANAGER, Role.BOSS)
+            ):
                 pool_candidates.append(eid)
         if pool_candidates:
             cand = await self._pick_least_loaded(tenant_id, pool_candidates)
@@ -429,6 +438,24 @@ class EmployeeServiceImpl:
         )
         # 换锁 + 追加历史由仓储一次原子完成；失败不产生部分提交。
         await self._ownership.replace(tenant_id, new_lock, transfer)
+
+    async def get_notification_owner(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        *,
+        actor: Actor,
+    ) -> EmployeeId | None:
+        """授权且核验精确账户后读取当前归属，无历史负责人回退。"""
+        self._authorize(actor, EmployeeAction.NOTIFICATION_OWNER_READ, tenant_id)
+        if actor.notification_account_id != account_id:
+            raise PermissionDenied("通知账户关联拒绝")
+        lock = await self._ownership.get(tenant_id, account_id)
+        if lock is None:
+            return None
+        if lock.tenant_id != tenant_id or lock.account_id != account_id:
+            raise PermissionDenied("通知账户关联拒绝")
+        return lock.owner
 
     async def get_ownership(
         self, tenant_id: TenantId, account_id: ProspectAccountId, *, actor: Actor

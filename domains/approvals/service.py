@@ -6,6 +6,30 @@ from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
 
+from domains.approvals.catalog_contract import (
+    CATALOG_CULTIVATION_NAMESPACE,
+    CATALOG_CULTIVATION_WARNING,
+    CATALOG_POLICY_NAMESPACE,
+    CatalogApprovalActorFact,
+    CatalogApprovalActorReader,
+    CatalogApprovalCommand,
+    CatalogApprovalContractError,
+    CatalogApprovalFact,
+    CatalogApprovalFactReader,
+    CatalogCultivationApprovalCommand,
+    CatalogEvidenceLocator,
+    CatalogPolicyApprovalChange,
+    CatalogPolicyApprovalCommand,
+    CatalogPolicyContentFact,
+    CatalogPolicyVersionFact,
+    CatalogRuleResultFact,
+    catalog_cultivation_request_hash,
+    catalog_evidence_locator,
+    catalog_package_fields,
+    catalog_policy_content_hash,
+    catalog_policy_request_hash,
+    parse_catalog_evidence_locator,
+)
 from domains.approvals.models import ApprovalState, ApprovalType, BlastRadius
 from domains.approvals.schemas import (
     ApprovalAccessResult,
@@ -13,6 +37,7 @@ from domains.approvals.schemas import (
     ApprovalQuoteSubject,
     ApprovalReaderIdentity,
     ApprovalView,
+    CatalogApprovalLinkState,
 )
 from shared.schemas.identifiers import ApprovalId, EmployeeId, RunId, TenantId
 
@@ -66,6 +91,22 @@ class ApprovalService(Protocol):
         """受信workflow按精确新版引用恢复原包；校验原请求，不作HTTP出口。"""
         ...
 
+    async def submit_catalog(self, command: CatalogApprovalCommand) -> ApprovalId:
+        """提交严格 Catalog 审批；同引用仅完整原请求可跨状态复用。"""
+        ...
+
+    async def read_catalog_fact(
+        self, tenant_id: TenantId, approval_id: ApprovalId
+    ) -> CatalogApprovalFact:
+        """受信 workflow 读取严格 Catalog 事实，不注册 HTTP。"""
+        ...
+
+    async def find_catalog_fact(
+        self, tenant_id: TenantId, change_set_ref: str
+    ) -> CatalogApprovalFact | None:
+        """按精确 Catalog 引用恢复 canonical 包；底层错误固定脱敏。"""
+        ...
+
     async def get_for_reader(
         self,
         tenant_id: TenantId,
@@ -74,6 +115,16 @@ class ApprovalService(Protocol):
         reader: ApprovalReaderIdentity,
     ) -> ApprovalView:
         """新包当前guard，旧包保持boss/manager门。"""
+        ...
+
+    async def get_catalog_link_state_for_reader(
+        self,
+        tenant_id: TenantId,
+        approval_id: ApprovalId,
+        *,
+        reader: ApprovalReaderIdentity,
+    ) -> CatalogApprovalLinkState:
+        """按当前员工事实返回 Products 联结所需的最小 Catalog 状态。"""
         ...
 
     async def list_for_reader(
@@ -180,10 +231,32 @@ class ApprovalService(Protocol):
 
 
 __all__ = (
+    "CATALOG_CULTIVATION_NAMESPACE",
+    "CATALOG_CULTIVATION_WARNING",
+    "CATALOG_POLICY_NAMESPACE",
     "ApprovalService",
     "ApprovalState",
     "ApprovalType",
     "BlastRadius",
+    "CatalogApprovalActorFact",
+    "CatalogApprovalActorReader",
+    "CatalogApprovalContractError",
+    "CatalogApprovalFact",
+    "CatalogApprovalFactReader",
+    "CatalogApprovalLinkState",
+    "CatalogCultivationApprovalCommand",
+    "CatalogEvidenceLocator",
+    "CatalogPolicyApprovalChange",
+    "CatalogPolicyApprovalCommand",
+    "CatalogPolicyContentFact",
+    "CatalogPolicyVersionFact",
+    "CatalogRuleResultFact",
     "QuoteApprovalAccess",
+    "catalog_cultivation_request_hash",
+    "catalog_evidence_locator",
+    "catalog_package_fields",
+    "catalog_policy_content_hash",
+    "catalog_policy_request_hash",
+    "parse_catalog_evidence_locator",
     "requires_approval",
 )

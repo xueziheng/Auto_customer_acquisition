@@ -10,6 +10,7 @@ from typing import Self
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from infra.db.inbox_access import SqlAlchemyInboxAccessFactsReader
 from infra.db.outbox import PostgresEventBus
 from infra.db.repositories.conversations import (
     ClassificationRepositoryImpl,
@@ -39,6 +40,7 @@ class SqlAlchemyConversationsUnitOfWork:
     async def __aenter__(self) -> Self:
         session = self._factory()
         self._session = session
+        self.inbox_facts = SqlAlchemyInboxAccessFactsReader(session, self._tenant_id)
         self.classifications = ClassificationRepositoryImpl(session, self._tenant_id)
         self.conversations = ConversationRepositoryImpl(session, self._tenant_id)
         self.messages = MessageRepositoryImpl(session, self._tenant_id)
@@ -46,9 +48,7 @@ class SqlAlchemyConversationsUnitOfWork:
         self.bus = PostgresEventBus(session, self._tenant_id, now=self._now)
         return self
 
-    async def lock_message(
-        self, tenant_id: TenantId, message_id: MessageId
-    ) -> None:
+    async def lock_message(self, tenant_id: TenantId, message_id: MessageId) -> None:
         """同 (tenant, message) 事务级 advisory 锁：把「查重→落分类→发布事件」
         串行化——并发下只有首个事务能发布 ReplyReceived（exactly-once 由
         锁 + message 唯一约束共同保证，不依赖检查时序或单线程）。

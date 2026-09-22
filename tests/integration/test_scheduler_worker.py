@@ -130,6 +130,26 @@ class _AdmissionDriver:
         return result
 
 
+class _CatalogDriver:
+    def __init__(
+        self,
+        results: list[object],
+        order: list[str] | None = None,
+    ) -> None:
+        self._results = deque(results)
+        self.order = order
+        self.calls = 0
+
+    async def scan_once(self) -> object:
+        self.calls += 1
+        if self.order is not None:
+            self.order.append("catalog_products")
+        result = self._results.popleft() if self._results else object()
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+
 def _config(module: Any, *, lock_key: int, interval: float = 0.01) -> Any:
     return module.SchedulerConfig(
         interval_seconds=interval,
@@ -208,9 +228,7 @@ def _stop_after_waits(
         ({"lock_key": 2**63}, "lock"),
     ],
 )
-def test_config_rejects_invalid_values(
-    kwargs: dict[str, object], message: str
-) -> None:
+def test_config_rejects_invalid_values(kwargs: dict[str, object], message: str) -> None:
     module = _scheduler()
     values: dict[str, object] = {
         "interval_seconds": 1,
@@ -362,7 +380,10 @@ async def test_runtime_activation_runs_after_lock_and_before_first_cycle(
     assert result.status is module.WorkerStartStatus.STARTED
     assert activation.calls == 1
     assert order[:4] == [
-        "lock_confirmed", "runtime_composed", "lock_confirmed", "drain:1"
+        "lock_confirmed",
+        "runtime_composed",
+        "lock_confirmed",
+        "drain:1",
     ]
 
 
@@ -451,9 +472,7 @@ async def test_worker_without_lock_never_writes_runtime_composed(
         await owner
 
 
-async def _lock_holder(
-    engine: AsyncEngine, lock_key: int
-) -> tuple[int, str]:
+async def _lock_holder(engine: AsyncEngine, lock_key: int) -> tuple[int, str]:
     async with engine.connect() as connection:
         row = (
             await connection.execute(
@@ -513,9 +532,7 @@ async def test_terminated_lock_backend_stops_before_next_cycle(
     )
     wait_calls = 0
 
-    async def terminate_holder(
-        interval: float, stop_event: asyncio.Event
-    ) -> None:
+    async def terminate_holder(interval: float, stop_event: asyncio.Event) -> None:
         nonlocal wait_calls
         del interval
         wait_calls += 1
@@ -664,7 +681,9 @@ async def test_sourcing_admission_failure_is_phase_isolated_and_redacted(
 
 
 @pytest.mark.asyncio
-async def test_lock_loss_immediately_before_admission_prevents_it_and_later_phases() -> None:
+async def test_lock_loss_immediately_before_admission_prevents_it_and_later_phases() -> (
+    None
+):
     module = _scheduler()
     outbox, workflow = AsyncMock(), AsyncMock()
     admission = AsyncMock()
@@ -756,6 +775,188 @@ async def test_lock_loss_after_workflow_prevents_post_outbox() -> None:
     ]
     assert len(workflow.calls) == 1
     assert outbox.calls == 1
+
+
+def test_catalog_driver_protocol_is_strict_at_runtime_construction() -> None:
+    module = _scheduler()
+    with pytest.raises(ValidationError, match="catalog"):
+        module.SchedulerRuntime(
+            lock_engine=object(),
+            outbox=_Drainer([0]),
+            workflow=_Poller([0]),
+            tenant_id=TenantId("scheduler-catalog-invalid"),
+            config=module.SchedulerConfig(1, 7, 1),
+            catalog_product_driver=object(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_catalog_runs_after_sourcing_with_lock_checks_before_workflow() -> None:
+    module = _scheduler()
+    order: list[str] = []
+    runtime = module.SchedulerRuntime(
+        lock_engine=object(),
+        outbox=_Drainer([1, 1], order),
+        workflow=_Poller([1], order),
+        tenant_id=TenantId("scheduler-catalog-order"),
+        config=module.SchedulerConfig(1, 7, 1),
+        sourcing_admission_driver=_AdmissionDriver([object()], order),
+        catalog_product_driver=_CatalogDriver([object()], order),
+    )
+
+    async def confirm_lock() -> None:
+        order.append("lock")
+
+    await module._run_cycle(runtime, 1, confirm_lock=confirm_lock)
+
+    assert order == [
+        "drain:1",
+        "lock",
+        "sourcing_admission",
+        "lock",
+        "lock",
+        "catalog_products",
+        "lock",
+        "workflow:1",
+        "lock",
+        "drain:2",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_catalog_requires_lock_before_any_phase_and_lock_loss_stops_scan() -> (
+    None
+):
+    module = _scheduler()
+    outbox = _Drainer([1])
+    catalog = _CatalogDriver([object()])
+    workflow = _Poller([1])
+    runtime = module.SchedulerRuntime(
+        lock_engine=object(),
+        outbox=outbox,
+        workflow=workflow,
+        tenant_id=TenantId("scheduler-catalog-lock-required"),
+        config=module.SchedulerConfig(1, 7, 1),
+        catalog_product_driver=catalog,
+    )
+
+    with pytest.raises(RuntimeError, match="锁确认"):
+        await module._run_cycle(runtime, 1)
+    assert outbox.calls == catalog.calls == 0
+    assert workflow.calls == []
+
+    async def lost() -> None:
+        raise module._SchedulerLockLost()
+
+    with pytest.raises(module._SchedulerLockLost):
+        await module._run_cycle(runtime, 1, confirm_lock=lost)
+    assert outbox.calls == 1
+    assert catalog.calls == 0
+    assert workflow.calls == []
+
+
+@pytest.mark.asyncio
+async def test_lock_loss_after_catalog_stops_workflow_and_post_outbox() -> None:
+    module = _scheduler()
+    order: list[str] = []
+    runtime = module.SchedulerRuntime(
+        lock_engine=object(),
+        outbox=_Drainer([1, 1], order),
+        workflow=_Poller([1], order),
+        tenant_id=TenantId("scheduler-catalog-lock-after"),
+        config=module.SchedulerConfig(1, 7, 1),
+        catalog_product_driver=_CatalogDriver([object()], order),
+    )
+    checks = 0
+
+    async def confirm_lock() -> None:
+        nonlocal checks
+        checks += 1
+        order.append("lock")
+        if checks == 2:
+            raise module._SchedulerLockLost()
+
+    with pytest.raises(module._SchedulerLockLost):
+        await module._run_cycle(runtime, 1, confirm_lock=confirm_lock)
+    assert order == ["drain:1", "lock", "catalog_products", "lock"]
+    assert runtime.workflow.calls == []
+    assert runtime.outbox.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_catalog_failure_is_redacted_and_workflow_may_continue(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    module = _scheduler()
+    order: list[str] = []
+    runtime = module.SchedulerRuntime(
+        lock_engine=object(),
+        outbox=_Drainer([0], order),
+        workflow=_Poller([0], order),
+        tenant_id=TenantId("scheduler-catalog-error"),
+        config=module.SchedulerConfig(1, 7, 1),
+        catalog_product_driver=_CatalogDriver(
+            [RuntimeError("postgres://user:secret@catalog/private")], order
+        ),
+    )
+
+    async def confirm_lock() -> None:
+        order.append("lock")
+
+    caplog.set_level(logging.INFO, logger="apps.scheduler_worker.main")
+    await module._run_cycle(runtime, 4, confirm_lock=confirm_lock)
+
+    assert order == [
+        "drain:1",
+        "lock",
+        "catalog_products",
+        "lock",
+        "workflow:1",
+    ]
+    records = [
+        record
+        for record in caplog.records
+        if getattr(record, "scheduler_phase", None) == "catalog_products"
+    ]
+    assert len(records) == 1
+    assert records[0].__dict__["error_category"] == "unexpected"
+    assert records[0].__dict__["tenant_id"] == "scheduler-catalog-error"
+    assert records[0].__dict__["cycle"] == 4
+    assert "secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_catalog_lock_loss_before_post_workflow_outbox_stops_delivery() -> None:
+    module = _scheduler()
+    order: list[str] = []
+    runtime = module.SchedulerRuntime(
+        lock_engine=object(),
+        outbox=_Drainer([1, 1], order),
+        workflow=_Poller([1], order),
+        tenant_id=TenantId("scheduler-catalog-post-lock"),
+        config=module.SchedulerConfig(1, 7, 1),
+        catalog_product_driver=_CatalogDriver([object()], order),
+    )
+    checks = 0
+
+    async def confirm_lock() -> None:
+        nonlocal checks
+        checks += 1
+        order.append("lock")
+        if checks == 3:
+            raise module._SchedulerLockLost()
+
+    with pytest.raises(module._SchedulerLockLost):
+        await module._run_cycle(runtime, 1, confirm_lock=confirm_lock)
+    assert order == [
+        "drain:1",
+        "lock",
+        "catalog_products",
+        "lock",
+        "workflow:1",
+        "lock",
+    ]
+    assert runtime.outbox.calls == 1
 
 
 async def test_phase_failure_isolated_and_next_cycle_continues(
@@ -1097,19 +1298,13 @@ async def test_repeated_cycles_do_not_repeat_real_outbox_or_workflow(
     async with scheduler_db.connect() as connection:
         event_status = (
             await connection.execute(
-                text(
-                    "SELECT status FROM outbox_events "
-                    "WHERE tenant_id = :tenant"
-                ),
+                text("SELECT status FROM outbox_events WHERE tenant_id = :tenant"),
                 {"tenant": str(tenant)},
             )
         ).scalar_one()
         run_status = (
             await connection.execute(
-                text(
-                    "SELECT status FROM workflow_runs "
-                    "WHERE tenant_id = :tenant"
-                ),
+                text("SELECT status FROM workflow_runs WHERE tenant_id = :tenant"),
                 {"tenant": str(tenant)},
             )
         ).scalar_one()
@@ -1488,9 +1683,7 @@ def _factory_environ(
         "TRADEOS_EMAIL_FEEDBACK_ROUTE_ID": "route-scheduler",
         "TRADEOS_UNSUBSCRIBE_BASE_URL": "https://unsub.example",
         "TRADEOS_UNSUBSCRIBE_ACTIVE_KEY_ID": "k1",
-        "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": (
-            '{"k1": "UNSUBSCRIBE_HMAC_CURRENT"}'
-        ),
+        "TRADEOS_UNSUBSCRIBE_KEY_REFS_JSON": ('{"k1": "UNSUBSCRIBE_HMAC_CURRENT"}'),
         "SCHEDULER_FINGERPRINT_KEY": "f" * 32,
         "UNSUBSCRIBE_HMAC_CURRENT": "u" * 32,
         "TRADEOS_HUNTER_CONTACTS_ENABLED": "true" if hunter_enabled else "false",
@@ -1652,13 +1845,14 @@ async def test_hunter_disabled_builds_without_contact_tools_or_activation(
     async with factory() as runtime:
         assert runtime.activation is None
         assert not any(
-            name.startswith("account_discovery.")
-            for name in runtime.workflow._handlers
+            name.startswith("account_discovery.") for name in runtime.workflow._handlers
         )
     assert transport_calls == 0
 
 
-async def test_research_scheduler_starts_without_campaign_or_contact_composition(db_url: str) -> None:
+async def test_research_scheduler_starts_without_campaign_or_contact_composition(
+    db_url: str,
+) -> None:
     from dataclasses import replace
     from unittest.mock import AsyncMock, Mock
 
@@ -1676,29 +1870,43 @@ async def test_research_scheduler_starts_without_campaign_or_contact_composition
 
     runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
     tenant = TenantId("tn_01M0VKA9S6KX7HRBG3G3ETYNBZ")
+
     class NoSecrets:
         def resolve(self, ref):
             raise AssertionError("研究组合启动不得解析Provider凭证")
+
     web = WebDiscoveryToolComposition(
-        playbook=AsyncMock(spec=WebResearchPlaybookReader), secret_resolver=NoSecrets(),
-        secret_ref="TEST_TAVILY_REF", search_transport=TavilySearchApiTransport(),
-        page_transport=SafePublicPageHttpTransport(), artifacts=Mock(spec=RawArtifactStore),
-        provider="tavily", exclusive_account_confirmed=True,
+        playbook=AsyncMock(spec=WebResearchPlaybookReader),
+        secret_resolver=NoSecrets(),
+        secret_ref="TEST_TAVILY_REF",
+        search_transport=TavilySearchApiTransport(),
+        page_transport=SafePublicPageHttpTransport(),
+        artifacts=Mock(spec=RawArtifactStore),
+        provider="tavily",
+        exclusive_account_confirmed=True,
     )
     discovery = runtime_module.DemandDiscoveryComposition(
         task_reader=AsyncMock(spec=DemandDiscoveryTaskReader),
-        capability=AsyncMock(spec=DemandIntelligenceCapability), demand=AsyncMock(spec=DemandService),
-        prospecting=AsyncMock(spec=ProspectingService), web_tools=web,
+        capability=AsyncMock(spec=DemandIntelligenceCapability),
+        demand=AsyncMock(spec=DemandService),
+        prospecting=AsyncMock(spec=ProspectingService),
+        web_tools=web,
     )
-    dependencies = replace(_factory_dependencies(runtime_module, with_hunter=False),
-                           demand_discovery=discovery)
+    dependencies = replace(
+        _factory_dependencies(runtime_module, with_hunter=False),
+        demand_discovery=discovery,
+    )
     factory = runtime_module.SchedulerRuntimeFactory(
-        _factory_environ(db_url, tenant, hunter_enabled=False), dependencies,
-        resolver_factory=_FactoryResolver, health_server_factory=_FactoryHealthServer,
+        _factory_environ(db_url, tenant, hunter_enabled=False),
+        dependencies,
+        resolver_factory=_FactoryResolver,
+        health_server_factory=_FactoryHealthServer,
     )
     async with factory() as runtime:
         assert "demand_discovery.v2.execute_search" in runtime.workflow._handlers
-        assert not any(name.startswith("account_discovery.") for name in runtime.workflow._handlers)
+        assert not any(
+            name.startswith("account_discovery.") for name in runtime.workflow._handlers
+        )
         assert runtime.activation is None
 
 
@@ -1772,8 +1980,7 @@ async def test_hunter_configured_pending_builds_fail_closed_adapters(
             if workflow_type == "account_discovery"
         } == {1, 2}
         assert {
-            name
-            for name, _handler in runtime.outbox._handlers["CampaignStateChanged"]
+            name for name, _handler in runtime.outbox._handlers["CampaignStateChanged"]
         } == {"account_discovery.campaign_state_changed"}
         assert "account_discovery.campaign_approval_decided" in {
             name for name, _handler in runtime.outbox._handlers["ApprovalDecided"]
@@ -1868,8 +2075,7 @@ async def test_hunter_validated_configuration_builds_exact_tools_and_activation(
     assert len(runtime_events) == 1
     assert runtime_events[0].actor_id == "system:scheduler-hunter"
     assert runtime_events[0].idempotency_key == (
-        "hunter-runtime:config-v1:"
-        f"{configuration.connector_profile_version}"
+        f"hunter-runtime:config-v1:{configuration.connector_profile_version}"
     )
 
 
@@ -1967,6 +2173,8 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
     async with factory() as runtime:
         assert runtime.outbox._max_attempts == 7
         assert set(runtime.workflow._handlers) == {
+            "human_handoff.notify_pending_owner",
+            "human_handoff.remind_owner",
             "human_handoff.notify_owner",
             "human_handoff.accept",
             "human_handoff.escalate_manager",
@@ -1985,6 +2193,19 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
             "country_policy_change.expire",
             "country_policy_change.apply",
             "country_policy_change.mark_applied",
+            "catalog_product_policy.assemble",
+            "catalog_product_policy.submit",
+            "catalog_product_policy.wait",
+            "catalog_product_policy.apply",
+            "catalog_product_policy.expire",
+            "catalog_product_policy.mark_applied",
+            "catalog_product_evaluation.evaluate",
+            "catalog_product_cultivation.assemble",
+            "catalog_product_cultivation.submit",
+            "catalog_product_cultivation.wait",
+            "catalog_product_cultivation.apply",
+            "catalog_product_cultivation.expire",
+            "catalog_product_cultivation.mark_applied",
         }
         assert {
             definition.workflow_type
@@ -1994,6 +2215,9 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
             "sending_identity_authentication",
             "playbook_change",
             "country_policy_change",
+            "catalog_proposal_policy_change",
+            "catalog_cluster_evaluation",
+            "catalog_product_cultivation",
         }
         assert set(runtime.outbox._handlers) == {
             "HandoffRequested",
@@ -2005,6 +2229,11 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
             "ApprovalDecided",
             "AuthenticationCheckRequested",
             "CountryPolicyVersionProposed",
+            "NeedClusterMembershipChanged",
+            "NeedCatalogFactsChanged",
+            "AccountCountryFactsChanged",
+            "CatalogProposalPolicyActivated",
+            "CatalogProductProposalCreated",
         }
         assert {
             name for name, _handler in runtime.outbox._handlers["ApprovalDecided"]
@@ -2012,7 +2241,10 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
             "notification.approval_decided",
             "playbook_change.approval_decided",
             "country_policy_change.approval_decided",
+            "catalog_product_policy.approval_decided",
+            "catalog_product_cultivation.approval_decided",
         }
+        assert callable(runtime.catalog_product_driver.scan_once)
         assert {
             name
             for name, _handler in runtime.outbox._handlers[
@@ -2022,6 +2254,7 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
         assert (
             runtime.workflow._handlers["sending_identity_auth.check"]._selector == "s1"
         )
-        assert servers[0].state.is_ready is True
+        assert servers[0].state.is_ready is False
+        assert runtime.lifecycle is servers[0].state
     assert servers[0].closed.is_set()
     assert disposed == 1

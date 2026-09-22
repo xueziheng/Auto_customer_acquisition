@@ -51,3 +51,11 @@ src/
 - 四类 admission 响应不是原子快照：跨状态出现重复身份时准入区必须 fail-closed；`/sourcing-cases` 只能作为独立、中性的 Case 工作台展示，不得用 admission 差集推断 Case 是历史记录或正在处理。
 - 人工准入只按后端 `can_current_user_manual_start` 渲染；确认对话框中的原始 Idempotency-Key 只随请求发送，失败恢复时不得换键，也不得在 UI 或日志展示。
 - admission 详情只显示安全不可变排序快照和 admitted actor/time；禁止渲染 claim token、租约、`requested_by`、完整 Workflow context 或底层异常。
+
+## Catalog Product Proposal 页面
+
+- 没有活动策略必须明示“未配置即关闭”；受控验收的三客户和 Kenya 只是合成场景，不得进前端默认值。
+- 策略与提案只链接后端返回的精确 `approval_id`；决策请求体只发 `decision`/拒绝原因，不发 tenant、actor、facts hash、Provenance、owner 或 approver。
+- 六条确定性规则必须保留固定顺序并区分“通过 / 未通过 / 未知 / 不要求”；非硬门槛的未知不得渲染成已知或 `not_required`。
+- 提案与培养区都要显示固定风险提示。页面不得提供概率、自动批准、正式 Product 创建、供应商联系或客户报价动作。
+- `pending_review`、`cultivation_queued`、`stale` 及其他终态必须按 API 事实分组；旧快照 stale 后不得伪装成已培养。桌面和 390px 都不能水平溢出或出现错误遮罩。

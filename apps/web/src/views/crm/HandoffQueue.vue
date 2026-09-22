@@ -1,7 +1,9 @@
 <script setup lang="ts">
 /* global HTMLButtonElement, HTMLOListElement, Response */
-import { computed, inject, nextTick, onMounted, ref } from "vue";
+import { computed, inject, nextTick, onMounted, ref, watch } from "vue";
 
+import { useRoute } from "vue-router";
+import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
 import { apiClient, createApiClient } from "../../api/client";
 import type { components } from "../../api/api";
 import HandoffPacketView from "./HandoffPacketView.vue";
@@ -13,6 +15,7 @@ type OpportunityView = components["schemas"]["OpportunityView"];
 type QueueUiState = "ready" | "loading" | "empty" | "forbidden" | "unavailable";
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
+const route = useRoute();
 const queue = ref<HandoffQueueItemView[]>([]);
 const removedHandoffIds = ref<ReadonlySet<string>>(new Set());
 const selectedHandoffId = ref<string | null>(null);
@@ -31,6 +34,15 @@ const queueList = ref<HTMLOListElement>();
 let queueGeneration = 0;
 let packetGeneration = 0;
 
+function resetScope(): void {
+ queueGeneration++; packetGeneration++; queue.value=[]; removedHandoffIds.value=new Set();
+ selectedHandoffId.value=null; clearCombination(); packetLoading.value=false; writePending.value=false;
+ stale.value=false; safeErrorMessage.value=null; retryAfter.value=null; announce("正在加载接管队列…");
+}
+const gate=useQuoteRequestScope(client,()=>[route.fullPath],()=>{resetScope();globalThis.queueMicrotask(()=>void loadQueue());});
+watch(()=>route.fullPath,()=>{resetScope();void loadQueue();},{flush:"sync"});
+const requestedHandoff = computed(() => typeof route.params.handoffId === "string" ? route.params.handoffId : typeof route.query.handoff_id === "string" ? route.query.handoff_id : null);
+
 const visibleQueue = computed(() => queue.value.filter((item) => !removedHandoffIds.value.has(item.handoff_id)));
 const isReady = computed(() => queueState.value === "ready");
 const canSelect = computed(() => isReady.value && !writePending.value);
@@ -43,11 +55,12 @@ const hasSelectedCombination = computed(() =>
       && packet.value.opportunity_id === opportunity.value.opportunity_id,
   ),
 );
-const canAccept = computed(() => canSelect.value && !packetLoading.value && hasSelectedCombination.value);
+const canAccept = computed(() => canSelect.value && !packetLoading.value && hasSelectedCombination.value && visibleQueue.value.some(item=>item.handoff_id===selectedHandoffId.value));
 
 function safeError(status: number): string {
+  if (status === 404) return "所选接管不存在或不可见";
   if (status === 400) return "请求参数无效";
-  if (status === 403) return "没有权限";
+  if (status === 401 || status === 403) return "没有权限";
   if (status === 409) return "已被接受";
   if (status === 503) return "服务暂时不可用，请稍后重试";
   return "请求未完成，请刷新后重试";
@@ -233,10 +246,10 @@ function leaveReadFailure(
     : safeError(status);
   retryAfter.value = response ? manualRetryNotice(response) : null;
   packetLoading.value = false;
-  if (status === 403) {
+  if (status === 401 || status === 403) {
     queueState.value = "forbidden";
     stale.value = false;
-    if (options.queueFailure) queue.value = [];
+    if (options.queueFailure || status === 401) queue.value = [];
     selectedHandoffId.value = null;
     clearCombination();
   } else {
@@ -247,10 +260,17 @@ function leaveReadFailure(
   announce(safeErrorMessage.value, true);
 }
 
+function evidenceDenied(status: number): void {
+  gate.invalidate(); writePending.value = false;
+  leaveReadFailure(status, null, { clearProtected: true, queueFailure: status === 401 });
+}
+
 async function loadPacket(handoffId: string, allowDuringWrite = false): Promise<boolean> {
   if (!isReady.value || writePending.value && !allowDuringWrite) return false;
   const queueItem = visibleQueue.value.find((item) => item.handoff_id === handoffId);
-  if (!queueItem) return false;
+  if (!queueItem && requestedHandoff.value !== handoffId) return false;
+  const op = gate.begin("packet"); if (!op?.valid()) return false;
+  clearCombination();
   const requestGeneration = ++packetGeneration;
   selectedHandoffId.value = handoffId;
   packetLoading.value = true;
@@ -262,7 +282,7 @@ async function loadPacket(handoffId: string, allowDuringWrite = false): Promise<
       params: { path: { handoff_id: handoffId } },
     });
     if (
-      requestGeneration !== packetGeneration
+      !op.valid() || requestGeneration !== packetGeneration
       || !isReady.value
       || selectedHandoffId.value !== handoffId
     ) return false;
@@ -270,7 +290,7 @@ async function loadPacket(handoffId: string, allowDuringWrite = false): Promise<
       packetResult.response.status !== 200
       || !isPacket(packetResult.data)
       || packetResult.data.handoff_id !== handoffId
-      || packetResult.data.opportunity_id !== queueItem.opportunity_id
+      || queueItem && packetResult.data.opportunity_id !== queueItem.opportunity_id
     ) {
       leaveReadFailure(packetResult.response.status, packetResult.response, {
         clearProtected: packetResult.response.status !== 503,
@@ -283,7 +303,7 @@ async function loadPacket(handoffId: string, allowDuringWrite = false): Promise<
       params: { path: { opportunity_id: packetData.opportunity_id } },
     });
     if (
-      requestGeneration !== packetGeneration
+      !op.valid() || requestGeneration !== packetGeneration
       || !isReady.value
       || selectedHandoffId.value !== handoffId
     ) return false;
@@ -305,7 +325,7 @@ async function loadPacket(handoffId: string, allowDuringWrite = false): Promise<
     announce("完整接管包已按后端响应加载。");
     return true;
   } catch {
-    if (requestGeneration === packetGeneration && isReady.value && selectedHandoffId.value === handoffId) {
+    if (op.valid() && requestGeneration === packetGeneration && isReady.value && selectedHandoffId.value === handoffId) {
       leaveReadFailure(0, null, { clearProtected: true, queueFailure: false });
     }
     return false;
@@ -319,6 +339,7 @@ async function loadQueue(options: {
   successIsError?: boolean;
   silentLoading?: boolean;
 } = {}): Promise<boolean> {
+  const op=gate.begin("queue");if(!op?.valid())return false;
   const requestGeneration = ++queueGeneration;
   packetGeneration += 1;
   packetLoading.value = false;
@@ -330,7 +351,7 @@ async function loadQueue(options: {
     const result = await client.GET("/crm/handoffs", {
       params: { query: { limit: 50 } },
     });
-    if (requestGeneration !== queueGeneration) return false;
+    if (!op.valid() || requestGeneration !== queueGeneration) return false;
     if (
       result.response.status !== 200
       || !Array.isArray(result.data)
@@ -344,6 +365,13 @@ async function loadQueue(options: {
     }
     queue.value = result.data;
     stale.value = false;
+    if (requestedHandoff.value) {
+      queueState.value = "ready";
+      const detailLoaded = await loadPacket(requestedHandoff.value, options.allowDuringWrite);
+      if (!op.valid() || requestGeneration !== queueGeneration) return false;
+      if (detailLoaded && options.successMessage) announce(options.successMessage, options.successIsError ?? false);
+      return detailLoaded;
+    }
     const firstAvailable = options.focusIndex === undefined
       ? visibleQueue.value.find((item) => item.handoff_id === selectedHandoffId.value) ?? visibleQueue.value[0]
       : firstItemAtOrAfter(options.focusIndex);
@@ -357,13 +385,13 @@ async function loadQueue(options: {
     queueState.value = "ready";
     selectedHandoffId.value = firstAvailable.handoff_id;
     const detailLoaded = await loadPacket(firstAvailable.handoff_id, options.allowDuringWrite);
-    if (requestGeneration !== queueGeneration) return false;
+    if (!op.valid() || requestGeneration !== queueGeneration) return false;
     if (detailLoaded) {
       announce(options.successMessage ?? "已按后端等待顺序刷新接管队列。", options.successIsError ?? false);
     }
     return detailLoaded;
   } catch {
-    if (requestGeneration === queueGeneration) {
+    if (op.valid() && requestGeneration === queueGeneration) {
       leaveReadFailure(0, null, { clearProtected: false, queueFailure: true });
     }
     return false;
@@ -387,6 +415,7 @@ async function manuallyRetry(): Promise<void> {
 
 async function acceptHandoff(): Promise<void> {
   if (!canAccept.value || !selectedHandoffId.value) return;
+  const op=gate.begin("accept");if(!op?.valid())return;
   const handoffId = selectedHandoffId.value;
   const capturedIndex = visibleQueue.value.findIndex((item) => item.handoff_id === handoffId);
   if (capturedIndex < 0) return;
@@ -400,6 +429,7 @@ async function acceptHandoff(): Promise<void> {
     const result = await client.POST("/crm/handoffs/{handoff_id}/accept", {
       params: { path: { handoff_id: handoffId } },
     });
+    if(!op.valid())return;
     if (result.response.status === 204 || result.response.status === 409) {
       const concurrent = result.response.status === 409;
       removeCapturedHandoff(handoffId);
@@ -412,6 +442,7 @@ async function acceptHandoff(): Promise<void> {
         successIsError: concurrent,
         successMessage: `${outcome}；已按后端等待顺序刷新队列。`,
       });
+      if(!op.valid())return;
       if (refreshed && isReady.value) focusAfterWrite = selectedHandoffId.value;
       if (!refreshed && queueState.value !== "forbidden") {
         const rootError = safeErrorMessage.value ?? "请求未完成，请刷新后重试";
@@ -424,7 +455,8 @@ async function acceptHandoff(): Promise<void> {
     }
     safeErrorMessage.value = safeError(result.response.status);
     retryAfter.value = manualRetryNotice(result.response);
-    if (result.response.status === 403) {
+    if (result.response.status === 401 || result.response.status === 403) {
+      if (result.response.status === 401) queue.value = [];
       queueState.value = "forbidden";
       stale.value = false;
       selectedHandoffId.value = null;
@@ -435,14 +467,15 @@ async function acceptHandoff(): Promise<void> {
     }
     announce(safeErrorMessage.value, result.response.status !== 400);
   } catch {
+    if(!op.valid())return;
     safeErrorMessage.value = "请求未完成，请刷新后重试";
     queueState.value = "unavailable";
     stale.value = true;
     announce(safeErrorMessage.value, true);
   } finally {
-    writePending.value = false;
-    if (focusAfterWrite && isReady.value && selectedHandoffId.value === focusAfterWrite) {
-      await focusQueueItem(focusAfterWrite);
+    if(op.valid()) {
+      writePending.value = false;
+      if (focusAfterWrite && isReady.value && selectedHandoffId.value === focusAfterWrite) await focusQueueItem(focusAfterWrite);
     }
   }
 }
@@ -514,6 +547,7 @@ onMounted(() => {
           </div>
           <div class="fairness-rule">
             <strong>等待最久优先</strong>
+            <span>当前可见 {{ visibleQueue.length }} 项（最多50项，按当前授权范围）；等待不是人工工作耗时。</span>
             <span>requested_at 升序 / wait_seconds 降序；不按分数排序</span>
           </div>
           <p
@@ -606,6 +640,7 @@ onMounted(() => {
           v-if="packet && opportunity && !packetLoading"
           :packet="packet"
           :opportunity="opportunity"
+          @denied="evidenceDenied"
         />
         <p
           v-else-if="queueState === 'forbidden'"
@@ -695,7 +730,8 @@ onMounted(() => {
 .handoff-shell {
   display: grid;
   grid-template-rows: 68px minmax(0, 1fr);
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
   background: #f5f7f7;
 }
@@ -1134,8 +1170,7 @@ a:focus-visible {
   }
 
   .handoff-shell {
-    grid-template-rows: auto auto;
-    height: calc(100vh - 56px);
+    display: block;
     overflow: auto;
   }
 
@@ -1151,8 +1186,14 @@ a:focus-visible {
   }
 
   .handoff-workspace {
-    grid-template-columns: minmax(0, 1fr);
+    display: flex;
+    flex-direction: column;
+    min-height: auto;
     overflow: visible;
+  }
+
+  .pane {
+    flex: none;
   }
 
   .pane,

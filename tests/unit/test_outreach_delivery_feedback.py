@@ -60,16 +60,12 @@ def _schemas() -> object:
 
 
 def _service_type() -> type[object]:
-    return importlib.import_module(
-        "domains.outreach.service_impl"
-    ).OutreachServiceImpl
+    return importlib.import_module("domains.outreach.service_impl").OutreachServiceImpl
 
 
 def _binding(route_id: str = "route-a", digest: str = "a" * 64) -> object:
     return _schemas().DeliveryCorrelationBinding(
-        deterministic_message_id=(
-            f"<{route_id}.{digest}@messages.tradeos.invalid>"
-        ),
+        deterministic_message_id=(f"<{route_id}.{digest}@messages.tradeos.invalid>"),
         idempotency_header=f"{route_id}.{digest}",
         route_id=route_id,
     )
@@ -89,13 +85,9 @@ class FeedbackAttemptRepository(FakeAttemptRepository):
         for candidate in self.store.attempts.values():
             if candidate.attempt_id == attempt.attempt_id:
                 continue
-            if (
-                candidate.tenant_id == attempt.tenant_id
-                and (
-                    candidate.deterministic_message_id
-                    == attempt.deterministic_message_id
-                    or candidate.idempotency_header == attempt.idempotency_header
-                )
+            if candidate.tenant_id == attempt.tenant_id and (
+                candidate.deterministic_message_id == attempt.deterministic_message_id
+                or candidate.idempotency_header == attempt.idempotency_header
             ):
                 return repository.DeliveryCorrelationBindResult(
                     repository.DeliveryCorrelationBindStatus.CONFLICT,
@@ -168,9 +160,7 @@ class FeedbackUowFactory:
 
 
 def _feedback_harness() -> object:
-    helpers = importlib.import_module(
-        "tests.unit.test_outreach_enrollment_service"
-    )
+    helpers = importlib.import_module("tests.unit.test_outreach_enrollment_service")
     harness = helpers._build()
     harness.service = _service_type()(
         FeedbackUowFactory(harness.store, harness.trace),
@@ -186,9 +176,7 @@ def _feedback_harness() -> object:
 
 
 async def _sent_attempt() -> tuple[object, object, object]:
-    helpers = importlib.import_module(
-        "tests.unit.test_outreach_enrollment_service"
-    )
+    helpers = importlib.import_module("tests.unit.test_outreach_enrollment_service")
     harness = _feedback_harness()
     enrollment = await harness.service.enroll(
         harness.tenant,
@@ -241,10 +229,7 @@ def _identity_actor(identity_id: SendingIdentityId) -> Actor:
 
 
 def _allow_count(harness: object) -> int:
-    return sum(
-        record["rule"].startswith("allow:")
-        for record in harness.audit.records
-    )
+    return sum(record["rule"].startswith("allow:") for record in harness.audit.records)
 
 
 def test_feedback_permission_vocabulary_and_exact_system_scope() -> None:
@@ -331,7 +316,9 @@ def test_human_roles_and_default_authorizer_cannot_process_feedback(
                 authorizer.preauthorize(actor, action, scope, tenant)
 
 
-def test_feedback_system_scope_rejects_empty_multi_mismatched_and_mutable_expansion() -> None:
+def test_feedback_system_scope_rejects_empty_multi_mismatched_and_mutable_expansion() -> (
+    None
+):
     """SYSTEM scope 必须冻结一个 Attempt 或一个 SendingIdentity。"""
     permissions = importlib.import_module("domains.outreach.permissions")
     tenant = TenantId(new_id("tn"))
@@ -414,7 +401,9 @@ async def test_binding_is_idempotent_and_conflicting_rebind_rolls_back() -> None
 
 
 @pytest.mark.asyncio
-async def test_resolve_uses_either_key_requires_same_target_and_missing_has_no_allow() -> None:
+async def test_resolve_uses_either_key_requires_same_target_and_missing_has_no_allow() -> (
+    None
+):
     """模糊 fallback、半匹配或冲突 header 不能产生业务目标。"""
     harness, enrollment, attempt = await _sent_attempt()
     binding = _binding()
@@ -454,16 +443,16 @@ async def test_resolve_uses_either_key_requires_same_target_and_missing_has_no_a
     missing = await harness.service.resolve_delivery_feedback(
         harness.tenant,
         schemas.DeliveryCorrelationLookup(
-            deterministic_message_id=(
-                f"<route-a.{'f' * 64}@messages.tradeos.invalid>"
-            )
+            deterministic_message_id=(f"<route-a.{'f' * 64}@messages.tradeos.invalid>")
         ),
         actor=harness.boss,
     )
     assert missing is None
     assert _allow_count(harness) == allow_before
 
-    second_enrollment = copy.deepcopy(harness.store.enrollments[enrollment.enrollment_id])
+    second_enrollment = copy.deepcopy(
+        harness.store.enrollments[enrollment.enrollment_id]
+    )
     second_enrollment.enrollment_id = EnrollmentId(new_id("enr"))
     second_enrollment.idempotency_key = IdempotencyKey("feedback-second-enrollment")
     harness.store.enrollments[second_enrollment.enrollment_id] = second_enrollment
@@ -542,9 +531,7 @@ async def test_hard_bounce_suppresses_contact_stops_matching_enrollments_once() 
     assert len(harness.store.events) == events_before + 1
     assert _allow_count(harness) == 1
     lock_call = next(
-        call
-        for call in harness.trace.calls
-        if call[0] == "enrollment_lock_matching"
+        call for call in harness.trace.calls if call[0] == "enrollment_lock_matching"
     )
     assert lock_call[1] == tuple(sorted(lock_call[1]))
     assert harness.trace.calls[-2][0] == "uow_exit"
@@ -718,6 +705,7 @@ async def test_full_require_mismatch_writes_one_deny_and_zero_allow() -> None:
 @pytest.mark.asyncio
 async def test_hard_bounce_commit_failure_rolls_back_and_writes_zero_allow() -> None:
     """把 allow 移入 UoW 或漏掉原子回滚会在提交失败时留下假成功。"""
+
     class CommitFailure(RuntimeError):
         pass
 
@@ -761,3 +749,80 @@ async def test_hard_bounce_commit_failure_rolls_back_and_writes_zero_allow() -> 
     assert captured.value is sentinel
     assert harness.store == before
     assert _allow_count(harness) == 0
+
+
+async def test_reply_source_read_uses_real_sent_correlation_and_independent_boss_scope():
+    harness, enrollment, attempt = await _sent_attempt()
+    binding = _binding()
+    await harness.service.bind_delivery_correlation(
+        harness.tenant, attempt.attempt_id, binding, actor=harness.boss
+    )
+    harness.service = _service_type()(
+        FeedbackUowFactory(harness.store, harness.trace),
+        harness.contacts,
+        harness.senders,
+        harness.approvals,
+        harness.replies,
+        Phase1OutreachAuthorizer(harness.tenant),
+        harness.audit,
+        now=lambda: NOW,
+    )
+    actor = Actor(
+        harness.boss.actor_id,
+        OutreachScope(
+            level=ScopeLevel.TENANT,
+            allowed_account_ids=frozenset({enrollment.account_id}),
+        ),
+        "boss",
+    )
+    lookup = _schemas().DeliveryCorrelationLookup(
+        deterministic_message_id=binding.deterministic_message_id
+    )
+    source = await harness.service.resolve_reply_source(
+        harness.tenant, lookup, actor=actor
+    )
+    assert source.enrollment_id == enrollment.enrollment_id
+    for role in ("manager", "sales", "system"):
+        with pytest.raises(PermissionDenied):
+            await harness.service.resolve_reply_source(
+                harness.tenant,
+                lookup,
+                actor=Actor("denied", OutreachScope(level=ScopeLevel.TENANT), role),
+            )
+    with pytest.raises(PermissionDenied):
+        await harness.service.resolve_reply_source(
+            TenantId(new_id("tn")), lookup, actor=actor
+        )
+    with pytest.raises(PermissionDenied):
+        await harness.service.resolve_reply_source(
+            harness.tenant,
+            lookup,
+            actor=Actor(
+                "boss",
+                OutreachScope(
+                    level=ScopeLevel.TENANT,
+                    allowed_account_ids=frozenset({new_id("acc")}),
+                ),
+                "boss",
+            ),
+        )
+    with pytest.raises(PermissionDenied):
+        await harness.service.resolve_delivery_feedback(
+            harness.tenant, lookup, actor=actor
+        )
+    assert (
+        await harness.service.resolve_reply_source(
+            harness.tenant,
+            _schemas().DeliveryCorrelationLookup(
+                deterministic_message_id=binding.deterministic_message_id,
+                idempotency_header="route-a." + "b" * 64,
+            ),
+            actor=actor,
+        )
+        is None
+    )
+    harness.store.attempts[
+        attempt.attempt_id
+    ].state = _models().MessageAttemptState.RESERVED
+    with pytest.raises(ValidationError):
+        await harness.service.resolve_reply_source(harness.tenant, lookup, actor=actor)

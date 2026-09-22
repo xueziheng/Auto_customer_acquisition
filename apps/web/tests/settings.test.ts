@@ -439,7 +439,7 @@ describe("SettingsCenter", () => {
     expect(root.textContent).toContain("system:playbook-change");
   });
 
-  it("keeps one idempotency key for a retry, rotates it after editing, and preserves Decimal text", async () => {
+  it("freezes unknown commands and only rotates the key for edits after a confirmed terminal result", async () => {
     const postKeys: string[] = [];
     const postBodies: unknown[] = [];
     let postAttempt = 0;
@@ -474,20 +474,25 @@ describe("SettingsCenter", () => {
     setField(root, "minimum_deal_amount", "10000.0010");
     setField(root, "minimum_deal_currency", "USD");
     submit(root);
-    await eventually(() => expect(root.textContent).toContain("7 秒后可重试"));
+    await eventually(() => expect(root.textContent).toContain("提交结果待核对"));
 
     submit(root);
     await eventually(() => expect(postKeys).toHaveLength(2));
     expect(postKeys[1]).toBe(postKeys[0]);
 
-    setField(root, "minimum_deal_amount", "10000.0011");
+    expect(root.querySelector<HTMLInputElement>('[name="minimum_deal_amount"]')?.disabled).toBe(true);
     submit(root);
     await eventually(() => {
       expect(root.textContent).toContain("pbv_candidate");
       expect(root.textContent).toContain("run_candidate");
     });
-    expect(postKeys[2]).not.toBe(postKeys[1]);
-    expect(postBodies[2]).toMatchObject({ minimum_deal_amount: "10000.0011" });
+    expect(postKeys[2]).toBe(postKeys[1]);
+    expect(postBodies[2]).toMatchObject({ minimum_deal_amount: "10000.0010" });
+    setField(root, "minimum_deal_amount", "10000.0011");
+    submit(root);
+    await eventually(() => expect(postKeys).toHaveLength(4));
+    expect(postKeys[3]).not.toBe(postKeys[2]);
+    expect(postBodies[3]).toMatchObject({ minimum_deal_amount: "10000.0011" });
     expect(root.querySelector<HTMLAnchorElement>('a[href="/approvals"]')).not.toBeNull();
     expect(root.querySelector<HTMLAnchorElement>('a[href="/runs/run_candidate"]')).not.toBeNull();
   });

@@ -7,6 +7,7 @@ from datetime import date, datetime
 
 from domains.opportunities.models import SortKey
 from shared.schemas.evidence import EvidenceLevel
+from shared.schemas.identifiers import ProspectAccountId
 from shared.schemas.money import Money
 from shared.schemas.provenance import Provenance
 
@@ -221,9 +222,7 @@ class HandoffQueueItemView:
 
     def __post_init__(self) -> None:
         """复制两个列表字段，防止内部 packet 后续修改污染已返回 DTO。"""
-        object.__setattr__(
-            self, "missing_information", list(self.missing_information)
-        )
+        object.__setattr__(self, "missing_information", list(self.missing_information))
         object.__setattr__(self, "evidence_links", list(self.evidence_links))
 
 
@@ -289,3 +288,10 @@ class HandoffQueueStats:
     by_employee: dict[str, int]
     breached_count: int
     is_backlogged: bool
+
+
+@dataclass(frozen=True)
+class NotificationAudienceTarget:
+    """通知受众所需唯一关联；不暴露机会详情或自由文本。"""
+
+    account_id: ProspectAccountId

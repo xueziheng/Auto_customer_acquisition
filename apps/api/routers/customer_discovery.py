@@ -85,15 +85,15 @@ def _prospecting(
 )
 async def list_accounts(
     identity: Annotated[RequestIdentity, Depends(get_request_identity)],
-    dependencies: Annotated[
-        ConfiguredApiDependencies, Depends(get_api_dependencies)
-    ],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[ResearchProspectAccountView]:
     accounts = await _prospecting(dependencies).list_accounts(
         identity.tenant_id, limit=limit
     )
-    return await research_accounts(identity.tenant_id, accounts, dependencies.research_evidence)
+    return await research_accounts(
+        identity.tenant_id, accounts, dependencies.research_evidence
+    )
 
 
 @router.get(
@@ -110,17 +110,19 @@ async def list_accounts(
 async def get_account(
     account_id: str,
     identity: Annotated[RequestIdentity, Depends(get_request_identity)],
-    dependencies: Annotated[
-        ConfiguredApiDependencies, Depends(get_api_dependencies)
-    ],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> ResearchProspectAccountDetailView:
     if _ACCOUNT_RE.fullmatch(account_id) is None:
         raise ValidationError("潜在企业标识无效")
     detail = await _prospecting(dependencies).get_account_detail(
         identity.tenant_id, ProspectAccountId(account_id)
     )
-    accounts = await research_accounts(identity.tenant_id, [detail.account], dependencies.research_evidence)
-    return ResearchProspectAccountDetailView(account=accounts[0], contacts=detail.contacts)
+    accounts = await research_accounts(
+        identity.tenant_id, [detail.account], dependencies.research_evidence
+    )
+    return ResearchProspectAccountDetailView(
+        account=accounts[0], contacts=detail.contacts
+    )
 
 
 @router.get(
@@ -137,9 +139,7 @@ async def get_account(
 async def list_contacts(
     account_id: str,
     identity: Annotated[RequestIdentity, Depends(get_request_identity)],
-    dependencies: Annotated[
-        ConfiguredApiDependencies, Depends(get_api_dependencies)
-    ],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> list[ProspectContactDetailView]:
     if _ACCOUNT_RE.fullmatch(account_id) is None:
         raise ValidationError("潜在企业标识无效")
@@ -162,9 +162,7 @@ async def list_contacts(
 async def start_discovery(
     body: AccountDiscoveryStartBody,
     identity: Annotated[RequestIdentity, Depends(get_request_identity)],
-    dependencies: Annotated[
-        ConfiguredApiDependencies, Depends(get_api_dependencies)
-    ],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
 ) -> AccountDiscoveryStartResponse:
     if (
         _HYPOTHESIS_RE.fullmatch(body.hypothesis_id) is None
@@ -177,6 +175,8 @@ async def start_discovery(
         )
     ):
         raise ValidationError("账户发现请求无效")
+    if identity.employee.user_id is None:
+        raise ValidationError("当前员工缺少用户映射")
     run_id = await dependencies.workflow_engine.start(
         identity.tenant_id,
         "account_discovery",
@@ -184,7 +184,7 @@ async def start_discovery(
         {
             "hypothesis_id": body.hypothesis_id,
             "campaign_id": body.campaign_id,
-            "acting_user_id": str(identity.employee.employee_id),
+            "acting_user_id": str(identity.employee.user_id),
             "role_hints": list(dict.fromkeys(body.role_hints)),
             "assessment_ref": body.assessment_ref,
         },

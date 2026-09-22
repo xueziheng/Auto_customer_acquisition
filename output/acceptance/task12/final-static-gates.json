@@ -1,0 +1,51 @@
+[
+  {
+    "gate": "boundaries",
+    "command": [
+      ".venv/bin/python3",
+      "scripts/check_boundaries.py"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 5.17
+  },
+  {
+    "gate": "scan",
+    "command": [
+      ".venv/bin/python3",
+      "scripts/scan_sensitive.py"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 2.05
+  },
+  {
+    "gate": "ruff",
+    "command": [
+      ".venv/bin/python3",
+      "-m",
+      "ruff",
+      "check",
+      ".",
+      "--output-format",
+      "concise"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.31
+  },
+  {
+    "gate": "mypy",
+    "command": [
+      ".venv/bin/python3",
+      "-m",
+      "mypy",
+      "domains",
+      "shared",
+      "tool_gateway",
+      "apps",
+      "workflows",
+      "notification_gateway",
+      "infra"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 2.66
+  }
+]

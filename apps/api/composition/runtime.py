@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
@@ -14,9 +13,38 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
+from agent_runtime.model_client import StructuredJsonModelClient
 from agent_runtime.trade_manager import (
     StructuredTradeManagerModelPort,
     TradeManagerAgent,
+)
+from apps.composition_support.campaign_approval_reader import (
+    CurrentCampaignApprovalReader,
+)
+from apps.composition_support.delivery_material_reader import (
+    CurrentDeliveryMaterialReader,
+)
+from apps.composition_support.email_inbound import (
+    InboundMailbox,
+    build_inbound_composition,
+)
+from apps.composition_support.employee_readers import (
+    RequestScopedCatalogApprovalActorReader as RequestScopedCatalogApprovalActorReader,  # noqa: PLC0414 - 保持公开类型身份
+)
+from apps.composition_support.employee_readers import (
+    RequestScopedDirectiveEmployeeReader as RequestScopedDirectiveEmployeeReader,  # noqa: PLC0414 - 保持公开类型身份
+)
+from apps.composition_support.employee_readers import RequestScopedHandoffEmployeeReader
+from apps.composition_support.employee_readers import (
+    employee_service_scope as employee_service_scope,  # noqa: PLC0414 - 保持公开类型身份
+)
+from apps.composition_support.handoff_notifications import (
+    NotificationJobHandoffNotifier,
+)
+from apps.composition_support.outreach_fact_readers import (
+    CurrentContactEligibilityReader,
+    CurrentReplyStatusReader,
+    CurrentSendingIdentityReader,
 )
 from artifact_store.repository import ArtifactUnitOfWorkFactory
 from artifact_store.service_impl import GeneratedArtifactStoreImpl, RawArtifactStoreImpl
@@ -26,13 +54,18 @@ from connectors.gmail.client import (
     GmailSendResult,
     SecretResolver,
 )
+from connectors.gmail.inbound_transport import GmailInboundHttpTransport
 from connectors.gmail.transport import GmailHttpTransport
 from connectors.object_store.bounded import S3BoundedObjectBlobTransport
 from connectors.object_store.config import S3ObjectStoreSettings
 from connectors.object_store.deferred import DeferredS3ObjectBlobTransport
 from connectors.object_store.quote_pdf import S3QuotePdfObjectBlobTransport
 from connectors.openai import OpenAIJsonModelClient
-from domains.approvals.service import ApprovalService, ApprovalState, ApprovalType
+from domains.approvals.service import (
+    ApprovalService,
+    ApprovalState,
+    ApprovalType,
+)
 from domains.approvals.service_impl import ApprovalServiceImpl
 from domains.commitments.service_impl import CommitmentServiceImpl
 from domains.compliance.permissions import Phase1ComplianceAuthorizer
@@ -47,19 +80,12 @@ from domains.employees.permissions import (
     Actor as EmployeeActor,
 )
 from domains.employees.permissions import (
-    AuditLogger as EmployeeAuditLogger,
-)
-from domains.employees.permissions import (
-    EmployeeAuthorizer,
     EmployeeScope,
     Phase1EmployeeAuthorizer,
 )
 from domains.employees.permissions import (
     StandardAuditLogger as EmployeeStandardAuditLogger,
 )
-from domains.employees.schemas import EmployeeView
-from domains.employees.service import EmployeeService
-from domains.employees.service_impl import EmployeeServiceImpl
 from domains.opportunities.permissions import (
     Actor as OpportunityActor,
 )
@@ -102,7 +128,13 @@ from domains.outreach.service import (
     SendingIdentityEligibilityProvider,
 )
 from domains.outreach.service_impl import OutreachServiceImpl
-from domains.products.permissions import Phase2ProductAuthorizer
+from domains.products.catalog_service_impl import CatalogProposalServiceImpl
+from domains.products.permissions import (
+    Phase2ProductAuthorizer,
+    ProductActor,
+    ProductRole,
+)
+from domains.products.service import CatalogProposalService
 from domains.products.service_impl import ProductServiceImpl
 from domains.prospecting.service import ContactValueHasher
 from domains.prospecting.service_impl import ProspectingServiceImpl
@@ -133,6 +165,7 @@ from domains.sourcing.service import CandidateEvidenceSnapshot
 from domains.sourcing.service_impl import SourcingServiceImpl
 from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
+from infra.db.catalog_products_uow import SqlAlchemyCatalogProductsUnitOfWork
 from infra.db.commitment_uow import SqlAlchemyCommitmentUnitOfWork
 from infra.db.compliance_uow import SqlAlchemyComplianceUnitOfWork
 from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
@@ -154,12 +187,8 @@ from infra.db.products_uow import SqlAlchemyProductsUnitOfWork
 from infra.db.prospecting_uow import SqlAlchemyProspectingUnitOfWork
 from infra.db.provider_readiness_uow import SqlAlchemyProviderReadinessUnitOfWork
 from infra.db.quote_evidence_context import SqlAlchemyQuoteEvidenceContextReader
-from infra.db.repositories.employees import (
-    EmployeeRepositoryImpl,
-    OwnershipRepositoryImpl,
-    TerritoryRepositoryImpl,
-)
 from infra.db.repositories.in_app_notifications import PostgresInAppNotificationStore
+from infra.db.repositories.notification_jobs import PostgresNotificationJobStore
 from infra.db.repositories.notifications import PostgresNotificationDedupStore
 from infra.db.run_audit import PostgresRunAuditRepository
 from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
@@ -206,6 +235,7 @@ from shared.schemas.identifiers import (
     UserId,
     new_id,
 )
+from shared.schemas.runtime_capabilities import CapabilityName, RuntimeCapability
 from tool_gateway.checks.approval import ApprovalCheck
 from tool_gateway.checks.idempotency import IdempotencyCheck
 from tool_gateway.checks.permission import PermissionCheck
@@ -235,6 +265,18 @@ from tool_gateway.provider_readiness import (
     ProviderReadinessServiceImpl,
 )
 from workflows.account_discovery.flow import build_account_discovery_definition
+from workflows.catalog_product_proposal import (
+    CatalogProductApplication,
+    build_catalog_evaluation_workflow_definition,
+    build_catalog_evaluation_workflow_handlers,
+    build_catalog_policy_workflow_definition,
+    build_catalog_policy_workflow_handlers,
+    build_catalog_product_workflow_definition,
+    build_catalog_product_workflow_handlers,
+)
+from workflows.catalog_product_proposal.account_facts import (
+    ProspectingDemandCatalogAccountFactsReader,
+)
 from workflows.country_policy_change import build_country_policy_change_definition
 from workflows.demand_discovery.flow import build_demand_discovery_definition
 from workflows.email_feedback.repository import FeedbackPageUnitOfWork
@@ -261,6 +303,7 @@ from workflows.quote_approval.flow import (
 )
 from workflows.quote_approval.run_reader import WorkflowQuoteRunReader
 from workflows.quote_approval.runtime_readers import CurrentQuotationActorReader
+from workflows.reply_qualification.questions import ReplySuggestionApplication
 from workflows.sourcing_case.application import (
     DirectiveSourcingAdmissionPolicyReader,
     SourcingAdmissionApplication,
@@ -294,88 +337,6 @@ from .quotations import (
 )
 from .quote_notifications import RuntimeQuoteApprovalNotifier
 from .work_uploads import WorkUploadApplicationServiceImpl
-
-
-@asynccontextmanager
-async def employee_service_scope(
-    factory: async_sessionmaker[AsyncSession],
-    tenant_id: TenantId,
-    *,
-    now: Callable[[], datetime],
-    authorizer: EmployeeAuthorizer,
-    audit: EmployeeAuditLogger,
-) -> AsyncIterator[EmployeeService]:
-    """为一次调用创建独立员工服务事务，异常回滚且总是关闭会话。"""
-    session = factory()
-    try:
-        employees = EmployeeRepositoryImpl(session, tenant_id)
-        yield EmployeeServiceImpl(
-            employees=employees,
-            territories=TerritoryRepositoryImpl(session, tenant_id),
-            ownership=OwnershipRepositoryImpl(session, tenant_id),
-            now=now,
-            manager_pool=lambda _: (),
-            count_active_accounts=employees.count_active_accounts,
-            authorizer=authorizer,
-            audit=audit,
-        )
-        await session.commit()
-    except BaseException:
-        await session.rollback()
-        raise
-    finally:
-        await session.close()
-
-
-class RequestScopedHandoffEmployeeReader:
-    """让 workflow 的每次员工读取使用独立 service scope。"""
-
-    def __init__(self, scope: EmployeeServiceScope) -> None:
-        self._scope = scope
-
-    async def get_employee(
-        self,
-        tenant_id: TenantId,
-        employee_id: EmployeeId,
-        *,
-        actor: EmployeeActor,
-    ) -> EmployeeView:
-        async with self._scope(tenant_id) as service:
-            return await service.get_employee(tenant_id, employee_id, actor=actor)
-
-
-class RequestScopedDirectiveEmployeeReader:
-    """用员工域公开服务为指令域提供老板校验与展示名。"""
-
-    def __init__(
-        self,
-        scope: EmployeeServiceScope,
-        actor: EmployeeActor,
-    ) -> None:
-        self._scope = scope
-        self._actor = actor
-
-    async def is_active_boss(
-        self, tenant_id: TenantId, employee_id: EmployeeId
-    ) -> bool:
-        async with self._scope(tenant_id) as service:
-            employees = await service.list_active(tenant_id, actor=self._actor)
-        return any(
-            employee.employee_id == employee_id and employee.role == "boss"
-            for employee in employees
-        )
-
-    async def names_for(
-        self, tenant_id: TenantId, employee_ids: tuple[EmployeeId, ...]
-    ) -> dict[EmployeeId, str]:
-        async with self._scope(tenant_id) as service:
-            employees = await service.list_active(tenant_id, actor=self._actor)
-        wanted = set(employee_ids)
-        return {
-            employee.employee_id: employee.name
-            for employee in employees
-            if employee.employee_id in wanted
-        }
 
 
 class _DomainSeparatedContactValueHasher(ContactValueHasher):
@@ -890,10 +851,17 @@ def build_phase1_dependencies(
     *,
     now: Callable[[], datetime],
     manual_send: ManualSendComposition | None = None,
+    gmail_transport: GmailHttpTransport | None = None,
     secret_resolver: SecretResolver | None = None,
     object_store_settings: S3ObjectStoreSettings | None = None,
+    model_client: StructuredJsonModelClient | None = None,
+    inbound_mailbox: InboundMailbox | None = None,
 ) -> ConfiguredApiDependencies:
-    """装配真实 Postgres、领域服务、workflow、outbox 与通知出口。"""
+    """同步装配，零数据库连接、Provider SDK 初始化与解析器进程启动。
+
+    注入模型由调用者拥有；默认模型和旧对象传输由返回的 lifecycle 暴露。
+    直接调用者须关闭这两项及可选 quotation，再关闭自己拥有的 engine。
+    """
     tenant = TenantId(settings.tenant_id)
     opportunity_authorizer = Phase1OpportunityAuthorizer(tenant)
     employee_authorizer = Phase1EmployeeAuthorizer(tenant)
@@ -905,6 +873,11 @@ def build_phase1_dependencies(
         now=now,
         authorizer=employee_authorizer,
         audit=employee_audit,
+    )
+    employee_system_actor = EmployeeActor(
+        "system:phase1-handoff",
+        EmployeeScope.SYSTEM,
+        "system",
     )
     opportunities = OpportunityServiceImpl(
         # 可写 Protocol 属性不协变；具体 UoW 的仓储/总线逐项实现同一公共契约。
@@ -936,6 +909,7 @@ def build_phase1_dependencies(
     generated_documents = None
     generated_metadata = None
     work_uploads = None
+    object_transport = None
     if object_store_settings is not None:
         object_transport = DeferredS3ObjectBlobTransport(
             object_store_settings, resolved_secret_resolver
@@ -1037,6 +1011,9 @@ def build_phase1_dependencies(
         ),
         now=now,
         quote_access=None if quote_domain is None else quote_domain.approval_access,
+        catalog_actor_reader=RequestScopedCatalogApprovalActorReader(
+            employees, employee_system_actor
+        ),
     )
     organization = OrganizationServiceImpl(
         lambda requested_tenant: SqlAlchemyOrganizationUnitOfWork(  # type: ignore[arg-type, return-value]
@@ -1052,6 +1029,58 @@ def build_phase1_dependencies(
         Phase1ComplianceAuthorizer(tenant),
         now=now,
     )
+    prospecting = ProspectingServiceImpl(
+        lambda requested_tenant: SqlAlchemyProspectingUnitOfWork(
+            factory, requested_tenant, now=now
+        ),
+        _DomainSeparatedContactValueHasher(fingerprint_provider),
+        now=now,
+    )
+    demand = cast(
+        DemandService,
+        DemandServiceImpl(
+            lambda requested_tenant: SqlAlchemyDemandUnitOfWork(  # type: ignore[arg-type, return-value]
+                factory,
+                requested_tenant,
+                now=now,
+            ),
+            now=now,
+            account_names=ProspectingDemandAccountNames(prospecting),
+            catalog_accounts=ProspectingDemandCatalogAccountFactsReader(prospecting),
+        ),
+    )
+    demand_radar = AuthorizedDemandRadarService(
+        demand,
+        employee_authorizer,
+    )
+    conversations = ConversationServiceImpl(
+        lambda requested_tenant: SqlAlchemyConversationsUnitOfWork(  # type: ignore[arg-type, return-value]
+            factory, requested_tenant, now=now
+        ),
+        now=now,
+    )
+    sending_identities = SendingIdentityServiceImpl(
+        lambda requested_tenant: SqlAlchemySendingIdentityUnitOfWork(  # type: ignore[arg-type, return-value]
+            factory, requested_tenant, now=now
+        ),
+        Phase1SendingIdentityAuthorizer(tenant),
+        SendingIdentityStandardAuditLogger(),
+        now=now,
+    )
+    if gmail_transport is not None:
+        if manual_send is not None or not isinstance(
+            gmail_transport, GmailHttpTransport
+        ):
+            raise TypeError("API 发送组配置冲突")
+        manual_send = ManualSendComposition(
+            CurrentContactEligibilityReader(tenant, prospecting, demand, now=now),
+            CurrentSendingIdentityReader(tenant, sending_identities, now=now),
+            CurrentCampaignApprovalReader(tenant, approvals, now=now),
+            CurrentReplyStatusReader(tenant, prospecting, conversations, now=now),
+            CurrentDeliveryMaterialReader(tenant, prospecting, sending_identities),
+            resolved_secret_resolver,
+            gmail_transport,
+        )
     unavailable_send_sources = _UnavailableManualSendSources()
     contact_eligibility = (
         manual_send.contact_eligibility
@@ -1086,14 +1115,6 @@ def build_phase1_dependencies(
         reply_status,  # type: ignore[arg-type]
         Phase1OutreachAuthorizer(tenant),
         OutreachStandardAuditLogger(),
-        now=now,
-    )
-    sending_identities = SendingIdentityServiceImpl(
-        lambda requested_tenant: SqlAlchemySendingIdentityUnitOfWork(  # type: ignore[arg-type, return-value]
-            factory, requested_tenant, now=now
-        ),
-        Phase1SendingIdentityAuthorizer(tenant),
-        SendingIdentityStandardAuditLogger(),
         now=now,
     )
     unsubscribe_keys: dict[str, bytes] = {}
@@ -1163,35 +1184,6 @@ def build_phase1_dependencies(
     unsubscribe_links: UnsubscribeLinkProvider = _UnsubscribeLinkAdapter(
         unsubscribe_service
     )
-    prospecting = ProspectingServiceImpl(
-        lambda requested_tenant: SqlAlchemyProspectingUnitOfWork(
-            factory, requested_tenant, now=now
-        ),
-        _DomainSeparatedContactValueHasher(fingerprint_provider),
-        now=now,
-    )
-    demand = cast(
-        DemandService,
-        DemandServiceImpl(
-            lambda requested_tenant: SqlAlchemyDemandUnitOfWork(  # type: ignore[arg-type, return-value]
-                factory,
-                requested_tenant,
-                now=now,
-            ),
-            now=now,
-            account_names=ProspectingDemandAccountNames(prospecting),
-        ),
-    )
-    demand_radar = AuthorizedDemandRadarService(
-        demand,
-        employee_authorizer,
-    )
-    conversations = ConversationServiceImpl(
-        lambda requested_tenant: SqlAlchemyConversationsUnitOfWork(  # type: ignore[arg-type, return-value]
-            factory, requested_tenant, now=now
-        ),
-        now=now,
-    )
     commitments = CommitmentServiceImpl(
         lambda requested_tenant: SqlAlchemyCommitmentUnitOfWork(  # type: ignore[arg-type]
             factory,
@@ -1199,11 +1191,6 @@ def build_phase1_dependencies(
             now=now,
         ),
         now=now,
-    )
-    employee_system_actor = EmployeeActor(
-        "system:phase1-handoff",
-        EmployeeScope.SYSTEM,
-        "system",
     )
     directive_employees = RequestScopedDirectiveEmployeeReader(
         employees, employee_system_actor
@@ -1217,14 +1204,17 @@ def build_phase1_dependencies(
         directive_employees,
         now=now,
     )
-    model_client = OpenAIJsonModelClient(
-        settings.openai_api_key_ref,
-        resolved_secret_resolver,
+    owned_model = (
+        OpenAIJsonModelClient(settings.openai_api_key_ref, resolved_secret_resolver)
+        if model_client is None
+        else None
     )
+    resolved_model = model_client if model_client is not None else owned_model
+    assert resolved_model is not None
     trade_manager = TradeManagerAgent(
         settings.trade_manager_model,
         StructuredTradeManagerModelPort(
-            model_client,
+            resolved_model,
             settings.trade_manager_model,
         ),
         None,
@@ -1315,16 +1305,36 @@ def build_phase1_dependencies(
         SourcingScope.SYSTEM,
         "system",
     )
+    catalog_products = cast(
+        CatalogProposalService,
+        CatalogProposalServiceImpl(
+            lambda requested_tenant: SqlAlchemyCatalogProductsUnitOfWork(  # type: ignore[arg-type, return-value]
+                factory, requested_tenant
+            ),
+            Phase2ProductAuthorizer(tenant),
+            now=now,
+        ),
+    )
+    catalog_system_actor = ProductActor(
+        "system:api-catalog-products", ProductRole.SYSTEM, tenant
+    )
     sourcing_definition = build_sourcing_case_definition()
     handlers = dict(
         build_human_handoff_step_handlers(
             opportunity_service=opportunities,
             employee_service=RequestScopedHandoffEmployeeReader(employees),
-            notifier=RuntimeHandoffNotifier(router),
+            notifier=(
+                NotificationJobHandoffNotifier(
+                    PostgresNotificationJobStore(factory, now=now), now=now
+                )
+                if settings.owner_reminder_interval is not None
+                else RuntimeHandoffNotifier(router)
+            ),
             opportunity_system_actor=opportunity_system_actor,
             employee_system_actor=employee_system_actor,
             t1=settings.t1,
             t2=settings.t2,
+            owner_reminder_interval=settings.owner_reminder_interval,
             now=now,
         )
     )
@@ -1345,6 +1355,25 @@ def build_phase1_dependencies(
                 sourcing_actor=sourcing_system_actor,
             ),
         }
+    )
+    handlers.update(
+        build_catalog_policy_workflow_handlers(
+            catalog_products, approvals, catalog_system_actor, now=now
+        )
+    )
+    handlers.update(
+        build_catalog_evaluation_workflow_handlers(
+            demand, catalog_products, catalog_system_actor
+        )
+    )
+    handlers.update(
+        build_catalog_product_workflow_handlers(
+            demand,
+            catalog_products,
+            approvals,
+            catalog_system_actor,
+            now=now,
+        )
     )
     account_definition = build_account_discovery_definition()
     demand_definition = build_demand_discovery_definition()
@@ -1380,6 +1409,9 @@ def build_phase1_dependencies(
         )
     workflow = PostgresWorkflowEngine(factory, handlers, now=now)
     engine_ref = workflow
+    catalog_product_application = CatalogProductApplication(
+        demand, catalog_products, workflow, catalog_system_actor
+    )
     run_audit = RunAuditService(
         PostgresRunAuditRepository(factory),
         Phase1RunAuditAuthorizer(tenant),
@@ -1397,7 +1429,13 @@ def build_phase1_dependencies(
         now=now,
         max_attempts=settings.outbox_max_attempts,
     )
-    register_human_handoff(workflow, outbox, t1=settings.t1, t2=settings.t2)
+    register_human_handoff(
+        workflow,
+        outbox,
+        t1=settings.t1,
+        t2=settings.t2,
+        owner_reminder_interval=settings.owner_reminder_interval,
+    )
     quotation = None
     if (
         quote_domain is not None
@@ -1423,6 +1461,9 @@ def build_phase1_dependencies(
     workflow.register(playbook_definition)
     workflow.register(country_policy_definition)
     workflow.register(sourcing_definition)
+    workflow.register(build_catalog_policy_workflow_definition())
+    workflow.register(build_catalog_evaluation_workflow_definition())
+    workflow.register(build_catalog_product_workflow_definition())
     provider_readiness_actor = ProviderReadinessActor(
         actor_id="system:api-provider-readiness",
         tenant_id=tenant,
@@ -1478,7 +1519,73 @@ def build_phase1_dependencies(
         lease_duration=settings.tool_lease,
         now=now,
     )
+    capability_names: tuple[CapabilityName, ...] = (
+        "research",
+        "contacts",
+        "campaign",
+        "reply",
+        "sourcing",
+        "quotation",
+        "inbound_body",
+        "full_reply",
+        "agent",
+        "browser",
+    )
+    capabilities = tuple(
+        RuntimeCapability(
+            name=name,
+            status="enabled"
+            if (
+                (name == "campaign" and manual_send is not None)
+                or (name == "quotation" and quote_domain is not None)
+            )
+            else "disabled",
+            reason="composed"
+            if (
+                (name == "campaign" and manual_send is not None)
+                or (name == "quotation" and quote_domain is not None)
+            )
+            else "not_implemented"
+            if name in {"inbound_body", "full_reply", "agent", "browser"}
+            else "worker_required",
+        )
+        for name in capability_names
+    )
+    inbound = None
+    if inbound_mailbox is not None:
+        if (
+            inbound_mailbox.tenant_id != tenant
+            or object_store_settings is None
+            or gmail_transport is None
+        ):
+            raise ValidationError("入站组合缺少显式受信依赖")
+        inbound = build_inbound_composition(
+            inbound_mailbox,
+            factory,
+            sending_identities=sending_identities,
+            employees=employees,
+            employee_actor=employee_system_actor,
+            outreach_builder=build_feedback_outreach,
+            provider=cast(GmailInboundHttpTransport, gmail_transport),
+            secret_resolver=resolved_secret_resolver,
+            secret_ref=settings.gmail_oauth_token_ref,
+            object_settings=object_store_settings,
+            fingerprint_key_ref=settings.tool_call_fingerprint_key_ref,
+            lease_owner="api-email-inbound",
+            now=now,
+        )
+    from apps.api.inbox_evidence import build_inbox_evidence_reader
+
     return ConfiguredApiDependencies(
+        inbox_evidence=(
+            build_inbox_evidence_reader(
+                tenant, factory, conversations, inbound.bounded_raw_store, now=now
+            )
+            if inbound is not None
+            else None
+        ),
+        email_inbound=inbound,
+        runtime_capabilities=capabilities,
         opportunities=opportunities,
         outreach=outreach,
         sending_identities=sending_identities,
@@ -1508,6 +1615,14 @@ def build_phase1_dependencies(
         organization=organization,
         compliance=compliance,
         conversations=conversations,
+        reply_suggestions=ReplySuggestionApplication(
+            tenant,
+            RequestScopedHandoffEmployeeReader(employees),
+            employee_system_actor,
+            conversations,
+            outreach,
+            demand,
+        ),
         commitments=commitments,
         costing=costing,
         work_uploads=work_uploads,
@@ -1516,8 +1631,12 @@ def build_phase1_dependencies(
         research_execution=PostgresDiscoveryExecutionReader(factory),
         research_evidence=PostgresResearchEvidenceReader(factory),
         quotation=quotation,
+        model_lifecycle=owned_model,
+        object_store_lifecycle=object_transport,
         sourcing=sourcing,
         sourcing_application=sourcing_application,
         sourcing_admission_application=sourcing_admission_application,
         products=products,
+        catalog_products=catalog_products,
+        catalog_product_application=catalog_product_application,
     )

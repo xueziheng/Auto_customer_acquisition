@@ -12,6 +12,9 @@ from contextlib import AbstractAsyncContextManager
 from typing import Protocol, runtime_checkable
 
 from domains.demand.errors import (
+    CatalogClusterNotFoundError as CatalogClusterNotFoundError,  # noqa: PLC0414
+)
+from domains.demand.errors import (
     NeedUnitError as NeedUnitError,  # noqa: PLC0414 - 保持既有类身份的公共错误端口
 )
 from domains.demand.errors import (
@@ -33,6 +36,18 @@ from domains.demand.http_schemas import (
     NeedUnitPreparationView as NeedUnitPreparationView,  # noqa: PLC0414 - 同类型公开重导出
 )
 from domains.demand.schemas import (
+    CatalogClusterCursor as CatalogClusterCursor,  # noqa: PLC0414
+)
+from domains.demand.schemas import (
+    CatalogClusterIdPage as CatalogClusterIdPage,  # noqa: PLC0414
+)
+from domains.demand.schemas import (
+    CatalogClusterReconciliationItem as CatalogClusterReconciliationItem,  # noqa: PLC0414
+)
+from domains.demand.schemas import (
+    CatalogEvidenceSummary as CatalogEvidenceSummary,  # noqa: PLC0414
+)
+from domains.demand.schemas import (
     CustomerReplyEvidenceClaim,
     DemandSignalView,
     HypothesisDiscoveryView,
@@ -46,10 +61,23 @@ from domains.demand.schemas import (
     NeedUnitConfirmationView,
     NeedUnitEvidenceQuery,
     NeedUnitScopeFacts,
+    OutreachHypothesisCategories,
     SignalCaptureRequest,
     ValidatedNeedView,
     VerifiedCustomerReplyEvidence,
     VerifiedNeedUnitEvidence,
+)
+from domains.demand.schemas import (
+    DemandCatalogAccountFact as DemandCatalogAccountFact,  # noqa: PLC0414
+)
+from domains.demand.schemas import (
+    NeedClusterCatalogFacts as NeedClusterCatalogFacts,  # noqa: PLC0414
+)
+from domains.demand.schemas import (
+    catalog_country_code_or_none as catalog_country_code_or_none,  # noqa: PLC0414
+)
+from domains.demand.schemas import (
+    catalog_evidence_summary as catalog_evidence_summary,  # noqa: PLC0414
 )
 from domains.demand.unit_facts import (
     assess_quote_preparation as assess_quote_preparation,  # noqa: PLC0414
@@ -93,8 +121,9 @@ from shared.schemas.quote_facts import (
 class NeedUnitScopeReader(Protocol):
     """只读锁内员工、Need/机会/account绑定，不作业务角色判断。"""
 
-    def open(self, tenant_id: TenantId, need_id: ValidatedNeedId,
-        actor_id: EmployeeId) -> AbstractAsyncContextManager[NeedUnitScopeFacts]:
+    def open(
+        self, tenant_id: TenantId, need_id: ValidatedNeedId, actor_id: EmployeeId
+    ) -> AbstractAsyncContextManager[NeedUnitScopeFacts]:
         """Employee→Opportunity SHARE保持至内层Need事务退出。"""
         ...
 
@@ -102,14 +131,25 @@ class NeedUnitScopeReader(Protocol):
 class NeedUnitAuthorizer(Protocol):
     """当前员工与机会授权；guard保护授权行直至内层Need事务提交。"""
 
-    async def check(self, tenant_id: TenantId, need_id: ValidatedNeedId,
-                    actor_id: EmployeeId, *, action: NeedUnitAction) -> NeedUnitAccess:
+    async def check(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+        actor_id: EmployeeId,
+        *,
+        action: NeedUnitAction,
+    ) -> NeedUnitAccess:
         """来源IO前即时核验，完整事实读取也须授权。"""
         ...
 
-    def guard(self, tenant_id: TenantId, need_id: ValidatedNeedId,
-              actor_id: EmployeeId, *, action: NeedUnitAction
-              ) -> AbstractAsyncContextManager[NeedUnitAccess]:
+    def guard(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+        actor_id: EmployeeId,
+        *,
+        action: NeedUnitAction,
+    ) -> AbstractAsyncContextManager[NeedUnitAccess]:
         """持授权保护后方可锁Need；不可只返回过时allowed。"""
         ...
 
@@ -117,12 +157,19 @@ class NeedUnitAuthorizer(Protocol):
 class NeedUnitEvidenceReader(Protocol):
     """上层通过Gateway核验客户消息，不以供应商口径推断客户单位。"""
 
-    async def read_verified(self, query: NeedUnitEvidenceQuery) -> VerifiedNeedUnitEvidence:
+    async def read_verified(
+        self, query: NeedUnitEvidenceQuery
+    ) -> VerifiedNeedUnitEvidence:
         """零锁读取原件，核验真实消息、hash、定位、摘录及数量单位关系。"""
         ...
 
-    async def authorize_reference(self, tenant_id: TenantId, need_id: ValidatedNeedId,
-                                  actor_id: EmployeeId, source: VerifiedNeedUnitEvidence) -> None:
+    async def authorize_reference(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+        actor_id: EmployeeId,
+        source: VerifiedNeedUnitEvidence,
+    ) -> None:
         """历史receipt输出前仅用元数据重验当前来源阅读权，不取原文。"""
         ...
 
@@ -130,20 +177,32 @@ class NeedUnitEvidenceReader(Protocol):
 class NeedUnitService(Protocol):
     """窄的人工单位事实入口，不批准价格、交期或其他商业承诺。"""
 
-    async def confirm(self, tenant_id: TenantId, need_id: ValidatedNeedId,
-                      command: NeedUnitConfirmationCommand, *, actor_id: EmployeeId,
-                      idempotency_key: str) -> NeedUnitConfirmationView:
+    async def confirm(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+        command: NeedUnitConfirmationCommand,
+        *,
+        actor_id: EmployeeId,
+        idempotency_key: str,
+    ) -> NeedUnitConfirmationView:
         """同键持久恢复；绑定/receipt/历史原子，不重新激活旧单位。"""
         ...
 
-    async def get_facts(self, tenant_id: TenantId, need_id: ValidatedNeedId,
-                        *, actor_id: EmployeeId) -> NeedQuoteFacts:
+    async def get_facts(
+        self, tenant_id: TenantId, need_id: ValidatedNeedId, *, actor_id: EmployeeId
+    ) -> NeedQuoteFacts:
         """授权后读取完整事实及当前绑定，不宣称单位一定有效。"""
         ...
 
-    async def get_confirmation(self, tenant_id: TenantId, need_id: ValidatedNeedId,
-                               confirmation_id: str, *, actor_id: EmployeeId
-                               ) -> NeedUnitConfirmationView:
+    async def get_confirmation(
+        self,
+        tenant_id: TenantId,
+        need_id: ValidatedNeedId,
+        confirmation_id: str,
+        *,
+        actor_id: EmployeeId,
+    ) -> NeedUnitConfirmationView:
         """重验当前需求和来源阅读权后读取不可变历史。"""
         ...
 
@@ -171,6 +230,7 @@ _PROMOTABLE_NEED_FIELDS = (
     "target_price",
     "current_supply_issue",
     "certification_required",
+    "recurring_requirement",
 )
 
 
@@ -208,6 +268,19 @@ class DemandAccountNameReader(Protocol):
 
 
 @runtime_checkable
+class DemandCatalogAccountFactsReader(Protocol):
+    """上层逐账户读取 Prospecting 的窄国家事实；Demand 不跨域导入。"""
+
+    async def get_account_catalog_fact(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+    ) -> DemandCatalogAccountFact:
+        """返回同租户、同账户的精确 ISO-2 国家事实或显式未知。"""
+        ...
+
+
+@runtime_checkable
 class DemandService(Protocol):
     """需求域服务。"""
 
@@ -241,6 +314,14 @@ class DemandService(Protocol):
           （拒绝覆盖 first reason）
         - 不发布事件
         """
+        ...
+
+    async def get_outreach_hypothesis_categories(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+    ) -> OutreachHypothesisCategories:
+        """读取最多200个当前有证据活跃假设类别；超限固定失败，拒绝静默截断。"""
         ...
 
     # --- 假设 -----------------------------------------------------------
@@ -329,8 +410,8 @@ class DemandService(Protocol):
         实现要求：
         - 每个 ``extracted_fields`` 的值都要包成 ``FactualField``，
           ``provenance.source_id`` 指向 ``source_message_id``
-        - ``extracted_fields`` 键 ⊆ {product_category} ∪ 10 个可变更业务字段
-          （11 键白名单）；product_category 必填且创建后不可变
+        - ``extracted_fields`` 键 ⊆ {product_category} ∪ 11 个可变更业务字段
+          （12 键白名单）；product_category 必填且创建后不可变
         - 完整度由字段推导，不接受传入
         - 假设状态转为 ``validated``
         - 发布 ``NeedValidated``
@@ -351,8 +432,9 @@ class DemandService(Protocol):
         - 每个新字段都要有自己的 provenance，指向说这句话的消息
         - **字段值变更要保留历史**，不能直接覆盖。客户把数量从 5000
           改成 3000 是重要的商业信息（可能预算收紧），覆盖掉就丢了。
-        - 跨过 3 级门槛自动置 sourcing_ready，**不发事件**（catalog 无匹配
-          schema，最小语义）
+        - 跨过 3 级门槛自动置 sourcing_ready，并仅首次发布就绪事实事件
+        - quantity/recurring_requirement 真正变化时，在同一事务发布
+          metadata-only ``NeedCatalogFactsChanged``；幂等重放不重复发布
         """
         ...
 
@@ -453,6 +535,43 @@ class DemandService(Protocol):
         数量或账户字段。观察时间是持久事实版本时间（未归簇 Need.created_at；
         归簇 Cluster.updated_at），重复读取不得使用服务时钟制造新版本。
         """
+        ...
+
+    async def get_cluster_catalog_facts(
+        self,
+        tenant_id: TenantId,
+        cluster_id: NeedClusterId,
+    ) -> NeedClusterCatalogFacts:
+        """读取经双向成员链核验、按账户保守聚合的目录决策事实。"""
+        ...
+
+    async def list_catalog_cluster_ids(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int = 50,
+    ) -> tuple[NeedClusterId, ...]:
+        """按稳定持久顺序列出真实需求簇，不伪造未归簇单成员簇。"""
+        ...
+
+    async def list_catalog_cluster_id_page(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int = 50,
+        cursor: CatalogClusterCursor | None = None,
+    ) -> CatalogClusterIdPage:
+        """按 created_at 与 cluster_id 升序读取 tenant-bound 稳定游标页。"""
+        ...
+
+    async def list_catalog_cluster_ids_for_account(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        *,
+        limit: int = 50,
+    ) -> tuple[NeedClusterId, ...]:
+        """列出账户已归属的真实需求簇；未归簇 Need 不进入结果。"""
         ...
 
     async def try_assign_cluster(

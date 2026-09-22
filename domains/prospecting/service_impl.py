@@ -31,6 +31,7 @@ from domains.prospecting.schemas import (
     ContactPointView,
     DiscoveredContactRequest,
     DiscoveredContactResult,
+    OutreachContactFacts,
     ProspectAccountDetailView,
     ProspectAccountView,
     ProspectContactDetailView,
@@ -118,9 +119,7 @@ def _canonical_contact_value(kind: ContactPointKind, raw: str) -> str:
     return value
 
 
-def _fingerprint_contact_value(
-    hasher: ContactValueHasher, canonical_value: str
-) -> str:
+def _fingerprint_contact_value(hasher: ContactValueHasher, canonical_value: str) -> str:
     try:
         value_hash = hasher.fingerprint(canonical_value)
     except Exception:  # noqa: BLE001 - 阻断底层异常回显原始个人数据
@@ -440,8 +439,7 @@ class ProspectingServiceImpl:
                     ProspectContactDetailView(
                         contact=_contact_view(contact),
                         contact_points=tuple(
-                            _contact_point_detail(point, account_id)
-                            for point in points
+                            _contact_point_detail(point, account_id) for point in points
                         ),
                     )
                 )
@@ -453,6 +451,34 @@ class ProspectingServiceImpl:
         account = await self.get_account(tenant_id, account_id)
         contacts = await self.list_contacts_for_account(tenant_id, account_id)
         return ProspectAccountDetailView(account=account, contacts=tuple(contacts))
+
+    async def get_outreach_contact_facts(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        contact_point_id: ContactPointId,
+    ) -> OutreachContactFacts:
+        """精确租户/企业/联系方式读取，不暴露地址或扫描账户联系人。"""
+        async with self._uow_factory(tenant_id) as uow:
+            point = await uow.contacts.get_point_for_account(
+                tenant_id, account_id, contact_point_id
+            )
+            account = await uow.accounts.get(tenant_id, account_id)
+            if point is None or account is None:
+                raise ContactPointNotFoundError("潜在联系方式不存在")
+            return OutreachContactFacts(
+                tenant_id=tenant_id,
+                account_id=account_id,
+                contact_point_id=point.contact_point_id,
+                kind=point.kind,
+                verification=point.verification,
+                verified_at=point.verified_at,
+                legal_basis=point.legal_basis.basis,
+                legal_basis_ref=point.legal_basis.assessment_ref
+                or str(point.contact_point_id),
+                country=account.country,
+                entity_type=account.entity_type,
+            )
 
     async def get_contact_point(
         self, tenant_id: TenantId, contact_point_id: ContactPointId

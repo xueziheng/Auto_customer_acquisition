@@ -114,6 +114,7 @@ async def select_excerpt(page, name, excerpt):
 
 async def create_sheet_quote(page, manifest, evidence, locator, *, revision=False):
     """同一DOM工作流确认成本/22项/适用性/报价，不用预制冻结状态。"""
+    await expect(page.locator('[name="opportunity-id"]')).to_have_value(manifest["opportunity"])
     new = page.locator("article.panel").filter(has=page.get_by_role("heading", name="创建成本表版本"))
     await new.get_by_label("版本类型").select_option("quoted")
     for label, value in (("数量", "50"), ("核算币种", "USD"), ("报价币种", "USD"), ("汇率快照 ID", "controlled-cost-fx")):
@@ -220,14 +221,23 @@ async def exercise_browser(stack, artifacts):
             # 真修订建立第二版本；旧版仍可深链读取，未直接seed版本列表。
             second = await create_sheet_quote(product, m, evidence, located["locator"], revision=True)
             assert second["replaces_quote_id"] == first["quote_id"]
-            await action(product, "提交此版本审批", f'/costing-quotes/quotes/{second["quote_id"]}/submit', status=202)
+            submitted = await action(product, "提交此版本审批", f'/costing-quotes/quotes/{second["quote_id"]}/submit', status=202)
             pending = await wait_quote(client, stack, second["quote_id"])
+            run_link = product.get_by_role("link", name="查看本次报价审批 Run", exact=True)
+            await expect(run_link).to_have_attribute("href", "/runs?run=" + submitted["run_id"])
+            await run_link.click()
+            await expect(product.get_by_text("只有老板可以查看 Run 审计记录", exact=False).first).to_be_visible()
+            await boss.goto(origins["boss"] + "/runs?run=" + submitted["run_id"])
+            approval_link = boss.get_by_role("link", name=pending["approval_id"], exact=True)
+            await expect(approval_link).to_have_attribute("href", "/approvals?approval_id=" + pending["approval_id"])
+            await approval_link.click()
+            await expect(boss.locator(".approval-packet")).to_contain_text(pending["approval_id"])
             await product.goto(origins["actor"] + "/approvals")
             await expect(product.get_by_role("button", name="批准此精确变更", exact=True)).to_have_count(0)
             denied = await client.post(stack.api_origin + f'/approvals/{pending["approval_id"]}/decide',
                 headers={"X-Tenant-Id": m["tenant"], "X-Employee-Id": m["actor"]}, json={"decision": "approve"})
             assert denied.status_code == 403
-            await decider.goto(origins["decider"] + "/approvals")
+            await decider.goto(origins["decider"] + "/approvals?approval_id=" + pending["approval_id"])
             await expect(decider.get_by_role("button", name="批准此精确变更", exact=True)).to_be_visible()
             await decider.screenshot(path=str(artifacts / "approval-1280.png"), full_page=True)
             await action(decider, "批准此精确变更", f'/approvals/{pending["approval_id"]}/decide')
@@ -245,7 +255,7 @@ async def exercise_browser(stack, artifacts):
             text = "\n".join(page.extract_text() for page in pdf.pages)
             assert "200.00" in text and "USD" in text and m["statement"] not in text
             assert approved["calculation"]["displayed_total"]["amount"] == "200.00"
-            for width, height in ((1280, 900), (390, 844)):
+            for width, height in ((1440, 1000), (390, 844)):
                 await boss.set_viewport_size({"width": width, "height": height})
                 await boss.goto(origins["boss"] + "/costing-quotes/quotes/" + first["quote_id"])
                 await expect(boss.locator(".internal-quote h3")).to_contain_text("指定版本 V1")
@@ -257,14 +267,35 @@ async def exercise_browser(stack, artifacts):
                 assert await boss.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
                 assert await boss.locator(".costing-shell").evaluate("e => e.scrollWidth <= e.clientWidth")
                 await boss.screenshot(path=str(artifacts / f"quote-{width}.png"), full_page=True)
+                cost_link = boss.get_by_role("link", name="核对此报价的成本表与需求依据", exact=True)
+                await expect(cost_link).to_have_attribute("href", "/costing-quotes?opportunity_id=" + m["opportunity"] + "&cost_sheet_id=" + second["cost_sheet_id"])
+                await cost_link.click()
+                await expect(boss.locator(".item-panel")).to_contain_text(second["cost_sheet_id"])
+                print("t10_relay_reload_cost=1", flush=True)
+                await boss.reload()
+                await expect(boss.locator(".item-panel")).to_contain_text(second["cost_sheet_id"])
+                await boss.locator(".item-panel").scroll_into_view_if_needed()
+                await boss.screenshot(path=str(artifacts / f"exact-cost-{width}.png"), full_page=False)
+                await boss.goto(origins["boss"] + "/runs?run=" + submitted["run_id"])
+                await expect(boss.get_by_role("link", name=pending["approval_id"], exact=True)).to_be_visible()
+                await boss.get_by_role("link", name=pending["approval_id"], exact=True).scroll_into_view_if_needed()
+                await boss.screenshot(path=str(artifacts / f"run-approval-{width}.png"), full_page=False)
             assert not errors
             result = {**m, "origins": origins, "api_origin": stack.api_origin,
                       "quote_id": second["quote_id"], "older_quote_id": first["quote_id"],
+                      "run_id": submitted["run_id"], "approval_id": pending["approval_id"],
                       "quote_url": origins["boss"] + "/costing-quotes/quotes/" + second["quote_id"],
                       "file": file, "pdf_pages": len(pdf.pages), "pdf_metadata": str(pdf.metadata),
                       "pdf_sha256": hashlib.sha256(content).hexdigest(), "image": stack.image}
             (artifacts / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
             return result
+        except Exception:
+            for label, page in (("boss", boss), ("product", product), ("decider", decider)):
+                try:
+                    await page.screenshot(path=str(artifacts / f"failure-{label}.png"), timeout=2000)
+                except PlaywrightError:
+                    pass
+            raise
         finally:
             await browser.close()
 

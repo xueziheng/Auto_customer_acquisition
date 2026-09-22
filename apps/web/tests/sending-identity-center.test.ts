@@ -82,7 +82,7 @@ function makeIdentityFetch(options: {
   const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
     const request = asRequest(input);
     const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/crm/sending-identities") {
+    if (request.method === "GET" && url.pathname === "/crm/sending-identities/management") {
       if (options.listError) return options.listError;
       return jsonResponse(options.identities ?? [identity]);
     }
@@ -162,7 +162,7 @@ describe("SendingIdentityCenter", () => {
       expect(root.textContent).toContain("DKIM 通过");
       expect(root.textContent).toContain("DMARC 通过");
       expect(root.textContent).toContain("第 12 / 28 天");
-      expect(root.textContent).toContain("0 / 50");
+      expect(root.textContent).toContain("50 · 目标日量 50");
       expect(root.textContent).toContain("代码确定性计算");
     });
   });
@@ -178,7 +178,7 @@ describe("SendingIdentityCenter", () => {
     const empty = makeIdentityFetch({ identities: [] });
     const emptyRoot = await mountCenter(empty.fetch);
     await eventually(() => {
-      expect(emptyRoot.root.textContent).toContain("暂无可用于 Campaign 的发件身份");
+      expect(emptyRoot.root.textContent).toContain("暂无已登记发件身份");
     });
   });
 

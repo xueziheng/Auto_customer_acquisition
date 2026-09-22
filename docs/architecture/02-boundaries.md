@@ -158,3 +158,10 @@ models 或 repository。国家政策不并入 Company Playbook，也不在 Gatew
 - 跨模块数据结构是否只定义在 `shared/schemas` 或域的 `schemas.py`？
 - 外部动作是否都走了 Tool Gateway？
 - 是否给新字段带上了 Provenance 和 `tenant_id`？
+
+## ADR0070 内置 Agent
+
+`domains/assistant` 拥有员工私有 Agent Session/Agent Turn，不拥有客户会话、研究提案或业务对象。
+只依赖 shared；当前业务读取和多轮编排位于 agent_runtime/assistant、workflows/assistant，
+通过公开服务消费其他域。模型调用共享契约位于 shared/schemas/model_invocation.py。
+`model.generate` 是 Gateway 插件；DeepSeek Connector 不被域或 Agent 直接导入。

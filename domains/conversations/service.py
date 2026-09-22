@@ -5,6 +5,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
+from domains.conversations.inbox_access import (
+    InboxAccessFactsReader as InboxAccessFactsReader,  # noqa: PLC0414 - 会话域公共权限契约
+)
+from domains.conversations.inbox_access import (
+    InboxAction as InboxAction,  # noqa: PLC0414 - 会话域公共权限契约
+)
+from domains.conversations.inbox_access import (
+    InboxActor as InboxActor,  # noqa: PLC0414 - 会话域公共权限契约
+)
+from domains.conversations.inbox_access import (
+    InboxEmployeeFacts as InboxEmployeeFacts,  # noqa: PLC0414 - 会话域公共权限契约
+)
+from domains.conversations.inbox_access import (
+    InboxScope as InboxScope,  # noqa: PLC0414 - 会话域公共权限契约
+)
 from domains.conversations.models import (
     Conversation,
     Message,
@@ -18,11 +33,16 @@ from domains.conversations.repository import (
     ConversationsUnitOfWork as _ConversationsUnitOfWork,
 )
 from domains.conversations.schemas import (
+    AccountReplyStatus,
     ConversationInboxDetail,
     ConversationInboxItem,
+    InboxEvidenceRef,
     ReplyWorkActionRequest,
     ReplyWorkActionView,
     ReplyWorkStatus,
+)
+from domains.conversations.source_access import (
+    require_inbound_review_access as require_inbound_review_access,  # noqa: PLC0414 - 窄公开权限端口
 )
 from domains.conversations.source_access import (
     require_inbound_source_access as require_inbound_source_access,  # noqa: PLC0414 - 显式公开纯权限端口
@@ -44,6 +64,14 @@ from shared.schemas.identifiers import (
 @runtime_checkable
 class ConversationService(Protocol):
     """会话服务。"""
+
+    async def get_account_reply_status(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+    ) -> AccountReplyStatus:
+        """单次持久快照保守暂停整个企业；未分类不等于无回复。"""
+        ...
 
     async def ingest_inbound(
         self,
@@ -83,11 +111,14 @@ class ConversationService(Protocol):
         outbound_message_id: OutboundMessageId | None = None,
         candidate_fields: tuple[ReplyFieldEvidence, ...] = (),
         suppress_scope: ReplySuppressScope | None = None,
+        actor: InboxActor | None = None,
     ) -> tuple[str, ...]:
         """落分类结果，返回 ``REPLY_ACTIONS`` 对应的动作序列。
 
         动作的**执行**在工作流（reply_qualification），本域只返回
-        「该做什么」。发布 ``ReplyReceived``（AUTO_REPLY 除外——
+        「该做什么」。受托分类传入 actor 时，在同一事务持有原员工访问锁，
+        重核当前 qualify、真实入站与出站关联，直到分类/事件提交；旧幂等结果
+        不能跳过该授权。发布 ``ReplyReceived``（AUTO_REPLY 除外——
         自动回复不算回复）。``outbound_message_id`` 是被回复出站消息的
         RFC Message-ID（In-Reply-To/References 关联）；无关联传 None，
         订阅方 fail-closed。每个候选 quote 必须是最多 500 个 Unicode
@@ -109,6 +140,8 @@ class ConversationService(Protocol):
         message_id: MessageId,
         corrected_category: ReplyCategory,
         corrected_by: str,
+        *,
+        actor: InboxActor,
     ) -> None:
         """人工纠正分类。
 
@@ -163,10 +196,22 @@ class ConversationService(Protocol):
         self, tenant_id: TenantId, conversation_id: ConversationId
     ) -> list[Message]: ...
 
+    async def get_message_evidence(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+        *,
+        actor: InboxActor,
+        action: InboxAction = InboxAction.EVIDENCE_READ,
+    ) -> InboxEvidenceRef:
+        """按真实Message关联判权；artifact引用不授予访问权。"""
+        ...
+
     async def list_inbox(
         self,
         tenant_id: TenantId,
         *,
+        actor: InboxActor,
         category: ReplyCategory | None,
         limit: int,
     ) -> list[ConversationInboxItem]:
@@ -174,7 +219,17 @@ class ConversationService(Protocol):
         ...
 
     async def get_inbox_detail(
-        self, tenant_id: TenantId, conversation_id: ConversationId
+        self,
+        tenant_id: TenantId,
+        conversation_id: ConversationId,
+        *,
+        actor: InboxActor,
+        action: InboxAction = InboxAction.READ,
     ) -> ConversationInboxDetail:
         """读取会话消息、模型原判、人工纠正与 artifact 公共引用。"""
         ...
+
+
+from .source_access import (
+    require_reply_internal_access as require_reply_internal_access,  # noqa: PLC0414 公开窄action
+)

@@ -4,6 +4,17 @@
 
 ---
 
+## 当前交付状态（2026-09-06）
+
+本机受控 Web 核心已完成 A1–A10 范围内工程验收，四应用入口和真实回复证据到接管已接通；
+[能力矩阵](docs/operations/web-core-capability-matrix.md)按平台与执行者列出状态，
+[正式验收](docs/acceptance/2026-09-05-web-core-completion.md)分列源码和实际结果。
+Phase 1 的真实市场、发件信誉、接管 SLA 与单位合格贸易机会成本仍无运营验收，不因此停止记录。
+Phase 2 下列已验子项目保持有效，不能把“Phase 1 尚无真实运营结论”误写成这些实现不存在。
+Mac 报价/自动寻源准入未配置；Linux 独立受控报价/PDF 已验，两环境业务实体不同。
+共享登录/服务器部署、真实外部服务、Catalog 培养消费者、通用 Agent/Browser 任务来源和桌面均未交付。
+本轮只提交本地工作树，最终全分支审查由控制者单独记录，未推送、合并或部署。
+
 ## Phase 1：需求验证闭环
 
 **要验证的假设**：系统能不能自动发现真实需求，并把它推进到值得真人处理的程度。这是整个项目最大的风险，先回答它。
@@ -91,19 +102,31 @@ Case 的顺序，不合并 Need、数量、规格、Provenance 或订单；历�
 [NeedCluster Sourcing Admission 验收](docs/acceptance/2026-09-02-phase2-need-cluster-sourcing-admission.md)。
 这不代表生产已启用，也不代表整个 Phase 2 完成。
 
-后续仍需独立规格、实现与验收：Catalog Product Proposal、联系人多源瀑布、70/30 自适应分配、
+后续仍需独立规格、实现与验收：联系人多源瀑布、70/30 自适应分配、
 接管队列自动背压、真实 direct supplier quote、商业来源。它们分别需要足够的
 真实样本/第二联系人 provider、已校准策略数据、成熟额度契约以及逐次人工授权；不得由本子项目自动启用。
 利润阈值、精度、汇率与条款由用户明确配置；不修改Phase1运营状态或勾完整个Phase2。
+
+### Catalog Product Proposal（工程实现与受控验收完成）
+
+已实现无默认值的版本化策略、确定性需求簇评估、独立人工审批、受单副本锁保护的 durable
+workflow/outbox 恢复，以及批准后唯一 `queued` 培养 Case。真实 PostgreSQL、API、scheduler、Vite 和
+Chromium 的三个合成 Kenya 客户功能场景已跑通；390px 元素级视觉断言和全仓测试门禁均已通过。
+这个场景只完成本子项目的受控工程验收，不是 Kenya/three-wheelers 市场结论，也不是生产门槛校准。
+
+本子项目没有创建正式 Product、供应商/联系人、搜索、发送、Quote 或价格承诺，也没有真实外部调用、
+合并、推送、部署或生产策略激活。培养队列后续消费、真实市场/客户验证和门槛校准仍未完成；下游
+`CatalogCultivationQueued` 消费者也需未来独立实现。证据见
+[Catalog Product Proposal 验收](docs/acceptance/2026-09-04-phase2-catalog-product-proposal.md)。
 
 ### 后续交付：剩余自动化范围继续保留
 
 **范围**
 
-- Sourcing Case 自动化：候选发现、规格核对、拒绝诱导性最低价、证据快照
+- Sourcing Case V2 的候选发现、规格核对、拒绝诱导价、证据快照已受控验收；后续是生产来源/模型配置及真实场景验证
 - Deal Cost Sheet 三版本和报价版本/审批已纳入上面成本报价批次；后续业务扩展继续按独立验收推进
-- 候选产品卡生成
-- **Catalog Product Proposal**——需求簇达到何种规模、数量、复购与跨国家证据后才提议进入正式产品目录，仍需独立规格、阈值校准和人工确认；本批只完成寻源准入排序，没有实现目录产品提案
+- 候选产品卡生成已随 Sourcing Case V2 交付；不代表 Catalog 正式 Product 已创建
+- **Catalog Product Proposal 后续**——工程实现与受控验收已完成；仍需用真实需求样本校准阈值、审批生产启用并实现培养队列下游，不得把候选提案说成正式 Product
 - **联系人多源瀑布补全**——按单价升序依次尝试、命中即停（此时才会有第二家 provider）
 - **70/30 自适应分配器**——以「每积分产出的已验证需求数」为反馈信号自动调整探索配比，本质是多臂老虎机。老板仍可手动倾斜
 - **接管队列反压**——待接管积压超阈值时自动降低探索类任务配额，把预算挪到已验证需求的寻源与报价上
@@ -126,7 +149,7 @@ Case 的顺序，不合并 Need、数量、规格、Provenance 或订单；历�
   - 失败退费规则：平台自身错误全退；任务未开始即取消全退；已调用付费数据但无结果按实际发生收取；缓存命中降额；幂等阻止的重复执行不重复收费
   - 所有会员开放核心功能，档位差异体现在包含积分、席位、邮箱数、并发 Campaign、存储、支持等级，**不是「便宜档不能找客户」**
 - Managed Shared 与 Managed Dedicated 两种部署，同一套代码
-- **Tauri 2 macOS 桌面端**（此期才建目录）。职责边界：拖拽上传聊天截图、读取授权文件夹、连接 Obsidian、监控导入目录、调用本地 Playwright、保存本地登录状态、Keychain、系统通知、人工浏览器接管。Web 端仍是主应用，桌面端只做本地能力增量
+- **Tauri 2 macOS 桌面端**（此期才建目录）。职责边界：拖拽上传聊天截图、读取授权文件夹、连接 Obsidian、监控导入目录、调用本地 Playwright、保存本地登录状态、Keychain、系统通知、人工浏览器接管。Web 端仍是主应用，桌面端只做本地能力增量。当前只有[现有接口与未来适配契约](docs/architecture/12-client-capability-boundaries.md)，无桌面进程、目录监听或浏览器人工接管实现
 - 合规 WhatsApp 跟进（仅 opt-in 场景：客户扫码、网站点击咨询、表单同意、邮件转移、展会授权、已有客户续聊）
 
 **不做**：把 WhatsApp 用于冷启动群发——这违反平台政策，也毁号。

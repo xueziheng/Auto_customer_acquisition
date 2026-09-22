@@ -387,7 +387,30 @@ class ApprovalPackageRow(Base):
               AND proposed_change->>'content_hash' ~ '^[0-9a-f]{64}$'
               AND approval_type IN ('quote_send','margin_floor_override','discount','delivery_commitment','payment_terms','certification_commitment')
               AND change_set_ref='quote:'||(proposed_change->>'quote_id')||':'||
-                  (proposed_change->>'content_hash')||':'||approval_type),false)""",
+                  (proposed_change->>'content_hash')||':'||approval_type),false) OR
+            coalesce((contract_namespace='catalog-policy-v1' AND request_hash ~ '^[0-9a-f]{64}$'
+              AND expires_at_limit IS NOT NULL AND expires_at <= expires_at_limit
+              AND approval_type='catalog_proposal_policy_change'
+              AND proposed_change->>'schema_version'='catalog-policy-v1'
+              AND proposed_change->>'tenant_id'=tenant_id
+              AND proposed_change->>'approval_type'=approval_type
+              AND proposed_change->>'policy_version_id' ~ '^cpv_'
+              AND proposed_change->>'content_hash' ~ '^[0-9a-f]{64}$'
+              AND proposed_change->>'request_hash'=request_hash
+              AND change_set_ref='catalog-policy:'||(proposed_change->>'policy_version_id')||':'||
+                  (proposed_change->>'content_hash')),false) OR
+            coalesce((contract_namespace='catalog-cultivation-v1' AND request_hash ~ '^[0-9a-f]{64}$'
+              AND expires_at_limit IS NOT NULL AND expires_at <= expires_at_limit
+              AND approval_type='catalog_product_cultivation'
+              AND proposed_change->>'schema_version'='catalog-cultivation-v1'
+              AND proposed_change->>'tenant_id'=tenant_id
+              AND proposed_change->>'approval_type'=approval_type
+              AND proposed_change->>'proposal_id' ~ '^cpr_'
+              AND proposed_change->>'policy_version_id' ~ '^cpv_'
+              AND proposed_change->>'facts_hash' ~ '^[0-9a-f]{64}$'
+              AND proposed_change->>'request_hash'=request_hash
+              AND change_set_ref='catalog-cultivation:'||(proposed_change->>'proposal_id')||':'||
+                  (proposed_change->>'policy_version_id')||':'||(proposed_change->>'facts_hash')),false)""",
             name="ck_approval_quote_contract",
         ),
         CheckConstraint(
@@ -2139,6 +2162,10 @@ class ValidatedNeedRow(Base):
             "(certification_required IS NULL) OR jsonb_typeof(certification_required) = 'object'",
             name="ck_validated_needs_certification_required_jsonb",
         ),
+        CheckConstraint(
+            "recurring_requirement IS NULL OR jsonb_typeof(recurring_requirement) = 'object'",
+            name="ck_validated_needs_recurring_requirement_jsonb",
+        ),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(40))
@@ -2181,12 +2208,176 @@ class ValidatedNeedRow(Base):
     certification_required: Mapped[dict | None] = mapped_column(
         postgresql.JSONB(none_as_null=True)
     )
+    recurring_requirement: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(none_as_null=True)
+    )
     confirmed_by: Mapped[str | None] = mapped_column(String(40))
     cluster_id: Mapped[str | None] = mapped_column(String(40))
 
     unit: Mapped[dict | None] = mapped_column(postgresql.JSONB(none_as_null=True))
     unit_quantity_fact_hash: Mapped[str | None] = mapped_column(String(64))
     unit_confirmation_id: Mapped[str | None] = mapped_column(String(40))
+
+
+class CatalogProposalPolicyVersionRow(Base):
+    """目录产品提案策略版本；内容不可变，数据库只允许声明的生命周期推进。"""
+
+    __tablename__ = "catalog_proposal_policy_versions"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "policy_version_id", name="pk_catalog_proposal_policy_versions"),
+        UniqueConstraint("tenant_id", "proposed_by", "creation_key", name="uq_catalog_policy_creation_key"),
+        ForeignKeyConstraint(["tenant_id", "base_active_version_id"], ["catalog_proposal_policy_versions.tenant_id", "catalog_proposal_policy_versions.policy_version_id"], name="fk_catalog_policy_base_active", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "proposed_by"], ["employees.tenant_id", "employees.employee_id"], name="fk_catalog_policy_proposer", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "approval_id"], ["approval_packages.tenant_id", "approval_packages.approval_id"], name="fk_catalog_policy_approval", ondelete="RESTRICT"),
+        CheckConstraint("btrim(tenant_id)<>'' AND policy_version_id ~ '^cpv_' AND btrim(proposed_by)<>'' AND btrim(creation_key)<>''", name="ck_catalog_policy_core"),
+        CheckConstraint("jsonb_typeof(content)='object'", name="ck_catalog_policy_content_jsonb"),
+        CheckConstraint("content_hash ~ '^[0-9a-f]{64}$' AND creation_request_hash ~ '^[0-9a-f]{64}$'", name="ck_catalog_policy_hashes"),
+        CheckConstraint("state IN ('pending_approval','active','superseded','rejected','expired','stale')", name="ck_catalog_policy_state"),
+        CheckConstraint("(activated_at IS NULL OR activated_at>=created_at) AND (terminal_at IS NULL OR terminal_at>=created_at) AND (activated_at IS NULL OR terminal_at IS NULL OR terminal_at>=activated_at)", name="ck_catalog_policy_times"),
+        CheckConstraint("(state='pending_approval' AND activated_at IS NULL AND terminal_at IS NULL) OR (state='active' AND approval_id IS NOT NULL AND activated_at IS NOT NULL AND terminal_at IS NULL) OR (state='superseded' AND approval_id IS NOT NULL AND activated_at IS NOT NULL AND terminal_at IS NOT NULL) OR (state IN ('rejected','expired','stale') AND approval_id IS NOT NULL AND activated_at IS NULL AND terminal_at IS NOT NULL)", name="ck_catalog_policy_lifecycle"),
+        Index("uq_catalog_policy_active", "tenant_id", unique=True, postgresql_where=text("state='active'")),
+        Index("uq_catalog_policy_approval", "tenant_id", "approval_id", unique=True, postgresql_where=text("approval_id IS NOT NULL")),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    policy_version_id: Mapped[str] = mapped_column(String(40))
+    content: Mapped[dict] = mapped_column(postgresql.JSONB)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    base_active_version_id: Mapped[str | None] = mapped_column(String(40))
+    proposed_by: Mapped[str] = mapped_column(String(40))
+    creation_key: Mapped[str] = mapped_column(String(200))
+    creation_request_hash: Mapped[str] = mapped_column(String(64))
+    approval_id: Mapped[str | None] = mapped_column(String(40))
+    state: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CatalogProposalEvaluationRow(Base):
+    """目录产品提案的确定性事实评估快照；整行只增不改。"""
+
+    __tablename__ = "catalog_proposal_evaluations"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "evaluation_id", name="pk_catalog_proposal_evaluations"),
+        UniqueConstraint("tenant_id", "cluster_id", "policy_version_id", "facts_hash", name="uq_catalog_evaluation_facts"),
+        UniqueConstraint("tenant_id", "evaluation_id", "cluster_id", "policy_version_id", "facts_hash", name="uq_catalog_evaluation_subject"),
+        ForeignKeyConstraint(["tenant_id", "cluster_id"], ["need_clusters.tenant_id", "need_clusters.cluster_id"], name="fk_catalog_evaluation_cluster", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "policy_version_id"], ["catalog_proposal_policy_versions.tenant_id", "catalog_proposal_policy_versions.policy_version_id"], name="fk_catalog_evaluation_policy", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "proposed_by_run"], ["workflow_runs.tenant_id", "workflow_runs.run_id"], name="fk_catalog_evaluation_run", ondelete="RESTRICT"),
+        CheckConstraint("evaluation_id ~ '^cpe_' AND facts_hash ~ '^[0-9a-f]{64}$' AND (blocked_reason IS NULL OR btrim(blocked_reason)<>'')", name="ck_catalog_evaluation_core"),
+        CheckConstraint("jsonb_typeof(facts)='object' AND jsonb_typeof(rule_results)='array'", name="ck_catalog_evaluation_jsonb"),
+        CheckConstraint("NOT (facts ? 'safe_total_quantity') OR facts->'safe_total_quantity'='null'::jsonb OR (jsonb_typeof(facts->'safe_total_quantity')='number' AND facts->>'safe_total_quantity' ~ '^(0|[1-9][0-9]*)$')", name="ck_catalog_evaluation_safe_quantity"),
+        CheckConstraint("(overall_passed AND blocked_reason IS NULL) OR NOT overall_passed", name="ck_catalog_evaluation_result"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    evaluation_id: Mapped[str] = mapped_column(String(40))
+    cluster_id: Mapped[str] = mapped_column(String(40))
+    policy_version_id: Mapped[str] = mapped_column(String(40))
+    facts_hash: Mapped[str] = mapped_column(String(64))
+    facts: Mapped[dict] = mapped_column(postgresql.JSONB)
+    rule_results: Mapped[list] = mapped_column(postgresql.JSONB)
+    overall_passed: Mapped[bool] = mapped_column(Boolean)
+    blocked_reason: Mapped[str | None] = mapped_column(String(100))
+    proposed_by_run: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CatalogProductProposalRow(Base):
+    """内部培养建议；它不表示 Product、供应、报价或外部发送。"""
+
+    __tablename__ = "catalog_product_proposals"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "proposal_id", name="pk_catalog_product_proposals"),
+        UniqueConstraint("tenant_id", "evaluation_id", name="uq_catalog_product_proposal_evaluation"),
+        UniqueConstraint("tenant_id", "proposal_id", "cluster_id", "policy_version_id", "facts_hash", name="uq_catalog_product_proposal_subject"),
+        ForeignKeyConstraint(["tenant_id", "evaluation_id", "cluster_id", "policy_version_id", "facts_hash"], ["catalog_proposal_evaluations.tenant_id", "catalog_proposal_evaluations.evaluation_id", "catalog_proposal_evaluations.cluster_id", "catalog_proposal_evaluations.policy_version_id", "catalog_proposal_evaluations.facts_hash"], name="fk_catalog_product_proposal_evaluation", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "owner_employee"], ["employees.tenant_id", "employees.employee_id"], name="fk_catalog_product_proposal_owner", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "proposed_by_run"], ["workflow_runs.tenant_id", "workflow_runs.run_id"], name="fk_catalog_product_proposal_run", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "approval_id"], ["approval_packages.tenant_id", "approval_packages.approval_id"], name="fk_catalog_product_proposal_approval", ondelete="RESTRICT"),
+        CheckConstraint("proposal_id ~ '^cpr_' AND facts_hash ~ '^[0-9a-f]{64}$'", name="ck_catalog_product_proposal_core"),
+        CheckConstraint("approval_request_hash IS NULL OR approval_request_hash ~ '^[0-9a-f]{64}$'", name="ck_catalog_product_proposal_hash"),
+        CheckConstraint("state IN ('awaiting_approval_submission','pending_review','cultivation_queued','rejected','expired','stale')", name="ck_catalog_product_proposal_state"),
+        CheckConstraint("updated_at>=created_at", name="ck_catalog_product_proposal_times"),
+        CheckConstraint("(state='awaiting_approval_submission' AND approval_id IS NULL AND approval_request_hash IS NULL) OR (state<>'awaiting_approval_submission' AND approval_id IS NOT NULL AND approval_request_hash IS NOT NULL)", name="ck_catalog_product_proposal_lifecycle"),
+        Index("uq_catalog_product_proposal_approval", "tenant_id", "approval_id", unique=True, postgresql_where=text("approval_id IS NOT NULL")),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    proposal_id: Mapped[str] = mapped_column(String(40))
+    evaluation_id: Mapped[str] = mapped_column(String(40))
+    cluster_id: Mapped[str] = mapped_column(String(40))
+    policy_version_id: Mapped[str] = mapped_column(String(40))
+    facts_hash: Mapped[str] = mapped_column(String(64))
+    owner_employee: Mapped[str] = mapped_column(String(40))
+    proposed_by_run: Mapped[str] = mapped_column(String(40))
+    approval_id: Mapped[str | None] = mapped_column(String(40))
+    approval_request_hash: Mapped[str | None] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CatalogCultivationCaseRow(Base):
+    """批准后的内部培养队列事实；本切片只允许固定 ``queued`` 状态。"""
+
+    __tablename__ = "catalog_cultivation_cases"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "cultivation_case_id", name="pk_catalog_cultivation_cases"),
+        UniqueConstraint("tenant_id", "proposal_id", name="uq_catalog_cultivation_proposal"),
+        UniqueConstraint("tenant_id", "approval_id", name="uq_catalog_cultivation_approval"),
+        ForeignKeyConstraint(["tenant_id", "proposal_id", "cluster_id", "policy_version_id", "facts_hash"], ["catalog_product_proposals.tenant_id", "catalog_product_proposals.proposal_id", "catalog_product_proposals.cluster_id", "catalog_product_proposals.policy_version_id", "catalog_product_proposals.facts_hash"], name="fk_catalog_cultivation_proposal", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id", "approval_id"], ["approval_packages.tenant_id", "approval_packages.approval_id"], name="fk_catalog_cultivation_approval", ondelete="RESTRICT"),
+        CheckConstraint("cultivation_case_id ~ '^ccc_' AND facts_hash ~ '^[0-9a-f]{64}$'", name="ck_catalog_cultivation_core"),
+        CheckConstraint("jsonb_typeof(evidence_refs)='array'", name="ck_catalog_cultivation_evidence_jsonb"),
+        CheckConstraint("state='queued'", name="ck_catalog_cultivation_state"),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    cultivation_case_id: Mapped[str] = mapped_column(String(40))
+    proposal_id: Mapped[str] = mapped_column(String(40))
+    approval_id: Mapped[str] = mapped_column(String(40))
+    cluster_id: Mapped[str] = mapped_column(String(40))
+    policy_version_id: Mapped[str] = mapped_column(String(40))
+    facts_hash: Mapped[str] = mapped_column(String(64))
+    evidence_refs: Mapped[list] = mapped_column(postgresql.JSONB)
+    state: Mapped[str] = mapped_column(String(20), server_default=text("'queued'"))
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CatalogReconciliationCheckpointRow(Base):
+    """scheduler 三流稳定扫描位置；仅含 locator metadata 与 CAS 版本。"""
+
+    __tablename__ = "catalog_reconciliation_checkpoints"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "stream", name="pk_catalog_reconciliation_checkpoints"
+        ),
+        CheckConstraint(
+            "btrim(tenant_id)<>'' AND stream IN "
+            "('pending_policies','awaiting_proposals','catalog_clusters')",
+            name="ck_catalog_reconciliation_checkpoint_scope",
+        ),
+        CheckConstraint(
+            "version>=1 AND ((position_at IS NULL AND entity_id IS NULL) OR "
+            "(position_at IS NOT NULL AND entity_id IS NOT NULL))",
+            name="ck_catalog_reconciliation_checkpoint_position",
+        ),
+        CheckConstraint(
+            "entity_id IS NULL OR "
+            "(stream='pending_policies' AND entity_id ~ '^cpv_') OR "
+            "(stream='awaiting_proposals' AND entity_id ~ '^cpr_') OR "
+            "(stream='catalog_clusters' AND entity_id ~ '^ncl_')",
+            name="ck_catalog_reconciliation_checkpoint_entity",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    stream: Mapped[str] = mapped_column(String(32))
+    position_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    entity_id: Mapped[str | None] = mapped_column(String(40))
+    version: Mapped[int] = mapped_column(BigInteger)
 
 
 class NeedUnitConfirmationRow(Base):
@@ -5523,3 +5714,358 @@ class SupplierPriceRecordRow(Base):
     artifact_id: Mapped[str] = mapped_column(String(32))
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EmailInboundCursorRow(Base):
+    """只存受信绑定、固定起点和opaque水位，不存邮件内容。"""
+
+    __tablename__ = "email_inbound_cursors"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "mailbox_alias", name="pk_email_inbound_cursors"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "configured_identity_id"],
+            ["sending_identities.tenant_id", "sending_identities.identity_id"],
+            name="fk_email_inbound_cursor_identity",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "version >= 1 AND octet_length(provider_cursor) BETWEEN 1 AND 32768 AND after_epoch >= 0",
+            name="ck_email_inbound_cursor_version",
+        ),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    mailbox_alias: Mapped[str] = mapped_column(String(32))
+    configured_identity_id: Mapped[str] = mapped_column(String(40))
+    route_id: Mapped[str] = mapped_column(String(32))
+    config_version: Mapped[str] = mapped_column(String(32))
+    provider_cursor: Mapped[str] = mapped_column(Text)
+    version: Mapped[int] = mapped_column(BigInteger)
+    bootstrap_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    after_epoch: Mapped[int] = mapped_column(BigInteger)
+    confirmed_by: Mapped[str] = mapped_column(String(40))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    blocked_reason: Mapped[str | None] = mapped_column(String(40))
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EmailInboundReceiptRow(Base):
+    """已处理Provider项目只增账本；关联证据仅摘要。"""
+
+    __tablename__ = "email_inbound_receipts"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id",
+            "mailbox_alias",
+            "provider_ref_digest",
+            name="pk_email_inbound_receipts",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "mailbox_alias"],
+            ["email_inbound_cursors.tenant_id", "email_inbound_cursors.mailbox_alias"],
+            name="fk_email_inbound_receipt_cursor",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "raw_artifact_id"],
+            ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
+            name="fk_email_inbound_receipt_raw",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "message_id"],
+            ["messages.tenant_id", "messages.message_id"],
+            name="fk_email_inbound_receipt_message",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "provider_ref_digest ~ '^[0-9a-f]{64}$' AND item_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="ck_email_inbound_receipt_hash",
+        ),
+        CheckConstraint(
+            "(raw_artifact_id IS NULL AND raw_hash IS NULL AND raw_size IS NULL) OR (raw_artifact_id IS NOT NULL AND raw_hash IS NOT NULL AND raw_size IS NOT NULL AND raw_hash ~ '^[0-9a-f]{64}$' AND raw_size BETWEEN 1 AND 4194304)",
+            name="ck_email_inbound_receipt_raw",
+        ),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    mailbox_alias: Mapped[str] = mapped_column(String(32))
+    provider_ref_digest: Mapped[str] = mapped_column(String(64))
+    item_fingerprint: Mapped[str] = mapped_column(String(64))
+    parser_version: Mapped[str] = mapped_column(String(32))
+    guard_version: Mapped[str] = mapped_column(String(32))
+    disposition: Mapped[str] = mapped_column(String(40))
+    raw_artifact_id: Mapped[str | None] = mapped_column(String(32))
+    raw_hash: Mapped[str | None] = mapped_column(String(64))
+    raw_size: Mapped[int | None] = mapped_column(BigInteger)
+    message_id: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EmailInboundReviewRow(Base):
+    """未形成Message的技术待核对，不借假Message授权。"""
+
+    __tablename__ = "email_inbound_reviews"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "review_id", name="pk_email_inbound_reviews"),
+        UniqueConstraint(
+            "tenant_id",
+            "mailbox_alias",
+            "provider_ref_digest",
+            name="uq_email_inbound_review_receipt",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "mailbox_alias", "provider_ref_digest"],
+            [
+                "email_inbound_receipts.tenant_id",
+                "email_inbound_receipts.mailbox_alias",
+                "email_inbound_receipts.provider_ref_digest",
+            ],
+            name="fk_email_inbound_review_receipt",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "raw_artifact_id"],
+            ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"],
+            name="fk_email_inbound_review_raw",
+            ondelete="RESTRICT",
+        ),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    review_id: Mapped[str] = mapped_column(String(40))
+    mailbox_alias: Mapped[str] = mapped_column(String(32))
+    provider_ref_digest: Mapped[str] = mapped_column(String(64))
+    raw_artifact_id: Mapped[str | None] = mapped_column(String(32))
+    reason: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AuthAccountRow(Base):
+    """认证账号；员工复合外键保证绑定不能跨租户。"""
+
+    __tablename__ = "auth_accounts"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "username", name="pk_auth_accounts"),
+        UniqueConstraint("tenant_id", "employee_id", name="uq_auth_accounts_employee"),
+        ForeignKeyConstraint(["tenant_id", "employee_id"], ["employees.tenant_id", "employees.employee_id"], name="fk_auth_accounts_employee", ondelete="RESTRICT"),
+        CheckConstraint("version >= 1 AND failed_count BETWEEN 0 AND 5", name="ck_auth_accounts_counters"),
+        CheckConstraint("username ~ '^[a-z0-9][a-z0-9_.-]{0,63}$'", name="ck_auth_accounts_username"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    username: Mapped[str] = mapped_column(String(64))
+    employee_id: Mapped[str] = mapped_column(String(32))
+    password_hash: Mapped[str] = mapped_column(String(160))
+    enabled: Mapped[bool] = mapped_column(Boolean)
+    version: Mapped[int] = mapped_column(Integer)
+    failed_count: Mapped[int] = mapped_column(Integer)
+    failure_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuthSessionRow(Base):
+    """只持久化会话与 CSRF 摘要，并保留发行时员工用户映射。"""
+
+    __tablename__ = "auth_sessions"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "token_digest", name="pk_auth_sessions"),
+        ForeignKeyConstraint(["tenant_id", "username"], ["auth_accounts.tenant_id", "auth_accounts.username"], name="fk_auth_sessions_account", ondelete="RESTRICT"),
+        CheckConstraint("token_digest ~ '^[0-9a-f]{64}$' AND csrf_digest ~ '^[0-9a-f]{64}$'", name="ck_auth_sessions_digest"),
+        CheckConstraint("account_version >= 1 AND expires_at > created_at", name="ck_auth_sessions_validity"),
+        Index("ix_auth_sessions_account", "tenant_id", "username", "created_at"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    token_digest: Mapped[str] = mapped_column(String(64))
+    csrf_digest: Mapped[str] = mapped_column(String(64))
+    username: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[str] = mapped_column(String(32))
+    account_version: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuthRateLimitRow(Base):
+    """每租户固定两个桶；任意未知用户名不能使表无限增长。"""
+
+    __tablename__ = "auth_rate_limits"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "bucket", name="pk_auth_rate_limits"),
+        CheckConstraint("bucket IN ('attempts', 'unknown') AND count BETWEEN 0 AND 30", name="ck_auth_rate_limits_bucket"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    bucket: Mapped[str] = mapped_column(String(16))
+    count: Mapped[int] = mapped_column(Integer)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ModelInvocationRow(Base):
+    """模型调用安全账本，不存原始请求、响应或秘密引用。"""
+    __tablename__ = "model_invocations"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "invocation_id", name="pk_model_invocations"),
+        UniqueConstraint("tenant_id", "run_id", "capability", "configuration_version", "sequence", name="uq_model_invocation_identity"),
+        CheckConstraint("state IN ('reserved','dispatched','succeeded','rejected','invalid','unknown')", name="ck_model_invocation_state"),
+        CheckConstraint("sequence >= 0 AND request_hmac ~ '^[0-9a-f]{64}$'", name="ck_model_invocation_identity"),
+        CheckConstraint("(input_tokens IS NULL OR input_tokens >= 0) AND (cached_input_tokens IS NULL OR cached_input_tokens >= 0) AND (output_tokens IS NULL OR output_tokens >= 0) AND (input_tokens IS NULL OR cached_input_tokens IS NULL OR cached_input_tokens <= input_tokens)", name="ck_model_invocation_usage"),
+        Index("ix_model_invocations_quota", "tenant_id", "created_at", "employee_id"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    invocation_id: Mapped[str] = mapped_column(String(40))
+    user_id: Mapped[str] = mapped_column(String(128))
+    employee_id: Mapped[str] = mapped_column(String(128))
+    run_id: Mapped[str] = mapped_column(String(128))
+    turn_id: Mapped[str | None] = mapped_column(String(128))
+    capability: Mapped[str] = mapped_column(String(40))
+    configuration_version: Mapped[str] = mapped_column(String(128))
+    sequence: Mapped[int] = mapped_column(Integer)
+    request_hmac: Mapped[str] = mapped_column(String(64))
+    provider: Mapped[str] = mapped_column(String(16))
+    model: Mapped[str] = mapped_column(String(128))
+    owner_id: Mapped[str | None] = mapped_column(String(128))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    state: Mapped[str] = mapped_column(String(16))
+    input_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    cached_input_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    output_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    slot_released: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ModelQuotaBucketRow(Base):
+    """稳定租户/员工技术锁及当前计数快照；事实源是调用账本。"""
+    __tablename__ = "model_quota_buckets"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "scope_key", name="pk_model_quota_buckets"),
+        CheckConstraint("calls >= 0", name="ck_model_quota_calls"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    scope_key: Mapped[str] = mapped_column(String(160))
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    calls: Mapped[int] = mapped_column(BigInteger)
+
+
+class ModelSlotReleaseRow(Base):
+    """未知执行显式解除并发槽的只增审计，不退款或覆盖原调用。"""
+    __tablename__ = "model_slot_releases"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "invocation_id", name="pk_model_slot_releases"),
+        ForeignKeyConstraint(["tenant_id", "invocation_id"], ["model_invocations.tenant_id", "model_invocations.invocation_id"], name="fk_model_slot_release_invocation", ondelete="RESTRICT"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    invocation_id: Mapped[str] = mapped_column(String(40))
+    operator_id: Mapped[str] = mapped_column(String(128))
+    reason: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ModelConfigurationVersionRow(Base):
+    """不可变非秘密配置；验证与进程装配事实另行投影。"""
+    __tablename__ = "model_configuration_versions"
+    __table_args__ = (PrimaryKeyConstraint("tenant_id", "version", name="pk_model_configuration_versions"),)
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    version: Mapped[str] = mapped_column(String(128))
+    model: Mapped[str] = mapped_column(String(128))
+    limits: Mapped[dict[str, object]] = mapped_column(postgresql.JSONB)
+    export_enabled: Mapped[bool] = mapped_column(Boolean)
+    created_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AgentSessionRow(Base):
+    """员工私有会话，不保存可能泄露业务信息的生成标题。"""
+    __tablename__ = "agent_sessions"
+    __table_args__ = (PrimaryKeyConstraint("tenant_id","session_id",name="pk_agent_sessions"),)
+    session_kind: Mapped[str] = mapped_column(String(16), server_default=text("'conversation'"))
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    session_id: Mapped[str] = mapped_column(String(40))
+    user_id: Mapped[str] = mapped_column(String(128))
+    employee_id: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer)
+
+
+class AgentTurnRow(Base):
+    """输入与持久 dispatch 意图同一行原子创建；不保存模型原始推理。"""
+    __tablename__ = "agent_turns"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id","turn_id",name="pk_agent_turns"),
+        UniqueConstraint("tenant_id","session_id","idempotency_key",name="uq_agent_turn_request"),
+        UniqueConstraint("tenant_id","run_id",name="uq_agent_turn_run"),
+        ForeignKeyConstraint(["tenant_id","session_id"],["agent_sessions.tenant_id","agent_sessions.session_id"],name="fk_agent_turn_session",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","attempt_of"],["agent_turns.tenant_id","agent_turns.turn_id"],name="fk_agent_turn_attempt",ondelete="RESTRICT"),
+        CheckConstraint("state IN ('queued','running','awaiting_input','proposal_ready','completed','blocked','failed','unknown','cancelled')",name="ck_agent_turn_state"),
+        CheckConstraint("dispatch_state IN ('pending','bound') AND turn_kind IN ('conversation','model_probe')",name="ck_agent_turn_dispatch"),
+        Index("uq_agent_turn_active","tenant_id","session_id",unique=True,postgresql_where=text("state IN ('queued','running')")),
+    )
+    context_refs: Mapped[list] = mapped_column(postgresql.JSONB, server_default=text("'[]'::jsonb"))
+    checkpoint_sequence: Mapped[int | None] = mapped_column(Integer)
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    turn_id: Mapped[str] = mapped_column(String(40))
+    session_id: Mapped[str] = mapped_column(String(40))
+    run_id: Mapped[str] = mapped_column(String(40))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    request_hmac: Mapped[str] = mapped_column(String(64))
+    input_text: Mapped[str] = mapped_column(Text)
+    object_refs: Mapped[list[dict[str,object]]] = mapped_column(postgresql.JSONB)
+    result: Mapped[dict[str,object]|None] = mapped_column(postgresql.JSONB)
+    state: Mapped[str] = mapped_column(String(32))
+    dispatch_state: Mapped[str] = mapped_column(String(16))
+    turn_kind: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attempt_of: Mapped[str|None] = mapped_column(String(40))
+    proposal_id: Mapped[str|None] = mapped_column(String(128))
+    error_code: Mapped[str|None] = mapped_column(String(40))
+
+
+class AssistantProposalSourceRow(Base):
+    """研究提案唯一来源；和提案同一事务提交，复合外键禁止跨租户。"""
+    __tablename__ = "assistant_proposal_sources"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "source_turn_id", "source_version"),
+        UniqueConstraint("tenant_id", "proposal_id"),
+        CheckConstraint("source_version >= 1", name="ck_assistant_proposal_source_version"),
+        ForeignKeyConstraint(["tenant_id", "proposal_id"], ["directive_proposals.tenant_id", "directive_proposals.proposal_id"], deferrable=True, initially="DEFERRED"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    source_turn_id: Mapped[str] = mapped_column(String(40))
+    source_version: Mapped[int] = mapped_column(Integer)
+    proposal_id: Mapped[str] = mapped_column(String(40))
+    request_hmac: Mapped[str] = mapped_column(String(256))
+    payload_hash: Mapped[str] = mapped_column(String(64))
+
+
+class ModelConfigurationHeadRow(Base):
+    """当前非秘密配置指针；版本内容不原地修改。"""
+    __tablename__ = "model_configuration_heads"
+    __table_args__ = (PrimaryKeyConstraint("tenant_id"),ForeignKeyConstraint(["tenant_id","version"],["model_configuration_versions.tenant_id","model_configuration_versions.version"]),)
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    version: Mapped[str] = mapped_column(String(128))
+
+
+class ModelRuntimeProcessRow(Base):
+    """进程的实际装配版本与有界存活心跳。"""
+    __tablename__ = "model_runtime_processes"
+    __table_args__ = (PrimaryKeyConstraint("tenant_id","process"),CheckConstraint("process IN ('api','scheduler')",name="ck_model_runtime_process"),)
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    process: Mapped[str] = mapped_column(String(16))
+    version: Mapped[str] = mapped_column(String(128))
+    instance_id: Mapped[str] = mapped_column(String(40))
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ModelProbeRow(Base):
+    """显式管理员探测，单独轮次并绑定配置版本。"""
+    __tablename__ = "model_probes"
+    __table_args__ = (PrimaryKeyConstraint("tenant_id","turn_id"),
+        UniqueConstraint("tenant_id","employee_id","configuration_version","idempotency_key"),
+        ForeignKeyConstraint(["tenant_id","turn_id"],["agent_turns.tenant_id","agent_turns.turn_id"]),
+        ForeignKeyConstraint(["tenant_id","configuration_version"],["model_configuration_versions.tenant_id","model_configuration_versions.version"]),)
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    turn_id: Mapped[str] = mapped_column(String(40))
+    employee_id: Mapped[str] = mapped_column(String(128))
+    configuration_version: Mapped[str] = mapped_column(String(128))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -199,7 +199,7 @@ async function eventually(assertion: () => void): Promise<void> {
   throw latestError;
 }
 
-async function mountBoard(fetch: ReturnType<typeof vi.fn<typeof globalThis.fetch>>): Promise<{
+async function mountBoard(fetch: ReturnType<typeof vi.fn<typeof globalThis.fetch>>, expectedCount=2): Promise<{
   app: VueApp;
   root: HTMLElement;
 }> {
@@ -212,7 +212,7 @@ async function mountBoard(fetch: ReturnType<typeof vi.fn<typeof globalThis.fetch
   app.mount(root);
   await router.replace("/crm/opportunities");
   await eventually(() => {
-    expect(root.querySelectorAll('ol[aria-label="机会列表"] > li > button')).toHaveLength(2);
+    expect(root.querySelectorAll('ol[aria-label="机会列表"] > li > button')).toHaveLength(expectedCount);
   });
   return { app, root };
 }
@@ -407,7 +407,7 @@ describe("opportunity board", () => {
       expect(document.activeElement?.getAttribute("aria-label")).toBe("关闭来源");
     });
     for (const visibleText of [
-      "客户名称 · 已验证事实",
+      "客户名称 · 来源记录",
       "来源类型",
       "conversation",
       "来源标识",
@@ -432,7 +432,7 @@ describe("opportunity board", () => {
     const dialogs = article.querySelectorAll<HTMLElement>('[role="dialog"]');
     await eventually(() => {
       expect(dialogs[1]?.hidden).toBe(false);
-      expect(dialogs[1]?.textContent).toContain("国家 / 地区 · 已验证事实");
+      expect(dialogs[1]?.textContent).toContain("国家 / 地区 · 来源记录");
       expect(dialogs[1]?.textContent).toContain("e2e-message-country");
     });
     app.unmount();
@@ -1043,7 +1043,7 @@ describe("opportunity board", () => {
     const dialog = amountSection.querySelector('[role="dialog"]') as HTMLElement;
     await eventually(() => {
       expect(dialog.hidden).toBe(false);
-      expect(dialog.textContent).toContain("目标价格 · 已验证事实");
+      expect(dialog.textContent).toContain("目标价格 · 来源记录");
       expect(dialog.textContent).toContain("quote-demo-price");
       expect(dialog.textContent).toContain("employee-demo-one");
     });
@@ -1211,4 +1211,38 @@ describe("opportunity board", () => {
     expect(root.textContent).not.toContain("推进为：已成交");
     app.unmount();
   });
+});
+
+it("Task10 机会详情链接精确Need和当前机会成本", async () => {
+  const { app, root } = await mountBoard(makeReadFetch());
+  await eventually(() => expect(root.querySelector('.opportunity-record')).not.toBeNull());
+  expect(root.querySelector(`a[href="/demand/needs/${firstOpportunity.need_id}"]`)).not.toBeNull();
+  expect(root.querySelector(`a[href="/costing-quotes?opportunity_id=${firstOpportunity.opportunity_id}"]`)).not.toBeNull();
+  app.unmount();
+});
+
+it("Task10 关键字段和金额有来源不代表已验证事实", async () => {
+  const { app, root } = await mountBoard(makeReadFetch());
+  await eventually(() => expect(root.querySelector('.opportunity-record')).not.toBeNull());
+  const record = root.querySelector('.opportunity-record')!;
+  expect(record.textContent).toContain("关键字段");
+  expect([...record.querySelectorAll('.fact-label')].length).toBeGreaterThan(0);
+  expect([...record.querySelectorAll('.fact-label')].every((label) => label.textContent?.includes("来源记录"))).toBe(true);
+  expect(record.textContent).not.toContain("已验证事实");
+  app.unmount();
+});
+
+
+it("来源链接读取精确机会，即使该对象不在当前列表", async () => {
+  const requests:string[]=[];
+  const fetch=vi.fn<typeof globalThis.fetch>(async input=>{
+    const request=asRequest(input);requests.push(new URL(request.url).pathname);
+    if(new URL(request.url).pathname==="/crm/opportunities")return jsonResponse([firstOpportunity]);
+    return opportunityForRequest(request,[firstOpportunity,secondOpportunity])??jsonResponse({},500);
+  });
+  const {app,root}=await mountBoard(fetch,1);
+  await router.push("/crm/opportunities?opportunity="+secondOpportunity.opportunity_id);
+  await eventually(()=>expect(requests).toContain("/crm/opportunities/"+secondOpportunity.opportunity_id));
+  await eventually(()=>expect(root.textContent).toContain(secondOpportunity.spec_summary!));
+  app.unmount();
 });

@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 
@@ -111,6 +112,15 @@ def main():
         print("t10_runtime_exit=verified", flush=True)
         return 0
     except Exception as error:  # noqa: BLE001 - 不输出环境/数据库原异常正文
+        root = Path(__file__).resolve().parents[2]
+        for frame in traceback.extract_tb(error.__traceback__):
+            try:
+                relative = Path(frame.filename).resolve().relative_to(root).as_posix()
+            except ValueError:
+                continue
+            name = "module" if frame.name == "<module>" else frame.name
+            if re.fullmatch(r"tests/[a-zA-Z0-9_/]+\.py", relative) and re.fullmatch(r"[a-zA-Z0-9_]+", name):
+                print(f"{relative}:{frame.lineno}: in {name}")
         print("t10_fixture_error=" + type(error).__name__)
         return 2
 

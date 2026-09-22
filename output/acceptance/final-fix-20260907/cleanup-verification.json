@@ -1,0 +1,19 @@
+{
+  "owner": "5be45c31379045a798f96f93226841b5",
+  "status": "stopped",
+  "cleanup_errors": [],
+  "same_birth_processes_alive": [],
+  "containers": [
+    {
+      "id": "18640b36ca3b8b573cf56c8cbb20011f6ae25397f429587653adb9f86fac6555",
+      "absent": true
+    },
+    {
+      "id": "1cfbc55f857bf24bca81a8345b90d3f7f4ce3900f43ea45ccf817523516c8798",
+      "absent": true
+    }
+  ],
+  "historical_output_count": 381,
+  "historical_paths_all_preserved": true,
+  "sqlite_cleanup": "原E2E finally断言同owner mail/reply-model及journal/wal/shm均不存在"
+}

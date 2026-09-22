@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
 from httpx import ASGITransport, AsyncClient, Response
 
 from domains.conversations.schemas import (
@@ -43,6 +44,7 @@ class _Conversations:
         self,
         tenant_id: TenantId,
         *,
+        actor,
         category: ReplyCategory | None,
         limit: int,
     ) -> list[ConversationInboxItem]:
@@ -66,7 +68,7 @@ class _Conversations:
         ]
 
     async def get_inbox_detail(
-        self, tenant_id: TenantId, conversation_id: ConversationId
+        self, tenant_id: TenantId, conversation_id: ConversationId, *, actor
     ) -> ConversationInboxDetail:
         self.detail_calls.append((tenant_id, conversation_id))
         return ConversationInboxDetail(
@@ -99,6 +101,8 @@ class _Conversations:
         message_id: MessageId,
         corrected_category: ReplyCategory,
         corrected_by: str,
+        *,
+        actor,
     ) -> None:
         self.correct_calls.append(
             (tenant_id, message_id, corrected_category, corrected_by)
@@ -140,9 +144,7 @@ def test_inbox_list_filters_by_effective_category_and_tenant() -> None:
     assert response.status_code == 200
     assert response.json()[0]["classified_by"] == "reply-classifier:v3"
     assert response.json()[0]["raw_artifact_ref"] == "artifact:reply-1"
-    assert conversations.list_calls == [
-        (TENANT, ReplyCategory.REQUESTS_QUOTE, 20)
-    ]
+    assert conversations.list_calls == [(TENANT, ReplyCategory.REQUESTS_QUOTE, 20)]
 
 
 def test_inbox_detail_exposes_only_safe_outbound_correlation_id() -> None:
@@ -203,3 +205,10 @@ def test_viewer_cannot_read_smart_inbox() -> None:
 
     assert response.status_code == 403
     assert conversations.list_calls == []
+
+
+@pytest.mark.parametrize("role", ["sales", "manager"])
+def test_owner_roles_reach_scoped_inbox_service(role):
+    app, _ = _inbox_app(role=role)
+    response = _ApiClient(app).get("/inbox/conversations", headers=_headers())
+    assert response.status_code == 200

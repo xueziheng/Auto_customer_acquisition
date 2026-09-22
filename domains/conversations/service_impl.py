@@ -13,6 +13,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from domains.conversations.errors import ReingestConflictError
+from domains.conversations.inbox_access import (
+    InboxAction,
+    InboxActor,
+    require_actor,
+    require_current_access,
+)
 from domains.conversations.models import (
     REPLY_ACTIONS,
     REPLY_WORK_QUEUES,
@@ -33,14 +39,17 @@ from domains.conversations.repository import (
     ConversationsUnitOfWork,
 )
 from domains.conversations.schemas import (
+    AccountReplyStatus,
     ClassificationCorrectionView,
     ConversationInboxDetail,
     ConversationInboxItem,
+    InboxEvidenceRef,
     InboxMessageView,
     ReplyWorkActionRequest,
     ReplyWorkActionView,
 )
-from shared.errors import ValidationError
+from domains.conversations.source_access import require_reply_internal_access
+from shared.errors import PermissionDenied, ValidationError
 from shared.events.catalog import InboundMessageStored, ReplyReceived
 from shared.schemas.identifiers import (
     ConversationId,
@@ -50,6 +59,7 @@ from shared.schemas.identifiers import (
     TenantId,
     new_id,
 )
+from shared.schemas.quote_facts import QuoteEmployeeFact
 
 
 class ConversationServiceImpl:
@@ -76,6 +86,23 @@ class ConversationServiceImpl:
             raise ValidationError("服务时钟必须为 UTC")
         return value
 
+    async def get_account_reply_status(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+    ) -> AccountReplyStatus:
+        """单次持久快照保守暂停整个企业；未分类不等于无回复。"""
+        async with self._uow_factory(tenant_id) as uow:
+            unknown, replied_at = await uow.messages.account_reply_summary(
+                tenant_id, account_id
+            )
+        return AccountReplyStatus(
+            tenant_id=tenant_id,
+            account_id=account_id,
+            state="unknown" if unknown else "replied" if replied_at else "no_reply",
+            replied_at=replied_at,
+        )
+
     async def ingest_inbound(
         self,
         tenant_id: TenantId,
@@ -98,20 +125,13 @@ class ConversationServiceImpl:
             raise ValidationError("会话租户无效")
         if not isinstance(account_id, str) or not account_id:
             raise ValidationError("会话账户无效")
-        if (
-            not isinstance(raw_artifact_ref, str)
-            or not raw_artifact_ref.strip()
-        ):
+        if not isinstance(raw_artifact_ref, str) or not raw_artifact_ref.strip():
             raise ValidationError("消息原文引用无效")
-        if (
-            not isinstance(external_message_id, str)
-            or not external_message_id.strip()
-        ):
+        if not isinstance(external_message_id, str) or not external_message_id.strip():
             raise ValidationError("消息 external Message-ID 无效")
         sent_at = self._validate_utc_input(sent_at, "sent_at")
         if outbound_message_id is not None and (
-            not isinstance(outbound_message_id, str)
-            or not outbound_message_id.strip()
+            not isinstance(outbound_message_id, str) or not outbound_message_id.strip()
         ):
             raise ValidationError("出站消息关联无效")
         now = self._validate_now(self._now())
@@ -266,6 +286,7 @@ class ConversationServiceImpl:
         outbound_message_id: OutboundMessageId | None = None,
         candidate_fields: tuple[ReplyFieldEvidence, ...] = (),
         suppress_scope: ReplySuppressScope | None = None,
+        actor: InboxActor | None = None,
     ) -> tuple[str, ...]:
         """落分类留痕并返回 ``REPLY_ACTIONS`` 动作序列（幂等契约见 docstring）。
 
@@ -303,6 +324,42 @@ class ConversationServiceImpl:
             raise ValidationError("非退订分类不得携带抑制范围")
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
+            if actor is not None:
+                await self._message_access(
+                    uow,
+                    tenant_id,
+                    message_id,
+                    actor,
+                    InboxAction.EVIDENCE_READ,
+                    lock=True,
+                )
+                current = await uow.inbox_facts.read_employee(
+                    tenant_id, actor.employee_id
+                )
+                if current is None:
+                    raise PermissionDenied("回复内部操作权限拒绝")
+                require_reply_internal_access(
+                    tenant_id,
+                    QuoteEmployeeFact.model_validate(
+                        {
+                            "tenant_id": tenant_id,
+                            "employee_id": current.employee_id,
+                            "role": current.role,
+                            "is_active": current.is_active,
+                            "manager_id": current.manager_id,
+                            "team_id": None,
+                        }
+                    ),
+                    action="qualify",
+                )
+                message = await uow.messages.get(tenant_id, message_id)
+                if (
+                    message is None
+                    or message.direction is not MessageDirection.INBOUND
+                    or message.outbound_message_id is None
+                    or message.outbound_message_id != outbound_message_id
+                ):
+                    raise PermissionDenied("回复消息绑定拒绝")
             # 同 message 事务级串行化：并发双写/双发布由锁 + 唯一约束兜底
             await uow.lock_message(tenant_id, message_id)
             classifications: ClassificationRepository = uow.classifications
@@ -313,9 +370,7 @@ class ConversationServiceImpl:
                         "同 message 不允许跨模型版本重评（未来由显式 reclassify API 承担）"
                     )
                 if existing.category is not category:
-                    raise ValidationError(
-                        "同 message+分类者分类冲突，拒绝覆盖"
-                    )
+                    raise ValidationError("同 message+分类者分类冲突，拒绝覆盖")
                 if existing.candidate_fields != candidate_fields:
                     raise ValidationError("同 message+分类者字段证据冲突，拒绝覆盖")
                 if existing.suppress_scope is not suppress_scope:
@@ -529,12 +584,14 @@ class ConversationServiceImpl:
         message_id: MessageId,
         corrected_category: ReplyCategory,
         corrected_by: str,
+        *,
+        actor: InboxActor,
     ) -> None:
         """人工纠正分类留痕（append-only；签名契约见 service.py，此处只谈实现语义）。
 
         - 原分类行永不修改：只 append ``ClassificationCorrection``；
           ``classified_by`` 保留模型版本，另记纠正人
-        - 未分类 / 跨租户不可见 → ``ValidationError("消息尚未分类")``
+        - 无权 / 跨租户不可见 / 不存在 → ``PermissionDenied``；授权成功但未分类 → ``ValidationError("消息尚未分类")``
           fail-closed（服务按租户绑定查询，不感知其他租户，不抛
           TenantIsolationViolation）
         - 输入校验（tenant/message/category/corrected_by 空值、长度上限
@@ -559,8 +616,14 @@ class ConversationServiceImpl:
             raise ValidationError("纠正人无效")
         if len(corrected_by) > 100:
             raise ValidationError("纠正人超长")
+        require_actor(tenant_id, actor, InboxAction.CORRECT)
+        if corrected_by != actor.employee_id:
+            raise PermissionDenied("收件箱访问拒绝")
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
+            await self._message_access(
+                uow, tenant_id, message_id, actor, InboxAction.CORRECT, lock=True
+            )
             classifications: ClassificationRepository = uow.classifications
             if await classifications.get(tenant_id, message_id) is None:
                 raise ValidationError("消息尚未分类")
@@ -594,14 +657,13 @@ class ConversationServiceImpl:
         async with self._uow_factory(tenant_id) as uow:
             if await uow.conversations.get(tenant_id, conversation_id) is None:
                 raise ValidationError("会话不存在")
-            return await uow.messages.list_for_conversation(
-                tenant_id, conversation_id
-            )
+            return await uow.messages.list_for_conversation(tenant_id, conversation_id)
 
     async def list_inbox(
         self,
         tenant_id: TenantId,
         *,
+        actor: InboxActor,
         category: ReplyCategory | None,
         limit: int,
     ) -> list[ConversationInboxItem]:
@@ -610,14 +672,21 @@ class ConversationServiceImpl:
             raise ValidationError("会话租户无效")
         if category is not None and not isinstance(category, ReplyCategory):
             raise ValidationError("分类类别无效")
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 200
+        ):
             raise ValidationError("Inbox 条数必须在 1–200")
         async with self._uow_factory(tenant_id) as uow:
             # 分类目前是 append-only 纠正后的域投影，不是 conversations 表字段；
             # Phase 1 最多扫描最近 200 条，再对有效分类过滤并应用调用方 limit。
+            await require_current_access(
+                uow.inbox_facts, tenant_id, actor, InboxAction.LIST
+            )
             scan_limit = 200 if category is not None else limit
             conversations = await uow.conversations.list_recent(
-                tenant_id, limit=scan_limit
+                tenant_id, actor=actor, limit=scan_limit
             )
             items: list[ConversationInboxItem] = []
             for conversation in conversations:
@@ -629,7 +698,9 @@ class ConversationServiceImpl:
                     for message in messages
                     if message.direction is MessageDirection.INBOUND
                 ]
-                latest = inbound[-1] if inbound else (messages[-1] if messages else None)
+                latest = (
+                    inbound[-1] if inbound else (messages[-1] if messages else None)
+                )
                 message_view = (
                     await self._build_message_view(uow, tenant_id, latest)
                     if latest is not None
@@ -656,7 +727,9 @@ class ConversationServiceImpl:
                         channel=conversation.channel,
                         last_activity_at=max(activity_candidates),
                         latest_message_id=(
-                            message_view.message_id if message_view is not None else None
+                            message_view.message_id
+                            if message_view is not None
+                            else None
                         ),
                         latest_message_at=(
                             message_view.sent_at if message_view is not None else None
@@ -700,17 +773,32 @@ class ConversationServiceImpl:
                 )
                 if len(items) == limit:
                     break
+            for item in items:
+                await self._require_inbox_snapshot(
+                    uow, tenant_id, item.conversation_id, item.account_id, actor
+                )
         return items
 
     async def get_inbox_detail(
-        self, tenant_id: TenantId, conversation_id: ConversationId
+        self,
+        tenant_id: TenantId,
+        conversation_id: ConversationId,
+        *,
+        actor: InboxActor,
+        action: InboxAction = InboxAction.READ,
     ) -> ConversationInboxDetail:
         """构造可审计 Inbox 详情；不返回主题、正文或模型概率。"""
+        require_actor(tenant_id, actor, action)
         self._validate_inbox_identity(tenant_id, conversation_id)
         async with self._uow_factory(tenant_id) as uow:
-            conversation = await uow.conversations.get(tenant_id, conversation_id)
+            conversation = await uow.conversations.get_inbox(
+                tenant_id, conversation_id, actor=actor
+            )
             if conversation is None:
-                raise ValidationError("会话不存在")
+                raise PermissionDenied("收件箱访问拒绝")
+            await require_current_access(
+                uow.inbox_facts, tenant_id, actor, action, conversation.account_id
+            )
             messages = await uow.messages.list_for_conversation(
                 tenant_id, conversation_id
             )
@@ -719,6 +807,9 @@ class ConversationServiceImpl:
                     await self._build_message_view(uow, tenant_id, message)
                     for message in messages
                 ]
+            )
+            await self._require_inbox_snapshot(
+                uow, tenant_id, conversation_id, conversation.account_id, actor
             )
         return ConversationInboxDetail(
             conversation_id=conversation.conversation_id,
@@ -729,6 +820,69 @@ class ConversationServiceImpl:
             last_outbound_at=conversation.last_outbound_at,
             messages=views,
         )
+
+    @staticmethod
+    async def _require_inbox_snapshot(
+        uow: ConversationsUnitOfWork,
+        tenant_id: TenantId,
+        conversation_id: ConversationId,
+        account_id: ProspectAccountId,
+        actor: InboxActor,
+    ) -> None:
+        """最后单SQL检查主体与owner，避免READ COMMITTED分次读取拼接过时事实。"""
+        current = await uow.conversations.get_inbox(
+            tenant_id, conversation_id, actor=actor
+        )
+        if current is None or current.account_id != account_id:
+            raise PermissionDenied("收件箱访问拒绝")
+
+    async def _message_access(
+        self,
+        uow: ConversationsUnitOfWork,
+        tenant_id: TenantId,
+        message_id: MessageId,
+        actor: InboxActor,
+        action: InboxAction,
+        *,
+        lock: bool = False,
+    ) -> InboxEvidenceRef:
+        require_actor(tenant_id, actor, action)
+        message = await uow.messages.get(tenant_id, message_id)
+        if message is None:
+            raise PermissionDenied("收件箱访问拒绝")
+        conversation = await uow.conversations.get(tenant_id, message.conversation_id)
+        if conversation is None:
+            raise PermissionDenied("收件箱访问拒绝")
+        if lock:
+            await uow.inbox_facts.lock_account_access(
+                tenant_id, conversation.account_id, actor.employee_id
+            )
+        await require_current_access(
+            uow.inbox_facts, tenant_id, actor, action, conversation.account_id
+        )
+        await self._require_inbox_snapshot(
+            uow, tenant_id, message.conversation_id, conversation.account_id, actor
+        )
+        return InboxEvidenceRef(
+            tenant_id=tenant_id,
+            message_id=message_id,
+            conversation_id=message.conversation_id,
+            account_id=conversation.account_id,
+            artifact_id=message.raw_artifact_ref,
+        )
+
+    async def get_message_evidence(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+        *,
+        actor: InboxActor,
+        action: InboxAction = InboxAction.EVIDENCE_READ,
+    ) -> InboxEvidenceRef:
+        """Message精确关联与当前事实读取同事务；不存在/越权统一拒绝。"""
+        require_actor(tenant_id, actor, action)
+        async with self._uow_factory(tenant_id) as uow:
+            return await self._message_access(uow, tenant_id, message_id, actor, action)
 
     @staticmethod
     def _validate_inbox_identity(

@@ -54,7 +54,9 @@ def safe_output(raw):
     """只回传固定诊断/pytest摘要，不暴露Uvicorn和依赖任意日志。"""
     lines = []
     for line in raw.decode("utf-8", errors="replace").splitlines():
-        if (re.fullmatch(r"(?:runtime_http_error|fixed_exception_type|t10_fixture_error)=[A-Za-z0-9_.]+", line)
+        if (re.fullmatch(r"t10_runtime_stop_exit=-?[0-9]+", line)
+            or re.fullmatch(r"t10_relay_(?:saturated|active|exec_active|completed|reload_cost)=[0-9]+", line)
+            or re.fullmatch(r"(?:runtime_http_error|fixed_exception_type|t10_fixture_error)=[A-Za-z0-9_.]+", line)
             or re.fullmatch(r"[a-zA-Z0-9_/]+\.py:[0-9]+: in [a-zA-Z0-9_]+", line)
             or re.fullmatch(r"t10_(?:worker_started_cycles|forbidden_gateway_calls)=[0-9]+", line)
             or re.fullmatch(r"t10_unit_diag_(?:(?:requests|failed|responses|selection_start|selection_end|text_length)=[0-9]+|disabled=[01])", line)
@@ -146,6 +148,8 @@ def linux_stack(*, mode="integration"):
                 runner.stop(timeout=12)
                 runner.reload()
                 state = runner.attrs["State"]
+                print("t10_runtime_stop_exit=" + str(int(state.get("ExitCode", -1))), flush=True)
+                print(safe_output(runner.logs()), flush=True)
                 assert state.get("Status") == "exited" and state.get("ExitCode") == 0
                 assert not state.get("OOMKilled", False)
                 lines = runner.logs().decode("utf-8", errors="replace").splitlines()
@@ -259,7 +263,8 @@ async def browser_stack(artifacts: Path, *, mode="browser"):
                 break
             stack.runner.reload()
             if stack.runner.status == "exited" or time.monotonic() > deadline:
-                raise AssertionError("T10公开前置未就绪：" + safe_output(stack.runner.logs()))
+                print(safe_output(stack.runner.logs()), flush=True)
+                raise AssertionError("T10公开前置未就绪")
             await asyncio.sleep(0.1)
         try:
             stack.api_origin = files.enter_context(http_bridge(stack.runner))

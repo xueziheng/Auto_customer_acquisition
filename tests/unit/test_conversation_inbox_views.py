@@ -9,8 +9,9 @@ from typing import Self
 import pytest
 
 from domains.conversations.schemas import ReplyCategory
+from domains.conversations.service import InboxActor, InboxEmployeeFacts, InboxScope
 from domains.conversations.service_impl import ConversationServiceImpl
-from shared.errors import ValidationError
+from shared.errors import PermissionDenied
 from shared.schemas.identifiers import (
     ConversationId,
     MessageId,
@@ -24,6 +25,7 @@ TENANT = TenantId(new_id("tn"))
 CONVERSATION = ConversationId(new_id("con"))
 ACCOUNT = ProspectAccountId(new_id("acc"))
 MESSAGE = MessageId(new_id("msg"))
+ACTOR = InboxActor(TENANT, "emp_test", "boss", InboxScope.TENANT)
 
 _models = importlib.import_module("domains.conversations.models")
 ClassificationCorrection = _models.ClassificationCorrection
@@ -39,13 +41,13 @@ class _Conversations:
         self.list_calls: list[tuple[TenantId, int]] = []
 
     async def list_recent(
-        self, tenant_id: TenantId, *, limit: int
+        self, tenant_id: TenantId, *, actor, limit: int
     ) -> list[Conversation]:
         self.list_calls.append((tenant_id, limit))
         return [self.conversation] if self.conversation is not None else []
 
-    async def get(
-        self, tenant_id: TenantId, conversation_id: ConversationId
+    async def get_inbox(
+        self, tenant_id: TenantId, conversation_id: ConversationId, *, actor
     ) -> Conversation | None:
         if tenant_id == TENANT and conversation_id == CONVERSATION:
             return self.conversation
@@ -94,9 +96,13 @@ class _Uow:
         classification: MessageClassification,
         corrections: list[ClassificationCorrection],
     ) -> None:
+        self.inbox_facts = self
         self.conversations = _Conversations(conversation)
         self.messages = _Messages(messages)
         self.classifications = _Classifications(classification, corrections)
+
+    async def read_employee(self, tenant_id, employee_id):
+        return InboxEmployeeFacts(ACTOR.employee_id, "boss", True, None)
 
     async def __aenter__(self) -> Self:
         return self
@@ -162,7 +168,7 @@ async def test_list_inbox_keeps_model_judgement_and_effective_correction() -> No
     service, uow = _fixture()
 
     items = await service.list_inbox(
-        TENANT, category=ReplyCategory.REQUESTS_QUOTE, limit=20
+        TENANT, actor=ACTOR, category=ReplyCategory.REQUESTS_QUOTE, limit=20
     )
 
     assert uow.conversations.list_calls == [(TENANT, 200)]
@@ -181,7 +187,7 @@ async def test_list_inbox_keeps_model_judgement_and_effective_correction() -> No
 async def test_inbox_detail_exposes_evidence_without_copying_message_body() -> None:
     service, _uow = _fixture()
 
-    detail = await service.get_inbox_detail(TENANT, CONVERSATION)
+    detail = await service.get_inbox_detail(TENANT, CONVERSATION, actor=ACTOR)
 
     assert detail.account_id == ACCOUNT
     assert len(detail.messages) == 2
@@ -198,5 +204,16 @@ async def test_inbox_detail_exposes_evidence_without_copying_message_body() -> N
 async def test_inbox_detail_fails_closed_for_unknown_conversation() -> None:
     service, _uow = _fixture()
 
-    with pytest.raises(ValidationError, match="会话不存在"):
-        await service.get_inbox_detail(TENANT, ConversationId(new_id("con")))
+    with pytest.raises(PermissionDenied, match="收件箱访问拒绝"):
+        await service.get_inbox_detail(
+            TENANT, ConversationId(new_id("con")), actor=ACTOR
+        )
+
+
+async def test_missing_actor_cannot_read_tenant_inbox():
+    """移除显式actor门禁会让此拒绝用例泄漏真实域投影。"""
+    from shared.errors import PermissionDenied
+
+    service, _ = _fixture()
+    with pytest.raises((PermissionDenied, TypeError)):
+        await service.list_inbox(TENANT, category=None, limit=20)

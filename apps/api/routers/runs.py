@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,6 +16,7 @@ from workflows.engine.audit import (
     RunDetailView,
     RunSummaryView,
 )
+from workflows.engine.observability import WebCoreObservation
 
 from ..dependencies import (
     ConfiguredApiDependencies,
@@ -74,6 +76,22 @@ async def list_runs(
         workflow_type=workflow_type,
         status=status,
         limit=limit,
+    )
+
+
+@router.get(
+    "/observability", response_model=WebCoreObservation,
+    responses={400: {"model": ApiErrorResponse}, 403: {"model": ApiErrorResponse}},
+)
+async def get_observability(
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    start: datetime | None = None, end: datetime | None = None,
+) -> WebCoreObservation:
+    """当前身份读取独立租户窗口；不接受客户端actor、tenant或成本输入。"""
+    actor = _actor(identity)
+    return await _service(dependencies).get_observability(
+        identity.tenant_id, actor=actor, start=start, end=end,
     )
 
 

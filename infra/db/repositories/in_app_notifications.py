@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
+
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -19,12 +22,51 @@ from shared.schemas.identifiers import EmployeeId, NotificationId, TenantId
 
 
 class PostgresInAppNotificationStore:
-    def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        factory: async_sessionmaker[AsyncSession],
+        *,
+        handoff_guard: Callable[[InAppNotification], AbstractAsyncContextManager[bool]]
+        | None = None,
+    ) -> None:
         self._factory = factory
+        self._handoff_guard = handoff_guard
 
     async def append(self, notification: InAppNotification) -> bool:
+        if (
+            notification.context.kind is NotificationKind.HANDOFF_ESCALATION
+            and notification.context.reason_code in {"owner_pending", "owner_reminder"}
+        ):
+            if self._handoff_guard is None:
+                raise ValidationError("负责人提醒投递缺少当前事实边界")
+            async with self._handoff_guard(notification) as allowed:
+                if not allowed:
+                    return False
+                return await self._append(notification)
+        return await self._append(notification)
+
+    async def _append(self, notification: InAppNotification) -> bool:
         async with self._factory() as session:
-            result = await session.execute(insert(InAppNotificationRow).values(tenant_id=str(notification.tenant_id), notification_id=str(notification.notification_id), recipient_employee_id=str(notification.recipient), priority=notification.priority.value, title=notification.title, context_kind=notification.context.kind.value, primary_id=notification.context.primary_id, secondary_id=notification.context.secondary_id, reason_code=notification.context.reason_code, level=notification.context.level, relative_link=notification.relative_link, source_job_id=str(notification.source_job_id), created_at=notification.created_at).on_conflict_do_nothing(index_elements=["tenant_id", "source_job_id"]).returning(InAppNotificationRow.notification_id))
+            result = await session.execute(
+                insert(InAppNotificationRow)
+                .values(
+                    tenant_id=str(notification.tenant_id),
+                    notification_id=str(notification.notification_id),
+                    recipient_employee_id=str(notification.recipient),
+                    priority=notification.priority.value,
+                    title=notification.title,
+                    context_kind=notification.context.kind.value,
+                    primary_id=notification.context.primary_id,
+                    secondary_id=notification.context.secondary_id,
+                    reason_code=notification.context.reason_code,
+                    level=notification.context.level,
+                    relative_link=notification.relative_link,
+                    source_job_id=str(notification.source_job_id),
+                    created_at=notification.created_at,
+                )
+                .on_conflict_do_nothing(index_elements=["tenant_id", "source_job_id"])
+                .returning(InAppNotificationRow.notification_id)
+            )
             created = result.scalar_one_or_none() is not None
             await session.commit()
             return created

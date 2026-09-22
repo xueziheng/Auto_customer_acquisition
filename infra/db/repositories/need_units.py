@@ -8,11 +8,12 @@ from typing import Any
 
 from pydantic import BaseModel
 from pydantic import ValidationError as SchemaError
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.demand.errors import NeedUnitUnavailableError
 from domains.demand.schemas import (
+    NeedCatalogEventLocator,
     NeedQuoteFacts,
     NeedUnitConfirmationView,
     NeedUnitStoredConfirmation,
@@ -24,7 +25,7 @@ from infra.db.tables import (
     ValidatedNeedRow,
 )
 from shared.errors import TenantIsolationViolation, ValidationError
-from shared.schemas.identifiers import TenantId, ValidatedNeedId, new_id
+from shared.schemas.identifiers import NeedClusterId, TenantId, ValidatedNeedId, new_id
 from shared.schemas.provenance import FactualField
 
 _audit = logging.getLogger("infra.db.audit")
@@ -133,6 +134,28 @@ class NeedUnitRepositoryImpl(TenantScopedRepository):
             )
         ).scalar_one_or_none()
         return _facts(row) if row else None
+
+    async def read_event_locator(
+        self, tenant_id: TenantId, need_id: ValidatedNeedId
+    ) -> NeedCatalogEventLocator | None:
+        """租户过滤后仅选目录事件定位列，不读取任何事实 JSON。"""
+        self._tenant(tenant_id)
+        row = (
+            await self._session.execute(
+                select(ValidatedNeedRow.need_id, ValidatedNeedRow.cluster_id).where(
+                    ValidatedNeedRow.tenant_id == self._tenant_id,
+                    ValidatedNeedRow.need_id == need_id,
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        return NeedCatalogEventLocator(
+            need_id=ValidatedNeedId(row.need_id),
+            cluster_id=(
+                NeedClusterId(row.cluster_id) if row.cluster_id is not None else None
+            ),
+        )
 
     def _view(self, row: NeedUnitConfirmationRow) -> NeedUnitConfirmationView:
         """不可变payload必须与索引/外键列完全一致。"""

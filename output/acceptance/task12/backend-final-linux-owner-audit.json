@@ -1,0 +1,47 @@
+[
+  {
+    "owner": "2ea6b4a4e32f429192c2d1926a2ebfc1",
+    "initial_code": 0,
+    "initial_cleanup_verified": true,
+    "matching_pids": [],
+    "containers": [],
+    "networks": [],
+    "open_ports": []
+  },
+  {
+    "owner": "d0b5ce050dfb49068cb7c12326dc3c2d",
+    "initial_code": 2,
+    "initial_cleanup_verified": false,
+    "matching_pids": [],
+    "containers": [],
+    "networks": [],
+    "open_ports": []
+  },
+  {
+    "owner": "71444c9b56ec4520851977e680645a54",
+    "initial_code": 2,
+    "initial_cleanup_verified": false,
+    "matching_pids": [],
+    "containers": [],
+    "networks": [],
+    "open_ports": []
+  },
+  {
+    "owner": "a0e90015d1ee4d7e9f857e1e6c9ac9c7",
+    "initial_code": 0,
+    "initial_cleanup_verified": true,
+    "matching_pids": [],
+    "containers": [],
+    "networks": [],
+    "open_ports": []
+  },
+  {
+    "owner": "f9aa1aec503442a08e00d81fc8ea5801",
+    "initial_code": 0,
+    "initial_cleanup_verified": true,
+    "matching_pids": [],
+    "containers": [],
+    "networks": [],
+    "open_ports": []
+  }
+]

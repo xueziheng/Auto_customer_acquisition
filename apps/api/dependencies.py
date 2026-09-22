@@ -10,8 +10,10 @@ from typing import Annotated, Protocol, runtime_checkable
 from fastapi import Depends, Header, Request
 
 from agent_runtime.trade_manager import TradeManagerAgent
+from apps.composition_support.email_inbound import InboundComposition
 from artifact_store.store import RawArtifactKind, RawArtifactMeta
 from domains.approvals.service import ApprovalService
+from domains.assistant.service import AssistantService, ModelConfigurationService
 from domains.commitments.service import CommitmentService
 from domains.compliance.service import ComplianceService
 from domains.conversations.service import ConversationService
@@ -50,7 +52,7 @@ from domains.outreach.permissions import (
     ScopeLevel as OutreachScopeLevel,
 )
 from domains.outreach.service import OutreachService
-from domains.products.service import ProductService
+from domains.products.service import CatalogProposalService, ProductService
 from domains.prospecting.service import ProspectingService
 from domains.sending_identity.permissions import (
     Actor as SendingIdentityActor,
@@ -79,16 +81,19 @@ from shared.schemas.identifiers import (
     ValidatedNeedId,
     WorkUploadId,
 )
+from shared.schemas.runtime_capabilities import RuntimeCapability
 from tool_gateway.handlers.email_send import (
     DeliveryMaterialProvider,
     UnsubscribeLinkProvider,
 )
+from tool_gateway.handlers.inbox_evidence import ToolGatewayInboxEvidenceReader
 from tool_gateway.pipeline import ToolCallContext, ToolCallResult
 from tool_gateway.provider_readiness import (
     ProviderReadinessActor,
     ProviderReadinessPermission,
     ProviderReadinessService,
 )
+from workflows.catalog_product_proposal.application import CatalogProductApplication
 from workflows.email_feedback.unsubscribe import UnsubscribeService
 from workflows.employee_work_intake.schemas import (
     ExtractionPayload,
@@ -98,6 +103,7 @@ from workflows.employee_work_intake.schemas import (
 )
 from workflows.engine.audit import RunAuditService
 from workflows.engine.runner import WorkflowEngine
+from workflows.reply_qualification.questions import ReplySuggestionApplication
 from workflows.sourcing_case.application import (
     SourcingAdmissionApplication,
     SourcingCaseApplication,
@@ -240,6 +246,12 @@ class WorkUploadApplicationService(Protocol):
     ) -> WorkExtractionView: ...
 
 
+class ApiOwnedResource(Protocol):
+    """进程自有资源的关闭端口；直接装配调用者负责退出时调用。"""
+
+    async def aclose(self) -> None: ...
+
+
 @dataclass(frozen=True)
 class ConfiguredApiDependencies:
     """完整且已配置的 API runtime 依赖。
@@ -269,6 +281,8 @@ class ConfiguredApiDependencies:
     employee_lookup_actor: EmployeeActor
     provider_readiness: ProviderReadinessService
     provider_readiness_actor: ProviderReadinessActor
+    assistant: AssistantService | None = None
+    model_configuration: ModelConfigurationService | None = None
     prospecting: ProspectingService | None = None
     demand_radar: DemandRadarService | None = None
     directives: DirectiveService | None = None
@@ -276,7 +290,9 @@ class ConfiguredApiDependencies:
     approvals: ApprovalService | None = None
     organization: OrganizationService | None = None
     compliance: ComplianceService | None = None
+    inbox_evidence: ToolGatewayInboxEvidenceReader | None = None
     conversations: ConversationService | None = None
+    reply_suggestions: ReplySuggestionApplication | None = None
     commitments: CommitmentService | None = None
     costing: CostingService | None = None
     work_uploads: WorkUploadApplicationService | None = None
@@ -289,6 +305,12 @@ class ConfiguredApiDependencies:
     sourcing_application: SourcingCaseApplication | None = None
     sourcing_admission_application: SourcingAdmissionApplication | None = None
     products: ProductService | None = None
+    catalog_products: CatalogProposalService | None = None
+    catalog_product_application: CatalogProductApplication | None = None
+    email_inbound: InboundComposition | None = None
+    runtime_capabilities: tuple[RuntimeCapability, ...] = ()
+    model_lifecycle: ApiOwnedResource | None = None
+    object_store_lifecycle: ApiOwnedResource | None = None
     configured: bool = True
 
     def __post_init__(self) -> None:

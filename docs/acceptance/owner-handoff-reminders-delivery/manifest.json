@@ -1,0 +1,76 @@
+{
+  "source_head": "b52f833244560e7e22d18b562519a2120d2f277a",
+  "records": [
+    {
+      "source": ".superpowers/sdd/2026-09-08-owner-handoff-reminders/final-review-context.md",
+      "archive": "final-review-context.md",
+      "sha256": "e087cfafe2341b496fc41f9e8c34c566aae91145c692c04f0d1834f490daba4a"
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-08-owner-handoff-reminders/final-review.md",
+      "archive": "final-review.md",
+      "sha256": "eaa7b14f9a2c439494969bcd2616871c1c85cc84d9ebf8146aaa0eade4461fdc"
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-08-owner-handoff-reminders/progress.md",
+      "archive": "progress.md",
+      "sha256": "edf99bb07cf80a3437acb4bbabf5e2bf0eaaed10a5e9b3cdf106436d6eb95064"
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-08-owner-handoff-reminders/review-context.md",
+      "archive": "review-context.md",
+      "sha256": "85e492f06a7412ceed143e79932de5e915de852b945b49b264b2e56312f85b01"
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-08-owner-handoff-reminders/reviewer_lock_probe.py",
+      "archive": "reviewer_lock_probe.py",
+      "sha256": "1c613567920b3a5f303e25126f62599d4fd9fcaa939c8e4cd01f29bff9d4dfa9"
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-08-owner-handoff-reminders/run_owned_tests.py",
+      "archive": "run_owned_tests.py",
+      "sha256": "8c3515ea7c0e5b29ff82c85626abd870e3497368d3e1cc2f2cb54fc1d3f89968"
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-08-owner-handoff-reminders/task-1-brief.md",
+      "archive": "task-1-brief.md",
+      "sha256": "ae1d6c37e89c99e5ff4f522973ab5c5327db6751349fed3aa97379c1231c5ebb"
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-08-owner-handoff-reminders/task-1-files.txt",
+      "archive": "task-1-files.txt",
+      "sha256": "da597a7b1b7437f2fb30362306e7ee331ea629060da1151d18b460af4315c374"
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-08-owner-handoff-reminders/task-1-fix-1-review.md",
+      "archive": "task-1-fix-1-review.md",
+      "sha256": "6e2780732e0e190b52211a1954b1b7e748ecde724db437804b44f78bf18860eb"
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-08-owner-handoff-reminders/task-1-report.md",
+      "archive": "task-1-report.md",
+      "sha256": "e5af40737b2c2c2aa9ff700913a90c29776de061ea6139f711fc0d25097277af"
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-08-owner-handoff-reminders/task-1-review.md",
+      "archive": "task-1-review.md",
+      "sha256": "d9c112bda2de9beb0272ae688f7eace98a7df74c9164f95abb16d986518406b1"
+    }
+  ],
+  "diff_ranges": [
+    {
+      "base": "e6e08aac170670eff93d4f73188cb16672103568",
+      "head": "acd89d23ca289f92bdbe5a280cbdf70fb05384f0"
+    },
+    {
+      "base": "acd89d23ca289f92bdbe5a280cbdf70fb05384f0",
+      "head": "b52f833244560e7e22d18b562519a2120d2f277a"
+    },
+    {
+      "base": "e6b2446909f435ac6dd0250d992555f2c764a741",
+      "head": "b52f833244560e7e22d18b562519a2120d2f277a"
+    }
+  ],
+  "reconstruct": "git diff -U10 BASE HEAD; git log --oneline BASE..HEAD",
+  "ruling_count": 11
+}

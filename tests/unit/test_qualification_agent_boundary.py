@@ -513,7 +513,7 @@ async def test_port_receives_only_subject_and_body_without_identifiers() -> None
 
 def test_need_field_vocabulary_matches_demand_factual_contract() -> None:
     """P3-3：agent 的 NEED_FIELD_NAMES 必须与 domains/demand ValidatedNeed 的
-    FactualField 业务字段集一致（测试侧 introspection，生产不 import 域内部）。"""
+    模型可提取 FactualField 字段集一致；typed unit 与布尔复购事实除外。"""
     demand_models = importlib.import_module("domains.demand.models")
     hints = typing.get_type_hints(demand_models.ValidatedNeed)
     factual: set[str] = set()
@@ -525,9 +525,10 @@ def test_need_field_vocabulary_matches_demand_factual_contract() -> None:
             factual.add(name)
     from agent_runtime.qualification_agent.agent import NEED_FIELD_NAMES
 
-    assert "unit" in factual
-    assert "unit" not in NEED_FIELD_NAMES
-    assert NEED_FIELD_NAMES == frozenset(factual - {"unit"})
+    non_model_extractable = {"unit", "recurring_requirement"}
+    assert non_model_extractable <= factual
+    assert NEED_FIELD_NAMES.isdisjoint(non_model_extractable)
+    assert NEED_FIELD_NAMES == frozenset(factual - non_model_extractable)
 
 
 async def test_model_unit_candidate_cannot_enter_need_changeset() -> None:
@@ -544,6 +545,66 @@ async def test_model_unit_candidate_cannot_enter_need_changeset() -> None:
     assert result.candidate_fields == ()
     changeset = await agent.run(_task(message), None)
     assert all(change.get("operation") != "update_need_fields" for change in changeset.changes)
+
+
+async def test_model_recurring_requirement_candidate_cannot_enter_need_changeset() -> None:
+    """逐字复购候选被单独丢弃，同批合法字段仍必须保留。"""
+    recurring_quote = "We order these hinges every month."
+    quantity_quote = "500 pieces"
+    message = {
+        "message_id": "msg_recurring_requirement_boundary",
+        "subject": "Recurring order",
+        "body": f"{recurring_quote} We need {quantity_quote}.",
+    }
+    agent = _agent(
+        _FakePort(
+            [
+                json.dumps(
+                    {
+                        "category": "provides_specification",
+                        "candidate_fields": [
+                            {
+                                "field": "recurring_requirement",
+                                "value": "true",
+                                "quote": recurring_quote,
+                            },
+                            {
+                                "field": "quantity",
+                                "value": "500",
+                                "quote": quantity_quote,
+                            },
+                        ],
+                    }
+                )
+            ]
+        )
+    )
+
+    result = await agent.classify(message=message)
+    assert [
+        (candidate.field, candidate.value, candidate.quote)
+        for candidate in result.candidate_fields
+    ] == [("quantity", "500", quantity_quote)]
+
+    changeset = await agent.run(_task(message), None)
+    fields_changes = [
+        change
+        for change in changeset.changes
+        if change.get("operation") == "update_need_fields"
+    ]
+    assert len(fields_changes) == 1
+    assert fields_changes[0]["payload"]["fields"] == [
+        {
+            "field": "quantity",
+            "value": "500",
+            "quote": quantity_quote,
+        }
+    ]
+    assert all(
+        item["field"] != "recurring_requirement"
+        for change in fields_changes
+        for item in change["payload"]["fields"]
+    )
 
 
 def test_agent_module_imports_only_allowed_layers() -> None:

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 /* global CustomEvent, window */
-import { computed, inject, onMounted, ref } from "vue";
+import { computed, inject, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import { apiClient, createApiClient } from "../api/client";
+import { useQuoteRequestScope } from "./costing-quotes/quote-request-scope";
 import type { components } from "../api/api";
 
 type ApiClient = ReturnType<typeof createApiClient>;
@@ -19,6 +20,17 @@ const listError = ref<string | null>(null);
 const actionError = ref<string | null>(null);
 const writeLock = ref(false);
 let listVersion = 0;
+
+const gate = useQuoteRequestScope(client, () => [router.currentRoute.value.fullPath], () => {
+  notifications.value = []; selectedId.value = null; writeLock.value = false;
+  listError.value = null; actionError.value = null; listVersion++;
+  globalThis.queueMicrotask(() => void loadNotifications());
+});
+watch(() => router.currentRoute.value.fullPath, () => {
+  notifications.value = []; selectedId.value = null; actionError.value = null; writeLock.value = false;
+  void loadNotifications();
+}, { flush: "sync" });
+watch(selectedId, () => { actionError.value = null; });
 
 const priorityLabels: Record<string, { icon: string; label: string }> = {
   urgent: { icon: "●", label: "紧急" },
@@ -57,29 +69,22 @@ function kindLabel(item: InAppNotificationView): string {
 }
 
 async function loadNotifications(): Promise<void> {
+  const op = gate.begin("list"); if (!op?.valid()) return;
   const version = ++listVersion;
-  listLoading.value = true;
-  listError.value = null;
-  const { data, response } = await client.GET("/notifications", {
-    params: { query: { limit: 100 } },
-  });
-  if (version !== listVersion) return;
-  listLoading.value = false;
-  if (response.status === 403) {
-    listError.value = "当前无法访问通知";
-    return;
-  }
-  if (response.status !== 200) {
-    listError.value = "通知加载失败，请刷新后重试";
-    return;
-  }
-  notifications.value = data ?? [];
-  if (
-    selectedId.value !== null &&
-    !notifications.value.some((item) => item.notification_id === selectedId.value)
-  ) {
-    selectedId.value = null;
-  }
+  listLoading.value = true; listError.value = null;
+  try {
+    const { data, response } = await client.GET("/notifications", { params: { query: { limit: 100 } }, signal: op.signal });
+    if (!op.valid() || version !== listVersion) return;
+    if (response.status !== 200 || !data) {
+      notifications.value = []; selectedId.value = null;
+      listError.value = response.status === 403 ? "当前无法访问通知" : "通知加载失败，请刷新后重试";
+      return;
+    }
+    notifications.value = data;
+    if (!data.some(item => item.notification_id === selectedId.value)) selectedId.value = null;
+  } catch {
+    if (op.valid()) { notifications.value = []; selectedId.value = null; listError.value = "通知加载失败，请刷新后重试"; }
+  } finally { if (op.valid() && version === listVersion) listLoading.value = false; }
 }
 
 const selectedNotification = computed(() =>
@@ -87,38 +92,24 @@ const selectedNotification = computed(() =>
 );
 
 async function markRead(): Promise<void> {
-  if (!selectedNotification.value || writeLock.value) return; // 同一 item 写锁
   const target = selectedNotification.value;
-  writeLock.value = true;
-  actionError.value = null;
-  const { data, response } = await client.POST(
-    "/notifications/{notification_id}/read",
-    {
-      params: { path: { notification_id: target.notification_id } },
-    },
-  );
-  writeLock.value = false;
-  if (response.status === 200) {
-    // 通知已变化：通知顶部徽标应重新拉取计数
-    window.dispatchEvent(new CustomEvent("tradeos:notifications-changed"));
-    // 接受后端返回 DTO；只允许 read_at null→datetime 的前进（单调）
-    const updated = data;
-    if (updated) {
-      const index = notifications.value.findIndex(
-        (item) => item.notification_id === updated.notification_id,
-      );
-      if (index >= 0) {
-        const previous = notifications.value[index];
-        if (previous.read_at === null && updated.read_at !== null) {
-          notifications.value = notifications.value.map((item) =>
-            item.notification_id === updated.notification_id ? updated : item,
-          );
-        }
-      }
+  if (!target || writeLock.value) return;
+  const op = gate.begin("write"); if (!op?.valid()) return;
+  writeLock.value = true; actionError.value = null;
+  try {
+    const { data, response } = await client.POST("/notifications/{notification_id}/read", {
+      params: { path: { notification_id: target.notification_id } }, signal: op.signal,
+    });
+    if (!op.valid() || selectedId.value !== target.notification_id) return;
+    if (response.status === 200 && data?.notification_id === target.notification_id) {
+      if (data.read_at !== null) notifications.value = notifications.value.map(item => item.notification_id === target.notification_id ? data : item);
+      window.dispatchEvent(new CustomEvent("tradeos:notifications-changed"));
+    } else {
+      if ([401,403,404].includes(response.status)) { notifications.value = []; selectedId.value = null; }
+      actionError.value = "无法读取或更新该通知";
     }
-    return;
-  }
-  actionError.value = "无法读取或更新该通知";
+  } catch { if (op.valid() && selectedId.value === target.notification_id) actionError.value = "结果待核对，请刷新通知"; }
+  finally { if (op.valid()) writeLock.value = false; }
 }
 
 const unreadCount = computed(
@@ -131,14 +122,30 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="shell">
+  <div class="shell notification-shell">
     <div class="page-head">
       <h1>通知中心</h1>
       <span class="meta">仅显示本人通知 · {{ unreadCount }} 未读</span>
     </div>
-    <div v-if="listLoading" class="state" role="status">正在加载通知…</div>
-    <div v-else-if="listError" class="state" role="alert">{{ listError }}</div>
-    <section v-else class="inbox" aria-label="通知列表">
+    <div
+      v-if="listLoading"
+      class="state"
+      role="status"
+    >
+      正在加载通知…
+    </div>
+    <div
+      v-else-if="listError"
+      class="state"
+      role="alert"
+    >
+      {{ listError }}
+    </div>
+    <section
+      v-else
+      class="inbox"
+      aria-label="通知列表"
+    >
       <div class="ledger">
         <div class="ledger-head">
           <span>通知</span>
@@ -156,21 +163,30 @@ onMounted(() => {
             @keydown.enter="selectedId = item.notification_id"
           >
             <div class="title">
-              <span class="prio" :class="item.priority">
+              <span
+                class="prio"
+                :class="item.priority"
+              >
                 {{ priorityOf(item).icon }} {{ priorityOf(item).label }}
               </span>
               <span>{{ item.title }}</span>
             </div>
             <div class="sub">
               {{ item.notification_id }} · {{ item.created_at }} ·
-              <span class="read-state" :class="item.read_at === null ? 'unread-tag' : 'read-tag'">
+              <span
+                class="read-state"
+                :class="item.read_at === null ? 'unread-tag' : 'read-tag'"
+              >
                 {{ item.read_at === null ? "未读" : "已读" }}
               </span>
             </div>
           </li>
         </ol>
       </div>
-      <div class="detail" aria-label="通知详情">
+      <div
+        class="detail"
+        aria-label="通知详情"
+      >
         <template v-if="selectedNotification">
           <h2>{{ selectedNotification.title }}</h2>
           <dl class="kv">
@@ -178,7 +194,10 @@ onMounted(() => {
             <dd>{{ kindLabel(selectedNotification) }}（{{ selectedNotification.context.kind }}）</dd>
             <dt>优先级</dt>
             <dd>
-              <span class="prio" :class="selectedNotification.priority">
+              <span
+                class="prio"
+                :class="selectedNotification.priority"
+              >
                 {{ priorityOf(selectedNotification).icon }}
                 {{ priorityOf(selectedNotification).label }}
               </span>
@@ -186,7 +205,10 @@ onMounted(() => {
             <dt>发生时间</dt><dd>{{ selectedNotification.created_at }}</dd>
             <dt>已读</dt>
             <dd>
-              <span class="read-state" :class="selectedNotification.read_at === null ? 'unread-tag' : 'read-tag'">
+              <span
+                class="read-state"
+                :class="selectedNotification.read_at === null ? 'unread-tag' : 'read-tag'"
+              >
                 {{ selectedNotification.read_at === null ? "未读" : "已读" }}
               </span>
             </dd>
@@ -199,20 +221,36 @@ onMounted(() => {
             >
               前往处理
             </RouterLink>
-            <button :disabled="writeLock" @click="markRead">标记为已读</button>
+            <button
+              :disabled="writeLock"
+              @click="markRead"
+            >
+              标记为已读
+            </button>
           </div>
-          <div v-if="actionError" class="safe-banner" role="alert">
+          <div
+            v-if="actionError"
+            class="safe-banner"
+            role="alert"
+          >
             <span aria-hidden="true">⚠</span>
             <div>{{ actionError }}</div>
           </div>
         </template>
-        <div v-else class="empty-detail">请选择一条通知</div>
+        <div
+          v-else
+          class="empty-detail"
+        >
+          请选择一条通知
+        </div>
       </div>
     </section>
   </div>
 </template>
 
 <style scoped>
+.notification-shell { overflow-y: auto; }
+
 .state {
   color: var(--text-secondary);
   padding: var(--space4) 0;
@@ -354,4 +392,5 @@ onMounted(() => {
     width: 340px;
   }
 }
+@media(max-width:700px) { .inbox { flex-direction:column; overflow-y:auto; } .ledger { width:100% !important; min-height:200px; } .detail { flex: none; overflow: visible; } .actions { flex-wrap:wrap; } }
 </style>

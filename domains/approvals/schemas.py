@@ -41,7 +41,9 @@ class ApprovalFactView(QuoteDTO):
     expires_at: QuoteTime
     expires_at_limit: QuoteTime | None
     request_hash: FactHash | None
-    contract_namespace: Literal["quote-approval-v1"] | None
+    contract_namespace: Literal[
+        "quote-approval-v1", "catalog-policy-v1", "catalog-cultivation-v1"
+    ] | None
     decided_by_employee: EmployeeId | None
     decided_at: QuoteTime | None
     decision_note: str | None
@@ -80,6 +82,16 @@ class ApprovalReaderIdentity(QuoteDTO):
     role: Literal[
         "boss", "manager", "sales", "sourcing", "product", "finance", "viewer"
     ]
+
+
+class CatalogApprovalLinkState(QuoteDTO):
+    """Products 内部视图可联结的最小 Catalog 审批状态。"""
+
+    approval_id: ApprovalId
+    approval_type: Literal[
+        "catalog_proposal_policy_change", "catalog_product_cultivation"
+    ]
+    state: ApprovalState
 
 
 @dataclass(frozen=True)

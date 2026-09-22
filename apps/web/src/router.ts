@@ -49,6 +49,11 @@ const router = createRouter({
       component: () => import("./views/crm/HandoffQueue.vue"),
     },
     {
+      path: "/crm/handoffs/:handoffId",
+      name: "crm-handoff-detail",
+      component: () => import("./views/crm/HandoffQueue.vue"),
+    },
+    {
       path: "/crm/outreach",
       name: "crm-outreach",
       component: () => import("./views/OutreachWorkbench.vue"),

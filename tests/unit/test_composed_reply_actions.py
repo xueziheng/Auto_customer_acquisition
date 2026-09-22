@@ -162,6 +162,13 @@ class _Demand:
     def __init__(self) -> None:
         self.updates: dict[tuple[str, str], dict[str, object]] = {}
 
+    async def get_need(self, tenant_id, need_id):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            need_id=need_id, account_id=ACCOUNT_ID, product_category="hinges"
+        )
+
     async def update_need_fields(
         self,
         tenant_id,
@@ -188,9 +195,7 @@ class _PromotingDemand(_Demand):
         self.promotions = 0
         self.reply_evidence = []
 
-    async def record_customer_reply_evidence(
-        self, tenant_id, claim
-    ) -> None:
+    async def record_customer_reply_evidence(self, tenant_id, claim) -> None:
         self.reply_evidence.append((tenant_id, claim))
 
     async def promote_to_validated(
@@ -248,9 +253,7 @@ class _CrashWindowBusiness(_Business):
         module = _module()
         assert tenant_id == TENANT and context == CONTEXT
         return module.ReplyBusinessFacts(
-            need_id=(
-                "need_promoted_reply_1" if self._demand.promotions else None
-            ),
+            need_id=("need_promoted_reply_1" if self._demand.promotions else None),
             hypothesis_id="hyp_promoted_reply_1",
             opportunity_id=None,
             account_name="Acme Imports",
@@ -342,9 +345,7 @@ class _Outreach:
         assert actor.scope.allowed_sending_identity_ids == frozenset(
             {SENDING_IDENTITY_ID}
         )
-        self.bounces.setdefault(
-            provider_event_id, _FeedbackEffect(target, occurred_at)
-        )
+        self.bounces.setdefault(provider_event_id, _FeedbackEffect(target, occurred_at))
 
     async def apply_complaint(
         self, tenant_id, target, provider_event_id, occurred_at, *, actor
@@ -367,9 +368,7 @@ class _SendingIdentities:
     ) -> bool:
         assert tenant_id == TENANT
         assert identity_id == SENDING_IDENTITY_ID
-        assert actor.scope.allowed_identity_ids == frozenset(
-            {SENDING_IDENTITY_ID}
-        )
+        assert actor.scope.allowed_identity_ids == frozenset({SENDING_IDENTITY_ID})
         key = str(event.dedup_key)
         created = key not in self.events
         self.events.setdefault(key, event)
@@ -400,9 +399,7 @@ async def _handoff_packet_for_quotes(body: str, quotes: tuple[str, ...]):
         sending_identities=_SendingIdentities(),
         conversations=_ConversationActions(),
     )
-    await actions.request_handoff(
-        TENANT, CONTEXT, f"reply:handoff:{MESSAGE_ID}"
-    )
+    await actions.request_handoff(TENANT, CONTEXT, f"reply:handoff:{MESSAGE_ID}")
     return next(iter(opportunities.requests.values()))
 
 
@@ -426,18 +423,11 @@ async def test_composed_actions_apply_evidence_and_handoff_idempotently() -> Non
         await actions.extract_need_fields(
             TENANT, CONTEXT, f"reply:extract_need_fields:{MESSAGE_ID}"
         )
-        await actions.request_handoff(
-            TENANT, CONTEXT, f"reply:handoff:{MESSAGE_ID}"
-        )
+        await actions.request_handoff(TENANT, CONTEXT, f"reply:handoff:{MESSAGE_ID}")
 
     assert len(demand.updates) == 1
     fields = next(iter(demand.updates.values()))
     assert fields == {
-        "product_category": {
-            "value": "hinges",
-            "quote": "We need 5000 stainless steel hinges.",
-            "extracted_by": "reply-model-v3",
-        },
         "quantity": {
             "value": "5000",
             "quote": "We need 5000 stainless steel hinges.",
@@ -624,9 +614,7 @@ async def test_handoff_prefers_validated_quote_over_long_message_body() -> None:
         conversations=_ConversationActions(),
     )
 
-    await actions.request_handoff(
-        TENANT, CONTEXT, f"reply:handoff:{MESSAGE_ID}"
-    )
+    await actions.request_handoff(TENANT, CONTEXT, f"reply:handoff:{MESSAGE_ID}")
 
     packet = next(iter(opportunities.requests.values()))
     assert packet.customer_verbatim == quote
@@ -650,16 +638,16 @@ async def test_handoff_candidate_quote_preserves_leading_whitespace() -> None:
     assert packet.customer_verbatim
 
 
-async def test_handoff_rejects_overlong_candidate_instead_of_truncating_or_skipping() -> None:
+async def test_handoff_rejects_overlong_candidate_instead_of_truncating_or_skipping() -> (
+    None
+):
     """耐久边界若出现超长候选，handoff 防御层也必须 fail-closed。"""
     blank_window_quote = f"{' ' * 501}must not win"
     second_quote = "  Use the second exact quote.   "
     body = f"Header{blank_window_quote}Middle{second_quote}Footer"
 
     with pytest.raises(ValidationError, match="逐字证据超长"):
-        await _handoff_packet_for_quotes(
-            body, (blank_window_quote, second_quote)
-        )
+        await _handoff_packet_for_quotes(body, (blank_window_quote, second_quote))
 
 
 async def test_composed_actions_fail_closed_without_business_mapping() -> None:
@@ -677,9 +665,7 @@ async def test_composed_actions_fail_closed_without_business_mapping() -> None:
     )
 
     with pytest.raises(ValidationError, match="业务关联不存在"):
-        await actions.request_handoff(
-            TENANT, CONTEXT, f"reply:handoff:{MESSAGE_ID}"
-        )
+        await actions.request_handoff(TENANT, CONTEXT, f"reply:handoff:{MESSAGE_ID}")
 
 
 @pytest.mark.parametrize(
@@ -709,9 +695,7 @@ async def test_handoff_categories_do_not_require_extracted_fields(
         conversations=_ConversationActions(),
     )
 
-    await actions.request_handoff(
-        TENANT, CONTEXT, f"reply:handoff:{MESSAGE_ID}"
-    )
+    await actions.request_handoff(TENANT, CONTEXT, f"reply:handoff:{MESSAGE_ID}")
 
     packet = next(iter(opportunities.requests.values()))
     assert packet.trigger == trigger
@@ -791,9 +775,7 @@ async def test_composed_feedback_actions_reject_corrupt_correlation() -> None:
     )
 
     with pytest.raises(ValidationError, match="关联不匹配"):
-        await actions.route_bounce(
-            TENANT, CONTEXT, f"reply:route_bounce:{MESSAGE_ID}"
-        )
+        await actions.route_bounce(TENANT, CONTEXT, f"reply:route_bounce:{MESSAGE_ID}")
 
 
 @pytest.mark.parametrize(

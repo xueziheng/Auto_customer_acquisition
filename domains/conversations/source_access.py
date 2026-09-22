@@ -18,3 +18,37 @@ def require_inbound_source_access(
         or message.direction != "inbound"
     ):
         raise QuoteEvidenceError("permission_denied")
+
+
+from typing import Literal
+
+from shared.errors import PermissionDenied
+
+
+def require_inbound_review_access(
+    tenant_id: TenantId, actor: QuoteEmployeeFact, *, action: Literal["read", "retry"]
+) -> None:
+    """当前active boss才能读取技术待核对与原位恢复；不需要或伪造Message。"""
+    if (
+        action not in {"read", "retry"}
+        or actor.tenant_id != tenant_id
+        or actor.is_active is not True
+        or actor.role != "boss"
+    ):
+        raise PermissionDenied("入站待核对权限拒绝")
+
+
+def require_reply_internal_access(
+    tenant_id: TenantId,
+    actor: QuoteEmployeeFact,
+    *,
+    action: Literal["next_questions", "qualify"],
+) -> None:
+    """回复建议/受托确认的独立内部action；当前阶段仅当前active boss，后续扩owner矩阵。"""
+    if (
+        action not in {"next_questions", "qualify"}
+        or actor.tenant_id != tenant_id
+        or actor.is_active is not True
+        or actor.role != "boss"
+    ):
+        raise PermissionDenied("回复内部操作权限拒绝")

@@ -559,3 +559,57 @@ def test_manual_case_mismatch_is_fixed_sanitized_409() -> None:
         "message": "当前状态不允许此操作",
     }
     assert "private" not in response.text
+
+
+def test_reconciliation_request_validation_is_safe_422_before_application() -> None:
+    from shared.errors import ValidationError
+
+    class Application:
+        calls = 0
+
+        async def reconcile_uncertain(self, *args, **kwargs):
+            self.calls += 1
+            raise ValidationError("不能泄露的业务细节")
+
+    app, _ = _app("boss")
+    application = Application()
+    app.dependency_overrides[get_api_dependencies] = lambda: SimpleNamespace(
+        sourcing=_Sourcing(), sourcing_application=application
+    )
+    payload = {
+        "reconciliation_id": "reconciliation-one",
+        "run_id": "run-one",
+        "request_key": "a" * 64,
+        "resolution": "count_as_consumed",
+        "reason": "人工确认已消耗",
+        "provider_usage_artifact_ref": "art-one",
+    }
+    path = f"/sourcing-cases/{CASE_ID}/reconcile-uncertain-request"
+    invalid = _request(app, "POST", path, headers=[("Idempotency-Key", "same-command")],
+                       json={**payload, "provider_usage_artifact_ref": {"unsafe": "private"}})
+    assert invalid.status_code == 422
+    assert invalid.json() == {"code": "http_error", "message": "请求未完成"}
+    assert application.calls == 0
+    valid = _request(app, "POST", path, headers=[("Idempotency-Key", "same-command")], json=payload)
+    assert valid.status_code == 400
+    assert valid.json() == {"code": "validation_error", "message": "请求参数无效"}
+    assert application.calls == 1
+    from pydantic import TypeAdapter
+
+    class RuntimeValidationApplication:
+        calls = 0
+
+        async def reconcile_uncertain(self, *args, **kwargs):
+            self.calls += 1
+            TypeAdapter(int).validate_python({"private": "runtime failure"})
+
+    runtime = RuntimeValidationApplication()
+    app.dependency_overrides[get_api_dependencies] = lambda: SimpleNamespace(
+        sourcing=_Sourcing(), sourcing_application=runtime
+    )
+    failed = _request(app, "POST", path, headers=[("Idempotency-Key", "runtime-command")], json=payload)
+    assert failed.status_code == 400
+    assert failed.json() == {"code": "validation_error", "message": "请求参数无效"}
+    assert runtime.calls == 1
+    responses = app.openapi()["paths"]["/sourcing-cases/{case_id}/reconcile-uncertain-request"]["post"]["responses"]
+    assert responses["422"]["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/ApiErrorResponse"}

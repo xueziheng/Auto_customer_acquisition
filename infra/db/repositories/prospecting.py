@@ -399,6 +399,38 @@ class ProspectContactRepositoryImpl(_TenantBound, ContactRepository):
         pair = (await self._session.execute(statement)).one_or_none()
         return _rows_to_point(*pair) if pair is not None else None
 
+    async def get_point_for_account(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        contact_point_id: ContactPointId,
+    ) -> ContactPoint | None:
+        self._require_tenant(tenant_id, "contact_point_account_get")
+        row = (
+            await self._session.execute(
+                select(ContactPointRow, ContactLegalBasisRow)
+                .join(
+                    ContactLegalBasisRow,
+                    (ContactLegalBasisRow.tenant_id == ContactPointRow.tenant_id)
+                    & (
+                        ContactLegalBasisRow.contact_point_id
+                        == ContactPointRow.contact_point_id
+                    ),
+                )
+                .join(
+                    ProspectContactRow,
+                    (ProspectContactRow.tenant_id == ContactPointRow.tenant_id)
+                    & (ProspectContactRow.contact_id == ContactPointRow.contact_id),
+                )
+                .where(
+                    ContactPointRow.tenant_id == str(tenant_id),
+                    ProspectContactRow.account_id == str(account_id),
+                    ContactPointRow.contact_point_id == str(contact_point_id),
+                )
+            )
+        ).one_or_none()
+        return None if row is None else _rows_to_point(row[0], row[1])
+
     async def get_contact_point(
         self, tenant_id: TenantId, contact_point_id: ContactPointId
     ) -> ContactPoint | None:

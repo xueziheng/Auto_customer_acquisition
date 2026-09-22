@@ -66,6 +66,7 @@ from workflows.reply_qualification.ports import (
     MessageContentReader,
     ReplyActionContext,
     ReplyActionPorts,
+    ReplyClassificationAccess,
 )
 
 _SYSTEM_ACTOR_ID = "system:reply-qualification"
@@ -112,11 +113,13 @@ class ClassifyStep:
         content_reader: MessageContentReader,
         input_guard: InputContentGuard,
         conversations: ConversationService,
+        classification_access: ReplyClassificationAccess | None = None,
     ) -> None:
         self._classifier = classifier
         self._content_reader = content_reader
         self._input_guard = input_guard
         self._conversations = conversations
+        self._classification_access = classification_access
 
     @staticmethod
     def _context(run: WorkflowRun) -> tuple[MessageId, OutboundMessageId | None]:
@@ -140,11 +143,18 @@ class ClassifyStep:
             # fail-closed：context 自报类别可被内部调用方伪造，且无 Provenance，
             # 绝不信任；预分类只允许来自 tenant-bound 持久化查询（后续切片）
             raise ValidationError("workflow context 不得携带自报类别")
+        access = self._classification_access
+        if access is not None:
+            if run.subject_ref != message_id:
+                raise ValidationError("回复流程消息绑定不一致")
+            await access.require(run.tenant_id, message_id, outbound_message_id)
         content = await self._content_reader.load(run.tenant_id, message_id)
         if content is None:
             raise ValidationError("回复消息原文不可读")
         # 硬边界 1：凭证/API key/token-like 文本绝不进模型——先过输入护栏
         self._input_guard.check(subject=content.subject, body=content.body)
+        if access is not None:
+            await access.require(run.tenant_id, message_id, outbound_message_id)
         result = await self._classifier.classify(
             message={
                 "message_id": str(message_id),
@@ -153,8 +163,37 @@ class ClassifyStep:
                 "body": content.body,
             }
         )
+        if result.rejected_candidates:
+            raise ValidationError("回复含不可验证候选，需人工核对")
+        reliable = content.evidence_segments if content.projected else (content.body,)
+        for candidate in result.candidate_fields:
+            if (
+                any(
+                    marker in candidate.quote
+                    for marker in (
+                        "[private reference omitted]",
+                        "[current expression boundary]",
+                    )
+                )
+                or reliable is None
+                or not any(
+                    source is not None
+                    and candidate.quote in source
+                    and (
+                        not content.projected
+                        or candidate.quote in (content.original_body or "")
+                    )
+                    for source in reliable
+                )
+            ):
+                raise ValidationError("回复字段缺少逐字原件证据")
         category = result.category
         classified_by = self._classifier.model
+        actor = (
+            await access.require(run.tenant_id, message_id, outbound_message_id)
+            if access is not None
+            else None
+        )
         actions = await self._conversations.record_classification(
             run.tenant_id,
             message_id,
@@ -166,6 +205,7 @@ class ClassifyStep:
                 for item in result.candidate_fields
             ),
             suppress_scope=result.suppress_scope,
+            **({"actor": actor} if actor is not None else {}),
         )
         classification = await self._conversations.get_classification(
             run.tenant_id, message_id
@@ -264,8 +304,7 @@ class ApplyActionsStep:
             "contact_point_id": "cp_",
         }
         if any(
-            not isinstance(value, str) or not value.strip()
-            for value in values.values()
+            not isinstance(value, str) or not value.strip() for value in values.values()
         ) or any(
             not str(values[name]).startswith(prefix)
             for name, prefix in prefixes.items()
@@ -273,9 +312,7 @@ class ApplyActionsStep:
             raise ValidationError("回复动作关联上下文无效")
         return ReplyActionContext(
             message_id=MessageId(str(values["message_id"])),
-            outbound_message_id=OutboundMessageId(
-                str(values["outbound_message_id"])
-            ),
+            outbound_message_id=OutboundMessageId(str(values["outbound_message_id"])),
             enrollment_id=EnrollmentId(str(values["enrollment_id"])),
             account_id=ProspectAccountId(str(values["account_id"])),
             contact_point_id=ContactPointId(str(values["contact_point_id"])),

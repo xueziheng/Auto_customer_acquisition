@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from shared.errors import PermissionDenied
+from shared.errors import PermissionDenied, ValidationError
 from shared.schemas.identifiers import (
     ApprovalId,
     ArtifactId,
@@ -18,6 +19,8 @@ from shared.schemas.identifiers import (
     TenantId,
     ToolCallId,
 )
+
+from .observability import RunObservation, WebCoreObservation
 
 DiscoveryLane = Literal["importer", "distributor", "ecommerce"]
 ResearchStopReason = Literal[
@@ -184,6 +187,7 @@ class RunDetailView(BaseModel):
     tool_calls: tuple[RunToolCallView, ...]
     artifacts: tuple[RunArtifactView, ...]
     approvals: tuple[RunApprovalView, ...]
+    observation: RunObservation | None = None
 
 
 @dataclass(frozen=True)
@@ -210,6 +214,10 @@ class RunAuditRepository(Protocol):
     async def get_run(
         self, tenant_id: TenantId, run_id: RunId
     ) -> RunDetailView | None: ...
+
+    async def get_observability(
+        self, tenant_id: TenantId, *, start: datetime, end: datetime, observed_at: datetime,
+    ) -> WebCoreObservation: ...
 
 
 class Phase1RunAuditAuthorizer:
@@ -238,9 +246,30 @@ class RunAuditService:
         self,
         repository: RunAuditRepository,
         authorizer: Phase1RunAuditAuthorizer,
+        *, now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._repository = repository
         self._authorizer = authorizer
+        self._now = now
+
+    async def get_observability(
+        self, tenant_id: TenantId, *, actor: RunAuditActor,
+        start: datetime | None = None, end: datetime | None = None,
+    ) -> WebCoreObservation:
+        """先授权再约束窗口，避免无权限调用进入租户统计读取。"""
+        self._authorizer.require_read(tenant_id, actor)
+        observed_at = self._now()
+        if (start is None) != (end is None):
+            raise ValidationError("观测窗口必须成对提供")
+        if start is None and end is None:
+            end, start = observed_at, observed_at - timedelta(days=7)
+        assert start is not None and end is not None
+        if (start.utcoffset() is None or end.utcoffset() is None
+            or not start < end <= observed_at or end - start > timedelta(days=31)):
+            raise ValidationError("观测窗口必须有时区、有效且不超过31天或当前时间")
+        return await self._repository.get_observability(
+            tenant_id, start=start, end=end, observed_at=observed_at,
+        )
 
     async def list_runs(
         self,

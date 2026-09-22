@@ -1,0 +1,114 @@
+{
+  "recorded_at": "2026-09-07T02:08:54.050477+00:00",
+  "status": "review_approved",
+  "source_commit": "02506e44b52392879ea7b8a5b350da435a9f827f",
+  "report_commit": "ab5eee46eaee6f0c4395cb08a64d4874658a8978",
+  "full_review_range": [
+    "ec801a87270503b92d3c70389cbcd4b92807dbb9",
+    "b2c64dbf42f2a4cdbade1df16eece8500749d4d1"
+  ],
+  "scoped_review_range": [
+    "21d3a3bb31f2419957668cb65f9eedce613686be",
+    "ab5eee46eaee6f0c4395cb08a64d4874658a8978"
+  ],
+  "entries": [
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/progress.md",
+      "target": "docs/acceptance/web-core-delivery/final-ledger.md",
+      "sha256": "1f3876737ba7453b13e897bcdaf01020e38c9f2428d3faf61dc7f95cef7a0823",
+      "bytes": 138813
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/final-review.md",
+      "target": "docs/acceptance/web-core-delivery/initial-final-review.md",
+      "sha256": "9088c3de7cb594cf014bc0784fdab1ec26794416243e6ac56d8134d79e1f8772",
+      "bytes": 20166
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/final-fix-review.md",
+      "target": "docs/acceptance/web-core-delivery/final-fix-review.md",
+      "sha256": "b758cdd384cf886ce61b89e46933eb65ae403899cce778350c2ceca90ef6de8d",
+      "bytes": 8538
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/final-fix-report.md",
+      "target": "docs/acceptance/web-core-delivery/final-fix-report.md",
+      "sha256": "767d4ae25fa05187a1eed5e18108d061028899765615312e61746c037b0c18d7",
+      "bytes": 12429
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/final-fix-brief.md",
+      "target": "docs/acceptance/web-core-delivery/final-fix-spec.md",
+      "sha256": "0d3772d41be888c5721d3daae1f9f167f85b78cfe125331a66290454f2a278f1",
+      "bytes": 5508
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/final-review-context.md",
+      "target": "docs/acceptance/web-core-delivery/final-review-context.md",
+      "sha256": "f23a1605da5bd17447f5bdfd65be9ea6fb88f9ee1dd5dcc813365060fbd63684",
+      "bytes": 8404
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/final-review-progress.md",
+      "target": "docs/acceptance/web-core-delivery/final-review-progress.md",
+      "sha256": "43188cb7e61965af92b66c684b3f34f39cc63daf98d517ee27bd05b076255cb4",
+      "bytes": 12961
+    }
+  ],
+  "safe_evidence": [
+    {
+      "path": "output/acceptance/final-fix-20260907/source-commit-verification.json",
+      "sha256": "2cdb591f6d8ecd76b843f8e9cc273b97b03a6bf1dc50e1ce502ed1e976c2be48",
+      "bytes": 734
+    },
+    {
+      "path": "output/acceptance/final-fix-20260907/e2e_runner.py",
+      "sha256": "e8687eebb9214c7c58ab0168259e9cccc8641dbf7df72228811bd8bfa76abad7",
+      "bytes": 623
+    },
+    {
+      "path": "output/acceptance/final-fix-20260907/integration-owner-cleanup.json",
+      "sha256": "a35ec4f539d1b66d01fcc40d825f6a3b83e7537938fbc0e17660c8e5debbb647",
+      "bytes": 958
+    },
+    {
+      "path": "output/acceptance/final-fix-20260907/source-sha.txt",
+      "sha256": "5cd4cefe66cb3ac47bb0847c07e255aa7d4ecccf076da369176c743589ef789d",
+      "bytes": 41
+    },
+    {
+      "path": "output/acceptance/final-fix-20260907/cleanup-verification.json",
+      "sha256": "c6a301f5069c48b37b1fba98e1978cf41b0457483a685e690f2f3f6ad39d5d0e",
+      "bytes": 557
+    },
+    {
+      "path": "output/acceptance/final-fix-20260907/static-gates.json",
+      "sha256": "6f31862f732557a112ffc79ce0164cafec06f1878ed6bd39d2057f343792004d",
+      "bytes": 2059
+    },
+    {
+      "path": "output/acceptance/final-fix-20260907/historical-output-paths.json",
+      "sha256": "7cea90563f165fe288c820f77c83085abdd00ae58ec898d3d1bf2b35eee6c036",
+      "bytes": 28415
+    },
+    {
+      "path": "output/acceptance/final-fix-20260907/tested-source-hashes.json",
+      "sha256": "98f758e0da02891ffdebfa010626d9b28d7f746a90acd3698227a893291e9c89",
+      "bytes": 1499
+    },
+    {
+      "path": "output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/cleanup.json",
+      "sha256": "c05dcc146c1a4e962896446402b7fef1af801864d3955654d98068f2f2ee2d90",
+      "bytes": 2586
+    },
+    {
+      "path": "output/acceptance/final-fix-20260907/e2e/5be45c31379045a798f96f93226841b5/proof.json",
+      "sha256": "36fdd3a25c38f6ab774c85d3df6e468335ac129043dfd81311d87f92618d99e5",
+      "bytes": 6355
+    }
+  ],
+  "ruling_containing_lines": 100,
+  "scratch_cleanup_target": ".superpowers/sdd/2026-09-05-web-first-completion",
+  "historical_archive_policy": "preserved_without_overwrite",
+  "local_only_new_artifacts": "原始eml、新截图、额外场景JSON不加入此最终清单；保留本地，不代表新增视觉验收。"
+}

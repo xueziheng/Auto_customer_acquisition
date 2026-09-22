@@ -5,8 +5,8 @@
 Phase 1 当前实现经 Tool Gateway 的**单封发送**、不确定结果的**只读搜索恢复**，
 以及 Gmail 的 **typed 投递反馈读取**：RFC 3464 DSN（hard/soft bounce）与
 RFC 5965 ARF 投诉（``multipart/report; report-type=feedback-report``，
-`Feedback-Type: abuse` 才产生 COMPLAINT 事实）。回复正文拉取、标签和
-DNS 检查不属于 Gmail，不能在文档、演示或 UI 中声称 Gmail 提供该能力。这个目录仍是其他
+`Feedback-Type: abuse` 才产生 COMPLAINT 事实）。新增独立 typed 正文读取与标签事实（ADR0026），只交技术候选；标签写入和
+DNS 检查不属于已实现 Gmail 能力。这个目录仍是其他
 Connector 的参考实现——写新 Connector 前先读这里。
 
 ## 密钥归属
@@ -78,5 +78,14 @@ fetch_feedback_page(alias, cursor, limit) -> EmailFeedbackPage
 ## Phase 1 范围
 
 单封人工批准/已批准 Campaign 边界内发送、确定性 header 搜索、DSN typed 读取、
-ARF 投诉 typed 读取、交付确定性错误分类。不做：回复正文 worker、标签、DNS 检查、
+ARF 投诉 typed 读取、交付确定性错误分类。不做：回复正文 worker、标签写入、DNS 检查、
 超过 30 天批量历史导入、自动重发、Gmail 之外的 Google 服务。
+
+## Task5a 入站正文
+
+GmailInboundReader使用独立gic1游标，profile锚定后固定bootstrap/history；预算和解析规则见ADR0026。
+只提取原值候选header，不查账户/发送事实、不写Message、不触发分类。原件只在Gateway内归档。
+ControlledGmailTransport外部场景是显式受控Provider seam，真实Gmail不默认启用；原feedback保持兼容。
+
+Task5b消费者只传耐久opaque cursor；初始化时间/after先保存再profile锚定，重启不得换新起点。
+只有原scheduler完整回复消费者已注册且持singleton才自动抓取；关联与Message入库不在Connector。

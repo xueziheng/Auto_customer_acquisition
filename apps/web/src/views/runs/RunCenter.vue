@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { RouterLink, useRoute } from "vue-router";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
+import WebCoreObservationPanel from "../../components/WebCoreObservationPanel.vue";
 import ResearchRunSummary from "../../components/ResearchRunSummary.vue";
 import { stopLabel } from "../../components/researchLabels";
 import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
@@ -16,6 +17,9 @@ const client = inject<ApiClient>("tradeos-api-client", apiClient);
 const route = useRoute();
 const runs = ref<RunSummary[]>([]);
 const detail = ref<RunDetail | null>(null);
+const observation = ref<components["schemas"]["WebCoreObservation"] | null>(null);
+const observationError = ref<string | null>(null);
+const observationLoading = ref(false);
 const selectedRunId = ref<string | null>(null);
 const statusFilter = ref("");
 const workflowFilter = ref("");
@@ -29,6 +33,7 @@ let detailRequestVersion = 0;
 const identityGate = useQuoteRequestScope(client, () => [], () => {
   listRequestVersion += 1; detailRequestVersion += 1;
   runs.value = []; detail.value = null; selectedRunId.value = null;
+  observation.value = null; observationError.value = null; observationLoading.value = false;
   listLoading.value = false; detailLoading.value = false; listError.value = null; detailError.value = null;
   statusFilter.value = ""; workflowFilter.value = "";
 });
@@ -62,10 +67,19 @@ const statusLabels: Readonly<Record<string, string>> = Object.freeze({
 });
 
 function safeError(status: number): string {
+  if (status === 401) return "登录身份已失效，请重新选择有效身份";
   if (status === 403) return "只有老板可以查看 Run 审计记录";
   if (status === 404) return "该 Run 已不存在或不属于当前租户";
   if (status === 503) return "Run 审计服务暂不可用";
   return "Run 审计记录读取失败，请稍后重试";
+}
+
+function revokeRead(status: number): void {
+  identityGate.invalidate(); listRequestVersion++; detailRequestVersion++;
+  runs.value = []; detail.value = null; selectedRunId.value = null;
+  observation.value = null; observationLoading.value = false;
+  listLoading.value = false; detailLoading.value = false;
+  observationError.value = safeError(status); listError.value = safeError(status); detailError.value = safeError(status);
 }
 
 function formatTime(value: string | null): string {
@@ -95,6 +109,7 @@ async function loadDetail(runId: string): Promise<void> {
     if (!op.valid() || requestVersion !== detailRequestVersion) return;
     if (result.response.status !== 200 || !result.data) {
       detail.value = null;
+      if ([401,403].includes(result.response.status)) revokeRead(result.response.status);
       detailError.value = safeError(result.response.status);
       return;
     }
@@ -121,6 +136,7 @@ async function loadRuns(): Promise<void> {
     if (!op.valid() || requestVersion !== listRequestVersion) return;
     if (result.response.status !== 200 || !result.data) {
       runs.value = [];
+      if ([401,403,404].includes(result.response.status)) revokeRead(result.response.status);
       listError.value = safeError(result.response.status);
       return;
     }
@@ -137,9 +153,29 @@ async function loadRuns(): Promise<void> {
   }
 }
 
+async function loadObservation(): Promise<void> {
+  const op = identityGate.begin("observation"); if (!op?.valid()) return;
+  observation.value = null; observationError.value = null; observationLoading.value = true;
+  try {
+    const result = await client.GET("/runs/observability", { signal: op.signal });
+    if (!op.valid()) return;
+    if (result.response.status !== 200 || !result.data || !Array.isArray(result.data.stages) || !result.data.handoffs) {
+      if ([401, 403].includes(result.response.status)) revokeRead(result.response.status);
+      observationError.value = safeError(result.response.status);
+      return;
+    }
+    observation.value = result.data;
+  } catch {
+    if (op.valid()) observationError.value = "无法连接观测服务";
+  } finally {
+    if (op.valid()) observationLoading.value = false;
+  }
+}
+
 async function refreshRuns(): Promise<void> {
   await Promise.all([
     loadRuns(),
+    loadObservation(),
     selectedRunId.value ? loadDetail(selectedRunId.value) : Promise.resolve(),
   ]);
 }
@@ -155,7 +191,7 @@ watch(() => route.query.run, (runId) => {
   else if (runs.value[0]) void loadDetail(runs.value[0].run_id);
 }, { immediate: true });
 
-onMounted(() => void loadRuns());
+onMounted(() => { void loadRuns(); void loadObservation(); });
 onBeforeUnmount(() => {
   listRequestVersion += 1;
   detailRequestVersion += 1;
@@ -196,11 +232,17 @@ onBeforeUnmount(() => {
       class="run-metrics"
       aria-label="Run 审计概览"
     >
-      <article><span>最近记录</span><strong>{{ runs.length }}</strong><p>按创建时间倒序，最多 50 条</p></article>
-      <article><span>进行中 / 等待</span><strong>{{ activeCount }}</strong><p>含等待人工与外部事件</p></article>
-      <article><span>失败 / 超时</span><strong>{{ failedCount }}</strong><p>错误只展示脱敏类别</p></article>
-      <article><span>已完成</span><strong>{{ completedCount }}</strong><p>状态机正常到达终态</p></article>
+      <article><span>最近记录</span><strong>{{ listLoading || listError ? "—" : runs.length }}</strong><p>按创建时间倒序，最多 50 条</p></article>
+      <article><span>进行中 / 等待</span><strong>{{ listLoading || listError ? "—" : activeCount }}</strong><p>含等待人工与外部事件</p></article>
+      <article><span>失败 / 超时</span><strong>{{ listLoading || listError ? "—" : failedCount }}</strong><p>错误只展示脱敏类别</p></article>
+      <article><span>已完成</span><strong>{{ listLoading || listError ? "—" : completedCount }}</strong><p>状态机正常到达终态</p></article>
     </section>
+
+    <WebCoreObservationPanel
+      :observation="observation"
+      :error="observationError"
+      :loading="observationLoading"
+    />
 
     <section class="run-layout">
       <article class="run-panel run-index">
@@ -241,6 +283,12 @@ onBeforeUnmount(() => {
           class="empty"
         >
           正在读取 Run 记录…
+        </div>
+        <div
+          v-else-if="listError"
+          class="empty"
+        >
+          记录读取失败，请刷新核对
         </div>
         <div
           v-else-if="!filteredRuns.length"
@@ -288,6 +336,12 @@ onBeforeUnmount(() => {
           正在读取证据链…
         </div>
         <div
+          v-else-if="detailError"
+          class="empty"
+        >
+          {{ detailError }}
+        </div>
+        <div
           v-else-if="!detail"
           class="empty"
         >
@@ -308,6 +362,30 @@ onBeforeUnmount(() => {
             <div><span>脱敏错误</span><strong>{{ detail.summary.last_error ?? "无" }}</strong></div>
           </section>
 
+          <section
+            v-if="detail.observation"
+            class="audit-section run-observation"
+          >
+            <h3>停留位置与可追溯输入</h3>
+            <p>当前步骤：{{ detail.summary.current_step }} · 处理责任：{{ detail.observation.responsible_employee_id ?? '未知，需老板核对分工' }}</p>
+            <p>记录时间跨度：{{ detail.observation.recorded_span_seconds === null ? '未知' : `${detail.observation.recorded_span_seconds} 秒` }} · 时间异常 {{ detail.observation.invalid_time_count }}。这是记录时钟跨度，不是执行或人工工作耗时。</p>
+            <p>工具调用 {{ detail.observation.call_count }} · 尝试 {{ detail.observation.attempt_count }} · 重放回执 {{ detail.observation.duplicate_receipt_count }}；模型 token、人工工时和费用未知，缺少实际 usage、计时和费率。</p>
+            <p>关联机会：{{ detail.observation.opportunity_id ?? '未知' }}</p>
+            <p v-if="detail.observation.handoff_id">
+              <RouterLink :to="`/crm/handoffs/${detail.observation.handoff_id}`">
+                打开关联接管与机会
+              </RouterLink>
+            </p>
+            <p v-if="detail.observation.need_id">
+              <RouterLink :to="`/demand/needs/${detail.observation.need_id}`">
+                打开关联已验证需求
+              </RouterLink>
+            </p>
+            <p v-if="!detail.observation.handoff_id && !detail.observation.need_id">
+              没有可核实的业务对象绑定；使用下方已有审批引用核对。
+            </p>
+          </section>
+
           <ResearchRunSummary
             v-if="detail.summary.research"
             :research="detail.summary.research"
@@ -320,11 +398,23 @@ onBeforeUnmount(() => {
             <header><h3>寻源运行摘要</h3><span>{{ detail.summary.sourcing.case_id }}</span></header>
             <p>计划：{{ detail.summary.sourcing.plan_status ?? "未确认" }} · 候选 {{ detail.summary.sourcing.candidate_count }} · 搜索尝试 {{ detail.summary.sourcing.search_attempt_count }} · 页面尝试 {{ detail.summary.sourcing.page_attempt_count }}</p>
             <p>免费额度：已预留 {{ detail.summary.sourcing.reserved_credits }} / 已消耗 {{ detail.summary.sourcing.consumed_credits }} / 不确定 {{ detail.summary.sourcing.uncertain_credits }}</p>
-            <p v-if="detail.summary.sourcing.stop_reason">停止：{{ detail.summary.sourcing.stop_reason.code }} · {{ detail.summary.sourcing.stop_reason.stage ?? "未知阶段" }}</p>
-            <ul v-if="detail.summary.sourcing.ladder.length" class="sourcing-ladder">
-              <li v-for="item in detail.summary.sourcing.ladder" :key="`${item.rung}-${item.outcome}`">第 {{ item.rung }} 级：{{ item.outcome }}</li>
+            <p v-if="detail.summary.sourcing.stop_reason">
+              停止：{{ detail.summary.sourcing.stop_reason.code }} · {{ detail.summary.sourcing.stop_reason.stage ?? "未知阶段" }}
+            </p>
+            <ul
+              v-if="detail.summary.sourcing.ladder.length"
+              class="sourcing-ladder"
+            >
+              <li
+                v-for="item in detail.summary.sourcing.ladder"
+                :key="`${item.rung}-${item.outcome}`"
+              >
+                第 {{ item.rung }} 级：{{ item.outcome }}
+              </li>
             </ul>
-            <p class="meta">该摘要不包含搜索词、页面正文、供应商联系人、成本或客户报价。</p>
+            <p class="meta">
+              该摘要不包含搜索词、页面正文、供应商联系人、成本或客户报价。
+            </p>
           </section>
 
           <section class="audit-section">
@@ -412,7 +502,11 @@ onBeforeUnmount(() => {
                   v-for="approval in detail.approvals"
                   :key="approval.approval_id"
                 >
-                  <header><strong>{{ approval.approval_type }}</strong><span>{{ approval.state }}</span></header><p>{{ approval.approval_id }}</p><small>创建于 {{ formatTime(approval.created_at) }}</small>
+                  <header><strong>{{ approval.approval_type }}</strong><span>{{ approval.state }}</span></header><p>
+                    <RouterLink :to="{ path: '/approvals', query: { approval_id: approval.approval_id } }">
+                      {{ approval.approval_id }}
+                    </RouterLink>
+                  </p><small>创建于 {{ formatTime(approval.created_at) }}</small>
                 </article>
               </div>
             </section>

@@ -2,70 +2,27 @@
 
 from __future__ import annotations
 
+from apps.composition_support.outreach_fact_readers import (
+    ProspectingDemandAccountNames as ProspectingDemandAccountNames,  # noqa: PLC0414
+)
 from domains.demand.schemas import (
     DemandSignalView,
     HypothesisView,
     NeedClusterView,
     ValidatedNeedView,
 )
-from domains.demand.service import DemandAccountNameReader, DemandService
+from domains.demand.service import DemandService
 from domains.employees.permissions import (
     Actor as EmployeeActor,
 )
 from domains.employees.permissions import EmployeeAction, EmployeeAuthorizer
-from domains.prospecting.service import ProspectingService
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     NeedClusterId,
     NeedHypothesisId,
-    ProspectAccountId,
     TenantId,
     ValidatedNeedId,
 )
-
-
-class ProspectingDemandAccountNames(DemandAccountNameReader):
-    """通过 Prospecting 公共服务读取组织事实，不让 demand 跨域导入。"""
-
-    def __init__(self, prospecting: ProspectingService) -> None:
-        if not callable(getattr(prospecting, "get_account", None)):
-            raise ValidationError("需求账户展示名适配器依赖无效")
-        self._prospecting = prospecting
-
-    async def names_for(
-        self,
-        tenant_id: TenantId,
-        account_ids: tuple[ProspectAccountId, ...],
-    ) -> dict[ProspectAccountId, str]:
-        names: dict[ProspectAccountId, str] = {}
-        for account_id in dict.fromkeys(account_ids):
-            account = await self._prospecting.get_account(tenant_id, account_id)
-            names[account_id] = account.name
-        return names
-
-    async def countries_for(
-        self,
-        tenant_id: TenantId,
-        account_ids: tuple[ProspectAccountId, ...],
-    ) -> dict[ProspectAccountId, str]:
-        countries: dict[ProspectAccountId, str] = {}
-        for account_id in dict.fromkeys(account_ids):
-            account = await self._prospecting.get_account(tenant_id, account_id)
-            countries[account_id] = account.country
-        return countries
-
-    async def domains_for(
-        self,
-        tenant_id: TenantId,
-        account_ids: tuple[ProspectAccountId, ...],
-    ) -> dict[ProspectAccountId, str]:
-        domains: dict[ProspectAccountId, str] = {}
-        for account_id in dict.fromkeys(account_ids):
-            account = await self._prospecting.get_account(tenant_id, account_id)
-            if account.website_domain is None:
-                raise ValidationError("需求账户缺少官网")
-            domains[account_id] = account.website_domain
-        return domains
 
 
 class AuthorizedDemandRadarService:

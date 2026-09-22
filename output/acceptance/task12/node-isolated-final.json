@@ -1,0 +1,22 @@
+{
+  "directory": "/var/folders/t2/6_w0ct0s04l68z693_h2fzkw0000gn/T/tradeos-task12-node-chje6ikd",
+  "results": [
+    {
+      "command": [
+        "npm",
+        "ci"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 28.71
+    },
+    {
+      "command": [
+        "npm",
+        "run",
+        "build"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 5.05
+    }
+  ]
+}

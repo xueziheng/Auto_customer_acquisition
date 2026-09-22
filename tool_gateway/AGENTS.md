@@ -184,3 +184,16 @@ Playbook、真实国家政策 reader/persistence/readiness，以及账户发现�
 但仓库真实 Hunter validation/smoke 为 `not_run`，没有生产部署事实；Phase 1 真实 Campaign、
 证据链、发件信誉与人工接管 SLA 运营验收也为 `not_run`。成本钱包仍是 Phase 3 挂载点；不在
 本阶段实现自动对账扫描器、对账 UI、回复正文 worker、自动重发或多 Provider 路由。
+
+## Task5a入站插件
+
+email.inbound.fetch独立LOW/FREE/NONE manifest，只tenant→permission；EXECUTING后懒配置Gmail。
+Gateway内Raw.put后bounded实际读回验证，完整候选guard后隔离；ledger只ipg一次性handle。
+独立task-owned槽拒绝child领取/清理，只有SUCCEEDED且route/cursor绑定一致可交付，失败/取消清槽。
+此批没有Message入库、正文worker、需求分类或模型读取许可（ADR0026）。
+
+Task5b增加email.inbound.raw.read具名LOW/FREE/NONE工具，当前active boss经Conversations公开权限端口授权。
+按精确review读取真实同tenant EMAIL_RAW，最大4MiB有界完整性验证；成功ledger后wrapper再次核当前权限和原件引用，
+一次性task-owned handle才可释放下载字节。禁止任意artifact覆盖、模型读取或在HTTP执行HTML。
+
+ADR0028新增inbox.message.evidence.read，独立LOW/FREE/NONE插件及task-bound snapshot槽位，Message当前归属前后判权。复用原bounded store，不修改email.inbound.raw.read的technical-review权限，不在参数或账本持久正文/actor范围。

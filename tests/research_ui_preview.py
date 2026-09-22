@@ -5,6 +5,7 @@
 """
 
 import json
+from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -20,7 +21,7 @@ from domains.directives.schemas import ProposalView
 from domains.employees.permissions import Phase1EmployeeAuthorizer
 from domains.prospecting.schemas import ProspectAccountDetailView, ProspectAccountView
 from shared.errors import PermissionDenied, ValidationError
-from shared.schemas.identifiers import ProspectAccountId, RunId, new_id
+from shared.schemas.identifiers import ProspectAccountId, RunId, UserId, new_id
 from tests.unit.test_runs_router import TENANT, _identity
 from tests.unit.workflows.test_research_discovery import research_plan
 from workflows.engine.audit import RunDetailView, RunResearchView, RunSummaryView
@@ -31,6 +32,22 @@ from workflows.sourcing_case.application import (
 
 NOW = datetime(2026, 8, 27, 12, tzinfo=UTC)
 LANES = ("importer", "distributor", "ecommerce")
+
+
+
+@asynccontextmanager
+async def preview_employees(tenant):
+    """显式合成当前确认人映射，仅供内存UI/API夹具。"""
+    assert tenant == TENANT
+
+    async def get_employee(requested_tenant, employee_id, *, actor):
+        identity = _identity("boss")
+        assert requested_tenant == TENANT
+        assert employee_id == identity.employee.employee_id
+        assert actor == identity.employee_actor
+        return replace(identity.employee, user_id=UserId("usr_controlled_preview"))
+
+    yield SimpleNamespace(get_employee=get_employee)
 
 
 class Preview:
@@ -280,6 +297,8 @@ app = create_app(
     cors_allowed_origins=("http://127.0.0.1:5184",),
 )
 dependencies = SimpleNamespace(
+    employees=preview_employees,
+    employee_lookup_actor=_identity("boss").employee_actor,
     employee_authorizer=Phase1EmployeeAuthorizer(TENANT),
     directives=fixture,
     trade_manager=TradeManagerAgent(

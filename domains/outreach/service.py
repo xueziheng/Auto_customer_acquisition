@@ -332,6 +332,16 @@ class OutreachService(Protocol):
         actor: Actor,
     ) -> DeliveryFeedbackTarget | None: ...
 
+    async def resolve_reply_source(
+        self,
+        tenant_id: TenantId,
+        lookup: DeliveryCorrelationLookup,
+        *,
+        actor: Actor,
+    ) -> DeliveryFeedbackTarget | None:
+        """仅当前员工只读SENT来源关联；强制真实账户/Enrollment scope。"""
+        ...
+
     async def apply_hard_bounce(
         self,
         tenant_id: TenantId,

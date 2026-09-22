@@ -167,7 +167,7 @@ describe("NotificationCenter", () => {
 
     await eventually(() => {
       expect(root.textContent).toContain("状态可能已过期");
-      expect(root.querySelector('[aria-label="通知，0 条未读"]')).not.toBeNull();
+      expect(root.querySelector('[aria-label="通知，未知 条未读"]')).not.toBeNull();
     });
     app.unmount();
   });

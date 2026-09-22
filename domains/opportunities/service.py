@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
@@ -21,6 +22,7 @@ from domains.opportunities.schemas import (
     HandoffPacketView,
     HandoffQueueItemView,
     HandoffQueueStats,
+    NotificationAudienceTarget,
     OpportunityCreateRequest,
     OpportunityView,
     ValidatedNeedEvidence,
@@ -171,6 +173,18 @@ class OpportunityService(Protocol):
         """
         ...
 
+    def handoff_notification_scope(
+        self,
+        tenant_id: TenantId,
+        handoff_id: HandoffId,
+        opportunity_id: OpportunityId,
+        recipient: EmployeeId,
+        *,
+        actor: Actor,
+    ) -> AbstractAsyncContextManager[bool]:
+        """持当前事实锁到调用者的站内提交完成；False 表示已接受或旧受众。"""
+        ...
+
     async def accept_handoff(
         self,
         tenant_id: TenantId,
@@ -220,6 +234,16 @@ class OpportunityService(Protocol):
         ...
 
     # --- 查询 -----------------------------------------------------------
+
+    async def get_notification_audience_target(
+        self,
+        tenant_id: TenantId,
+        opportunity_id: OpportunityId,
+        *,
+        actor: Actor,
+    ) -> NotificationAudienceTarget:
+        """仅精确SYSTEM通知scope读取当前账户关联，无机会详情权限。"""
+        ...
 
     async def get(
         self,

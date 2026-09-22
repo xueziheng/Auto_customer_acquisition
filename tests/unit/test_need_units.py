@@ -272,6 +272,7 @@ class MemoryCase:
         self.history: list[
             tuple[FactualField[str] | None, schemas.NeedUnitConfirmationView]
         ] = []
+        self.events: list[object] = []
         self.depth = self.guard_depth = self.reads = self.reference_reads = 0
         self.deny_check = self.deny_guard = self.deny_reference = self.fail_history = (
             False
@@ -368,12 +369,18 @@ class MemoryUow:
     def __init__(self, case: MemoryCase) -> None:
         self.case = case
         self.units = self
+        self.bus = self
 
     async def __aenter__(self) -> Self:
         """进入时复制已提交状态。"""
         self.case.depth += 1
-        self.facts, self.records, self.history = deepcopy(
-            (self.case.facts, self.case.records, self.case.history)
+        self.facts, self.records, self.history, self.events = deepcopy(
+            (
+                self.case.facts,
+                self.case.records,
+                self.case.history,
+                self.case.events,
+            )
         )
         return self
 
@@ -385,10 +392,11 @@ class MemoryUow:
     ) -> None:
         """只在成功退出时提交完整副本。"""
         if exc_type is None:
-            self.case.facts, self.case.records, self.case.history = (
+            self.case.facts, self.case.records, self.case.history, self.case.events = (
                 self.facts,
                 self.records,
                 self.history,
+                self.events,
             )
         self.case.depth -= 1
 
@@ -405,6 +413,18 @@ class MemoryUow:
         if self.case.on_lock:
             self.case.on_lock(self)
         return self.facts
+
+    async def read_event_locator(
+        self, tenant_id: TenantId, need_id: ValidatedNeedId
+    ) -> schemas.NeedCatalogEventLocator | None:
+        """内存契约同样只返回 need/cluster 定位。"""
+        if self.facts is None:
+            return None
+        return schemas.NeedCatalogEventLocator(need_id=need_id, cluster_id=None)
+
+    async def publish(self, event: object) -> None:
+        """事件与事实副本由同一次成功退出提交。"""
+        self.events.append(event)
 
     async def find_operation(
         self, tenant_id: TenantId, need_id: ValidatedNeedId, idempotency_key: str
@@ -495,6 +515,9 @@ async def test_confirm_atomic_receipt_and_reference_replay() -> None:
     assert first.unit.provenance.confirmed_by == ACTOR
     assert first.unit.provenance.extracted_at == first.confirmed_at == NOW
     assert len(case.records) == len(case.history) == 1
+    assert [type(event).__name__ for event in case.events] == [
+        "NeedCatalogFactsChanged"
+    ]
     assert service.require_current_unit(case.facts) == first.unit
     assert await confirm(svc) == first
     assert case.reads == case.reference_reads == 1

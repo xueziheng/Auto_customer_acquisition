@@ -89,3 +89,5 @@ SLA 指标：从 `HandoffRequested` 到 `HandoffAccepted` 的等待时长、队�
 机会模型、状态机、硬门槛加三因子打分、打分快照、Loss Reason、接管包、SLA 度量全部要有。
 
 不做：九因子加权、自动反压、机会价值预测。
+
+通知受众专用get_notification_audience_target仅返回当前account_id，NOTIFICATION_AUDIENCE_READ只SYSTEM且notification_opportunity_id必须为单一精确机会。先授权/核ID再tenant仓储查询；旧get仍不允许SYSTEM。canonical通知投影随后重读Employee当前ownership/active受众，不用事件旧assigned_to，不冒用boss。

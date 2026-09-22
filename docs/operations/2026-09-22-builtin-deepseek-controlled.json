@@ -1,0 +1,10 @@
+{
+  "source_commit": "fc8880b5a229d92939023b3792e93ed5da3d6e04",
+  "configuration_version": null,
+  "model_id": null,
+  "prompt_version": "assistant-v1",
+  "controlled": "passed",
+  "live_model": "not_run",
+  "live_sources": "not_run",
+  "shared_deployment": "not_run"
+}

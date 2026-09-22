@@ -6,15 +6,33 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
+from typing import Literal
 
+from pydantic import ValidationError as PydanticValidationError
+
+from domains.products.schemas import (
+    CatalogBlockedFactsInput,
+    CatalogClusterFactsInput,
+    CatalogProposalEvaluationResult,
+    CatalogProposalPolicyContent,
+    CatalogProposalRuleResult,
+)
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
+    ApprovalId,
     ArtifactId,
+    CatalogCultivationCaseId,
+    CatalogProductProposalId,
+    CatalogProposalEvaluationId,
+    CatalogProposalPolicyVersionId,
+    EmployeeId,
+    NeedClusterId,
     ProductId,
     ProductVariantId,
+    RunId,
     SourcingCaseId,
     SupplierCandidateId,
     SupplierId,
@@ -49,6 +67,270 @@ class ProductSpecMatchLevel(str, Enum):
     EXACT = "exact"
     DIFFERENT = "different"
     UNKNOWN = "unknown"
+
+
+class CatalogProposalPolicyState(str, Enum):
+    PENDING_APPROVAL = "pending_approval"
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    STALE = "stale"
+
+
+class CatalogProductProposalState(str, Enum):
+    AWAITING_APPROVAL_SUBMISSION = "awaiting_approval_submission"
+    PENDING_REVIEW = "pending_review"
+    CULTIVATION_QUEUED = "cultivation_queued"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    STALE = "stale"
+
+
+def _catalog_hash(value: str, field_name: str) -> None:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValidationError(f"{field_name} 必须是 64 位小写 SHA-256")
+
+
+def _catalog_utc(value: datetime, field_name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(value):
+        raise ValidationError(f"{field_name} 必须是 UTC 时间")
+
+
+def _catalog_identity(value: str, field_name: str, maximum: int = 200) -> None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > maximum
+    ):
+        raise ValidationError(f"{field_name} 必须是非空有界标识")
+
+
+@dataclass(frozen=True)
+class CatalogProposalPolicyVersion:
+    """目录提案策略内部实体；内容与提交身份创建后不可变。"""
+
+    tenant_id: TenantId
+    policy_version_id: CatalogProposalPolicyVersionId
+    content: CatalogProposalPolicyContent
+    content_hash: str
+    base_active_version_id: CatalogProposalPolicyVersionId | None
+    proposed_by: EmployeeId
+    creation_key: str
+    creation_request_hash: str
+    approval_id: ApprovalId | None
+    state: CatalogProposalPolicyState
+    created_at: datetime
+    activated_at: datetime | None = None
+    terminal_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        _catalog_identity(self.tenant_id, "tenant_id", 40)
+        _catalog_identity(self.policy_version_id, "policy_version_id", 40)
+        _catalog_identity(self.proposed_by, "proposed_by", 40)
+        _catalog_identity(self.creation_key, "creation_key")
+        _catalog_hash(self.content_hash, "content_hash")
+        from domains.products.catalog_rules import catalog_policy_content_hash
+
+        try:
+            validated_content = CatalogProposalPolicyContent.model_validate(
+                self.content.model_dump(mode="python")
+            )
+        except (AttributeError, PydanticValidationError, TypeError, ValueError):
+            raise ValidationError("策略 content 无效") from None
+        if self.content_hash != catalog_policy_content_hash(validated_content):
+            raise ValidationError("content_hash 与策略内容不一致")
+        _catalog_hash(self.creation_request_hash, "creation_request_hash")
+        _catalog_utc(self.created_at, "created_at")
+        for field_name in ("activated_at", "terminal_at"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _catalog_utc(value, field_name)
+                if value < self.created_at:
+                    raise ValidationError(f"{field_name} 不得早于 created_at")
+        if not isinstance(self.state, CatalogProposalPolicyState):
+            raise ValidationError("目录提案策略状态无效")
+
+
+@dataclass(frozen=True)
+class CatalogProposalEvaluation:
+    """同一事实与策略唯一的不可变确定性评估。"""
+
+    tenant_id: TenantId
+    evaluation_id: CatalogProposalEvaluationId
+    cluster_id: NeedClusterId
+    policy_version_id: CatalogProposalPolicyVersionId
+    facts_hash: str
+    facts: CatalogClusterFactsInput | CatalogBlockedFactsInput
+    rule_results: tuple[CatalogProposalRuleResult, ...]
+    overall_passed: bool
+    blocked_reason: Literal["catalog_facts_invalid"] | None
+    proposed_by_run: RunId
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "tenant_id",
+            "evaluation_id",
+            "cluster_id",
+            "policy_version_id",
+            "proposed_by_run",
+        ):
+            _catalog_identity(getattr(self, field_name), field_name, 40)
+        _catalog_hash(self.facts_hash, "facts_hash")
+        _catalog_utc(self.created_at, "created_at")
+        try:
+            persisted_result = CatalogProposalEvaluationResult.model_validate(
+                {
+                    "rule_results": self.rule_results,
+                    "overall_passed": self.overall_passed,
+                    "blocked_reason": self.blocked_reason,
+                }
+            )
+            reconstructed_policy = CatalogProposalPolicyContent.model_validate(
+                {
+                    "minimum_distinct_accounts": persisted_result.rule_results[
+                        1
+                    ].required_value,
+                    "minimum_recurring_accounts": persisted_result.rule_results[
+                        2
+                    ].required_value,
+                    "minimum_distinct_countries": persisted_result.rule_results[
+                        3
+                    ].required_value,
+                    "minimum_quantity_unit_accounts": persisted_result.rule_results[
+                        4
+                    ].required_value,
+                    "require_unified_unit": (
+                        persisted_result.rule_results[5].required_value is True
+                    ),
+                }
+            )
+        except (PydanticValidationError, TypeError, ValueError):
+            raise ValidationError("评估规则结果无效") from None
+        normal_facts: CatalogClusterFactsInput | None
+        validated_locator: CatalogClusterFactsInput | CatalogBlockedFactsInput
+        try:
+            if persisted_result.blocked_reason is None:
+                if type(self.facts) is not CatalogClusterFactsInput:
+                    raise ValueError("normal 评估必须携带完整事实")
+                normal_facts = CatalogClusterFactsInput.model_validate(
+                    self.facts.model_dump(mode="python")
+                )
+                validated_locator = normal_facts
+            else:
+                if type(self.facts) is not CatalogBlockedFactsInput:
+                    raise ValueError("blocked 评估必须携带最小事实信封")
+                normal_facts = None
+                validated_locator = CatalogBlockedFactsInput.model_validate(
+                    self.facts.model_dump(mode="python")
+                )
+        except (AttributeError, PydanticValidationError, TypeError, ValueError):
+            raise ValidationError("评估 facts 快照无效") from None
+        if self.facts_hash != validated_locator.facts_hash:
+            raise ValidationError("评估 facts_hash 与事实快照不一致")
+        if self.tenant_id != validated_locator.tenant_id:
+            raise ValidationError("评估 tenant_id 与事实快照不一致")
+        if self.cluster_id != validated_locator.cluster_id:
+            raise ValidationError("评估 cluster_id 与事实快照不一致")
+        if normal_facts is None:
+            return
+        from domains.products.catalog_rules import evaluate_catalog_facts
+
+        expected_result = evaluate_catalog_facts(reconstructed_policy, normal_facts)
+        if persisted_result != expected_result:
+            raise ValidationError("评估规则结果与事实快照不一致")
+
+
+@dataclass(frozen=True)
+class CatalogProductProposal:
+    """自动产生、等待人工决定的内部候选产品培养建议。"""
+
+    tenant_id: TenantId
+    proposal_id: CatalogProductProposalId
+    evaluation_id: CatalogProposalEvaluationId
+    cluster_id: NeedClusterId
+    policy_version_id: CatalogProposalPolicyVersionId
+    facts_hash: str
+    owner_employee: EmployeeId
+    proposed_by_run: RunId
+    approval_id: ApprovalId | None
+    approval_request_hash: str | None
+    state: CatalogProductProposalState
+    created_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "tenant_id",
+            "proposal_id",
+            "evaluation_id",
+            "cluster_id",
+            "policy_version_id",
+            "owner_employee",
+            "proposed_by_run",
+        ):
+            _catalog_identity(getattr(self, field_name), field_name, 40)
+        _catalog_hash(self.facts_hash, "facts_hash")
+        if self.approval_request_hash is not None:
+            _catalog_hash(self.approval_request_hash, "approval_request_hash")
+        _catalog_utc(self.created_at, "created_at")
+        _catalog_utc(self.updated_at, "updated_at")
+        if self.updated_at < self.created_at:
+            raise ValidationError("updated_at 不得早于 created_at")
+        if not isinstance(self.state, CatalogProductProposalState):
+            raise ValidationError("目录产品提案状态无效")
+
+
+@dataclass(frozen=True)
+class CatalogCultivationCase:
+    """批准后的唯一内部培养交接；本子项目状态固定为 queued。"""
+
+    tenant_id: TenantId
+    cultivation_case_id: CatalogCultivationCaseId
+    proposal_id: CatalogProductProposalId
+    approval_id: ApprovalId
+    cluster_id: NeedClusterId
+    policy_version_id: CatalogProposalPolicyVersionId
+    facts_hash: str
+    evidence_refs: tuple[str, ...]
+    state: str
+    queued_at: datetime
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "tenant_id",
+            "cultivation_case_id",
+            "proposal_id",
+            "approval_id",
+            "cluster_id",
+            "policy_version_id",
+        ):
+            _catalog_identity(getattr(self, field_name), field_name, 40)
+        _catalog_hash(self.facts_hash, "facts_hash")
+        _catalog_utc(self.queued_at, "queued_at")
+        if type(self.evidence_refs) is not tuple or not self.evidence_refs:
+            raise ValidationError("evidence_refs 必须是非空 tuple")
+        for evidence_ref in self.evidence_refs:
+            if (
+                type(evidence_ref) is not str
+                or not evidence_ref
+                or evidence_ref != evidence_ref.strip()
+                or len(evidence_ref) > 200
+                or any(not character.isprintable() for character in evidence_ref)
+            ):
+                raise ValidationError(
+                    "evidence_ref 必须是非空、无首尾空白或控制字符且不超过 200 字符的字符串"
+                )
+        if len(set(self.evidence_refs)) != len(self.evidence_refs):
+            raise ValidationError("evidence_refs 不得重复")
+        if self.state != "queued":
+            raise ValidationError("培养 Case 状态必须为 queued")
 
 
 @dataclass(frozen=True)

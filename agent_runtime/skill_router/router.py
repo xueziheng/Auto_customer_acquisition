@@ -42,6 +42,9 @@ class SkillManifest:
     outputs: dict[str, str] = field(default_factory=dict)
     freshness_days: int = 7
     eval_refs: tuple[str, ...] = ()
+    description: str = ""
+    upstream_ref: str | None = None
+    evals: tuple[str, ...] = ()
 
 
 @runtime_checkable

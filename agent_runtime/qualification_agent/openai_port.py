@@ -38,8 +38,7 @@ class StructuredReplyModelPort:
     ) -> str:
         if (
             not isinstance(system_prompt, str)
-            or not system_prompt
-            or system_prompt != system_prompt.strip()
+            or not system_prompt.strip()
             or not isinstance(message, dict)
             or set(message) != {"subject", "body"}
             or any(

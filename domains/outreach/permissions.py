@@ -43,6 +43,7 @@ class OutreachAction(str, Enum):
     SUPPRESSION_LIST = "suppression:list"
     MESSAGE_DELIVERY_BIND = "message:delivery_bind"
     DELIVERY_FEEDBACK_RESOLVE = "delivery_feedback:resolve"
+    REPLY_SOURCE_READ = "reply_source:read"
     HARD_BOUNCE_APPLY = "hard_bounce:apply"
     COMPLAINT_APPLY = "complaint:apply"
 
@@ -66,8 +67,7 @@ def _freeze_ids(
         raise ValidationError(f"{field} 必须为集合")
     result = frozenset(value)
     if any(
-        not isinstance(item, str)
-        or re.fullmatch(rf"{prefix}_{_ULID}", item) is None
+        not isinstance(item, str) or re.fullmatch(rf"{prefix}_{_ULID}", item) is None
         for item in result
     ):
         raise ValidationError(f"{field} 包含无效 ID")
@@ -145,9 +145,7 @@ class OutreachScope:
                 for target in frozen_targets
             ):
                 raise ValidationError("allowed_suppression_targets 包含无效目标")
-            object.__setattr__(
-                self, "allowed_suppression_targets", frozen_targets
-            )
+            object.__setattr__(self, "allowed_suppression_targets", frozen_targets)
         if self.level is ScopeLevel.MANAGER and (
             self.allowed_campaign_ids is None and self.allowed_account_ids is None
         ):
@@ -155,6 +153,7 @@ class OutreachScope:
         if self.level is ScopeLevel.SELF and (
             self.allowed_campaign_ids is None
             and self.allowed_enrollment_ids is None
+            and self.allowed_account_ids is None
         ):
             raise ValidationError("SELF 作用域必须携带 ownership")
         if self.level is ScopeLevel.SYSTEM:
@@ -179,8 +178,7 @@ class OutreachScope:
                 else 0
             )
             if (
-                enrollment_count + target_count + attempt_count + identity_count
-                != 1
+                enrollment_count + target_count + attempt_count + identity_count != 1
                 or self.allowed_campaign_ids is not None
                 or self.allowed_account_ids is not None
             ):
@@ -275,6 +273,7 @@ class StandardAuditLogger:
 
 _BOSS_ACTIONS = frozenset(
     {
+        OutreachAction.REPLY_SOURCE_READ,
         OutreachAction.CAMPAIGN_CREATE,
         OutreachAction.CAMPAIGN_SUBMIT,
         OutreachAction.CAMPAIGN_REVISE,
@@ -294,6 +293,7 @@ _BOSS_ACTIONS = frozenset(
 )
 _MANAGER_ACTIONS = frozenset(
     {
+        OutreachAction.REPLY_SOURCE_READ,
         OutreachAction.CAMPAIGN_SUBMIT,
         OutreachAction.CAMPAIGN_REVISE,
         OutreachAction.CAMPAIGN_PAUSE,
@@ -325,6 +325,7 @@ _SYSTEM_ACTIONS = frozenset(
 )
 _SALES_ACTIONS = frozenset(
     {
+        OutreachAction.REPLY_SOURCE_READ,
         OutreachAction.CAMPAIGN_READ,
         OutreachAction.CAMPAIGN_LIST,
         OutreachAction.ENROLLMENT_READ,
@@ -383,6 +384,23 @@ class Phase1OutreachAuthorizer:
             or any(value == frozenset() for value in configured_sets)
         ):
             raise PermissionDenied("Phase 1 触达授权拒绝")
+        if (
+            level in {ScopeLevel.SELF, ScopeLevel.MANAGER}
+            and action is OutreachAction.REPLY_SOURCE_READ
+            and (
+                scope.allowed_account_ids is None or len(scope.allowed_account_ids) != 1
+            )
+        ):
+            raise PermissionDenied("Phase 1 触达授权拒绝")
+        if (
+            level is ScopeLevel.SELF
+            and action is not OutreachAction.REPLY_SOURCE_READ
+            and (
+                scope.allowed_campaign_ids is None
+                and scope.allowed_enrollment_ids is None
+            )
+        ):
+            raise PermissionDenied("Phase 1 触达授权拒绝")
         if level is ScopeLevel.SYSTEM:
             expected_resource = {
                 OutreachAction.SUPPRESSION_ADD: "suppression",
@@ -439,6 +457,10 @@ class Phase1OutreachAuthorizer:
         sending_identity_id: SendingIdentityId | None = None,
     ) -> str:
         level = self._eligible_level(actor, action, scope, tenant_id)
+        if action is OutreachAction.REPLY_SOURCE_READ:
+            self._require_member(scope.allowed_campaign_ids, campaign_id)
+            self._require_member(scope.allowed_account_ids, account_id)
+            self._require_member(scope.allowed_enrollment_ids, enrollment_id)
         if level in {ScopeLevel.MANAGER, ScopeLevel.SELF}:
             if action.value.startswith("campaign:"):
                 self._require_member(scope.allowed_campaign_ids, campaign_id)

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol, Self, runtime_checkable
 
 from domains.demand.models import (
@@ -16,6 +17,7 @@ from domains.demand.models import (
     NeedHypothesis,
     ValidatedNeed,
 )
+from domains.demand.schemas import CatalogClusterCursor, CatalogClusterIdPage
 from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
     ArtifactId,
@@ -38,6 +40,14 @@ class SnapshotArtifactEvidenceRepository(Protocol):
         artifact_id: ArtifactId,
         content_hash: str,
     ) -> bool: ...
+
+
+@dataclass(frozen=True)
+class NeedClusterCatalogSnapshot:
+    """单次租户读取获得的簇、正向成员关系与 Need 反向归属快照。"""
+
+    cluster: NeedCluster
+    needs: tuple[ValidatedNeed, ...]
 
 
 @runtime_checkable
@@ -127,6 +137,16 @@ class NeedHypothesisRepository(Protocol):
     ) -> NeedHypothesis | None: ...
 
     async def update(self, hypothesis: NeedHypothesis) -> None: ...
+
+    async def list_active_categories(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        *,
+        limit: int,
+    ) -> list[str]:
+        """SQL 先限定企业/租户/活跃且有证据，再 distinct/order/limit。"""
+        ...
 
     async def find_active_by_account_and_category(
         self,
@@ -252,3 +272,34 @@ class NeedClusterRepository(Protocol):
     async def list_for_radar(
         self, tenant_id: TenantId, *, limit: int
     ) -> list[NeedCluster]: ...
+
+    async def get_catalog_snapshot(
+        self,
+        tenant_id: TenantId,
+        cluster_id: NeedClusterId,
+    ) -> NeedClusterCatalogSnapshot | None:
+        """单次 tenant-bound 查询读取完整双向成员集合。"""
+        ...
+
+    async def list_catalog_cluster_ids(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int,
+    ) -> tuple[NeedClusterId, ...]: ...
+
+    async def list_catalog_cluster_id_page(
+        self,
+        tenant_id: TenantId,
+        *,
+        limit: int,
+        cursor: CatalogClusterCursor | None = None,
+    ) -> CatalogClusterIdPage: ...
+
+    async def list_catalog_cluster_ids_for_account(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        *,
+        limit: int,
+    ) -> tuple[NeedClusterId, ...]: ...

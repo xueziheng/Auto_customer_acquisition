@@ -1,0 +1,104 @@
+{
+  "updated_at": 1788694023.17235,
+  "supervisor": {
+    "pid": 66911,
+    "born": 1788693988.753355
+  },
+  "owner": "8d234c0956fb498e9f171342c3b72f51",
+  "status": "stopped",
+  "reason": "requested_stop",
+  "processes": [
+    {
+      "name": "api",
+      "pid": 66946,
+      "born": 1788694011.522066,
+      "exit": -15,
+      "anchor": {
+        "pid": 66947,
+        "born": 1788694011.567152
+      },
+      "children": []
+    },
+    {
+      "name": "scheduler",
+      "pid": 66948,
+      "born": 1788694011.58908,
+      "exit": 0,
+      "anchor": {
+        "pid": 66949,
+        "born": 1788694011.607789
+      },
+      "children": []
+    },
+    {
+      "name": "notification",
+      "pid": 66950,
+      "born": 1788694011.625815,
+      "exit": 0,
+      "anchor": {
+        "pid": 66951,
+        "born": 1788694011.642976
+      },
+      "children": []
+    },
+    {
+      "name": "web",
+      "pid": 66952,
+      "born": 1788694011.660828,
+      "exit": 143,
+      "anchor": {
+        "pid": 66953,
+        "born": 1788694011.678229
+      },
+      "children": []
+    }
+  ],
+  "container_ids": [
+    "3ec280047d51133bf42a1ac16371258c6195a606ff82b205858282565b44f6c3",
+    "eb829dea3e09693ddbe870ce6380067f8581fa83cf224ca2e1cf7b2f82cf8dc1"
+  ],
+  "cleanup_errors": [],
+  "tenant_id": "tn_01M1V7GK67GGWJTQQA085DSX17",
+  "identities": [
+    {
+      "employee_id": "emp_01M1V7GK66H22QS6X8BPV83KW7",
+      "user_id": "usr_01M1V7GK66S07ARJ19249Z0NB4",
+      "role": "boss",
+      "label": "演练老板甲（提案）"
+    },
+    {
+      "employee_id": "emp_01M1V7GK67X9NGW8ZXGSRT219G",
+      "user_id": "usr_01M1V7GK67YVMMFAQ94G6GBW1X",
+      "role": "boss",
+      "label": "演练老板乙（独立审批）"
+    },
+    {
+      "employee_id": "emp_01M1V7GK67QW6NWMDM06SESV7A",
+      "user_id": "usr_01M1V7GK67CWFWZ53JAQ1KQFPD",
+      "role": "manager",
+      "label": "演练经理"
+    },
+    {
+      "employee_id": "emp_01M1V7GK67PNFWXR4SNHZTSBCB",
+      "user_id": "usr_01M1V7GK67NDSWJ5F0YMQY1D6J",
+      "role": "sales",
+      "label": "演练销售"
+    },
+    {
+      "employee_id": "emp_01M1V7GK67JZTSP4HE4RPF364K",
+      "user_id": "usr_01M1V7GK67EA16E0D4VJHC3B6M",
+      "role": "sourcing",
+      "label": "演练寻源"
+    },
+    {
+      "employee_id": "emp_01M1V7GK67A20M49968H62M09E",
+      "user_id": "usr_01M1V7GK67HE1XKRBS7PQV7XRF",
+      "role": "product",
+      "label": "演练产品"
+    }
+  ],
+  "api_url": "http://127.0.0.1:56077",
+  "web_url": "http://127.0.0.1:56078",
+  "scheduler_url": "http://127.0.0.1:56079",
+  "notification_url": "http://127.0.0.1:56081"
+}

@@ -1,7 +1,7 @@
 # TradeOS 实现手册
 
-项目已经越过纯骨架阶段：目录、边界与契约仍是实现依据，多个 Phase 1 切片已经落地，尚未
-交付的能力继续按本手册顺序实现。这份手册回答一个问题：**怎么把它变成完整可运营的系统，
+项目已完成本机受控 Web 核心闭环及若干 Phase 2 切片（2026-09-06）；真实运营和共享部署尚未验收。
+目录、边界与契约仍是实现依据，下文早期切片按历史实施顺序保留，当前状态逐项注明。这份手册回答一个问题：**怎么把它变成完整可运营的系统，
 且过程中架构不腐化。**
 
 读者是接手实现的人（或 AI）。架构**为什么**这样设计在 `docs/architecture/` 和 `docs/adr/`，这里只讲**怎么做**。
@@ -20,10 +20,12 @@
 | 4 | [docs/architecture/02-boundaries.md](docs/architecture/02-boundaries.md) | 依赖方向、四个插件点 |
 | 5 | `domains/demand/` 全部七个文件 | 域的标准长相。后面每个域都照它写 |
 
+先按[本机操作说明](docs/operations/web-core-local.md)建立Python3.12+环境；下文`python3`须指向该环境，
+可执行`source .venv/bin/activate`或将命令解释器换成`.venv/bin/python`。系统Python3.9不能解析本仓语法。
 然后跑一次自检，确认环境正常：
 
 ```bash
-python3 scripts/check_boundaries.py --skeleton
+python3 scripts/check_boundaries.py
 ```
 
 ### 三个最容易理解错的地方
@@ -38,9 +40,10 @@ python3 scripts/check_boundaries.py --skeleton
 
 ## 二、第 0 步：补齐工程基建
 
-骨架**故意没做**这部分——它和架构无关，且技术选型会随实现细节调整。但没有它一行业务代码都跑不起来，所以这是第一件事。
+本节是早期基建实施说明，现有 pyproject、迁移、Repository、测试、Makefile 和 CI 已落地。
+本机 Web 的真实启动命令与依赖来源见第十四节，不再按缺基建处理。
 
-### 要建的东西
+### 已落地的基建清单
 
 ```text
 pyproject.toml            依赖与工具配置
@@ -91,7 +94,8 @@ pytest                                    # 测试
 
 ### 验收
 
-`make dev` 能起数据库、`make test` 跑通空测试、`make check` 四件全绿。
+原基建验收入口为`make dev`、`make test`与`make check`；当前测试已包含真实业务作用组，
+不再是空测试。最终实际命令、版本与结果见第十四节。
 
 ---
 
@@ -121,6 +125,9 @@ pytest                                    # 测试
 
 #### 切片 1 · shared 契约层
 
+**当前状态（2026-09-06）**：公共契约已实现，Decimal/Provenance/证据等级边界已回归。
+以下保留该切片原实现目标与验收要求。
+
 **做什么**：`shared/` 全部实现 + 单测。纯函数，无 IO，一两天的活。
 
 ```text
@@ -141,6 +148,9 @@ events/bus.py           EventBus 的 outbox 实现（依赖切片 2 的库，可
 
 #### 切片 2 · 持久化基建 + 机会域
 
+**当前状态（2026-09-06）**：持久化与机会域已实现；真实合格机会产出不由合成数量推导。
+以下保留该切片原实现目标与验收要求。
+
 **做什么**：把 `domains/opportunities` 完整落地，含数据库表、Repository 实现、打分。
 
 ```text
@@ -160,6 +170,9 @@ domains/opportunities/ scoring.py 的 check_gates 与 compute_score（纯函数�
 
 #### 切片 3 · 机会看板与人工接管（第一个可演示版本）
 
+**当前状态（2026-09-06）**：Web 队列/证据包/接受已贯通；当前角色与归属在 API 重新授权。
+以下保留该切片原实现目标与验收要求。
+
 **做什么**：`apps/api` 起来 + 最小前端，员工能看到机会、接管、填写下一步。
 
 ```text
@@ -178,6 +191,9 @@ apps/web                        两个页面：机会列表、接管队列
 ---
 
 #### 切片 4 · 发件身份 + 单封手动发送
+
+**当前状态（2026-09-06）**：原 Gateway、发件身份和受控 Gmail 链已实现；真实 DNS/发件信誉/邮件外发未验收。
+以下保留该切片原实现目标与验收要求。
 
 **做什么**：第一次引入 `connectors` 和 `tool_gateway`。
 
@@ -202,6 +218,9 @@ notification_gateway         站内 + 邮件两个渠道
 
 #### 切片 5 · Campaign 与序列自动化
 
+**当前状态（2026-09-06）**：原持锁 scheduler 与获批 Campaign 已接通；未验证联系人拒绝入组。
+以下保留该切片原实现目标与验收要求。
+
 **做什么**：引入工作流引擎和调度进程。
 
 ```text
@@ -223,6 +242,9 @@ domains/prospecting          可达性验证门禁、法律依据留痕
 
 #### 切片 6 · 回复识别
 
+**当前状态（2026-09-06）**：正文入站→不可变原件→分类/逐字段证据→Need/Opportunity/Handoff 已受控验收。
+以下保留该切片原实现目标与验收要求。
+
 **做什么**：第一次引入大模型。
 
 ```text
@@ -242,6 +264,9 @@ tests/evals/replies/*                评估集先建，再写 prompt
 ---
 
 #### 切片 7 · 需求发现（闭环）
+
+**当前状态（2026-09-06）**：原 typed research_only 已接线并执行；只到 Signal/Hypothesis，触达需另行明确批准。
+以下保留该切片原实现目标与验收要求。
 
 **做什么**：接上链路第一环，系统开始自转。
 
@@ -443,7 +468,7 @@ AI 会给出一个「看起来合理」的默认值，而这些数字直接决�
 4. 人工接管的等待时长可度量，且没有超时流失的案例
 ```
 
-达到后先别急着做 Phase 2。**先看三个数**：已验证需求的产出速率、每条的成本、接管响应时长。它们决定 Phase 2 优先自动化哪一段——如果瓶颈是人工接管太慢，那么自动化寻源没有意义。
+这是原运营推进准则；当前 Phase 2 多个工程切片已受控交付，但真实运营并未达标。生产推广前仍须**先看三个数**：已验证需求的产出速率、每条的成本、接管响应时长。它们决定 Phase 2 优先自动化哪一段——如果瓶颈是人工接管太慢，那么自动化寻源没有意义。
 
 如果 Phase 1 发现核心假设不成立（信号噪音过高、回复率长期上不去），**要改的是发现与触达策略，不是继续往下游建功能**。这是整个路线图里最重要的一条纪律。
 
@@ -676,8 +701,101 @@ snapshot，不启动 Workflow；恢复 scheduler 前再次核对 active Directiv
 
 受控验收的真实命令、`8-member / 3-member / unclustered` 排序、batch 2、runtime 重建、人工重放、
 外部调用零计数和 Browser 证据见
-`docs/acceptance/2026-09-02-phase2-need-cluster-sourcing-admission.md`。Catalog Product Proposal、联系人多源
-瀑布、70/30 allocator、自动 backpressure、真实 direct supplier quote 与商业来源仍未完成。
+`docs/acceptance/2026-09-02-phase2-need-cluster-sourcing-admission.md`。联系人多源瀑布、70/30 allocator、自动
+backpressure、真实 direct supplier quote 与商业来源仍未完成。
+
+## 十三、Phase2 Catalog Product Proposal
+
+本子项目已完成工程实现、受控 PostgreSQL/API/scheduler/Browser 功能链、390px 元素级视觉验收与
+全仓门禁；它只把通过
+显式策略的 Need Cluster 变成内部 Catalog Product Proposal，人工批准后最多创建一个
+`queued` 培养 Case。这不是正式 Product、供应确认、客户报价、生产启用或市场验证，也不代表
+整个 Phase2 完成。
+
+### 受控运行
+
+1. 先核对已迁移的 PostgreSQL、API 和 scheduler 来自同一构建，并确认当前没有未经批准的生产
+   Catalog 策略。无活动策略是正常关闭态，scheduler 不得创建 evaluation、proposal 或 Case。
+2. product/sourcing 人员只提交完整显式门槛；系统不提供国家、品类、客户数、复购或数量的
+   业务默认。由不同的 boss 打开精确 Approval 深链，核对策略内容、基线版本和影响后再决定。
+3. scheduler 只在单副本 advisory lock 下恢复待处理策略/提案、重读 Demand canonical 事实并启动
+   durable workflow。确定性规则展示六种固定结果；未配硬门槛不等于事实已知，缺失复购、数量或单位
+   仍显示“未知”，但按当前显式策略可不阻断。
+4. boss 对提案的批准只入培养队列。操作后同时核对 proposal、Approval 与 Case 的精确绑定，以及
+   Product、Supplier、Contact、Search、Send、Quote 和 Tool Gateway 外部调用均未增加。
+
+### 停止
+
+- 计划停止：不再提交新策略；需改变现行门槛时必须提交新版本并重走独立审批，不得直接改
+  active 行。
+- 紧急停止：先停 scheduler worker，再核对 pending policy/proposal、running workflow、pending/dead Outbox 和
+  queued Case。不删行、不改 hash、不补写审批状态、不用 downgrade 伪造恢复。
+- 停止 scheduler 不撤销已生效策略或已排队 Case。若需改变这些业务事实，必须另行设计可审计命令和
+  审批；本子项目没有紧急“删库开关”。
+
+### 重启与恢复
+
+1. 重建 runtime 后从 PostgreSQL 重读 checkpoint、活动策略、待提交 proposal 和 workflow；以 tenant +
+   subject + facts hash 的幂等键恢复，不能用新 actor/key 制造第二份业务事实。
+2. Approval 投递、决定或 Case 创建结果不确定时，先读 canonical proposal/Approval/Case，再以原事件或原
+   workflow 恢复。同一决定重投和 scheduler 重启只能保留一份 evaluation、proposal、Approval 和 Case。
+3. 应用提案决定前重读当前策略与 Demand 事实。facts hash 已改的旧快照必须转 `stale`，不得因
+   已点“批准”而创建第二个 Case。
+4. `CatalogCultivationQueued` 目前没有本子项目内的下游消费者；培养后续必须另行规格、授权和装配，
+   不得把 no-handler dead 当成已执行培养。受控结果、命令、截图和完整残余风险见
+   `docs/acceptance/2026-09-04-phase2-catalog-product-proposal.md`。
+
+## 十四、Web 核心交付（2026-09-06）
+
+四进程原入口、安装、开发身份、研究/触达的独立授权、重启/停止和备份恢复见
+[本机操作说明](docs/operations/web-core-local.md)。页面到真实执行者及未配置项见
+[能力矩阵](docs/operations/web-core-capability-matrix.md)。[验收](docs/acceptance/2026-09-05-web-core-completion.md)
+分列48e4465完整9318通过与7e10383修复后主链1通过；Web411通过，不累计局部数字。
+
+- HUP重启API/scheduler/notification/Web，保留同owner数据。PG单独stop/start可能改随机HostPort，
+  不能沿旧配置假称透明恢复；已验短断是同端点pause/unpause。
+- 备份恢复只证明静止owned PG+对象原件到另一owned空目标的metadata/SHA256一致；不覆盖运行库，
+  不恢复受控邮箱/模型状态，也不是生产备份产品。完整停止后新启动是新环境。
+- Mac原入口无完整quotation/自动寻源准入；独立Linux公开回复→来源/单位/Decimal成本→独立审批/PDF
+  已验，不能用不同owner/Need拼成Mac完整报价入口。Catalog培养终点仍queued。
+- Task1/2为通用技能/上下文/权限交集组件验证；生产Agent任务源、policy/descriptor/模型消费者仍未装配。
+  Browser无生产任务来源仍disabled；当前研究公开页通过原Gateway，不依赖桌面登录态。
+- 真实Provider/供应商/邮件、多人认证、TLS/共享部署、实际计费token和人工工时未验收。
+  单位合格贸易机会成本暂无可靠分母/成本来源，不报告0或宣称效率改善。
+
+[桌面扩展契约](docs/architecture/12-client-capability-boundaries.md)只保存真实接口与未来适配责任；
+没有Tauri或假IPC。后续共享部署须验证后端会话、员工映射、撤销、CSRF/来源限制、TLS、迁移、
+备份保留/恢复、单副本scheduler和告警，禁用dev身份；逐次审批及真实外部调用授权仍适用。
+[正式证据与裁定索引](docs/acceptance/web-core-delivery/README.md)保留历史失败、取舍与成本；
+最终全分支review由控制者追加，未发生的审查不填通过。
+
+## 十五、本机持久 Web 内测（2026-09-07）
+
+真实账号、生产Web构建、三应用与独立持久PG/MinIO现由`scripts/run_web_pilot.py`提供。首次使用
+必须由操作者显式提供业务政策，再依次`init`、`start`和在
+真实TTY中创建账号；系统没有默认员工、默认密码、默认市场或测试业务政策。完整命令、政策字段形状、
+`getpass`交互、私有权限与冷备份恢复步骤见
+[持久内测操作说明](docs/operations/web-internal-pilot.md)。
+
+- 当前schema为单一head `0060`；`start`只核验不迁移。生产Web须先执行`gen:api`和`build`，页面与
+  `/api`同源，不使用开发员工头。
+- `stop`只停止当前profile精确owner的应用和存储，保留profile、容器及卷。关机前必须stop并核对
+  应用/存储均stopped；不要用prune、宽泛pkill或删卷代替。
+- `disable`和`reset-password`撤销旧会话；恢复副本也撤销全部会话。多标签登录/退出要求Web Locks，
+  当前实际浏览器仅Chromium 151.0.7922.34。
+- 冷备份要求全部应用和存储已停止，只恢复到全新profile/新owner。备份含敏感配置和业务数据，目录
+  0700、文件0600；当前无加密、自动保留或异地复制，与原盘同故障域时不能抵御磁盘损坏。
+- 生产源`ecfb4d2d959ade7ffa143b7b9ad1b8e29cde4242`、测试修订
+  `63150da376b07414088f5c0f90bcb7ea5f22e075`的增强E2E为1 passed/34.15s；覆盖刷新、完整stop/start、
+  DB/对象hash、退出失败重试与旧token重放、直接跨标签换号/共同失效、真实响应交付顺序与Web Lock
+  排队、账号停用/重置、冷恢复、重登与390px。console collector的宽泛过滤局限见
+  [持久内测验收](docs/acceptance/2026-09-07-web-internal-pilot.md)，不得据此宣称过滤窗口内无其他告警。
+- 这是本机loopback内测。共享TLS/反向代理、其他浏览器、真实Provider/供应商/邮件、桌面端与生产
+  Browser任务源仍未验收；[桌面扩展契约](docs/architecture/12-client-capability-boundaries.md)继续保留。
+
+受控四应用/Vite入口、持久三应用/生产Web入口和独立Linux报价证据必须分开阅读，不能把不同owner、
+不同Need/Opportunity或合成结果拼成一条真实业务闭环。[能力矩阵](docs/operations/web-core-capability-matrix.md)
+已按这三类证据分别标注。
 
 ## 附：常用命令
 
@@ -695,3 +813,17 @@ docs/architecture/00-overview.md    # 总体架构
 docs/adr/                            # 决策与理由
 GLOSSARY.md                          # 术语（写代码前对一遍用词）
 ```
+
+
+## 内置 DeepSeek Agent（首批）
+
+独立入口为 `apps.api.standalone` 与 `apps.scheduler_worker.standalone`，复用已有持久存储、
+真实账号与 canonical scheduler。初次配置、显式迁移、启动、probe、对话及停止步骤见
+[操作说明](docs/operations/builtin-deepseek-agent.md)。默认验收命令为
+`python -m scripts.accept_builtin_agent`；没有管理员明确输入与配置，不执行 live 调用。
+
+首批只开放私有会话、当前权限资料读取和人工确认的 research_only；模型走 `model.generate`
+网关，使用持久调用额度与序列身份。unknown 不自动重发，历史来源撤权后重新裁剪。
+模型配置保存后必须同步私有部署文件、重启两进程并显式探测；Web 不接收真实密钥。
+本地独立后台不等于共享 HTTPS 或全部业务自动执行，最终证据与未运行项见
+[同版本验收](docs/operations/2026-09-22-builtin-deepseek-acceptance.md)。

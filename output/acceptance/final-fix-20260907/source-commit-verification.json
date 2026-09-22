@@ -1,0 +1,18 @@
+{
+  "source_sha": "02506e44b52392879ea7b8a5b350da435a9f827f",
+  "matching_tested_files": [
+    "apps/scheduler_worker/adapters/reply_current_access.py",
+    "apps/scheduler_worker/adapters/reply_gateway_content.py",
+    "apps/scheduler_worker/adapters/message_content_reader.py",
+    "apps/scheduler_worker/reply_composition.py",
+    "apps/scheduler_worker/runtime.py",
+    "domains/conversations/service.py",
+    "domains/conversations/service_impl.py",
+    "workflows/reply_qualification/ports.py",
+    "workflows/reply_qualification/steps.py",
+    "workflows/reply_qualification/flow.py",
+    "infra/controlled/reply_model.py",
+    "tests/unit/test_controlled_reply_model.py",
+    "tests/integration/test_reply_completion.py"
+  ]
+}

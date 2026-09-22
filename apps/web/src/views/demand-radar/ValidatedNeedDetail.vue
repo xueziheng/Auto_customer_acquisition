@@ -1,8 +1,10 @@
 <script setup lang="ts">
 /* global HTMLDetailsElement, HTMLElement, KeyboardEvent */
-import { inject, onMounted, ref } from "vue";
+import { inject, onMounted, ref, watch } from "vue";
+import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
 import { useRoute } from "vue-router";
 
+import MessageEvidenceDownload from "../../components/MessageEvidenceDownload.vue";
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
 
@@ -17,6 +19,12 @@ const loading = ref(true);
 const error = ref<string | null>(null);
 const sourcingCase = ref<SourcingCase | null>(null);
 const sourcingNotice = ref<string | null>(null);
+
+function clearNeed(): void { need.value = null; sourcingCase.value = null; sourcingNotice.value = null; error.value = null; }
+const gate = useQuoteRequestScope(client, () => [route.fullPath], () => {
+  clearNeed(); globalThis.queueMicrotask(() => void loadNeed());
+});
+watch(() => route.fullPath, () => { clearNeed(); void loadNeed(); }, { flush: "sync" });
 
 function fieldLabel(value: string): string {
   return (
@@ -41,7 +49,7 @@ function formatDate(value: string): string {
 }
 
 function safeError(status: number): string {
-  if (status === 403) return "当前身份无权读取该已验证需求";
+  if (status === 401 || status === 403) return "当前身份无权读取该已验证需求";
   if (status === 400 || status === 404) return "该已验证需求不存在或不可见";
   return "已验证需求加载失败，请稍后重试";
 }
@@ -55,6 +63,8 @@ function toggleProvenance(event: KeyboardEvent): void {
 }
 
 async function loadNeed(): Promise<void> {
+  const op = gate.begin("need"); if (!op?.valid()) return;
+  clearNeed();
   loading.value = true;
   error.value = null;
   sourcingNotice.value = null;
@@ -63,12 +73,14 @@ async function loadNeed(): Promise<void> {
     const result = await client.GET("/demand/needs/{need_id}", {
       params: { path: { need_id: needId } },
     });
+    if (!op.valid()) return;
     if (result.response.status === 200 && result.data) {
       need.value = result.data;
       try {
         const sourcing = await client.GET("/sourcing-cases", {
           params: { query: { limit: 50 } },
         });
+        if (!op.valid()) return;
         if (sourcing.response.status !== 200 || !sourcing.data) {
           sourcingCase.value = null;
           sourcingNotice.value = sourcing.response.status === 403
@@ -78,9 +90,10 @@ async function loadNeed(): Promise<void> {
           sourcingCase.value = sourcing.data.find(
             (item) => item.need_id === result.data!.need_id,
           ) ?? null;
-          if (!sourcingCase.value) sourcingNotice.value = "尚无关联寻源 Case";
+          if (!sourcingCase.value) sourcingNotice.value = "最近 50 条可见记录中未找到关联寻源 Case；是否存在暂不可确认";
         }
       } catch {
+        if (!op.valid()) return;
         sourcingCase.value = null;
         sourcingNotice.value = "关联寻源 Case 暂不可读取";
       }
@@ -88,9 +101,10 @@ async function loadNeed(): Promise<void> {
       error.value = safeError(result.response.status);
     }
   } catch {
+    if (!op.valid()) return;
     error.value = "无法连接需求服务";
   } finally {
-    loading.value = false;
+    if (op.valid()) loading.value = false;
   }
 }
 
@@ -143,7 +157,7 @@ onMounted(() => void loadNeed());
     >
       <header>
         <div>
-          <span class="validated-badge">客户确认</span>
+          <span class="validated-badge">客户明确表达过需求</span>
           <h2>{{ need.account_name }}</h2>
           <p>{{ need.account_id }} · {{ need.need_id }}</p>
         </div>
@@ -167,6 +181,9 @@ onMounted(() => void loadNeed());
         {{ sourcingNotice }}
       </p>
 
+      <RouterLink :to="{path:'/inbox', query:{account_id:need.account_id}}">
+        查看该企业最近已授权会话与邮件原件
+      </RouterLink>
       <section
         class="summary-grid"
         aria-label="需求摘要"
@@ -187,7 +204,7 @@ onMounted(() => void loadNeed());
         <div class="section-head">
           <div>
             <span class="validated-badge">字段级 Provenance</span>
-            <h2>客户原话与确认记录</h2>
+            <h2>来源摘录与确认记录</h2>
           </div>
           <span>{{ need.fields.length }} 个字段</span>
         </div>
@@ -200,6 +217,12 @@ onMounted(() => void loadNeed());
             <span>{{ fieldLabel(field.name) }}</span>
             <strong>{{ field.value }}</strong>
           </header>
+          <span>{{ field.confirmed_by ? "人工确认记录" : "来源摘录；字段确认状态见 Provenance" }}</span>
+          <MessageEvidenceDownload
+            v-if="/^msg_[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(field.source_ref)"
+            :message-id="field.source_ref"
+            @denied="clearNeed(); error = '邮件证据不存在或当前身份无权读取'"
+          />
           <blockquote v-if="field.source_quote">
             “{{ field.source_quote }}”
           </blockquote>
@@ -238,6 +261,8 @@ onMounted(() => void loadNeed());
 </template>
 
 <style scoped>
+.need-packet, .summary-grid article, .field-evidence { min-width:0; overflow-wrap:anywhere; }
+.field-evidence dd { min-width:0; margin:0; }
 .need-detail-shell { max-width: 1180px; overflow-y: auto; }
 .detail-head { justify-content: space-between; align-items: center; }
 .detail-head a { color: var(--fact); text-decoration: none; font-size: 12px; }

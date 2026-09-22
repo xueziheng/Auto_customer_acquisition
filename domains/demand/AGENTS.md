@@ -159,3 +159,24 @@ NeedUnitScopeReader只提供真实员工与Need/机会/account绑定；业务交
 表示已经开始寻源、询价或报价。优先级事实的观察时间是底层版本：归簇后必须使用经双向成员链核验、
 严格 UTC 且不早于创建时间的 `NeedCluster.updated_at`；未归簇时使用严格 UTC 的
 `ValidatedNeed.created_at`。禁止用读取时钟制造新版本，也禁止在遗留时间缺失/非法时回退当前时间。
+
+## Phase 2 目录提案需求事实
+
+`recurring_requirement` 是客户明确表达的三态事实：`True`、`False` 与未知 `None` 不得合并，
+并须沿用 `FactualField`/`Provenance` 的直接来源门禁。它不参与完整度 0–5、寻源或报价准备推导，
+也不推进 Need 状态。quantity、unit 或 recurrence 真正变化后，业务事实、历史与
+`NeedCatalogFactsChanged` 必须在同一租户事务提交；相同命令重放不得重复发布。事件只携带
+Need/当前簇定位与变更种类，未归簇时 `cluster_id=None`，不得伪造单成员 Catalog 簇。
+
+目录事实读取必须一次取得租户绑定的完整双向成员快照；簇→Need 与 Need→簇集合不相等、
+成员租户不一致或成员产品类别不等于簇类别时失败关闭，且不得产出 `facts_hash`。未归簇 Need
+不属于目录簇。
+
+所有计数先按 account 聚合：同账户多条 Need 的数量覆盖视为未知，复购 True+False 只计一个
+True 账户并输出固定 mixed display code。数量只纳入正整数、人工确认且仍绑定当前完整数量事实
+哈希的单位；只做既有单位契约允许的空白/大小写规范化，不换算，混合单位不合计。
+
+国家只接受 workflow 提供的完整非 Agent 证据与精确大写已分配 ISO-2。证据摘要仅携带安全
+Provenance 元数据和绑定事实值的内容哈希，不得带值、原话、URL 内容或 reasoning。`facts_observed_at`
+取所有参与持久事实的最新时间，不使用读取时钟；`facts_hash` 对稳定排序后的决策字段做 canonical
+SHA-256，排除展示文案和读取时间。Demand 不读取 Catalog Policy，也不决定是否创建提案或 Product。

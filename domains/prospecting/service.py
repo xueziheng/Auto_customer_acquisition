@@ -14,6 +14,7 @@ from domains.prospecting.schemas import (
     ContactPointView,
     DiscoveredContactRequest,
     DiscoveredContactResult,
+    OutreachContactFacts,
     ProspectAccountDetailView,
     ProspectAccountView,
     ProspectContactDetailView,
@@ -57,6 +58,15 @@ class ContactValueHasher(Protocol):
 @runtime_checkable
 class ProspectingService(Protocol):
     """潜客服务。"""
+
+    async def get_outreach_contact_facts(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+        contact_point_id: ContactPointId,
+    ) -> OutreachContactFacts:
+        """精确租户/企业/联系方式读取，不暴露地址或扫描账户联系人。"""
+        ...
 
     async def resolve_account(
         self, tenant_id: TenantId, request: AccountResolveRequest

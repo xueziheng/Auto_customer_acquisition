@@ -56,7 +56,7 @@ from shared.schemas.money import CurrencyCode, Money
 from tests.provider_readiness_fakes import provider_readiness_dependencies
 from tests.unit.test_crm_router import _ManualRuntime
 
-_NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
+_NOW = datetime.now(UTC)
 
 
 class _AllowAuthorizer:

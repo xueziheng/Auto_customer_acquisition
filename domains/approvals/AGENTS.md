@@ -41,6 +41,7 @@ Campaign 边界修改
 指令提案确认（by boss）
 INDICATIVE 风险接受
 国家政策包变更（首次配置与后续修订均需独立审批）
+目录产品提案策略变更、目录产品培养（均由独立 boss 决定）
 ```
 
 条目用字符串引用其他域的枚举值（不跨域 import）。
@@ -51,6 +52,7 @@ INDICATIVE 风险接受
 报价审批人 ≠ 报价起草人，且 ≠ 机会负责人
 承诺解除人 ≠ 承诺人
 国家政策包审批人 ≠ 国家政策包提交人，且 ≠ 该变更 owner
+目录策略审批人 ≠ 可信策略提交人/owner；目录培养审批人 ≠ 提案 owner
 ```
 
 不是不信任员工，是消除「赶指标时给自己开绿灯」的结构性诱惑。通用自批规则由本域强制；新版报价的当前归属与用途规则由注入的报价guard判断，本域必须持该租约完成决定事务。
@@ -109,3 +111,17 @@ QuoteApprovalAccess.display只用于真报价namespace，在已有当前read租�
 ApprovalView.proposed_change_display；中文稳定标签/纯文本值，缺依赖失败关闭，不退回嵌套JSON。
 通用_view及legacy原字典值完全不变（国家政策流程有精确等值依赖）；不新增HTTP字段/端点。
 新版展示键的变更不是存储/审批规则变化，不授权原件或客户文件。
+
+## Phase 2 Catalog namespace 隔离
+
+仅 `catalog-policy-v1` 与 `catalog-cultivation-v1` 可以进入目录审批分支。审批域只定义
+字段白名单、规范 hash、可信事实读取和命令协议，不得导入 Products 或 Employees。策略审批
+`request_hash` 必须独立重现 Products 既有创建承诺；生成后的策略 ID、期限与完整包绑定由精确
+change-set、严格 proposed_change 和全不可变字段 replay 共同完成。培养 hash 绑定完整 subject，
+证据只保存安全引用，不保存原文、URL、价格或模型概率。
+
+Catalog 提交先取得 tenant+change-set 事务 advisory lock，再跨全部状态读取 canonical 包；只有
+完整不可变请求 exact replay 才返回原 ID，任一字段变化固定冲突，重试时钟不延长期限。目录决定
+只允许可信员工源确认的当前 active、eligible boss，缺 reader、异常、租户/员工不一致或角色失效
+均失败关闭并保持 pending，不发布 `ApprovalDecided`。可信 boss 仍受通用 proposed-by/owner 自批
+禁令约束。该 guard 只作用于两个精确 Catalog namespace，不改变 legacy、quote 或通用 HTTP 决定端点。

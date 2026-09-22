@@ -37,3 +37,5 @@
 ## Phase 1 范围
 
 角色枚举、Territory Matrix、归属锁、分配解析器。不做：工作量自动均衡、绩效统计（明确不做 AI 模糊绩效评分，见设计稿 45.8——老板看可验证事实，不看「员工能力 72 分」）。
+
+通知受众get_notification_owner仅返回当前owner ID/None；NOTIFICATION_OWNER_READ只SYSTEM且Actor.notification_account_id形状合法、与本次tenant-bound账户精确匹配。旧get_ownership/OWNERSHIP_READ权限不放宽；上层用当前list_active过滤停用人员，不回退事件旧owner。

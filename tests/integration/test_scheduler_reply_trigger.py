@@ -568,8 +568,10 @@ def _conversations_service(
 
 def _raw_stores(engine: AsyncEngine, runtime: _MinioRuntime):
     from artifact_store.service_impl import RawArtifactStoreImpl
+    from connectors.object_store.bounded import S3BoundedObjectBlobTransport
     from connectors.object_store.s3 import S3ObjectBlobTransport
     from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
+    from shared.schemas.evidence_read import ObjectReadLimits
 
     factory = async_sessionmaker(engine, expire_on_commit=False)
     uow_factory = lambda tenant: SqlAlchemyArtifactUnitOfWork(factory, tenant)
@@ -580,6 +582,11 @@ def _raw_stores(engine: AsyncEngine, runtime: _MinioRuntime):
         runtime.settings.raw_max_bytes,
         lambda: NOW,
         new_id,
+        bounded_transport=S3BoundedObjectBlobTransport(
+            runtime.settings, runtime.secrets,
+            limits=ObjectReadLimits(connect_timeout_ms=1000, read_timeout_ms=1000,
+                total_timeout_ms=5000, chunk_bytes=65536, maximum_attempts=1),
+        ),
     )
 
 
@@ -901,7 +908,7 @@ async def test_inbound_stored_starts_reply_run_and_applies_actions(
                 )
             ).scalars().all()
         assert len(reply_runs) == 1
-        assert reply_runs[0].status == "completed"
+        assert reply_runs[0].status == "completed", reply_runs[0].last_error
         # 完成后只增加分类/动作/抑制范围及耐久分类时刻，不携带原文。
         assert set(reply_runs[0].context) == _REPLY_CONTEXT_KEYS | {
             "category",
@@ -1269,7 +1276,7 @@ async def test_reply_trigger_consumer_redelivery_is_idempotent(
                 )
             ).scalars().all()
         assert len(reply_runs) == 1  # engine 幂等键 reply:{message_id}
-        assert reply_runs[0].status == "completed"
+        assert reply_runs[0].status == "completed", reply_runs[0].last_error
         assert len(classifications) == 1  # record_classification at-most-once
         assert len(suppressions) == 1  # add_suppression 幂等键
         assert len(reply_events) == 1  # ReplyReceived 恰一次
@@ -1354,7 +1361,7 @@ async def test_reply_trigger_does_not_retrigger_on_reply_received(
         # 对象级断言：事件计数与单 run/单分类/单抑制，不依赖推理
         assert len(inbound_events) == 1
         assert len(reply_runs) == 1
-        assert reply_runs[0].status == "completed"
+        assert reply_runs[0].status == "completed", reply_runs[0].last_error
         assert len(reply_events) == 1
         assert len(classifications) == 1
         assert len(suppressions) == 1
