@@ -5969,3 +5969,46 @@ class ModelConfigurationVersionRow(Base):
     export_enabled: Mapped[bool] = mapped_column(Boolean)
     created_by: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AgentSessionRow(Base):
+    """员工私有会话，不保存可能泄露业务信息的生成标题。"""
+    __tablename__ = "agent_sessions"
+    __table_args__ = (PrimaryKeyConstraint("tenant_id","session_id",name="pk_agent_sessions"),)
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    session_id: Mapped[str] = mapped_column(String(40))
+    user_id: Mapped[str] = mapped_column(String(128))
+    employee_id: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer)
+
+
+class AgentTurnRow(Base):
+    """输入与持久 dispatch 意图同一行原子创建；不保存模型原始推理。"""
+    __tablename__ = "agent_turns"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id","turn_id",name="pk_agent_turns"),
+        UniqueConstraint("tenant_id","session_id","idempotency_key",name="uq_agent_turn_request"),
+        UniqueConstraint("tenant_id","run_id",name="uq_agent_turn_run"),
+        ForeignKeyConstraint(["tenant_id","session_id"],["agent_sessions.tenant_id","agent_sessions.session_id"],name="fk_agent_turn_session",ondelete="RESTRICT"),
+        ForeignKeyConstraint(["tenant_id","attempt_of"],["agent_turns.tenant_id","agent_turns.turn_id"],name="fk_agent_turn_attempt",ondelete="RESTRICT"),
+        CheckConstraint("state IN ('queued','running','awaiting_input','proposal_ready','completed','blocked','failed','unknown','cancelled')",name="ck_agent_turn_state"),
+        CheckConstraint("dispatch_state IN ('pending','bound') AND turn_kind IN ('conversation','model_probe')",name="ck_agent_turn_dispatch"),
+        Index("uq_agent_turn_active","tenant_id","session_id",unique=True,postgresql_where=text("state IN ('queued','running')")),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128))
+    turn_id: Mapped[str] = mapped_column(String(40))
+    session_id: Mapped[str] = mapped_column(String(40))
+    run_id: Mapped[str] = mapped_column(String(40))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    request_hmac: Mapped[str] = mapped_column(String(64))
+    input_text: Mapped[str] = mapped_column(Text)
+    object_refs: Mapped[list[dict[str,object]]] = mapped_column(postgresql.JSONB)
+    result: Mapped[dict[str,object]|None] = mapped_column(postgresql.JSONB)
+    state: Mapped[str] = mapped_column(String(32))
+    dispatch_state: Mapped[str] = mapped_column(String(16))
+    turn_kind: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attempt_of: Mapped[str|None] = mapped_column(String(40))
+    proposal_id: Mapped[str|None] = mapped_column(String(128))
+    error_code: Mapped[str|None] = mapped_column(String(40))
