@@ -130,6 +130,7 @@ class SchedulerRuntime:
     workflow: WorkflowPoller
     tenant_id: TenantId
     config: SchedulerConfig
+    assistant_driver: CampaignDriver | None = None
     campaign_driver: CampaignDriver | None = None
     activation: RuntimeActivation | None = None
     quote_expiry_driver: QuoteExpiryDriver | None = None
@@ -255,7 +256,8 @@ async def _run_cycle(
     Catalog 恢复/评估 → workflow 推进 → 有推进时 outbox 后置投递。
     """
     if (
-        runtime.quote_expiry_driver is not None
+        runtime.assistant_driver is not None
+        or runtime.quote_expiry_driver is not None
         or runtime.sourcing_admission_driver is not None
         or runtime.catalog_product_driver is not None
         or runtime.inbound_driver is not None
@@ -342,6 +344,15 @@ async def _run_cycle(
             )
         await confirm_lock()
 
+    if runtime.assistant_driver is not None:
+        assert confirm_lock is not None
+        await confirm_lock()
+        try:
+            await runtime.assistant_driver.scan_once()
+        except Exception as error:  # noqa: BLE001 - 阶段独立，日志不含原文
+            _log_phase_error(phase="assistant", error=error, tenant_id=runtime.tenant_id, cycle=cycle)
+        await confirm_lock()
+
     workflow_succeeded = False
     try:
         workflow_count = await runtime.workflow.poll_due(
@@ -358,7 +369,8 @@ async def _run_cycle(
 
     if workflow_succeeded and workflow_count > 0:
         if (
-            runtime.sourcing_admission_driver is not None
+            runtime.assistant_driver is not None
+            or runtime.sourcing_admission_driver is not None
             or runtime.catalog_product_driver is not None
             or runtime.inbound_driver is not None
         ):

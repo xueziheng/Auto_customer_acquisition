@@ -38,7 +38,7 @@ def filter_fragments(
 
 
 def dependencies(turn: TurnView) -> set[ObjectRef]:
-    refs = set(turn.object_refs)
+    refs = {*turn.object_refs, *turn.context_refs}
     if isinstance(turn.result, Explanation):
         for f in turn.result.fragments:
             refs.update(f.dependencies)
@@ -81,6 +81,7 @@ class HistoryProjector:
                 update={
                     "input_text": "",
                     "object_refs": (),
+                    "context_refs": (),
                     "result": None,
                     "proposal_id": None,
                     "content_hidden": True,

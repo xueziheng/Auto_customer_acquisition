@@ -5,6 +5,7 @@ from domains.assistant.repository import AssistantRepository
 from domains.assistant.schemas import (
     AssistantActor,
     AssistantDecision,
+    ObjectRef,
     SessionView,
     TurnExecution,
     TurnInput,
@@ -158,3 +159,26 @@ class AssistantServiceImpl:
             proposal_id=proposal_id,
             error_code=error_code,
         )
+
+    async def checkpoint(
+        self,
+        actor: AssistantActor,
+        session_id: AgentSessionId,
+        turn_id: AgentTurnId,
+        sequence: int,
+        result: AssistantDecision,
+        refs: tuple[ObjectRef, ...],
+    ) -> None:
+        """授权后保存已校验中间结果，崩溃恢复不再调用模型。"""
+        await self._authority.check(actor)
+        await self._repo.checkpoint(actor, session_id, turn_id, sequence, result, refs)
+
+    async def fail_turn(
+        self,
+        tenant_id: TenantId,
+        turn_id: AgentTurnId,
+        state: TurnState,
+        code: ModelFailureCode,
+    ) -> None:
+        """仅供受信后台失败关闭；员工撤权后仍可隐藏结果，不能产生成功内容。"""
+        await self._repo.fail_turn(tenant_id, turn_id, state, code)

@@ -282,6 +282,25 @@ class PostgresWorkflowEngine:
         *,
         scheduled_at: datetime | None = None,
     ) -> RunId:
+        return await self._start(tenant_id, workflow_type, subject_ref, initial_context, idempotency_key, scheduled_at=scheduled_at)
+
+    async def start_once(self, tenant_id: TenantId, run_id: RunId, workflow_type: str, subject_ref: str, context: dict[str, object]) -> RunId:
+        """受信会话意图专用：使用接纳时的 Run ID，旧 start 语义不变。"""
+        if workflow_type != "assistant" or context != {"turn_id": subject_ref} or not run_id:
+            raise ValidationError("会话运行绑定无效")
+        return await self._start(tenant_id, workflow_type, subject_ref, context, f"assistant-turn:{run_id}", requested_run_id=run_id)
+
+    async def _start(
+        self,
+        tenant_id: TenantId,
+        workflow_type: str,
+        subject_ref: str,
+        initial_context: dict[str, Any],
+        idempotency_key: str,
+        *,
+        scheduled_at: datetime | None = None,
+        requested_run_id: RunId | None = None,
+    ) -> RunId:
         """启动流程：创建 run 与首步原子提交；同 (tenant, key) 幂等返回既有 run。"""
         if not idempotency_key or not idempotency_key.strip():
             raise ValidationError("idempotency_key 必填且拒绝空白")
@@ -292,7 +311,7 @@ class PostgresWorkflowEngine:
         first_step = definition.steps[0]
         anchor = scheduled_at if scheduled_at is not None else self._now()
         first_planned_at = anchor + self._entry_delay(first_step, initial_context)
-        run_id = new_id("run")
+        run_id = requested_run_id or new_id("run")
         session = self._factory()
         try:
             await acquire_workflow_subject_lock(
@@ -368,6 +387,7 @@ class PostgresWorkflowEngine:
             ).one_or_none()
             if (
                 existing is None
+                or (requested_run_id is not None and existing.run_id != requested_run_id)
                 or existing.workflow_type != workflow_type
                 or existing.workflow_version != definition.version
                 or existing.subject_ref != subject_ref

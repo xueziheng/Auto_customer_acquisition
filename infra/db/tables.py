@@ -5996,6 +5996,8 @@ class AgentTurnRow(Base):
         CheckConstraint("dispatch_state IN ('pending','bound') AND turn_kind IN ('conversation','model_probe')",name="ck_agent_turn_dispatch"),
         Index("uq_agent_turn_active","tenant_id","session_id",unique=True,postgresql_where=text("state IN ('queued','running')")),
     )
+    context_refs: Mapped[list] = mapped_column(postgresql.JSONB, server_default=text("'[]'::jsonb"))
+    checkpoint_sequence: Mapped[int | None] = mapped_column(Integer)
     tenant_id: Mapped[str] = mapped_column(String(128))
     turn_id: Mapped[str] = mapped_column(String(40))
     session_id: Mapped[str] = mapped_column(String(40))

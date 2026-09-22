@@ -75,6 +75,7 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from workflows.account_discovery.ports import ContactEnricher, ContactVerifier
+from workflows.assistant.ports import AssistantRuntimePorts
 
 from .account_discovery import (
     BossAccountDiscoveryActorResolver,
@@ -252,6 +253,7 @@ class CanonicalSchedulerBootstrap:
     scoring_policy: ScoringPolicy
     handoff_policy: HandoffPolicy
     sourcing: SourcingRuntimePorts | None = None
+    assistant_factory: Callable[[SchedulerCoreServices, async_sessionmaker[AsyncSession], OpportunityService], AssistantRuntimePorts] | None = None
     research_enabled: bool = False
     research: ResearchRuntimePorts | None = None
     contacts_enabled: bool = False
@@ -310,6 +312,10 @@ class CanonicalSchedulerBootstrap:
             raise ValidationError("scheduler Campaign 发送依赖未完整配置")
         if self.reply_factory is not None and not self.campaign_enabled:
             raise ValidationError("scheduler 回复依赖未完整配置")
+
+    def build_assistant(self, core: SchedulerCoreServices, sessions: async_sessionmaker[AsyncSession], opportunities: OpportunityService) -> AssistantRuntimePorts | None:
+        """只构造独立端口；调度器稍后绑定同一个 engine。"""
+        return self.assistant_factory(core, sessions, opportunities) if self.assistant_factory is not None else None
 
     def build_base(
         self,

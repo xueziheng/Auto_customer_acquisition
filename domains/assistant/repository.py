@@ -5,6 +5,7 @@ from typing import Protocol
 from domains.assistant.schemas import (
     AssistantActor,
     AssistantDecision,
+    ObjectRef,
     SessionView,
     TurnExecution,
     TurnInput,
@@ -51,4 +52,21 @@ class AssistantRepository(Protocol):
     ) -> TurnExecution: ...
     async def bind(
         self, tenant_id: TenantId, turn_id: AgentTurnId, run_id: RunId
+    ) -> None: ...
+
+    async def checkpoint(
+        self,
+        actor: AssistantActor,
+        session_id: AgentSessionId,
+        turn_id: AgentTurnId,
+        sequence: int,
+        result: AssistantDecision,
+        refs: tuple[ObjectRef, ...],
+    ) -> None: ...
+    async def fail_turn(
+        self,
+        tenant_id: TenantId,
+        turn_id: AgentTurnId,
+        state: TurnState,
+        code: ModelFailureCode,
     ) -> None: ...

@@ -141,6 +141,8 @@ class WorkflowEngine(Protocol):
         """受信workflow内部只读快照，含终态；不扩老板审计HTTP权限。"""
         ...
 
+    async def start_once(self, tenant_id: TenantId, run_id: RunId, workflow_type: str, subject_ref: str, context: dict[str, object]) -> RunId: ...
+
     async def start(
         self,
         tenant_id: TenantId,

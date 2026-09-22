@@ -126,6 +126,7 @@ class TurnView(AssistantDTO):
     created_at: datetime
     input_text: str = Field(default="", repr=False)
     object_refs: tuple[ObjectRef, ...] = ()
+    context_refs: tuple[ObjectRef, ...] = ()
     result: AssistantDecision | None = Field(default=None, repr=False)
     attempt_of: AgentTurnId | None = None
     proposal_id: str | None = None
@@ -138,3 +139,4 @@ class TurnExecution(AssistantDTO):
     actor: AssistantActor
     turn: TurnView
     dispatch_state: Literal["pending", "bound"]
+    checkpoint_sequence: int | None = None

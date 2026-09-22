@@ -1,0 +1,314 @@
+"""真实 PG/engine/Gateway 的会话崩溃窗口；仅 Provider 使用受控输出。"""
+
+from datetime import timedelta
+
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+from connectors.deepseek.client import DeepSeekFailure
+from shared.schemas.model_invocation import ModelResponse, ModelUsage
+from tests.integration.test_assistant import actor, input_text
+from tests.integration.test_model_gateway import Authority as ModelAuthority
+from tests.integration.test_model_usage import limits
+from tests.integration.test_need_units import (
+    unit_engine as unit_engine,  # noqa: PLC0414
+)
+from tool_gateway.fingerprint import HmacFingerprintProvider
+
+
+class Identity:
+    allowed = True
+
+    async def check(self, actor):
+        from shared.errors import PermissionDenied
+
+        if not self.allowed:
+            raise PermissionDenied("已停用")
+
+    async def resolve(self, actor):
+        await self.check(actor)
+        return "boss", frozenset({"product_help", "research_proposal", "business_read"})
+
+
+class Reads:
+    async def read(self, actor, ref):
+        from agent_runtime.assistant.reads import PRODUCT_HELP
+        from domains.assistant.schemas import AuthorizedFragment
+
+        return AuthorizedFragment(text=PRODUCT_HELP, dependencies=(ref,))
+
+    async def list(self, actor, query):
+        return ()
+
+
+class Provider:
+    def __init__(self, mode="success", text=None):
+        self.calls = 0
+        self.mode = mode
+        self.after = None
+        self.text = (
+            text
+            or '{"kind":"clarify","questions":["请明确研究国家及预算"],"missing_fields":["target_countries"]}'
+        )
+
+    async def generate(self, request):
+        self.calls += 1
+        if self.after:
+            await self.after()
+        if self.mode == "timeout":
+            raise DeepSeekFailure("unknown")
+        return ModelResponse(
+            model=request.model,
+            text=self.text,
+            usage=ModelUsage(input_tokens=20, cached_input_tokens=0, output_tokens=15),
+        )
+
+    async def aclose(self):
+        pass
+
+
+def assemble(engine, provider):
+    from agent_runtime.assistant.context import (
+        AssistantContextBuilder,
+        HistoryProjector,
+    )
+    from agent_runtime.assistant.proposal import ResearchProposalBuilder
+    from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
+    from apps.scheduler_worker.assistant import AssistantDispatcher
+    from domains.assistant.service_impl import AssistantServiceImpl
+    from infra.db.assistant import SqlAssistantRepository
+    from infra.db.model_usage import SqlModelUsageRepository
+    from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
+    from infra.db.workflow_engine import PostgresWorkflowEngine
+    from tests.integration.test_assistant_proposal import service as directives
+    from tool_gateway.handlers.model_generate import GatewayModelGenerator
+    from workflows.assistant.flow import build_assistant_definition
+    from workflows.assistant.ports import AssistantRuntimePorts
+    from workflows.assistant.steps import build_assistant_handlers
+
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    repo = SqlAssistantRepository(sessions)
+    identity = Identity()
+    reads = Reads()
+    projector = HistoryProjector(identity, reads, repo)
+    fingerprints = HmacFingerprintProvider("test-v1", b"x" * 32)
+    service = AssistantServiceImpl(
+        repo, identity, CredentialMarkerGuard(), fingerprints, projector
+    )
+    generator = GatewayModelGenerator(
+        authority=ModelAuthority(),
+        usage=SqlModelUsageRepository(sessions),
+        provider_factory=lambda: provider,
+        limits=limits().model_copy(
+            update={
+                "max_input_bytes": 100000,
+                "max_output_tokens": 2000,
+                "tenant_calls": 10,
+                "employee_calls": 10,
+            }
+        ),
+        model="test-model",
+        configuration_version="test-v1",
+        ledger_factory=lambda tenant: SqlAlchemyToolGatewayUnitOfWork(sessions, tenant),
+        fingerprints=fingerprints,
+        lease_owner="assistant-test",
+        lease_duration=timedelta(seconds=30),
+    )
+    ports = AssistantRuntimePorts(
+        service,
+        AssistantContextBuilder(
+            identity,
+            reads,
+            repo,
+            projector,
+            configuration_version="test-v1",
+            max_bytes=100000,
+        ),
+        reads,
+        generator,
+        ResearchProposalBuilder(),
+        directives(engine),
+        identity,
+        fingerprints,
+        "test-model",
+        "test-v1",
+        2000,
+    )
+    handlers = build_assistant_handlers(ports)
+    workflow = PostgresWorkflowEngine(sessions, handlers)
+    workflow.register(build_assistant_definition())
+    return (
+        service,
+        workflow,
+        AssistantDispatcher(service, workflow),
+        sessions,
+        handlers,
+        identity,
+    )
+
+
+async def drain(workflow, tenant, count=8):
+    for _ in range(count):
+        await workflow.poll_due(tenant, 1)
+
+
+async def test_accept_stop_start_and_lost_bind_use_one_run(unit_engine):
+    provider = Provider()
+    app, wf, dispatcher, db, _handlers, _identity = assemble(unit_engine, provider)
+    owner = actor()
+    session = await app.create_session(owner)
+    turn = await app.accept_turn(owner, session.session_id, input_text())
+    assert provider.calls == 0
+    await wf.start_once(
+        owner.tenant_id,
+        turn.run_id,
+        "assistant",
+        turn.turn_id,
+        {"turn_id": turn.turn_id},
+    )
+    await dispatcher.dispatch(owner.tenant_id, 10)
+    await dispatcher.dispatch(owner.tenant_id, 10)
+    await drain(wf, owner.tenant_id)
+    result = await app.get_turn(owner, session.session_id, turn.turn_id)
+    assert result.state == "awaiting_input" and provider.calls == 1
+    from infra.db.tables import WorkflowRunRow
+
+    async with db() as connection:
+        assert (
+            await connection.scalar(
+                select(func.count())
+                .select_from(WorkflowRunRow)
+                .where(WorkflowRunRow.tenant_id == owner.tenant_id)
+            )
+            == 1
+        )
+
+
+@pytest.mark.parametrize("mode", ["timeout", "lost_result", "cancel", "revoke"])
+async def test_uncertain_and_late_results_never_repeat_provider(unit_engine, mode):
+    provider = Provider(mode)
+    app, wf, dispatcher, _db, _handlers, identity = assemble(unit_engine, provider)
+    owner = actor()
+    session = await app.create_session(owner)
+    turn = await app.accept_turn(owner, session.session_id, input_text())
+    if mode == "lost_result":
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("simulated write loss")
+
+        app.checkpoint = broken
+    if mode == "cancel":
+
+        async def cancel():
+            await app.cancel_turn(owner, session.session_id, turn.turn_id)
+
+        provider.after = cancel
+    if mode == "revoke":
+
+        async def revoke():
+            identity.allowed = False
+
+        provider.after = revoke
+    await dispatcher.dispatch(owner.tenant_id, 10)
+    await drain(wf, owner.tenant_id)
+    # Worker restart scans retained state; no implicit model attempt.
+    restarted = assemble(unit_engine, provider)
+    await restarted[2].dispatch(owner.tenant_id, 10)
+    await drain(restarted[1], owner.tenant_id)
+    result = (await app.execution(owner.tenant_id, turn.turn_id)).turn
+    assert (
+        result.state
+        == {
+            "timeout": "unknown",
+            "lost_result": "unknown",
+            "cancel": "cancelled",
+            "revoke": "blocked",
+        }[mode]
+    )
+    assert result.result is None and provider.calls == 1
+
+
+async def test_persisted_result_before_engine_advance_is_reused(unit_engine):
+    provider = Provider()
+    app, wf, dispatcher, _db, handlers, _identity = assemble(unit_engine, provider)
+    owner = actor()
+    session = await app.create_session(owner)
+    turn = await app.accept_turn(owner, session.session_id, input_text())
+    await dispatcher.dispatch(owner.tenant_id, 10)
+    await wf.poll_due(owner.tenant_id, 1)
+    run = await wf.get_run(owner.tenant_id, turn.run_id)
+    assert run.current_step == "generate"
+    await handlers["assistant.generate"].execute(run)
+    assert provider.calls == 1
+    await drain(wf, owner.tenant_id)
+    assert (
+        await app.get_turn(owner, session.session_id, turn.turn_id)
+    ).state == "awaiting_input"
+    assert provider.calls == 1
+
+
+async def test_committed_proposal_before_turn_binding_is_reused(unit_engine):
+    from domains.assistant.schemas import ResearchDraft, SourcedField
+    from infra.db.tables import AssistantProposalSourceRow
+    from tests.integration.test_directives_persistence import BOSS
+
+    provider = Provider()
+    app, wf, dispatcher, db, handlers, _identity = assemble(unit_engine, provider)
+    owner = actor(employee=BOSS)
+    session = await app.create_session(owner)
+    fields = {
+        "objective": "研究铰链需求",
+        "target_countries": "US",
+        "target_categories": "hinges",
+        "excluded_countries": "无",
+        "excluded_categories": "无",
+        "max_search_queries": "3",
+        "max_pages_read": "2",
+        "max_signals": "2",
+        "max_hypotheses": "1",
+        "minimum_confidence_tier": "low_mid",
+        "strategy_group": "demand_first",
+        "query_limit": "3",
+    }
+    turn = await app.accept_turn(
+        owner,
+        session.session_id,
+        input_text(text="；".join(f"{k}={v}" for k, v in fields.items())),
+    )
+    provider.text = ResearchDraft(
+        fields=tuple(
+            SourcedField(name=k, value=v, source_turn_id=turn.turn_id)
+            for k, v in fields.items()
+        )
+    ).model_dump_json()
+    await dispatcher.dispatch(owner.tenant_id, 10)
+    await drain(wf, owner.tenant_id, 2)
+    run = await wf.get_run(owner.tenant_id, turn.run_id)
+    assert run.current_step == "apply_result"
+
+    class Crash(BaseException):
+        pass
+
+    original = app.deliver
+
+    async def die(*args, **kwargs):
+        raise Crash()
+
+    app.deliver = die
+    with pytest.raises(Crash):
+        await handlers["assistant.apply_result"].execute(run)
+    app.deliver = original
+    await drain(wf, owner.tenant_id)
+    result = await app.get_turn(owner, session.session_id, turn.turn_id)
+    assert result.state == "proposal_ready" and result.proposal_id
+    async with db() as connection:
+        rows = (
+            await connection.scalars(
+                select(AssistantProposalSourceRow).where(
+                    AssistantProposalSourceRow.tenant_id == owner.tenant_id
+                )
+            )
+        ).all()
+        assert len(rows) == 1 and rows[0].proposal_id == result.proposal_id
+    assert provider.calls == 1

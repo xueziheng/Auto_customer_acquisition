@@ -11,6 +11,7 @@ from domains.assistant.models import can_transition
 from domains.assistant.schemas import (
     AssistantActor,
     AssistantDecision,
+    ObjectRef,
     SessionView,
     TurnExecution,
     TurnInput,
@@ -248,8 +249,7 @@ class SqlAssistantRepository:
                     TenantScopedRepository(tenant_id)
                     .scoped_query(AgentTurnRow)
                     .where(
-                        AgentTurnRow.dispatch_state == "pending",
-                        AgentTurnRow.state == "queued",
+                        AgentTurnRow.state.in_(("queued", "running")),
                     )
                     .order_by(AgentTurnRow.created_at, AgentTurnRow.turn_id)
                     .limit(limit)
@@ -276,6 +276,7 @@ class SqlAssistantRepository:
                 },
                 "turn": self._view(row),
                 "dispatch_state": row.dispatch_state,
+                "checkpoint_sequence": row.checkpoint_sequence,
             }
         )
 
@@ -311,3 +312,58 @@ class SqlAssistantRepository:
             if row.run_id != run_id:
                 raise AssistantConflict()
             row.dispatch_state = "bound"
+
+    async def checkpoint(
+        self,
+        actor: AssistantActor,
+        session_id: AgentSessionId,
+        turn_id: AgentTurnId,
+        sequence: int,
+        result: AssistantDecision,
+        refs: tuple[ObjectRef, ...],
+    ) -> None:
+        if sequence not in {0, 1} or len(refs) > 50:
+            raise AssistantConflict()
+        async with self._factory() as db, db.begin():
+            await self._session(db, actor, session_id, lock=True)
+            row = await self._turn(db, actor.tenant_id, session_id, turn_id)
+            if row.state != "running":
+                raise AssistantConflict()
+            data = result.model_dump(mode="json")
+            context_refs = [r.model_dump(mode="json") for r in refs]
+            if row.checkpoint_sequence == sequence:
+                if row.result != data or row.context_refs != context_refs:
+                    raise AssistantConflict()
+                return
+            if (row.checkpoint_sequence is None and sequence != 0) or (
+                row.checkpoint_sequence is not None
+                and (sequence != 1 or row.checkpoint_sequence != 0)
+            ):
+                raise AssistantConflict()
+            row.result = data
+            row.context_refs = context_refs
+            row.checkpoint_sequence = sequence
+
+    async def fail_turn(
+        self,
+        tenant_id: TenantId,
+        turn_id: AgentTurnId,
+        state: TurnState,
+        code: ModelFailureCode,
+    ) -> None:
+        if state not in {"blocked", "failed", "unknown"}:
+            raise AssistantConflict()
+        execution = await self.execution(tenant_id, turn_id)
+        async with self._factory() as db, db.begin():
+            await self._session(
+                db, execution.actor, execution.turn.session_id, lock=True
+            )
+            row = await self._turn(db, tenant_id, execution.turn.session_id, turn_id)
+            if row.state not in {"queued", "running"}:
+                return
+            row.state, row.error_code, row.result, row.proposal_id = (
+                state,
+                code,
+                None,
+                None,
+            )

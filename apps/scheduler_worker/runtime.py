@@ -25,6 +25,7 @@ from apps.composition_support.employee_readers import (
     RequestScopedDirectiveEmployeeReader,
     employee_service_scope,
 )
+from apps.scheduler_worker.assistant import AssistantDispatcher, AssistantDriver
 from artifact_store.repository import ArtifactUnitOfWorkFactory
 from artifact_store.service_impl import GeneratedArtifactStoreImpl, RawArtifactStoreImpl
 from connectors.dns_auth.client import (
@@ -228,6 +229,9 @@ from workflows.account_discovery.ports import (
     ContactEnricher,
     ContactVerifier,
 )
+from workflows.assistant.flow import build_assistant_definition
+from workflows.assistant.ports import AssistantRuntimePorts
+from workflows.assistant.steps import build_assistant_handlers
 from workflows.country_policy_change import (
     build_country_policy_change_handlers,
     register_country_policy_change,
@@ -998,6 +1002,8 @@ class SchedulerCoreServices:
 class SchedulerBootstrap(Protocol):
     """消费本次连接池及已存在服务，按拓扑形成依赖。"""
 
+    def build_assistant(self, core: SchedulerCoreServices, sessions: async_sessionmaker[AsyncSession], opportunities: OpportunityService) -> AssistantRuntimePorts | None: ...
+
     def build_base(
         self,
         config: SchedulerWorkerConfig,
@@ -1761,9 +1767,16 @@ class SchedulerRuntimeFactory:
                         ),
                     )
                 )
+            assistant_ports = None
+            if self._bootstrap is not None:
+                build_assistant = getattr(self._bootstrap, "build_assistant", None)
+                if build_assistant is not None:
+                    assistant_ports = build_assistant(core, factory, dependencies.opportunity_service)
+            assistant_handlers = build_assistant_handlers(assistant_ports) if assistant_ports is not None else {}
             workflow = PostgresWorkflowEngine(
                 factory,
                 {
+                    **assistant_handlers,
                     **handoff_handlers,
                     "sending_identity_auth.check": auth_step,
                     **campaign_handlers,
@@ -1779,6 +1792,10 @@ class SchedulerRuntimeFactory:
                 now=self._now,
             )
             engine_ref = workflow
+            assistant_driver = None
+            if assistant_ports is not None:
+                workflow.register(build_assistant_definition())
+                assistant_driver = AssistantDriver(AssistantDispatcher(assistant_ports.assistant_service, workflow), config.tenant_id, config.batch_limit)
             sourcing_admission_driver = (
                 SourcingAdmissionDriver(
                     policy=sourcing_policy_reader,
@@ -1932,6 +1949,7 @@ class SchedulerRuntimeFactory:
                     config.batch_limit,
                     config.lock_key,
                 ),
+                assistant_driver=assistant_driver,
                 campaign_driver=campaign_driver,
                 activation=runtime_activation,
                 quote_expiry_driver=(
