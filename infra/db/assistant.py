@@ -19,6 +19,7 @@ from domains.assistant.schemas import (
 )
 from infra.db.base import TenantScopedRepository
 from infra.db.tables import AgentSessionRow, AgentTurnRow
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     AgentSessionId,
     AgentTurnId,
@@ -47,6 +48,7 @@ class SqlAssistantRepository:
             .where(
                 AgentSessionRow.session_id == session_id,
                 AgentSessionRow.employee_id == actor.employee_id,
+                AgentSessionRow.user_id == actor.user_id,
             )
         )
         row = (
@@ -102,7 +104,10 @@ class SqlAssistantRepository:
                 await db.scalars(
                     TenantScopedRepository(actor.tenant_id)
                     .scoped_query(AgentSessionRow)
-                    .where(AgentSessionRow.employee_id == actor.employee_id)
+                    .where(
+                        AgentSessionRow.employee_id == actor.employee_id,
+                        AgentSessionRow.user_id == actor.user_id,
+                    )
                     .order_by(AgentSessionRow.created_at.desc())
                     .limit(100)
                 )
@@ -142,6 +147,8 @@ class SqlAssistantRepository:
                 if old.request_hmac != request_hmac or old.attempt_of != attempt_of:
                     raise AssistantConflict()
                 return self._view(old)
+            if len((await db.scalars(scoped.limit(100))).all()) >= 100:
+                raise ValidationError("会话已达到轮次上限，请新建会话")
             active = (
                 await db.scalars(
                     scoped.where(AgentTurnRow.state.in_(("queued", "running")))
@@ -188,9 +195,11 @@ class SqlAssistantRepository:
                     .order_by(
                         AgentTurnRow.created_at.desc(), AgentTurnRow.turn_id.desc()
                     )
-                    .limit(100)
+                    .limit(101)
                 )
             ).all()
+            if len(rows) > 100:
+                raise ValidationError("上下文超限，请新建会话")
             return [self._view(r) for r in reversed(rows)]
 
     async def get(
