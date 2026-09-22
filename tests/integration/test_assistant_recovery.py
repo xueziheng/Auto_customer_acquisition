@@ -153,6 +153,100 @@ async def drain(workflow, tenant, count=8):
         await workflow.poll_due(tenant, 1)
 
 
+async def test_selected_sources_complete_multiple_turns_and_survive_restart(unit_engine):
+    from agent_runtime.assistant.reads import PRODUCT_HELP, PRODUCT_REF
+
+    provider = Provider(text='{"kind":"explain","source_indexes":[0]}')
+    app, wf, dispatcher, _db, _handlers, _identity = assemble(unit_engine, provider)
+    owner = actor()
+    session = await app.create_session(owner)
+    ids = []
+    for index in range(3):
+        turn = await app.accept_turn(owner, session.session_id,
+            input_text(text="聊天中的好是否批准商业承诺？", key=f"explain-{index}"))
+        ids.append(turn.turn_id)
+        await dispatcher.dispatch(owner.tenant_id, 10)
+        await drain(wf, owner.tenant_id)
+        result = await app.get_turn(owner, session.session_id, turn.turn_id)
+        assert result.state == "completed"
+        assert result.result.fragments[0].text == PRODUCT_HELP
+        assert result.result.fragments[0].dependencies == (PRODUCT_REF,)
+        assert result.result.fragments[0].source_turn_ids == tuple(ids)
+        assert provider.calls == index + 1
+    restarted = assemble(unit_engine, provider)
+    await restarted[2].dispatch(owner.tenant_id, 10)
+    await drain(restarted[1], owner.tenant_id)
+    assert provider.calls == 3
+    assert len(await restarted[0].list_turns(owner, session.session_id)) == 3
+
+
+async def test_selected_source_revoked_before_delivery_stays_blocked(unit_engine):
+    from shared.errors import PermissionDenied
+
+    provider = Provider(text='{"kind":"explain","source_indexes":[0]}')
+    app, wf, dispatcher, _db, handlers, _identity = assemble(unit_engine, provider)
+    owner = actor()
+    session = await app.create_session(owner)
+    turn = await app.accept_turn(owner, session.session_id, input_text())
+
+    async def revoke():
+        async def denied(actor, ref):
+            raise PermissionDenied("来源已撤权")
+        handlers["assistant.generate"]._ports.read_port.read = denied
+
+    provider.after = revoke
+    await dispatcher.dispatch(owner.tenant_id, 10)
+    await drain(wf, owner.tenant_id)
+    result = (await app.execution(owner.tenant_id, turn.turn_id)).turn
+    assert result.state == "blocked" and result.result is None
+    assert provider.calls == 1
+
+
+async def test_legacy_explanation_checkpoint_applies_without_regeneration(unit_engine):
+    from agent_runtime.assistant.reads import PRODUCT_HELP, PRODUCT_REF
+    from domains.assistant.schemas import AuthorizedFragment, Explanation
+
+    provider = Provider()
+    app, wf, dispatcher, _db, _handlers, _identity = assemble(unit_engine, provider)
+    owner = actor()
+    session = await app.create_session(owner)
+    turn = await app.accept_turn(owner, session.session_id, input_text())
+    await dispatcher.dispatch(owner.tenant_id, 10)
+    await wf.poll_due(owner.tenant_id, 1)
+    legacy = Explanation(fragments=(AuthorizedFragment(
+        text=PRODUCT_HELP, dependencies=(PRODUCT_REF,), source_turn_ids=(turn.turn_id,)),))
+    await app.checkpoint(owner, session.session_id, turn.turn_id, 0, legacy, (PRODUCT_REF,))
+    restarted = assemble(unit_engine, provider)
+    await restarted[2].dispatch(owner.tenant_id, 10)
+    await drain(restarted[1], owner.tenant_id)
+    result = await restarted[0].get_turn(owner, session.session_id, turn.turn_id)
+    assert result.state == "completed" and result.result == legacy
+    assert provider.calls == 0
+
+
+@pytest.mark.parametrize("text,reason", [
+    ('{"kind":"explain","source_indexes":[999]}', "assistant_output_reference"),
+    ('{"kind":"explain","source_indexes":[0],"text":"虚构承诺"}', "assistant_output_schema"),
+])
+async def test_invalid_model_selection_records_safe_reason_without_retry(unit_engine, text, reason):
+    provider = Provider(text=text)
+    app, wf, dispatcher, _db, _handlers, _identity = assemble(unit_engine, provider)
+    owner = actor()
+    session = await app.create_session(owner)
+    turn = await app.accept_turn(owner, session.session_id, input_text())
+    await dispatcher.dispatch(owner.tenant_id, 10)
+    await drain(wf, owner.tenant_id)
+    run = await wf.get_run(owner.tenant_id, turn.run_id)
+    assert run.status == "failed"
+    assert run.context["assistant_output_failure"] == reason.removeprefix("assistant_")
+    assert set(run.context) == {"turn_id", "assistant_output_failure"}
+    result = await app.get_turn(owner, session.session_id, turn.turn_id)
+    assert result.state == "failed" and result.error_code == "invalid_response"
+    assert result.result is None
+    await drain(wf, owner.tenant_id)
+    assert provider.calls == 1
+
+
 async def test_accept_stop_start_and_lost_bind_use_one_run(unit_engine):
     provider = Provider()
     app, wf, dispatcher, db, _handlers, _identity = assemble(unit_engine, provider)
