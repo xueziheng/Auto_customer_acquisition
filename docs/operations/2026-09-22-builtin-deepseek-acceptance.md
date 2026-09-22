@@ -1,18 +1,27 @@
 # 内置 DeepSeek Agent 首批验收
 
 日期：2026-09-22。分支 `codex/builtin-deepseek-agent`，执行基线
-`c8251c15d6502e6cfc19a28a3e2c61d5c022db53`。本记录正在收敛最终回归与独立审查，不能据此宣称公司部署完成。
+`c8251c15d6502e6cfc19a28a3e2c61d5c022db53`。实现与六项重要审查修复的源码提交为 `68033e8`。测试夹具追加修正提交为 `fc8880b`；公司部署不在本批验收内。
 
 ## 已获得的证据
 
-- 后端 unit：`python -m pytest tests/unit -q`，7454 passed，102.96 秒。
+- 后端 unit：`python -m pytest tests/unit -q`，7455 passed，85.14 秒。
 - 业务评估：`python -m pytest tests/evals -q`，25 passed；其中新增 12 个内置助手安全/澄清案例。
   模型输出受控，不能代表 live 模型准确率。
-- `python -m mypy domains shared tool_gateway connectors`：335 个源码文件通过。
+- `python -m mypy domains shared tool_gateway connectors`：335 个源码文件通过；独立 API/scheduler/生命周期装配追加类型检查通过。
 - 结构自检通过；`python -m ruff check .` 通过。
 - 受控独立 API/PG/scheduler、显式 probe、多轮提案、精确确认、研究来源与 unknown 不重试已逐任务测试。
 - 1440/390px 浏览器会话操作已验证；HTTP 受控，真实服务端授权/数据库持久性由独立集成测试覆盖。
-- 最终 integration、Web 与受影响端到端正在运行，结果将在完成后补齐。
+- Web：API 类型连续生成两次哈希一致，typecheck/build 通过；36 个文件、432 项测试通过。
+  ESLint 0 errors / 94 warnings（包含既有风格告警，未宣称零告警）。
+- 受影响 E2E：显式 `TRADEOS_REQUIRE_E2E=1` 运行 assistant_browser、web_pilot、research_browser、
+  web_core_controlled，6 passed / 107.35 秒；真实 Chromium，旧 pilot 的登录/持久化/恢复也回归通过。
+- 默认受控验收脚本：`python -m scripts.accept_builtin_agent` 返回 0，详见[机器报告](2026-09-22-builtin-deepseek-controlled.json)。
+- 完整 integration：2130 passed / 2 failed，1844.98 秒，无跳过。两项为旧仓储测试预期：
+  显式索引清单漏掉迁移 0060/0061/0062 中的索引，归因聚合夹具的固定日期已在 30 天窗口外。
+  仅修测试，业务源码未变化；仓储文件复跑 36 passed / 4.32 秒。该文件及其后的全部集成测试按默认顺序补验：557 passed / 171.85 秒。
+  全量中未修改且已通过的前段 1575 项，加上补验 557 项，覆盖全部 2132 项，无跳过。
+  这组证据按全量运行与修复后补验分别记录，不宣称第二次不间断全量全绿。
 
 真实 DeepSeek 调用、真实搜索/页面和共享部署均为 `not_run`，原因是没有管理员提供的真实密钥、
 明确调用额度及获准研究输入。未读取真实 `.env`、未启动共享网址、未发送客户消息。
@@ -24,6 +33,8 @@ handoff 兼容性读取替身和受环境代理影响的 loopback 测试；安�
 初次 integration 在 626 passed / 11 failed / 3 errors 时停止诊断；新不可变会话事实污染共享库的
 旧迁移往返，已改用隔离数据库，未放宽生产不可变约束。旧迁移 head、固定日期滚动窗口与 handler
 预期已同步；Linux 测试镜像漏掉既有 handoff 模块和新增模型装配模块，已补显式源码白名单。
+一次手工将旧 scheduler 测试排在迁移降级测试之前的组合仍因共享夹具状态出现 29 项迁移失败；
+该组合不作为通过证据，最终完整 integration 使用默认收集顺序。任意重排旧共享夹具测试的隔离性未在本批解决。
 
 新增回归证明：密钥解析失败发生在发出请求前，调用账本应为 rejected 且释放额度；先观察到 invalid
 失败，再修正为本地 prepare→mark_dispatched→单次 HTTP，测试通过。真实验收脚本对 probe/Run
@@ -31,7 +42,7 @@ handoff 兼容性读取替身和受环境代理影响的 loopback 测试；安�
 
 ## 范围与已知限制
 
-首批为本机独立后台。两个应用手动启动，需各自 Ctrl-C 后停止存储；没有自动公司服务托管。
+首批为本机独立后台。API、scheduler 及既有通知 worker 手动启动，需各自 Ctrl-C 后停止存储；没有自动公司服务托管。
 Web 配置变更需同步私有配置文件、重启两进程、重新 probe。research 依赖显式 Tavily 配置、
 当前 Playbook/国家政策及老板确认。仅有研究信号/假设不能自动晋升已验证需求。
 unknown 保留费用事实与并发槽，无自动重发；单会话最多 100 轮；业务解释使用可核验摘录，
@@ -39,36 +50,76 @@ unknown 保留费用事实与并发槽，无自动重发；单会话最多 100 �
 
 ## 独立审查
 
-待写入最终 fresh-context 审查结论、修复证据和延期小项。
+使用 fresh-context `gpt-6-astra` 整分支只读审查，范围 `c8251c1..92d7f75`；未调用真实服务。
+审查报告 0 Critical、6 Important、2 Minor。重要项集中修复于 `68033e8`，没有重复派发审查。
+
+| 重要发现 | 修复与回归证据 |
+| --- | --- |
+| 已存检查点按旧配置继续应用 | 从不可变模型调用账本恢复版本绑定；每个业务步骤重新检查配置；`test_changed_configuration_never_applies_or_replays_old_generation`，旧配置/许可撤销用例先失败后通过 |
+| 长任务把活跃后台误判掉线 | 独立心跳只在持有规范锁期间运行，核验同一连接并在解锁前关闭；`test_scheduler_heartbeat_continues_during_work_and_stops_on_lock_loss` 先失败后通过 |
+| 外发许可无法切换 | 管理员设置接口新增严格布尔许可，expected_version 检查、新版本审计和重启流程保留；`test_admin_can_change_export_permission_with_version_and_restart` 覆盖 false→true→false，先失败后通过 |
+| 50 条合法读取触发来源超限 | 来源集合上限统一为 256，在模型请求前检查；`test_source_budget_is_checked_before_paid_generation` 的 50 条成功及超限零调用用例先失败后通过 |
+| 私有聊天全文复制到共享提案 | 只存研究字段及来源标识；增强 `test_committed_proposal_before_turn_binding_is_reused`，超过万字的无关历史仍可生成一个提案，且共享记录不含私人历史；先失败后通过 |
+| 来源机会链接打开列表首项 | 目标组件按 query 精确加载来源 ID，包括列表外对象；Web“来源链接读取精确机会，即使该对象不在当前列表”先失败后通过 |
+
+附加 QA：助手/模型设置先读取能力元数据，未装配时不请求登录专属端点，避免旧开发工作台被
+401 清空身份。两条 Web 回归先失败后通过；旧研究页和新助手页 4 个浏览器用例通过。
+
+延期小项（不涉及后端权限放宽）：
+
+- `blocked/cancelled` 卡片显示“重新生成”，而后端仅接纳 `failed/unknown`，点击会明确冲突；可另发新消息。
+- 非老板也能看到 Run 链接，但规范审计 API 仍拒绝其访问；入口显示待按能力细化。
+
+审查未判断真实 Provider、公司部署和整套最终回归；这些分别保留为未运行项、下一批范围及本记录的
+独立测试门，不能用只读代码审查代替。
 
 ## 执行裁定（完整记录）
 
-- Ruling: use native-managed worktree under ~/.codex/worktrees rather than repo-local .worktrees — installed worktree skill prioritizes native tool and user requested isolation — no behavior cost, artifact paths differ.
-- Ruling: test examples that assert private step constants will be replaced by observable no-repeat behaviors — test skill requires behavior tests and spec requires no duplicate external requests — cost is slightly larger test setup.
-- Task 2: Ruling: add insufficient_balance classification for HTTP 402 — approved spec explicitly separates balance shortage from authentication/rate limit although plan Literal omitted it — if wrong the UI may mislabel provider errors, tested with controlled HTTP.
-- Task 3: Ruling: reserve requires explicit model keyword for auditable provider/model identity; current configuration authorization belongs to Gateway authority, not quota repository — limits and identities remain trusted injection — wrong assembly could apply stale limits, covered at composition.
-- Task 3: Ruling: stable tenant/employee bucket locks protect counts derived from persistent invocation ledger, rather than resettable increment-only counters — config changes cannot reset usage and rejected reservations are excluded deterministically — counting cost grows with ledger and is indexed.
-- Task 5: Ruling: dispatch intent is persisted as turn.dispatch_state with preallocated Run ID in the turn transaction, not a second table — one row preserves atomicity with less dual-write recovery — no loss of semantics; worker explicitly scans pending intents.
-- Task 5: Ruling: replace planned test import of private domains.assistant.models with real delivered-turn/new-input behavior via public service — boundary checker rejects new domain-internal test imports — preserves intended coverage without exposing private state helpers.
-- Task 6: Ruling: Run audit remains boss-only; manager/sales cannot query Run details — existing canonical audit service only authorizes boss, and chat must not widen access — fewer role capabilities than plan's generic mapping language.
-- Task 6: Ruling: reject nonempty pagination cursor until canonical readers supply stable signed cursors; lists remain explicitly bounded — an invented cursor would imply stable paging absent from domain services — only first bounded page in this batch.
-- Task 6: Ruling: conservatively hide all downstream turns when any earlier source becomes inaccessible; cap sessions at 100 turns and fail on oversize context rather than truncate — preserves dependency closure and explicit exclusions without guessing natural-language provenance — may hide more than necessary and require a fresh session.
-- Task 7: Ruling: submit_once additionally requires submitted_by and rechecks current active boss in the canonical directive service — relying on earlier chat-role check leaves a revocation window — trusted workflow must pass employee identity, no model actor field.
-- Task 7: Ruling: deterministically collect explicit Chinese/English labeled fields, asking clarification for ambiguous prose; also require per-query result limit — arbitrary substring matches cannot prove budget/market intent and the existing query schema requires this limit — more clarification than unrestricted natural language, no silent paid defaults.
-- Task 7: Ruling: business explanations use verified source excerpts with dependency closure instead of accepting any paraphrase with a valid ID — a real citation does not validate an invented claim — less fluent summaries until semantic evidence validation exists.
-- Task 8: Ruling: add migration 0064 for private validated-result sequence and trusted context-reference checkpoint — workflow audit cannot hold chat content and an in-memory slot cannot recover committed results — one extra migration, conservatively unknown if checkpoint fails.
-- Task 8: Ruling: construct typed assistant ports before canonical engine, bind dispatcher afterward — existing engine validates handlers at registration and canonical services already exist — keeps one engine with no mutable handler proxy; factory does not own/start another scheduler.
-- Task 9: Ruling: use existing ConfiguredApiDependencies and RequestIdentity injection instead of a parallel assistant router container — same authenticated middleware and runtime dependency lifecycle already expose current identity — fewer standalone router injection seams, no authorization bypass.
-- Task 9: Ruling: main router registration automatically feeds the existing zero-I/O OpenAPI exporter; leave exporter unchanged, defer full profile assembly to Task 10 — no duplicate schemas or second API factory — generated Web types still require Task 11 generation.
-- Task 10: Ruling: model status is projected by domain service.view rather than a second infra public_model_settings helper — avoids duplicate readiness logic — deployment file must match saved immutable version before both processes restart.
-- Task 10: Ruling: add migration 0065 for config head/process/probe and 0066 for invocation owner/lease; recover only under canonical scheduler lock, expired previous owner reserved→rejected/dispatched→unknown — required durable recovery evidence — legacy ownerless calls remain manual.
-- Task 11: Ruling: reuse existing exact proposal-confirmation screen via proposal_id; independent session component replaces only old model composer after assistant availability — keeps existing confirmation permissions — initial unavailable state retains legacy interface.
-- Task 12: Ruling: research uses existing v2 execute_search max_retries=0; no new flow version because topology/retries unchanged — model failure now returns fixed failed outcome with unknown quota retained — old paid unknown requests remain non-replayable.
-- Task 12: Ruling: explicit standalone_research constructor marker permits only research_factory+assistant_factory with local resources; pilot remains closed — legacy constructor correctly rejected new optional research until distinct intent was supplied — adds narrow deployment surface covered by controlled real factory tests.
-- Task 12: Ruling: optional research settings remain in private deployment file; actual Tavily/page/S3 resources are owned by an outer async lifecycle — avoids creating/leaking resources before canonical scheduler entry — two configuration files must match the deployment.
-- Task 13: Ruling: new immutable assistant/usage integration fixtures use per-test databases — shared legacy migration downgrade tests must start without unrelated durable facts — slightly slower tests, no production deletion policy relaxed.
-- Task 13: Ruling: refresh legacy schema-head assertions, include actual handoff handlers, align rolling-window seed time, bypass ambient proxies only in loopback test clients, and stub existing handoff compatibility read only in quotation lifecycle fixture — observed baseline test assumptions were stale — test-only repairs could mask unrelated drift, targeted regressions retained.
-- Task 13: Ruling: prepare DeepSeek credentials/SDK before marking a request dispatched, still after Gateway authorization and reservation — missing credentials cannot consume a provider call — preparation Protocol is trusted to perform no HTTP; real connector test verifies quota released. RED invalid→GREEN rejected with next call allowed.
-- Task 13: Ruling: extend Linux test image source allowlist for existing handoff and new model composition dependencies — previous explicit image omitted an imported module — source-only offline image grows; no environment/config added.
-- Task 13: Ruling: repair existing acceptance helper lint without excluding historical directories — full lint gate otherwise fails on baseline support files — no evidence outputs rewritten, only import/explicit-check/style.
-- Task 13: Ruling: conduct fresh whole-branch review while the final complete regression continues, after implementation is committed — independent read-only review does not depend on test completion — acceptance remains in progress until both review fixes and checks finish.
+以下按实施顺序列出理由与代价，完整保留执行者做出的范围/接口决定。
+
+1. 使用 Codex 管理的独立工作树；符合隔离要求，代价是文件位置与原仓库不同。
+2. 把计划中的私有常量断言改为可观察的“不重复执行”测试；避免锁定实现，代价是测试夹具更大。
+3. 增加 HTTP 402 余额不足分类；设计要求与认证错误分开，分类错误可能造成界面误导，已做受控协议测试。
+4. 配额预留显式传模型名，当前配置授权留在 Gateway；账本可审计，装配错误可能套用旧限额，因此追加装配测试。
+5. 用稳定租户/员工锁及不可变账本推导额度；配置切换不能清零，代价是查询成本随记录增长。
+6. 接纳输入与派发意图存在同一 turn 行；保证原子性，代价是恢复扫描依赖该状态字段。
+7. 会话测试通过公共服务断言，不导入域私有模型；维护依赖边界，代价是不能直接检查内部状态助手。
+8. Run 审计保持老板专属；沿用现有权限，代价是其他角色不能在聊天里读取 Run。
+9. 未有稳定分页契约前拒绝非空 cursor；避免伪分页，代价是本批只读有界首屏。
+10. 来源失效时保守隐藏后续历史；单会话最多 100 轮，过大上下文拒绝而不截断；代价是可能需要新会话。
+11. 规范提案提交再次检查当前活跃老板与 submitted_by；关闭撤权窗口，代价是编排必须传入可信员工身份。
+12. 研究范围用明确中英文标签收集，并要求每条查询结果数；避免猜付费默认值，代价是澄清次数较多。
+13. 业务解释用经过来源闭包核验的摘录；有效来源 ID 不能证明任意转述，代价是语言表达自由度较低。
+14. 增加 0064 保存私有结果检查点和来源引用；Run 不保存聊天正文，代价是新增迁移及写入失败时保守 unknown。
+15. 先构造有类型的会话端口，再创建规范 engine，随后绑定 dispatcher；保持单 engine，代价是装配顺序固定。
+16. 会话 API 复用现有依赖容器和身份注入；保持同一认证生命周期，代价是测试需使用该装配入口。
+17. 复用已有零 IO OpenAPI 导出器；避免平行 schema，代价是前端必须执行生成命令。
+18. 模型状态由领域服务 view 统一投影；避免双份可用性逻辑，代价是部署文件需人工同步数据库保存版本。
+19. 增加 0065 配置/进程/probe 和 0066 调用 owner/lease；恢复仅在规范锁下执行，旧无 owner 调用仍需人工处理。
+20. 复用现有精确提案确认页；助手可用后替换旧输入器，代价是服务未装配时仍使用旧入口。
+21. 研究保持既有 v2 流程和 max_retries=0；拓扑不变，模型失败固定分类，代价是未知付费请求不能自动补跑。
+22. 新增显式 standalone_research 装配标志；只放开研究组、保持 pilot 关闭，代价是多一个需测试的组合条件。
+23. 可选研究配置保存在私有部署文件，搜索/对象资源由外层异步生命周期拥有；避免泄漏，代价是需同步两进程配置。
+24. 新不可变会话/费用测试使用每例隔离库；不污染旧迁移往返，代价是测试更慢，生产不可变规则不放宽。
+25. 同步旧测试 head、handler、滚动日期及 quotation 兼容性替身；loopback 测试禁用环境代理。仅修测试假设，风险是掩盖其他漂移，所以保留相关回归。
+26. 本地凭证/SDK 准备先于 mark_dispatched；缺密钥不占调用额，代价是 prepare 必须保持无网络 IO。
+27. 扩充 Linux 验收镜像的显式源码白名单，加入漏掉的装配依赖；修正 ModuleNotFoundError，代价是镜像内容略增，不包含环境配置。
+28. 修正历史验收辅助脚本的 lint，而不排除整个历史目录；代价是改动少量辅助程序，历史证据输出保持原样。
+29. 代码提交后让独立只读审查与最终回归并行；缩短等待，代价是验收必须等两者及修复都完成才结束。
+30. 从不可变调用账本恢复已发生请求的配置版本，避免再存一份绑定；代价是按租户查询记录的成本，版本不一致时阻断而不猜测。
+31. 受控测试不裁定真实服务商行为；缺少真实凭证和明确输入，代价是在线协议、账号与效果仍需 live 验收。
+32. 公司 HTTPS、服务托管与灾备留待第二批；符合批准范围，代价是本批不能作为共享生产服务。
+33. 旧工作台认证回归由执行者补验修复，即使审查者未独立复现也不忽略；能力元数据只用于显示，后端仍自行判权。
+34. 最终全库回归由执行者负责；审查者未跑全套，代价是代码审查通过不能替代测试门。
+
+35. 核对迁移 0060/0061/0062 后补齐三项索引预期，滚动窗口夹具改用昨天；保持索引全量相等及时间过滤断言，代价是旧夹具随架构演进仍需维护。
+36. 全量运行后仅一份测试文件改动，保留全量证据并复跑该文件及其后所有集成文件；业务源码不变，代价是最终证据为组合覆盖，未再做一次不间断全量全绿运行。
+
+## 任务完成凭据
+
+13 项任务均已完成并逐项验证。最终受控脚本在 `fc8880b` 返回 0，`controlled=passed`；
+真实模型、真实来源及共享部署仍为 `not_run`。阶段提交依次为：
+`b305e4f`、`32b469e`、`a36e83e`、`e384c82`、`89f0239`、`095f526`、`1371e22`、
+`610c40d`、`42c11be`、`9c5b939`、`4f9f2b2`、`64735d0`、`92d7f75`；
+重要审查修复 `68033e8`，最终仓储测试夹具修正 `fc8880b`。
+执行草稿和测试原始输出归档到本机临时目录后移除计划专用 scratch；分支与工作树保留。

@@ -1,6 +1,6 @@
 # 内置 DeepSeek Agent Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 在 TradeOS 指挥中心完成持久员工对话、DeepSeek 网关调用、权限内查询、多轮研究提案及 research_only 执行，使这些能力由产品自己的后台运行。
 
@@ -75,7 +75,7 @@
 
 **Interfaces:** 新增 NewType：AgentSessionId、AgentTurnId、ModelInvocationId。`InvocationIdentity(tenant_id: TenantId,user_id: UserId,employee_id: EmployeeId,run_id: RunId,turn_id: AgentTurnId|None,capability: str,configuration_version: str,sequence: int)`；`ModelRequest(model: str,system_prompt: str,payload: dict[str,object],max_output_tokens: int)`；`ModelUsage(input_tokens: int|None,cached_input_tokens: int|None,output_tokens: int|None)`；`ModelResponse(text: str,model: str,usage: ModelUsage)`。全部 Pydantic frozen/extra=forbid；严格整数拒绝 bool、负数，sequence 从 0 起。正文 `repr=False`，identity 不含 secret_ref。此处同时定义 `ModelLimits(window_seconds:int,tenant_calls:int,employee_calls:int,tenant_concurrency:int,employee_concurrency:int,max_input_bytes:int,max_output_tokens:int,timeout_seconds:int)`：所有值严格正整数、无默认值，供技术配额和域 DTO 共用。
 
-- [ ] 写输入/输出契约测试，覆盖任意额外身份字段、usage 缺失、缓存大于输入及凭证不出现在 repr。
+- [x] 写输入/输出契约测试，覆盖任意额外身份字段、usage 缺失、缓存大于输入及凭证不出现在 repr。
 
 ```python
 import pytest
@@ -91,7 +91,7 @@ def test_usage_is_measured_not_coerced():
         ModelUsage(input_tokens=2, cached_input_tokens=3, output_tokens=1)
 ```
 
-- [ ] 执行 `python -m pytest tests/unit/test_model_invocation.py -q`，新模块缺失时红；随后实现契约和缓存一致性检查。
+- [x] 执行 `python -m pytest tests/unit/test_model_invocation.py -q`，新模块缺失时红；随后实现契约和缓存一致性检查。
 
 ```python
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -111,8 +111,8 @@ class ModelUsage(BaseModel):
         return self
 ```
 
-- [ ] ADR 记录 assistant 域、模型凭证归属、网关一次性结果、账本独立事务/未知执行、提案来源唯一键、延后共享部署。规则只允许 composition_support/model.py 做无 IO 的机械装配，各进程独立实例，不能 import 进程或决定权限。
-- [ ] 同命令通过，结构自检通过；显式暂存本项五个生产/文档文件和测试，提交 `feat: define trusted model invocation contracts`。
+- [x] ADR 记录 assistant 域、模型凭证归属、网关一次性结果、账本独立事务/未知执行、提案来源唯一键、延后共享部署。规则只允许 composition_support/model.py 做无 IO 的机械装配，各进程独立实例，不能 import 进程或决定权限。
+- [x] 同命令通过，结构自检通过；显式暂存本项五个生产/文档文件和测试，提交 `feat: define trusted model invocation contracts`。
 
 ### Task 2：DeepSeek Connector 的受限协议
 
@@ -120,7 +120,7 @@ class ModelUsage(BaseModel):
 
 **Interfaces:** 消费 ModelRequest/ModelResponse/ModelUsage。`DeepSeekClient(secret_ref: str,resolver: ModelSecretResolver,timeout_seconds: int,client_factory: Callable[[str,int],AsyncOpenAI]|None=None)`；`async generate(request: ModelRequest)->ModelResponse`、`async aclose()->None`。在本 Connector 定义结构兼容的 ModelSecretResolver Protocol（resolve(str)->str），不 import OpenAI Connector。`decode_response(body: Mapping[str,object],expected_model: str)->ModelResponse` 为纯解析入口。`DeepSeekFailure(code: Literal['authentication','invalid_request','rate_limit','provider_error','invalid_response','unknown'],dispatched: bool,retry_after_seconds: int|None)` 不保存异常原文；未知发送确定性按 dispatched=True 保守处理。
 
-- [ ] 用纯解析测试先锁定 HTTP 成功不等于业务成功。
+- [x] 用纯解析测试先锁定 HTTP 成功不等于业务成功。
 
 ```python
 import pytest
@@ -134,7 +134,7 @@ def test_noncompleted_response_cannot_be_used(status):
     assert error.value.code == "invalid_response"
 ```
 
-- [ ] `python -m pytest tests/unit/test_deepseek_client.py -q` 应红。实现固定客户端和请求，惰性解析 secret，关闭时幂等；不记录 SDK exception/message/request。
+- [x] `python -m pytest tests/unit/test_deepseek_client.py -q` 应红。实现固定客户端和请求，惰性解析 secret，关闭时幂等；不记录 SDK exception/message/request。
 
 ```python
 import httpx
@@ -151,8 +151,8 @@ def make_sdk(key: str, timeout_seconds: int) -> AsyncOpenAI:
 
 请求仅包含 model、instructions、JSON 序列化 input、max_output_tokens、store=False、text.format.type=json_object、reasoning.effort=none。输出仅收集 completed assistant message 的 output_text；不收集 reasoning/refusal。解析 JSON 必须对象、有限大小，后续业务 schema 再严格检查；拒绝空正文、不匹配的 model、非 completed。usage 缺失返回 None，不能补 0。
 
-- [ ] 用 httpx.MockTransport 注入 SDK，验证 URL/请求体、307 不跟随、401/429/5xx/断连分类；计数每案恰好一次请求。测试以哨兵密钥和正文核对 repr、caplog、异常均无泄露。未知 alias 只接受明确配置的完全匹配 model，连接测试不匹配则不启用。
-- [ ] 同命令与 `python -m pytest tests/unit/test_api_owned_clients.py -q` 通过后自检、提交 `feat: add bounded DeepSeek responses connector`。
+- [x] 用 httpx.MockTransport 注入 SDK，验证 URL/请求体、307 不跟随、401/429/5xx/断连分类；计数每案恰好一次请求。测试以哨兵密钥和正文核对 repr、caplog、异常均无泄露。未知 alias 只接受明确配置的完全匹配 model，连接测试不匹配则不启用。
+- [x] 同命令与 `python -m pytest tests/unit/test_api_owned_clients.py -q` 通过后自检、提交 `feat: add bounded DeepSeek responses connector`。
 
 ### Task 3：持久模型配额与实际用量
 
@@ -160,7 +160,7 @@ def make_sdk(key: str, timeout_seconds: int) -> AsyncOpenAI:
 
 **Interfaces:** 消费 Task 1 的 ModelLimits。`ModelUsageRepository.reserve(identity:InvocationIdentity,request_hmac:str,limits:ModelLimits,now:datetime)->Reservation`；`mark_dispatched(tenant_id,invocation_id)->None`；`finish(tenant_id,invocation_id,usage:ModelUsage,state:InvocationState)->None`；`get(tenant_id,invocation_id)->InvocationView`；每个操作 async。Reservation 含 invocation_id、outcome（reserved/duplicate/conflict/limited）、state。InvocationState 为 reserved/dispatched/succeeded/rejected/invalid/unknown。`window_start(now:datetime,seconds:int)->datetime`；`model_cost(usage:ModelUsage,input_rate:Decimal|None,cached_rate:Decimal|None,output_rate:Decimal|None)->Decimal|None`，费率为每百万 tokens，附可信配置的费率版本/币种/来源。
 
-- [ ] 先写跨窗口归属与 Decimal 的测试。
+- [x] 先写跨窗口归属与 Decimal 的测试。
 
 ```python
 from datetime import datetime, timezone
@@ -171,7 +171,7 @@ def test_daily_window_is_utc():
     assert window_start(now, 86400) == datetime(2026, 9, 22, tzinfo=timezone.utc)
 ```
 
-- [ ] `python -m pytest tests/unit/test_model_usage.py -q` 应红；实现纯计算。
+- [x] `python -m pytest tests/unit/test_model_usage.py -q` 应红；实现纯计算。
 
 ```python
 from datetime import datetime, timedelta, timezone
@@ -184,10 +184,10 @@ def window_start(now: datetime, seconds: int) -> datetime:
     return epoch + timedelta(seconds=(elapsed // seconds) * seconds)
 ```
 
-- [ ] 迁移建 tenant-bound model_configuration_versions、model_invocations、model_quota_buckets：请求唯一键 `(tenant_id,run_id,capability,configuration_version,sequence)`，employee 必须与可信身份一致；存 request_hmac 不存正文。配置版本不可覆盖；更换模型/配置/密钥不重置已用配额；配额桶按 tenant、employee、window_start，租户桶与员工桶固定顺序锁。并发槽跨窗口计数；未知占用不因跨日/超时静默消失，运营显式解除槽位留痕但不退调用次数。
-- [ ] 在真实 PG 测试两连接争最后配额、一员工重放、不同 payload 冲突、另租户独立、午夜结算仍计预留窗口、进程恢复 unknown 不退额度、二次 finish 幂等。测试中持有 workflow Run 行锁时另连接 reserve 必须及时完成；不锁 Run。所有调用边界先 commit dispatched，再进 Connector；reserved 崩溃也需证明未 dispatch 才能回收。
-- [ ] 实现事务：锁桶 → 查幂等 → 检查当前配置/两级上限 → 同事务 insert invocation/增计数 → commit；finish 只单向 CAS。provider 请求已经发生但 invalid/unknown 都保留次数。cost 任一必要 usage/费率缺失返回 None，包含缓存且缓存费率缺失也不得假设全按普通输入收费。
-- [ ] `python -m pytest tests/unit/test_model_usage.py tests/integration/test_model_usage.py -q` 应绿；在一次性 PG 上升级/降级/升级本迁移，自检、提交 `feat: persist atomic model budgets and usage`。
+- [x] 迁移建 tenant-bound model_configuration_versions、model_invocations、model_quota_buckets：请求唯一键 `(tenant_id,run_id,capability,configuration_version,sequence)`，employee 必须与可信身份一致；存 request_hmac 不存正文。配置版本不可覆盖；更换模型/配置/密钥不重置已用配额；配额桶按 tenant、employee、window_start，租户桶与员工桶固定顺序锁。并发槽跨窗口计数；未知占用不因跨日/超时静默消失，运营显式解除槽位留痕但不退调用次数。
+- [x] 在真实 PG 测试两连接争最后配额、一员工重放、不同 payload 冲突、另租户独立、午夜结算仍计预留窗口、进程恢复 unknown 不退额度、二次 finish 幂等。测试中持有 workflow Run 行锁时另连接 reserve 必须及时完成；不锁 Run。所有调用边界先 commit dispatched，再进 Connector；reserved 崩溃也需证明未 dispatch 才能回收。
+- [x] 实现事务：锁桶 → 查幂等 → 检查当前配置/两级上限 → 同事务 insert invocation/增计数 → commit；finish 只单向 CAS。provider 请求已经发生但 invalid/unknown 都保留次数。cost 任一必要 usage/费率缺失返回 None，包含缓存且缓存费率缺失也不得假设全按普通输入收费。
+- [x] `python -m pytest tests/unit/test_model_usage.py tests/integration/test_model_usage.py -q` 应绿；在一次性 PG 上升级/降级/升级本迁移，自检、提交 `feat: persist atomic model budgets and usage`。
 
 ### Task 4：网关模型工具与受信绑定客户端
 
@@ -195,7 +195,7 @@ def window_start(now: datetime, seconds: int) -> datetime:
 
 **Interfaces:** `ModelGenerationPort.generate(identity:InvocationIdentity,request:ModelRequest)->ModelResponse`（async Protocol 放 shared/schemas/model_invocation.py，不暴露 Connector）。`GatewayJsonModelClient(identity:InvocationIdentity,generator:ModelGenerationPort)` 实现现有 StructuredJsonModelClient.complete_json 同签名。每个客户端只代表一个既定调用序号，不能隐式递增；下一调用由持久编排显式分配新 identity。`ModelResponseSlot.put(response)->str`、`take(handle)->ModelResponse`，单次使用、请求私有。`CurrentModelAuthority.check(identity)->None`（async，模型工具检查端口），实现不缓存授权。
 
-- [ ] 写 wrapper 的受信绑定测试；FakeGenerator 在测试直接定义，无 SDK。
+- [x] 写 wrapper 的受信绑定测试；FakeGenerator 在测试直接定义，无 SDK。
 
 ```python
 from agent_runtime.gateway_model import GatewayJsonModelClient
@@ -219,7 +219,7 @@ async def test_wrapper_keeps_trusted_identity():
     assert seen[0][0] == identity
 ```
 
-- [ ] `python -m pytest tests/unit/test_model_gateway.py -q` 应红；实现 wrapper，其内部仅构造请求并调用 generator，不 import SDK。
+- [x] `python -m pytest tests/unit/test_model_gateway.py -q` 应红；实现 wrapper，其内部仅构造请求并调用 generator，不 import SDK。
 
 ```python
 async def complete_json(self, *, model, system_prompt, payload, max_output_tokens):
@@ -229,10 +229,10 @@ async def complete_json(self, *, model, system_prompt, payload, max_output_token
     return result.text
 ```
 
-- [ ] 注册 `model.generate` manifest：MEDIUM、付费类别、幂等 REQUIRED、tenant/permission/playbook/idempotency/rate_limit 顺序，安全 input 仅 invocation 引用；实际正文通过 PreparedToolCall 私有 payload。playbook 检查公司模型外发许可，产品说明不要求研究市场政策。handler 授权及额度预留后才创建 Connector。HMAC 由受信 fingerprint provider 构造，不能用密钥值当配置 fingerprint。
-- [ ] Gateway 通用 result 仅 provider_ref/configuration_version/status；正文经一次性 slot 交回当前可信 workflow，finally 清理。duplicate 找不到已保存的业务结果时标 unknown，不尝试复建 slot 或调用 Provider。账本成功不能单独证明轮次结果已落库。
-- [ ] PG 测试：权限拒绝和额度拒绝 secret resolver 调用数为 0；同请求重放 SDK 为 1；发送后断连 SDK 为 1 且 unknown；旧配置或员工停用调用被拒绝；日志/outbox/ledger 含哨兵正文数量为 0。明确把 reconciliation_required 映射 unknown，不照通用 retryable 标记自动重试。
-- [ ] `python -m pytest tests/unit/test_model_gateway.py tests/integration/test_model_gateway.py tests/unit/test_tool_gateway_pipeline.py -q` 通过，自检、提交 `feat: route model calls through trusted gateway`。
+- [x] 注册 `model.generate` manifest：MEDIUM、付费类别、幂等 REQUIRED、tenant/permission/playbook/idempotency/rate_limit 顺序，安全 input 仅 invocation 引用；实际正文通过 PreparedToolCall 私有 payload。playbook 检查公司模型外发许可，产品说明不要求研究市场政策。handler 授权及额度预留后才创建 Connector。HMAC 由受信 fingerprint provider 构造，不能用密钥值当配置 fingerprint。
+- [x] Gateway 通用 result 仅 provider_ref/configuration_version/status；正文经一次性 slot 交回当前可信 workflow，finally 清理。duplicate 找不到已保存的业务结果时标 unknown，不尝试复建 slot 或调用 Provider。账本成功不能单独证明轮次结果已落库。
+- [x] PG 测试：权限拒绝和额度拒绝 secret resolver 调用数为 0；同请求重放 SDK 为 1；发送后断连 SDK 为 1 且 unknown；旧配置或员工停用调用被拒绝；日志/outbox/ledger 含哨兵正文数量为 0。明确把 reconciliation_required 映射 unknown，不照通用 retryable 标记自动重试。
+- [x] `python -m pytest tests/unit/test_model_gateway.py tests/integration/test_model_gateway.py tests/unit/test_tool_gateway_pipeline.py -q` 通过，自检、提交 `feat: route model calls through trusted gateway`。
 
 ### Task 5：会话、轮次和持久执行意图
 
@@ -242,7 +242,7 @@ async def complete_json(self, *, model, system_prompt, payload, max_output_token
 
 `AssistantService.create_session(actor)->SessionView`、`list_sessions(actor)->list[SessionView]`、`accept_turn(actor,session_id,input)->TurnView`、`get_turn(actor,session_id,turn_id)->TurnView`、`cancel_turn(actor,session_id,turn_id)->TurnView`、`regenerate(actor,session_id,turn_id,idempotency_key)->TurnView`，全部 async。服务调用 repository 协议，SQL 仅 infra；外部可见结果另经 Task 6 裁剪。`is_active_turn(state:str)->bool`。`AssistantRepository.accept(actor,session_id,input,request_hmac,run_id)->TurnView` 原子执行，不在 API 双写意图。
 
-- [ ] 写状态槽测试与幂等集成测试，正文凭证 guard 在落库前执行。
+- [x] 写状态槽测试与幂等集成测试，正文凭证 guard 在落库前执行。
 
 ```python
 from domains.assistant.models import is_active_turn
@@ -255,7 +255,7 @@ def test_delivered_turn_releases_session_slot():
     assert not is_active_turn("unknown")
 ```
 
-- [ ] `python -m pytest tests/unit/test_assistant.py -q` 应红；实现状态表及模型。
+- [x] `python -m pytest tests/unit/test_assistant.py -q` 应红；实现状态表及模型。
 
 ```python
 ACTIVE_TURN_STATES = frozenset({"queued", "running"})
@@ -264,10 +264,10 @@ def is_active_turn(state: str) -> bool:
     return state in ACTIVE_TURN_STATES
 ```
 
-- [ ] 同事务创建 turn 和 dispatch intent，并预分配 canonical RunId。建部分唯一索引 `(tenant_id,session_id) WHERE state IN ('queued','running')`；幂等键 `(tenant_id,employee_id,session_id,idempotency_key)` 搭 request_hmac，先返回已有相同请求再判断 active 槽。turn.run_id 唯一；复合 FK 防止跨租户。输入、模型解释、受信业务引用分别存储。允许的状态转移显式列出，终态不回 running。
-- [ ] PG 断言原始 accept 两次返回同一 turn/run；相同键不同正文冲突；另一员工（含 boss）读会话失败；另一租户伪造 ID 失败；不同输入争同一会话一胜一 409；awaiting_input 后可新轮；含秘密输入 turn/intent 计数均未变。关闭会话权限不依赖角色猜测。
-- [ ] cancel 仅阻止本 turn 后续动作，保留模型计量和独立 research Run；regenerate 仅允许明确的失败/未知轮，生成新 id 与 attempt_of，原结果不覆盖、原配额不退。取消已派发请求不声称撤回。
-- [ ] `python -m pytest tests/unit/test_assistant.py tests/integration/test_assistant.py -q` 通过，迁移前后旧登录/Run 数据可读，自检、提交 `feat: persist private assistant sessions and turns`。
+- [x] 同事务创建 turn 和 dispatch intent，并预分配 canonical RunId。建部分唯一索引 `(tenant_id,session_id) WHERE state IN ('queued','running')`；幂等键 `(tenant_id,employee_id,session_id,idempotency_key)` 搭 request_hmac，先返回已有相同请求再判断 active 槽。turn.run_id 唯一；复合 FK 防止跨租户。输入、模型解释、受信业务引用分别存储。允许的状态转移显式列出，终态不回 running。
+- [x] PG 断言原始 accept 两次返回同一 turn/run；相同键不同正文冲突；另一员工（含 boss）读会话失败；另一租户伪造 ID 失败；不同输入争同一会话一胜一 409；awaiting_input 后可新轮；含秘密输入 turn/intent 计数均未变。关闭会话权限不依赖角色猜测。
+- [x] cancel 仅阻止本 turn 后续动作，保留模型计量和独立 research Run；regenerate 仅允许明确的失败/未知轮，生成新 id 与 attempt_of，原结果不覆盖、原配额不退。取消已派发请求不声称撤回。
+- [x] `python -m pytest tests/unit/test_assistant.py tests/integration/test_assistant.py -q` 通过，迁移前后旧登录/Run 数据可读，自检、提交 `feat: persist private assistant sessions and turns`。
 
 ### Task 6：当前权限上下文与可追溯的只读查询
 
@@ -275,7 +275,7 @@ def is_active_turn(state: str) -> bool:
 
 **Interfaces:** 消费 AssistantActor、ObjectRef 和各域公开服务。业务列表另定义 `AssistantReadQuery(kind:Literal['need','opportunity','handoff','run'],limit:int,cursor:str|None)`，limit 为严格整数 1–50，cursor 为租户和 actor 绑定的签名游标；`AssistantReadPort.list(actor:AssistantActor,query:AssistantReadQuery)->tuple[AuthorizedFragment,...]`（async），底层只查当前范围，不能先全量读取再筛选。`AuthorizedFragment(text:str,dependencies:tuple[ObjectRef,...],source_turn_ids:tuple[AgentTurnId,...])` 定义于 assistant/schemas.py；`filter_fragments(fragments:Sequence[AuthorizedFragment],visible_refs:frozenset[ObjectRef])->tuple[AuthorizedFragment,...]`；`AssistantReadPort.read(actor:AssistantActor,ref:ObjectRef)->AuthorizedFragment`（async Protocol，放 reads.py）；`AssistantContextBuilder.build(actor,session_id,turn_id)->AssistantContext`（async）。AssistantContext 包含 actor、当前角色 capabilities、可见 fragments、明确原话字段、已裁剪计数、当前配置版本，禁止 secret。`CurrentAssistantIdentity.resolve(actor)->tuple[str,frozenset[str]]`（async Protocol）从当前员工服务解析角色与能力。
 
-- [ ] 写撤权后整段摘要隐藏测试。
+- [x] 写撤权后整段摘要隐藏测试。
 
 ```python
 from agent_runtime.assistant.context import filter_fragments
@@ -289,7 +289,7 @@ def test_hidden_dependency_removes_whole_summary():
     assert filter_fragments([summary], frozenset({a})) == ()
 ```
 
-- [ ] `python -m pytest tests/unit/test_assistant_context.py -q` 应红；实现整段筛除，并确保派生摘要依赖闭包是所有输入依赖的并集。
+- [x] `python -m pytest tests/unit/test_assistant_context.py -q` 应红；实现整段筛除，并确保派生摘要依赖闭包是所有输入依赖的并集。
 
 ```python
 def filter_fragments(fragments, visible_refs):
@@ -297,10 +297,10 @@ def filter_fragments(fragments, visible_refs):
                  if set(fragment.dependencies).issubset(visible_refs))
 ```
 
-- [ ] 建明确业务读 adapter：Need、Opportunity、Handoff、Run 分别调用其公开服务/授权审计端口。用户可见 ID 必须本次读取过，不能让模型编一个 ID 生成链接。读 Run 不沿用系统 actor；老板租户范围、经理团队范围、销售自身范围按原领域权限映射；未适配角色只给 product_help。明确 UserId→EmployeeId 解析，不能 cast 或自动把 finance/viewer 当 sales。
-- [ ] 上下文先身份重核、再读取、最后限长；必备系统规则/排除项/预算不能裁剪，放不下返回固定超限错误；只裁剪背景并记计数。业务引文标记 untrusted，不作为系统消息。产品说明按版本化本地受信文档提取固定内容，不接受员工任意路径。
-- [ ] PG 测试停用、归属转移、跨租户、来源被删除、经理调组和历史摘要复用；被隐藏的业务原文及其派生总结均不出现在模型输入或 API。模型输出事实引用集合必须为本次 authorized read 的子集，缺来源返回缺项。
-- [ ] `python -m pytest tests/unit/test_assistant_context.py tests/integration/test_assistant_reads.py tests/unit/test_context_builder.py -q` 通过，自检、提交 `feat: authorize assistant context and history on every read`。
+- [x] 建明确业务读 adapter：Need、Opportunity、Handoff、Run 分别调用其公开服务/授权审计端口。用户可见 ID 必须本次读取过，不能让模型编一个 ID 生成链接。读 Run 不沿用系统 actor；老板租户范围、经理团队范围、销售自身范围按原领域权限映射；未适配角色只给 product_help。明确 UserId→EmployeeId 解析，不能 cast 或自动把 finance/viewer 当 sales。
+- [x] 上下文先身份重核、再读取、最后限长；必备系统规则/排除项/预算不能裁剪，放不下返回固定超限错误；只裁剪背景并记计数。业务引文标记 untrusted，不作为系统消息。产品说明按版本化本地受信文档提取固定内容，不接受员工任意路径。
+- [x] PG 测试停用、归属转移、跨租户、来源被删除、经理调组和历史摘要复用；被隐藏的业务原文及其派生总结均不出现在模型输入或 API。模型输出事实引用集合必须为本次 authorized read 的子集，缺来源返回缺项。
+- [x] `python -m pytest tests/unit/test_assistant_context.py tests/integration/test_assistant_reads.py tests/unit/test_context_builder.py -q` 通过，自检、提交 `feat: authorize assistant context and history on every read`。
 
 ### Task 7：多轮澄清与幂等研究提案
 
@@ -312,7 +312,7 @@ def filter_fragments(fragments, visible_refs):
 
 DirectiveService 增加 `submit_discovery_proposal_once(tenant_id:TenantId,source_turn_id:AgentTurnId,source_version:int,request_hmac:str,raw_text:str,plan:DemandDiscoveryPlanInput,interpretation_summary:str,expected_behavior_changes:list[str],parsed_by:str)->str`（async）。内部原提案构建规则不变；新增来源唯一记录和 proposal 在同一 UoW，精确重复返回旧 ID，不同 HMAC 冲突；source_version 是确定性候选版本，模型不提供。确认仍沿原 confirm_proposal 公开接口。
 
-- [ ] 测试模型不能用默认值补预算/市场，不能把聊天肯定词变成确认动作。
+- [x] 测试模型不能用默认值补预算/市场，不能把聊天肯定词变成确认动作。
 
 ```python
 import pytest
@@ -327,7 +327,7 @@ def test_freeform_confirmation_is_not_a_model_action():
     assert result.kind == "clarify"
 ```
 
-- [ ] `python -m pytest tests/unit/test_assistant_decision.py -q` 应红；解析使用 Pydantic 判别 union，不用 eval/字符串路由。
+- [x] `python -m pytest tests/unit/test_assistant_decision.py -q` 应红；解析使用 Pydantic 判别 union，不用 eval/字符串路由。
 
 ```python
 from pydantic import TypeAdapter
@@ -337,9 +337,9 @@ def parse_decision(text: str) -> AssistantDecision:
     return TypeAdapter(AssistantDecision).validate_json(text)
 ```
 
-- [ ] 分别实现字段收集、来源核验、缺项澄清、最终计划转换。用户原话→字段提取保留具体轮次；当前已确认政策可提供值但必须展示版本。本轮明确修正覆盖旧值并留下新出处；冲突未消解先问。模型推测/测试预算不能转成用户确认。三条线路、预算、禁止外发范围由既有 schema 与业务代码约束；提示词不构成唯一防线。
-- [ ] PG 测试 submit_once 两连接/重启重放返回同一提案、相同 source 不同请求冲突；在提案事务提交后、绑定会话前抛异常，恢复绑定原 ID；普通销售不得生成可确认提案；降权/旧版本无法确认；文本“继续”只产生下一 turn，审批数不增加。
-- [ ] `python -m pytest tests/unit/test_assistant_decision.py tests/integration/test_assistant_proposal.py tests/unit/agent_runtime/test_research_proposal.py -q` 通过，自检、提交 `feat: build sourced research proposals from assistant turns`。
+- [x] 分别实现字段收集、来源核验、缺项澄清、最终计划转换。用户原话→字段提取保留具体轮次；当前已确认政策可提供值但必须展示版本。本轮明确修正覆盖旧值并留下新出处；冲突未消解先问。模型推测/测试预算不能转成用户确认。三条线路、预算、禁止外发范围由既有 schema 与业务代码约束；提示词不构成唯一防线。
+- [x] PG 测试 submit_once 两连接/重启重放返回同一提案、相同 source 不同请求冲突；在提案事务提交后、绑定会话前抛异常，恢复绑定原 ID；普通销售不得生成可确认提案；降权/旧版本无法确认；文本“继续”只产生下一 turn，审批数不增加。
+- [x] `python -m pytest tests/unit/test_assistant_decision.py tests/integration/test_assistant_proposal.py tests/unit/agent_runtime/test_research_proposal.py -q` 通过，自检、提交 `feat: build sourced research proposals from assistant turns`。
 
 ### Task 8：scheduler 持久交互流程和恢复
 
@@ -347,7 +347,7 @@ def parse_decision(text: str) -> AssistantDecision:
 
 **Interfaces:** 消费 Task 4–7。`build_assistant_definition()->WorkflowDefinition`；`AssistantStepHandler.execute(run:WorkflowRun)->tuple[str,str|None,dict[str,object]]` 实现现有 StepHandler 语义。`AssistantDispatcher.dispatch(tenant_id:TenantId,limit:int)->int`（async）认领持久 intent 并按预分配 RunId 创建/核对/绑定。`AssistantRuntimePorts` frozen dataclass：assistant_service、context_builder、read_port、model_generator、proposal_builder、directive_service、current_identity；类型均来自前项 Protocol/公开服务，无全局服务定位器。bootstrap 新增可选 assistant_factory，工厂接当前 SchedulerCoreServices，并显式获得同一 engine；不新建第二 engine/registry。
 
-- [ ] 写无自动模型重试的结构测试与恢复场景。
+- [x] 写无自动模型重试的结构测试与恢复场景。
 
 ```python
 from workflows.assistant.flow import build_assistant_definition
@@ -358,7 +358,7 @@ def test_model_step_has_no_implicit_retry():
     assert model_step.max_retries == 0
 ```
 
-- [ ] `python -m pytest tests/unit/test_assistant_workflow.py -q` 应红；定义 load_context → generate → apply_result → complete。read decision 只允许一个受限读取阶段再生成解释，设明确最大模型次数且每步固定 sequence。计划不能含任意循环或动态 handler_ref。
+- [x] `python -m pytest tests/unit/test_assistant_workflow.py -q` 应红；定义 load_context → generate → apply_result → complete。read decision 只允许一个受限读取阶段再生成解释，设明确最大模型次数且每步固定 sequence。计划不能含任意循环或动态 handler_ref。
 
 ```python
 from workflows.engine.runner import StepDefinition
@@ -368,10 +368,10 @@ def generate_step() -> StepDefinition:
                           max_retries=0)
 ```
 
-- [ ] dispatcher 的唯一 Run 创建要求数据库唯一 identity。若现有 engine.start 不能接受预分配 ID，新增窄 `start_once` 公共端口并保持原 start 不变，文件为 `workflows/engine/runner.py` 与 `infra/db/workflow_engine.py`，写入同一 Run 唯一约束。禁止“先查没有再 start 随机 ID”。崩溃恢复重查 canonical Run 后绑定，不创建第二个。
-- [ ] generate 前重核角色/配置/cancel；响应只在当前权限和 schema/来源均通过后写会话。模型返回后无法持久结果，恢复时依据调用账本置 unknown；绝不根据“turn 无结果”自动重调。apply_result 幂等使用 Task 7 source_turn/version；run context 仅安全引用，不保存整段聊天。权限失效结果置 blocked，同时已发生 usage 保留。
-- [ ] PG 测试窗口：接纳后未 dispatch、start 后未绑定、dispatch 后 provider 超时、成功后未写结果、结果已写未 advance、提案已存未绑定、停止后恢复。逐案计数 provider≤1、proposal≤1、run=1；模型未知终止该 turn 的自动推进。对已 cancel/blocked 的迟到结果不展示；关闭浏览器不影响已接纳后台流程。
-- [ ] `python -m pytest tests/unit/test_assistant_workflow.py tests/integration/test_assistant_recovery.py -q` 通过，自检、提交 `feat: run durable assistant turns in scheduler`。
+- [x] dispatcher 的唯一 Run 创建要求数据库唯一 identity。若现有 engine.start 不能接受预分配 ID，新增窄 `start_once` 公共端口并保持原 start 不变，文件为 `workflows/engine/runner.py` 与 `infra/db/workflow_engine.py`，写入同一 Run 唯一约束。禁止“先查没有再 start 随机 ID”。崩溃恢复重查 canonical Run 后绑定，不创建第二个。
+- [x] generate 前重核角色/配置/cancel；响应只在当前权限和 schema/来源均通过后写会话。模型返回后无法持久结果，恢复时依据调用账本置 unknown；绝不根据“turn 无结果”自动重调。apply_result 幂等使用 Task 7 source_turn/version；run context 仅安全引用，不保存整段聊天。权限失效结果置 blocked，同时已发生 usage 保留。
+- [x] PG 测试窗口：接纳后未 dispatch、start 后未绑定、dispatch 后 provider 超时、成功后未写结果、结果已写未 advance、提案已存未绑定、停止后恢复。逐案计数 provider≤1、proposal≤1、run=1；模型未知终止该 turn 的自动推进。对已 cancel/blocked 的迟到结果不展示；关闭浏览器不影响已接纳后台流程。
+- [x] `python -m pytest tests/unit/test_assistant_workflow.py tests/integration/test_assistant_recovery.py -q` 通过，自检、提交 `feat: run durable assistant turns in scheduler`。
 
 ### Task 9：员工会话 API 和明确的重生成语义
 
@@ -385,7 +385,7 @@ def generate_step() -> StepDefinition:
 - `POST .../{turn_id}/cancel` → TurnView；`POST .../{turn_id}/regenerate`（幂等键必填）→ 202 新 TurnView。
 - 不可见会话/轮次为 404；已停用登录为 401/403（沿原认证规则）；活动轮冲突 409；未配置模型 503 固定缺项；限流 429 带安全等待值。
 
-- [ ] 写输入身份不可由浏览器指定的单元测试。
+- [x] 写输入身份不可由浏览器指定的单元测试。
 
 ```python
 import pytest
@@ -398,7 +398,7 @@ def test_browser_cannot_supply_authority():
             "idempotency_key":"test-request", "role":"boss"})
 ```
 
-- [ ] `python -m pytest tests/unit/test_assistant_api.py -q` 应红；router 每次从现有认证取当前身份，先校验 input，再调用领域服务；HTTP 202 必须在 accept 事务成功之后。
+- [x] `python -m pytest tests/unit/test_assistant_api.py -q` 应红；router 每次从现有认证取当前身份，先校验 input，再调用领域服务；HTTP 202 必须在 accept 事务成功之后。
 
 ```python
 from fastapi import Response
@@ -408,10 +408,10 @@ def accepted_response(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
 ```
 
-- [ ] GET 每次裁剪历史并 no-store；错误不回显输入、密钥引用或别人的 active turn。对隐藏文本返回固定“当前无权查看相关内容”，不能返回已存原 result 给前端自筛。恢复 POST 丢失响应靠原幂等键读取，不自动换键。
-- [ ] 真实 HTTP/PG 测试 accept commit 后主动断开客户端，重新提交同键读到相同 turn/run；CSRF 缺失拒绝；换用户同 session ID 隐藏；权限撤销后已完成摘要不再可读；cancel 与迟到响应竞争不会显示结果；regenerate 不新建 research Run 或重新确认提案。
-- [ ] 公司 profile 对旧即时 `/commands/discovery-proposals` 若无受信 Run 绑定，返回明确 unavailable；保留纯查询与既有精确确认路径。新路径不 HTTP 回调自己。OpenAPI 导出必须包含新 DTO 且不导出凭证配置类型。
-- [ ] `python -m pytest tests/unit/test_assistant_api.py tests/integration/test_assistant_api.py -q` 通过，自检、提交 `feat: expose authenticated assistant sessions API`。
+- [x] GET 每次裁剪历史并 no-store；错误不回显输入、密钥引用或别人的 active turn。对隐藏文本返回固定“当前无权查看相关内容”，不能返回已存原 result 给前端自筛。恢复 POST 丢失响应靠原幂等键读取，不自动换键。
+- [x] 真实 HTTP/PG 测试 accept commit 后主动断开客户端，重新提交同键读到相同 turn/run；CSRF 缺失拒绝；换用户同 session ID 隐藏；权限撤销后已完成摘要不再可读；cancel 与迟到响应竞争不会显示结果；regenerate 不新建 research Run 或重新确认提案。
+- [x] 公司 profile 对旧即时 `/commands/discovery-proposals` 若无受信 Run 绑定，返回明确 unavailable；保留纯查询与既有精确确认路径。新路径不 HTTP 回调自己。OpenAPI 导出必须包含新 DTO 且不导出凭证配置类型。
+- [x] `python -m pytest tests/unit/test_assistant_api.py tests/integration/test_assistant_api.py -q` 通过，自检、提交 `feat: expose authenticated assistant sessions API`。
 
 ### Task 10：独立本机配置、模型状态和显式连接测试
 
@@ -421,7 +421,7 @@ def accepted_response(response: Response) -> None:
 
 `ModelConfigurationService.get_public(actor)->ModelSettingsView`、`save_nonsecret(actor,input:ModelSettingsUpdate)->ModelSettingsView`、`request_probe(actor,idempotency_key:str)->TurnView`（async，协议放 assistant/service.py）。ModelSettingsUpdate 仅 model 和 limits、expected_version，不含 secret 或任意 endpoint。配置持久化归 Task 3 配置版本表；改变后 pending_restart。部署 loader 提供启动版本及秘密引用，API/scheduler 启动注册各自版本，未达一致不给 verified。`build_model_composition(...)` 接受受信 settings、resolver、authority、usage repo、gateway ledger 与 fingerprint provider，返回独立 generator/aclose，不读取环境。
 
-- [ ] 写所有限额必须显式提供、不允许额外 base URL 的测试。
+- [x] 写所有限额必须显式提供、不允许额外 base URL 的测试。
 
 ```python
 import pytest
@@ -433,7 +433,7 @@ def test_no_implicit_paid_defaults():
         StandaloneModelSettings.model_validate({"provider":"deepseek", "model":"test"})
 ```
 
-- [ ] `python -m pytest tests/unit/test_standalone_model_settings.py -q` 应红；配置数据保持严格白名单。
+- [x] `python -m pytest tests/unit/test_standalone_model_settings.py -q` 应红；配置数据保持严格白名单。
 
 ```python
 from pydantic import BaseModel, ConfigDict, Field
@@ -450,11 +450,11 @@ class StandaloneModelSettings(BaseModel):
     model_data_export_enabled: bool
 ```
 
-- [ ] 例子文件只展示字段说明/拒绝启用的未配置状态，不放可付费运行默认阈值。secret 只经原受限 resolver 引用。后台按显式部署配置启动，不能读用户 shell 的任意文件，也不在日志打印完整 settings。两进程分别创建/关闭自己的 SDK、slot、Gateway、DB 资源。
-- [ ] 模型设置路由只允许当前老板/现有管理权限，保存非秘密配置不自动 probe；probe 是固定短 JSON 请求，通过 Task 8 持久轮次 type/capability=model_probe、统一 Gateway/租户+员工预算。探测结果只对对应配置版本有效，配置改变/跨进程版本不同显示待重启。普通员工只看安全能力状态，不能触发探测或看 secret_ref。配置轮次不混入员工自然语言历史。
-- [ ] 扩展 capability 具名 builtin_assistant/model，UI 分开显示装配、配置验证、最近失败；不把现有 agent/browser 标 enabled。缺 Tavily 仍可 chat/help/draft，执行 research 显示缺项。原 pilot 继续拒绝真实外网模型，不移除 loopback origin 限制。
-- [ ] PG 集成通过新 profile 启动 API/scheduler，使用受控 HTTP Provider，验证启动零付费请求、点击 probe 恰好一次、重复请求仍一次、两个进程总配额统一、v1 结果不能验证 v2、取消/停用不让迟到 probe 启用。未配置或不匹配不得直连旧 OpenAI wrapper。
-- [ ] `python -m pytest tests/unit/test_standalone_model_settings.py tests/integration/test_standalone_model_runtime.py tests/integration/test_pilot_runtime.py -q` 通过，自检、提交 `feat: compose standalone DeepSeek runtime and admin probe`。
+- [x] 例子文件只展示字段说明/拒绝启用的未配置状态，不放可付费运行默认阈值。secret 只经原受限 resolver 引用。后台按显式部署配置启动，不能读用户 shell 的任意文件，也不在日志打印完整 settings。两进程分别创建/关闭自己的 SDK、slot、Gateway、DB 资源。
+- [x] 模型设置路由只允许当前老板/现有管理权限，保存非秘密配置不自动 probe；probe 是固定短 JSON 请求，通过 Task 8 持久轮次 type/capability=model_probe、统一 Gateway/租户+员工预算。探测结果只对对应配置版本有效，配置改变/跨进程版本不同显示待重启。普通员工只看安全能力状态，不能触发探测或看 secret_ref。配置轮次不混入员工自然语言历史。
+- [x] 扩展 capability 具名 builtin_assistant/model，UI 分开显示装配、配置验证、最近失败；不把现有 agent/browser 标 enabled。缺 Tavily 仍可 chat/help/draft，执行 research 显示缺项。原 pilot 继续拒绝真实外网模型，不移除 loopback origin 限制。
+- [x] PG 集成通过新 profile 启动 API/scheduler，使用受控 HTTP Provider，验证启动零付费请求、点击 probe 恰好一次、重复请求仍一次、两个进程总配额统一、v1 结果不能验证 v2、取消/停用不让迟到 probe 启用。未配置或不匹配不得直连旧 OpenAI wrapper。
+- [x] `python -m pytest tests/unit/test_standalone_model_settings.py tests/integration/test_standalone_model_runtime.py tests/integration/test_pilot_runtime.py -q` 通过，自检、提交 `feat: compose standalone DeepSeek runtime and admin probe`。
 
 ### Task 11：指挥中心的会话与状态界面
 
@@ -462,7 +462,7 @@ class StandaloneModelSettings(BaseModel):
 
 **Interfaces:** useAgentSession 接现有 API client，返回 sessionId/turns/loading/error/startSession/send/cancel/regenerate/dispose；DTO 全从 components/schemas 引用。send 生成一次幂等键直到请求确定接纳/拒绝；网络失败保留原键，禁止后台自动新建 attempt。AgentTurnCard props 为生成类型 TurnView；仅发出 cancel/regenerate/openProposal/openRun，不判断业务批准条件。
 
-- [ ] 写状态卡测试；使用既有 createApp/DOM test 方式，不增加组件测试框架。
+- [x] 写状态卡测试；使用既有 createApp/DOM test 方式，不增加组件测试框架。
 
 ```typescript
 import { createApp, nextTick } from "vue";
@@ -487,7 +487,7 @@ it("未知结果不显示成功或自动重试", async () => {
 });
 ```
 
-- [ ] `npm --prefix apps/web test -- assistant.test.ts` 应红；生成 OpenAPI 后实现状态卡。
+- [x] `npm --prefix apps/web test -- assistant.test.ts` 应红；生成 OpenAPI 后实现状态卡。
 
 ```vue
 <template>
@@ -497,10 +497,10 @@ it("未知结果不显示成功或自动重试", async () => {
 </template>
 ```
 
-- [ ] 完成列表/交流/来源/提案/Run 卡组合。说明“研究已发现信号”不能显示“客户需求已验证”。精确确认按钮继续现有接口/当前 can_confirm；聊天 send 不触发确认。配置页点击探测前显示调用计费说明，密钥输入框不进入聊天或浏览器持久存储；该页只展示部署端配置提示和非秘密设置。
-- [ ] 轮询固定间隔，只更新当前用户/session；切会话、登出、卸载中止旧请求并校验响应身份世代。隐藏页面降低轮询频率；恢复读取当前状态，不重复 POST。unknown/blocked/failed 分开展示；停止生成与取消 research Run 是不同控件和权限。
-- [ ] 测试旧用户迟到响应不污染新用户、撤权后历史文本移除、409 定位已有轮次、202 丢失保留幂等键、probe 必须用户点击、缺搜索可写提案但无法确认执行。真实浏览器在 1440px 和 390px 完成新会话→澄清→卡片→证据跳转→刷新恢复，检查焦点和无横向溢出。
-- [ ] `npm --prefix apps/web run gen:api`（解释器指向本批 venv）、typecheck、lint、test、build；`python -m pytest tests/e2e/test_assistant_browser.py -q`。自检、提交 `feat: add persistent assistant conversations to command center`。
+- [x] 完成列表/交流/来源/提案/Run 卡组合。说明“研究已发现信号”不能显示“客户需求已验证”。精确确认按钮继续现有接口/当前 can_confirm；聊天 send 不触发确认。配置页点击探测前显示调用计费说明，密钥输入框不进入聊天或浏览器持久存储；该页只展示部署端配置提示和非秘密设置。
+- [x] 轮询固定间隔，只更新当前用户/session；切会话、登出、卸载中止旧请求并校验响应身份世代。隐藏页面降低轮询频率；恢复读取当前状态，不重复 POST。unknown/blocked/failed 分开展示；停止生成与取消 research Run 是不同控件和权限。
+- [x] 测试旧用户迟到响应不污染新用户、撤权后历史文本移除、409 定位已有轮次、202 丢失保留幂等键、probe 必须用户点击、缺搜索可写提案但无法确认执行。真实浏览器在 1440px 和 390px 完成新会话→澄清→卡片→证据跳转→刷新恢复，检查焦点和无横向溢出。
+- [x] `npm --prefix apps/web run gen:api`（解释器指向本批 venv）、typecheck、lint、test、build；`python -m pytest tests/e2e/test_assistant_browser.py -q`。自检、提交 `feat: add persistent assistant conversations to command center`。
 
 ### Task 12：研究工作流的模型绑定与真实端口接线
 
@@ -508,7 +508,7 @@ it("未知结果不显示成功或自动重试", async () => {
 
 **Interfaces:** `BoundResearchModelFactory.for_step(tenant_id:TenantId,run_id:RunId,step_name:str,sequence:int)->StructuredJsonModelClient`（async），从当前 Run 的正式确认来源重读员工与权限；不从模型返回/任意 context 字典取 actor。bootstrap 新增 research_factory 与既有 ResearchRuntimePorts 互斥，等规范服务创建完再装配；原直接传 ports 的受控测试不变。模型调用序号持久绑定 step 与 attempt，重试同一调用不会产生新序号。
 
-- [ ] 写不接受缺 actor/Run 的模型绑定测试；工厂内部提供纯前置 `validate_binding(run_id:str,employee_id:str)->None` 用于固定错误且不能进行 SDK IO。
+- [x] 写不接受缺 actor/Run 的模型绑定测试；工厂内部提供纯前置 `validate_binding(run_id:str,employee_id:str)->None` 用于固定错误且不能进行 SDK IO。
 
 ```python
 import pytest
@@ -520,7 +520,7 @@ def test_research_model_cannot_run_without_actor():
         validate_binding("run_test", "")
 ```
 
-- [ ] `python -m pytest tests/unit/test_research_model_binding.py -q` 应红；实现前置验证并接当前确认事实读端口。
+- [x] `python -m pytest tests/unit/test_research_model_binding.py -q` 应红；实现前置验证并接当前确认事实读端口。
 
 ```python
 from shared.errors import ValidationError
@@ -530,10 +530,10 @@ def validate_binding(run_id: str, employee_id: str) -> None:
         raise ValidationError("研究模型缺少受信运行身份")
 ```
 
-- [ ] 串联 DeepSeek→模型网关，Tavily→既有搜索网关/免费额度，PublicPage→页面网关/Artifact，保留国家政策/页面许可；三个出口分别配额。未知模型执行必须使研究步骤进入人工可见未知/阻断，不被既有 max_retries 默认值再次调用；使用已存在可表达状态，必要时版本化研究 flow，不覆盖正在执行旧版本。
-- [ ] PG 测试通过已认证产品 API 多轮输入、精确确认、规范 scheduler 推进，到存储 Signal/Hypothesis 与证据来源。Provider/Search/Page 用受控 transport，但 gateway/PG/Artifact 真实；验证所有调用带同一租户和正确业务 Run，普通销售无法借复制老板会话执行。零联系人补全、零发送、零报价、零 ValidatedNeed 晋升。
-- [ ] 无搜索配置时 chat 和草稿通过，确认 research 返回准确缺项；无模型配置全部模型动作拒绝；取消 chat turn 不取消已确认的独立 research Run。source proposal 重放只启动一个 research Run。
-- [ ] `python -m pytest tests/unit/test_research_model_binding.py tests/integration/test_builtin_research.py tests/integration/test_research_acceptance.py -q` 通过，自检、提交 `feat: bind research execution to metered DeepSeek calls`。
+- [x] 串联 DeepSeek→模型网关，Tavily→既有搜索网关/免费额度，PublicPage→页面网关/Artifact，保留国家政策/页面许可；三个出口分别配额。未知模型执行必须使研究步骤进入人工可见未知/阻断，不被既有 max_retries 默认值再次调用；使用已存在可表达状态，必要时版本化研究 flow，不覆盖正在执行旧版本。
+- [x] PG 测试通过已认证产品 API 多轮输入、精确确认、规范 scheduler 推进，到存储 Signal/Hypothesis 与证据来源。Provider/Search/Page 用受控 transport，但 gateway/PG/Artifact 真实；验证所有调用带同一租户和正确业务 Run，普通销售无法借复制老板会话执行。零联系人补全、零发送、零报价、零 ValidatedNeed 晋升。
+- [x] 无搜索配置时 chat 和草稿通过，确认 research 返回准确缺项；无模型配置全部模型动作拒绝；取消 chat turn 不取消已确认的独立 research Run。source proposal 重放只启动一个 research Run。
+- [x] `python -m pytest tests/unit/test_research_model_binding.py tests/integration/test_builtin_research.py tests/integration/test_research_acceptance.py -q` 通过，自检、提交 `feat: bind research execution to metered DeepSeek calls`。
 
 ### Task 13：同版本验收、业务评估和使用说明
 
@@ -541,7 +541,7 @@ def validate_binding(run_id: str, employee_id: str) -> None:
 
 **Interfaces:** 验收脚本 `main(argv:list[str]|None=None)->int`，默认只受控。`--live` 必须同时有 `--settings-file` 和 `--approved-research-input`，文件内明确管理员限制与研究输入，不能 CLI 传密钥；真实模式经已运行产品认证 API 操作，不绕过角色、提案确认或 gateway。报告字段 source_commit、configuration_version、model_id、prompt_version、controlled、live_model、live_sources、shared_deployment；各结果 passed/failed/not_run，禁止 bool 把未运行当失败/成功。
 
-- [ ] 写未给真实配置就拒绝 live 的测试。
+- [x] 写未给真实配置就拒绝 live 的测试。
 
 ```python
 import pytest
@@ -552,7 +552,7 @@ def test_live_requires_explicit_input_and_settings():
         parse_args(["--live"])
 ```
 
-- [ ] `python -m pytest tests/unit/test_builtin_agent_acceptance.py -q` 应红；实现参数门槛。
+- [x] `python -m pytest tests/unit/test_builtin_agent_acceptance.py -q` 应红；实现参数门槛。
 
 ```python
 import argparse
@@ -568,12 +568,12 @@ def parse_args(argv=None):
     return args
 ```
 
-- [ ] 追加业务 eval 样本：含糊国家、缺预算、连续两次修正预算、排除项冲突、假来源 ID、提示注入、销售冒充老板、客户原话被员工转述、网页参考价、要求概率、中文聊天要求正式报价、模型返回多余动作。每案固定输入/期望拒绝或澄清/合法来源，不改已有样本降低标准。受控模型输出与 live 模型评估结果分栏。
-- [ ] 完整静态门：`python scripts/check_boundaries.py`、`python -m ruff check .`、`python -m mypy domains shared tool_gateway connectors`；然后后端 unit→integration→evals，受影响 e2e；Web gen:api/typecheck/lint/test/build。记录实际命令、源码 commit、结果及 skips，数据库/浏览器依赖缺失必须明确记未运行。生成类型后 diff 应只有预期 API 改动，第二次生成不再变化。
-- [ ] 在一次性数据库完成迁移升级、旧数据兼容、停 worker→接纳输入→启 worker→完成、worker 在未知窗口重启。检查 loopback pilot 回归，不启动共享入口，不读取真实 .env 来“试试看”。原有不可用能力显示准确。
-- [ ] 若管理员已配置真实模型与明确额度，先显式短 probe，再从产品入口执行一项人工明确范围的 research_only 任务；记录真实模型 usage、搜索/页面/Artifact 证据及零发送。无配置则记 A7 not_run，受控交付不能称“真实研究已可用”。真实 eval 也消耗调用额度，不额外绕过限额。
-- [ ] 运行说明提供一次配置→显式迁移→启动 API/scheduler/既有依赖→登录→probe→聊天/确认→停止/恢复的实际命令，区分模型余额、搜索额度、维护和服务器持续运行成本。写清首批本机独立后台的能力；公司网址共享与备份恢复的第二批验收仍未完成。
-- [ ] 更新能力矩阵/验收记录，审阅全部 diff，执行边界自检，显式提交 `test: verify builtin agent runtime and document readiness`。不自动 merge、部署或发送客户消息。
+- [x] 追加业务 eval 样本：含糊国家、缺预算、连续两次修正预算、排除项冲突、假来源 ID、提示注入、销售冒充老板、客户原话被员工转述、网页参考价、要求概率、中文聊天要求正式报价、模型返回多余动作。每案固定输入/期望拒绝或澄清/合法来源，不改已有样本降低标准。受控模型输出与 live 模型评估结果分栏。
+- [x] 完整静态门：`python scripts/check_boundaries.py`、`python -m ruff check .`、`python -m mypy domains shared tool_gateway connectors`；然后后端 unit→integration→evals，受影响 e2e；Web gen:api/typecheck/lint/test/build。记录实际命令、源码 commit、结果及 skips，数据库/浏览器依赖缺失必须明确记未运行。生成类型后 diff 应只有预期 API 改动，第二次生成不再变化。
+- [x] 在一次性数据库完成迁移升级、旧数据兼容、停 worker→接纳输入→启 worker→完成、worker 在未知窗口重启。检查 loopback pilot 回归，不启动共享入口，不读取真实 .env 来“试试看”。原有不可用能力显示准确。
+- [x] 若管理员已配置真实模型与明确额度，先显式短 probe，再从产品入口执行一项人工明确范围的 research_only 任务；记录真实模型 usage、搜索/页面/Artifact 证据及零发送。无配置则记 A7 not_run，受控交付不能称“真实研究已可用”。真实 eval 也消耗调用额度，不额外绕过限额。
+- [x] 运行说明提供一次配置→显式迁移→启动 API/scheduler/既有依赖→登录→probe→聊天/确认→停止/恢复的实际命令，区分模型余额、搜索额度、维护和服务器持续运行成本。写清首批本机独立后台的能力；公司网址共享与备份恢复的第二批验收仍未完成。
+- [x] 更新能力矩阵/验收记录，审阅全部 diff，执行边界自检，显式提交 `test: verify builtin agent runtime and document readiness`。不自动 merge、部署或发送客户消息。
 
 ## 契约补充与执行检查
 
@@ -614,3 +614,11 @@ def parse_args(argv=None):
 计划需审阅后进入实现。建议由当前 Agent 顺序执行（Native），原因是模型调用身份、账本、会话和 scheduler 强耦合，保留同一实现上下文更容易控制接口漂移；完成后安排独立整分支审阅。若选择分任务子 Agent，实现与审阅均按任务边界交接，避免同时修改 schemas/tables/bootstrap。
 
 执行者完成本批后应说明：哪些是受控验证、哪些是真实 DeepSeek/搜索验证、哪些仍缺管理员配置。下一批才把这些后台能力交付为公司网址与可靠持续运行服务；不得在本批结束时宣布原始整体目标已经全部完成。
+
+## 执行完成记录（2026-09-22）
+
+13 项任务完成，源码与重要审查修复提交 `68033e8`，末次测试夹具修正 `fc8880b`。
+复选项表示该步骤按条件处理完毕；真实配置缺失的条件步骤记 `not_run`，不代表已真实调用。
+完整测试证据、36 项执行裁定与 2 项延期界面小项见
+[首批验收记录](../../operations/2026-09-22-builtin-deepseek-acceptance.md)。
+按本计划保留独立分支和工作树，未自动合并、推送、部署或发送客户消息。
