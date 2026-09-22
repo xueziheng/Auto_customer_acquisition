@@ -91,7 +91,9 @@ class AssistantServiceImpl:
         self, actor: AssistantActor, session_id: AgentSessionId, turn_id: AgentTurnId
     ) -> TurnView:
         await self._authority.check(actor)
-        return await self._repo.transition(actor, session_id, turn_id, "cancelled")
+        return await self._projector.project(
+            actor, await self._repo.transition(actor, session_id, turn_id, "cancelled")
+        )
 
     async def regenerate(
         self,
@@ -118,9 +120,10 @@ class AssistantServiceImpl:
                 str(turn_id).encode(),
             )
         )
-        return await self._repo.accept(
+        regenerated = await self._repo.accept(
             actor, session_id, input, digest, RunId(new_id("run")), attempt_of=turn_id
         )
+        return await self._projector.project(actor, regenerated)
 
     async def pending(self, tenant_id: TenantId, limit: int) -> list[TurnExecution]:
         """仅供规范 scheduler 的租户扫描，不暴露到 HTTP。"""

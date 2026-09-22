@@ -140,3 +140,13 @@ class TurnExecution(AssistantDTO):
     turn: TurnView
     dispatch_state: Literal["pending", "bound"]
     checkpoint_sequence: int | None = None
+
+
+class EmptyAssistantCommand(AssistantDTO):
+    """无附加控制字段的命令。"""
+
+
+class AssistantRegenerateInput(AssistantDTO):
+    idempotency_key: str = Field(
+        min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$"
+    )
