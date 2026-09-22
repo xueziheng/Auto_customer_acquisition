@@ -1133,6 +1133,11 @@ def test_orm_metadata_parity_with_head() -> None:
                 "tenant_id", "activated_at", "activation_id",
             ),
         }
+    expected_indexes.update({
+        "ix_auth_sessions_account": ("tenant_id", "username", "created_at"),
+        "ix_model_invocations_quota": ("tenant_id", "created_at", "employee_id"),
+        "uq_agent_turn_active": ("tenant_id", "session_id"),
+    })
     actual_indexes: dict[str, tuple[str, ...]] = {}
     for tbl in metadata.tables.values():
         for idx in tbl.indexes:
@@ -2024,14 +2029,15 @@ async def test_loss_record_add_and_count_2d(repo_session: AsyncSession) -> None:
     LossRecordRepositoryImpl = _load("LossRecordRepositoryImpl")
     await _seed_opp(repo_session, "opp-loss-a", "tLoss1", "need-loss-a")
     repo = LossRecordRepositoryImpl(repo_session, TenantId("tLoss1"))
+    recent = datetime.now(UTC) - timedelta(days=1)
     await repo.add(
-        TenantId("tLoss1"), _loss("loss-a1", "tLoss1", "opp-loss-a", reason="price_too_high", died="quoted")
+        TenantId("tLoss1"), _loss("loss-a1", "tLoss1", "opp-loss-a", reason="price_too_high", died="quoted", recorded_at=recent)
     )
     await repo.add(
-        TenantId("tLoss1"), _loss("loss-a2", "tLoss1", "opp-loss-a", reason="price_too_high", died="quoted")
+        TenantId("tLoss1"), _loss("loss-a2", "tLoss1", "opp-loss-a", reason="price_too_high", died="quoted", recorded_at=recent)
     )
     await repo.add(
-        TenantId("tLoss1"), _loss("loss-a3", "tLoss1", "opp-loss-a", reason="no_reply", died="contacted")
+        TenantId("tLoss1"), _loss("loss-a3", "tLoss1", "opp-loss-a", reason="no_reply", died="contacted", recorded_at=recent)
     )
     await repo_session.commit()
 
