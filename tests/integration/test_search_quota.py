@@ -16,7 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from connectors.search_contracts import SearchCostStatus, SearchUsage
 from connectors.tavily.client import TavilySearchConnector
-from connectors.tavily.transport import TavilyHttpResponse, TavilyRateLimitedError
+from connectors.tavily.transport import (
+    TavilyHttpResponse,
+    TavilyRateLimitedError,
+    TavilyTransientError,
+)
 from shared.errors import ValidationError
 from shared.schemas.identifiers import RunId, TenantId, UserId, new_id
 from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
@@ -127,9 +131,11 @@ def _reader(quota: Any, tenant: TenantId, run: RunId, transport: SearchTransport
     return factory.for_run(tenant, run, "a" * 64, fingerprint_version="v1")
 
 
-async def test_two_runs_compete_for_last_credit_only_one_dispatch(quota) -> None:
+@pytest.mark.parametrize("paygo_limit", [0, None], ids=["disabled_paygo", "unknown_paygo"])
+async def test_two_runs_compete_for_last_credit_only_one_dispatch(quota, paygo_limit) -> None:
     repository, _, tenant = quota
     transport = SearchTransport()
+    transport.account["paygo_limit"] = paygo_limit
     readers = [
         _reader(repository, tenant, RunId(new_id("run")), transport) for _ in range(2)
     ]
@@ -142,6 +148,7 @@ async def test_two_runs_compete_for_last_credit_only_one_dispatch(quota) -> None
     state = await repository.snapshot()
     assert state.remaining == 0
     assert state.reservations == 1
+    assert state.included_credits_free is True
     denied_run = next(
         reader.run_id
         for reader, result in zip(readers, results)
@@ -248,7 +255,12 @@ async def test_reserved_quota_cannot_be_acknowledged_as_consumed(quota) -> None:
     assert (await repository.get(run, request_key)).status == "reserved"
 
 
-@pytest.mark.parametrize("case", ["usage_failure", "paygo", "unknown", "missing_paygo"])
+@pytest.mark.parametrize(
+    "case", [
+        "usage_failure", "paygo", "unknown", "unknown_null_paygo", "missing_paygo",
+        "missing_plan_limit", "missing_plan_usage", "missing_paygo_usage", "null_plan_limit",
+    ]
+)
 async def test_unverified_free_usage_cannot_dispatch(quota, case: str) -> None:
     repository, _, tenant = quota
     transport = SearchTransport()
@@ -258,6 +270,15 @@ async def test_unverified_free_usage_cannot_dispatch(quota, case: str) -> None:
         transport.account["paygo_limit"] = 100
     elif case == "unknown":
         transport.account["current_plan"] = "Unknown"
+    elif case == "unknown_null_paygo":
+        transport.account["current_plan"] = "Unknown"
+        transport.account["paygo_limit"] = None
+    elif case.startswith("missing_plan_") or case == "missing_paygo_usage":
+        del transport.account[case.removeprefix("missing_")]
+        transport.account["paygo_limit"] = None
+    elif case == "null_plan_limit":
+        transport.account["plan_limit"] = None
+        transport.account["paygo_limit"] = None
     else:
         del transport.account["paygo_limit"]
     run = RunId(new_id("run"))
@@ -268,9 +289,78 @@ async def test_unverified_free_usage_cannot_dispatch(quota, case: str) -> None:
     assert "sensitive" not in str(rejected.value)
     assert transport.calls == 0
     assert (await repository.snapshot()).reservations == 0
+    assert (await repository.snapshot()).included_credits_free is False
     assert (await repository.run_state(run)).stop_reason == (
         "paid_enabled" if case == "paygo" else "usage_unknown"
     )
+
+
+async def test_null_paygo_exhausted_included_credits_never_dispatch(quota) -> None:
+    """免费资格不是无限额度；套餐用量耗尽必须在供应商搜索前停止。"""
+    repository, _, tenant = quota
+    transport = SearchTransport(limit=1000)
+    transport.account.update(plan_usage=1000, paygo_limit=None)
+    run = RunId(new_id("run"))
+
+    with pytest.raises(ToolGatewayError) as failure:
+        await _reader(repository, tenant, run, transport).search(tenant, "factory", "US", 1)
+
+    assert failure.value.category is ToolErrorCategory.PROVIDER_PERMANENT
+    assert (await repository.run_state(run)).stop_reason == "quota_exhausted"
+    assert transport.calls == 0
+    state = await repository.snapshot()
+    assert state.remaining == state.reservations == 0
+    assert state.included_credits_free is True
+    assert state.cost_status is SearchCostStatus.UNKNOWN
+    assert state.paygo_enabled is None
+
+
+async def test_null_paygo_free_credit_fact_survives_repository_restart(quota) -> None:
+    """只保存在 reader 内存中的免费事实会在重启后丢失，且不能伪报 paygo 关闭。"""
+    repository, factory, tenant = quota
+    transport = SearchTransport(limit=3)
+    transport.account["paygo_limit"] = None
+    run = RunId(new_id("run"))
+
+    results = await _reader(repository, tenant, run, transport).search(tenant, "factory", "US", 1)
+    rebuilt = _modules()[0].PostgresSearchQuotaRepository(factory, tenant, now=lambda: NOW)
+    snapshot = await rebuilt.snapshot()
+
+    assert results[0].title == "Acme"
+    assert transport.calls == 1
+    assert snapshot.included_credits_free is True
+    assert snapshot.cost_status is SearchCostStatus.UNKNOWN
+    assert snapshot.paygo_enabled is None
+    assert snapshot.usage_limit == 3
+    assert snapshot.usage_used == 0
+    assert snapshot.remaining == 2
+    assert snapshot.reservations == 1
+
+
+async def test_usage_failure_clears_persisted_included_credit_fact_without_refund(quota) -> None:
+    """旧资格在下次用量读取失败后必须失效，已消耗预留不能因失效而返还。"""
+    repository, factory, tenant = quota
+    transport = SearchTransport(limit=3)
+    transport.account["paygo_limit"] = None
+    await _reader(repository, tenant, RunId(new_id("run")), transport).search(
+        tenant, "factory", "US", 1
+    )
+    assert (await repository.snapshot()).included_credits_free is True
+    transport.usage_error = RuntimeError("sensitive-provider-detail")
+
+    with pytest.raises(ToolGatewayError):
+        await _reader(repository, tenant, RunId(new_id("run")), transport).search(
+            tenant, "factory", "US", 1
+        )
+    rebuilt = _modules()[0].PostgresSearchQuotaRepository(factory, tenant, now=lambda: NOW)
+    snapshot = await rebuilt.snapshot()
+
+    assert snapshot.included_credits_free is False
+    assert snapshot.cost_status is SearchCostStatus.UNKNOWN
+    assert snapshot.paygo_enabled is None
+    assert snapshot.usage_limit is snapshot.usage_used is None
+    assert snapshot.reservations == 1
+    assert transport.calls == 1
 
 
 async def test_same_account_different_binding_cannot_reset_and_other_tenant_cannot_read(
@@ -416,9 +506,11 @@ def _composition(
     )
 
 
-async def test_tavily_composition_passes_gateway_and_returns_typed_quota_reason(quota):
+@pytest.mark.parametrize("paygo_limit", [0, None], ids=["disabled_paygo", "unknown_paygo"])
+async def test_tavily_composition_passes_gateway_and_returns_typed_quota_reason(quota, paygo_limit):
     repository, factory, tenant = quota
     transport = SearchTransport()
+    transport.account["paygo_limit"] = paygo_limit
     tools = _composition(factory, tenant, transport)
     assert transport.calls == transport.usage_calls == 0
     run = await _workflow_run(factory, tenant)
@@ -446,6 +538,40 @@ async def test_tavily_composition_passes_gateway_and_returns_typed_quota_reason(
             .all()
         )
     assert rows == ["free"]
+
+
+@pytest.mark.parametrize(
+    ("failure", "category"),
+    [(TavilyRateLimitedError(17), "rate_limited"),
+     (TavilyTransientError(), "provider_transient")],
+)
+async def test_dispatched_transient_gateway_failure_stops_without_redispatch(
+    quota, failure, category
+):
+    from tool_gateway.free_search_contracts import FreeSearchError
+
+    repository, factory, tenant = quota
+    transport = SearchTransport(limit=10, error=failure)
+    tools = _composition(factory, tenant, transport)
+    run = await _workflow_run(factory, tenant)
+
+    with pytest.raises(FreeSearchError) as stopped:
+        await tools.searcher.search(tenant, run, "factory", "US", "hinges", 1)
+    assert stopped.value.reason == "request_uncertain"
+    assert stopped.value.is_retryable is False
+    assert (await repository.run_state(run)).stop_reason == "request_uncertain"
+    async with factory() as session:
+        ledger = (await session.execute(text(
+            "SELECT status,error_category FROM tool_calls "
+            "WHERE tenant_id=:tenant AND run_id=:run"
+        ), {"tenant": tenant, "run": run})).all()
+    assert ledger == [("failed_transient", category)]
+
+    with pytest.raises(FreeSearchError) as repeated:
+        await tools.searcher.search(tenant, run, "factory", "US", "hinges", 1)
+    assert repeated.value.reason == "request_uncertain"
+    assert repeated.value.is_retryable is False
+    assert transport.calls == transport.usage_calls == 1
 
 
 @pytest.mark.parametrize(

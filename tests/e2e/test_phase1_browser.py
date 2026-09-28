@@ -647,7 +647,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             signal_id = signal_row.signal_id
             account_name = (await prospecting.get_account(tenant, account_id)).name
             assert captured_account_queue.hypothesis_id == str(hypothesis_id)
-            receipt = page.get_by_text(f"Run {confirmed_run_id}", exact=False)
+            receipt = page.get_by_text(f"运行记录 {confirmed_run_id}", exact=False)
             await expect(receipt).to_be_visible()
 
             account_handlers = build_account_discovery_handlers(
@@ -679,7 +679,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             await expect(page.get_by_text(str(signal_id), exact=False)).to_be_visible()
             await page.get_by_role("button", name="需求假设").click()
             await expect(page.get_by_text("推断", exact=True).first).to_be_visible()
-            await expect(page.get_by_text("置信档位：low_mid")).to_be_visible()
+            await expect(page.get_by_text("置信档位：中低")).to_be_visible()
             await expect(
                 page.get_by_text(str(hypothesis_id), exact=False)
             ).to_be_visible()
@@ -703,8 +703,8 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             page.on("request", capture_discovery)
             await page.goto(f"{stack.web_origin}/prospects/accounts")
             await assert_surface("/prospects/accounts", "客户发现")
-            await page.get_by_label("需求假设 ID").fill(str(hypothesis_id))
-            await page.get_by_label("Campaign ID").fill(str(campaign_id))
+            await page.get_by_label("需求假设编号").fill(str(hypothesis_id))
+            await page.get_by_label("活动编号").fill(str(campaign_id))
             await page.get_by_label("联系人角色线索").fill("procurement")
             await page.get_by_label("正当利益评估引用").fill("phase1-browser-lia")
             async with page.expect_response(
@@ -768,7 +768,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             await account_row.press("Enter")
             await expect(page.get_by_text("已验证，可入组", exact=True)).to_be_visible()
             await expect(
-                page.get_by_text("legitimate_interest", exact=False)
+                page.get_by_text("合法利益", exact=False)
             ).to_be_visible()
             await expect(page.get_by_text(signal_id, exact=True)).to_be_visible()
             await expect(page.get_by_text(str(account_id), exact=True)).to_be_visible()
@@ -792,7 +792,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             )
 
             await page.goto(f"{stack.web_origin}/approvals")
-            await assert_surface("/approvals", "Approval Center")
+            await assert_surface("/approvals", "审批中心")
             await expect(page.get_by_text(str(approval_id), exact=True)).to_be_visible()
             await expect(
                 page.get_by_text(f"Campaign {campaign_id} 版本 1")
@@ -803,13 +803,13 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             )
 
             await page.goto(f"{stack.web_origin}/campaigns")
-            await assert_surface("/campaigns", "Campaign Center")
+            await assert_surface("/campaigns", "活动中心")
             await expect(page.get_by_text("不可变版本 v1")).to_be_visible()
             await expect(
                 page.get_by_text("暂停只阻止新发送；入站回复仍继续处理。")
             ).to_be_visible()
             await page.get_by_role("button", name="激活已批准版本").click()
-            await expect(page.get_by_text("Campaign 精确版本已激活。")).to_be_visible()
+            await expect(page.get_by_text("活动精确版本已激活。")).to_be_visible()
             approval_view = await dependencies.approvals.get(tenant, approval_id)
             assert approval_view.state == "applied"
             assert approval_view.decided_by_employee == stack.employees.boss
@@ -849,8 +849,8 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             await expect(
                 page.get_by_text(str(hypothesis_id), exact=True)
             ).to_be_visible()
-            await expect(page.get_by_text("Campaign v1", exact=True)).to_be_visible()
-            await expect(page.get_by_text("enrolled", exact=True).first).to_be_visible()
+            await expect(page.get_by_text("活动 v1", exact=True)).to_be_visible()
+            await expect(page.get_by_text("已入组", exact=True).first).to_be_visible()
 
             await page.screenshot(path=evidence_dir / "04-campaign-enrolled.png")
 
@@ -1078,7 +1078,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             assert RAW_ONLY_CREDENTIAL.encode() in raw_reply
 
             await page.goto(f"{stack.web_origin}/inbox")
-            await assert_surface("/inbox", "Smart Inbox")
+            await assert_surface("/inbox", "智能收件箱")
             await page.get_by_role("button", name="报价 / 样品 / 规格 1").click()
             await expect(page.get_by_text("提供规格", exact=True).first).to_be_visible()
             await expect(page.get_by_text(str(reply_meta.artifact_id))).to_be_visible()

@@ -138,6 +138,11 @@ class SearchQuotaAccountRow(Base):
         CheckConstraint("cost_status IN ('free','paid','unknown')", name="ck_search_quota_accounts_cost_status"),
         CheckConstraint("usage_limit IS NULL OR usage_limit >= 0", name="ck_search_quota_accounts_usage_limit"),
         CheckConstraint("usage_used IS NULL OR usage_used >= 0", name="ck_search_quota_accounts_usage_used"),
+        CheckConstraint(
+            "NOT included_credits_free OR (usage_limit IS NOT NULL AND usage_used IS NOT NULL "
+            "AND cost_status <> 'paid' AND paygo_enabled IS NOT TRUE)",
+            name="ck_search_quota_accounts_included_credits",
+        ),
     )
 
     tenant_id: Mapped[str] = mapped_column(String(40))
@@ -149,6 +154,7 @@ class SearchQuotaAccountRow(Base):
     usage_used: Mapped[int | None] = mapped_column(BigInteger)
     paygo_enabled: Mapped[bool | None] = mapped_column(Boolean)
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    included_credits_free: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
 
 
 class SearchQuotaRunRow(Base):
@@ -5850,10 +5856,16 @@ class AuthAccountRow(Base):
         UniqueConstraint("tenant_id", "employee_id", name="uq_auth_accounts_employee"),
         ForeignKeyConstraint(["tenant_id", "employee_id"], ["employees.tenant_id", "employees.employee_id"], name="fk_auth_accounts_employee", ondelete="RESTRICT"),
         CheckConstraint("version >= 1 AND failed_count BETWEEN 0 AND 5", name="ck_auth_accounts_counters"),
-        CheckConstraint("username ~ '^[a-z0-9][a-z0-9_.-]{0,63}$'", name="ck_auth_accounts_username"),
+        CheckConstraint(
+            "(username ~ '^[a-z0-9][a-z0-9_.-]{0,63}$') OR ("
+            "username ~ '^[a-z0-9!#$%&''*+/=?^_`{|}~-]+(\\.[a-z0-9!#$%&''*+/=?^_`{|}~-]+)*@"
+            "[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'"
+            " AND length(username) <= 254 AND length(split_part(username, '@', 1)) <= 64)",
+            name="ck_auth_accounts_username",
+        ),
     )
     tenant_id: Mapped[str] = mapped_column(String(32))
-    username: Mapped[str] = mapped_column(String(64))
+    username: Mapped[str] = mapped_column(String(254))
     employee_id: Mapped[str] = mapped_column(String(32))
     password_hash: Mapped[str] = mapped_column(String(160))
     enabled: Mapped[bool] = mapped_column(Boolean)
@@ -5876,7 +5888,7 @@ class AuthSessionRow(Base):
     tenant_id: Mapped[str] = mapped_column(String(32))
     token_digest: Mapped[str] = mapped_column(String(64))
     csrf_digest: Mapped[str] = mapped_column(String(64))
-    username: Mapped[str] = mapped_column(String(64))
+    username: Mapped[str] = mapped_column(String(254))
     user_id: Mapped[str] = mapped_column(String(32))
     account_version: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

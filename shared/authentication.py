@@ -1,5 +1,6 @@
 """登录身份与会话契约；材料仅供可信传输层使用，禁止写入日志或模型。"""
 
+import re
 from datetime import datetime
 from typing import Protocol
 
@@ -27,6 +28,29 @@ class AuthenticationInputInvalid(Exception):
 
     def __init__(self) -> None:
         super().__init__("账号资料不符合要求")
+
+
+def normalize_login_username(username: str) -> str:
+    """兼容原用户名与 ASCII 邮箱登录；不合并邮箱点号或加号别名。"""
+    if not isinstance(username, str) or not username.isascii():
+        raise AuthenticationInputInvalid()
+    if "@" not in username:
+        if re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", username) is None:
+            raise AuthenticationInputInvalid()
+        return username
+    if len(username) > 254 or username.count("@") != 1:
+        raise AuthenticationInputInvalid()
+    normalized = username.lower()
+    local, domain = normalized.split("@")
+    atom = r"[a-z0-9!#$%&'*+/=?^_`{|}~-]+"
+    label = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    if (
+        not 1 <= len(local) <= 64
+        or re.fullmatch(atom + r"(?:\." + atom + ")*", local) is None
+        or re.fullmatch(label + r"(?:\." + label + ")+", domain) is None
+    ):
+        raise AuthenticationInputInvalid()
+    return normalized
 
 
 class AuthPrincipal(BaseModel):

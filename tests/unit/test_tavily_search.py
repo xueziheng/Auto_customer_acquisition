@@ -31,6 +31,12 @@ class _Transport:
     def __init__(self) -> None:
         self.search_request: tuple[str, str, int, str] | None = None
         self.usage_key: str | None = None
+        self.result: dict[str, object] = {
+            "title": "Acme expansion",
+            "url": "https://example.com/news",
+            "content": "New factory",
+            "score": 0.99,
+        }
 
     async def search(
         self, query: str, country: str, limit: int, *, api_key: str
@@ -38,16 +44,7 @@ class _Transport:
         self.search_request = (query, country, limit, api_key)
         return TavilyHttpResponse(
             status_code=200,
-            payload={
-                "results": [
-                    {
-                        "title": "Acme expansion",
-                        "url": "https://example.com/news",
-                        "content": "New factory",
-                        "score": 0.99,
-                    }
-                ]
-            },
+            payload={"results": [self.result]},
         )
 
     async def usage(self, *, api_key: str) -> TavilyHttpResponse:
@@ -93,6 +90,86 @@ async def test_connector_normalizes_results_and_lazily_resolves_secret() -> None
     usage = await connector.usage()
     assert usage.paygo_enabled is False
     assert usage.cost_status is SearchCostStatus.FREE
+    assert usage.included_credits_free is True
+
+
+@pytest.mark.parametrize(
+    ("title", "content", "expected_title", "expected_content"),
+    [
+        ("  Acme\n\r\t expansion  ", " New\n\n factory\t in\r US ", "Acme expansion", "New factory in US"),
+        ("T" * 700, "C" * 2200, "T" * 500, "C" * 2000),
+        ("Acme", " \t\r\n ", "Acme", ""),
+    ],
+    ids=["fold_whitespace", "bound_text", "empty_description"],
+)
+async def test_search_results_normalize_bounded_display_text(
+    title: str, content: str, expected_title: str, expected_content: str,
+) -> None:
+    """供应商的展示空白与长摘要不得使整批有效网页定位结果报错。"""
+    transport = _Transport()
+    transport.result.update(title=title, content=content)
+    connector = TavilySearchConnector(transport, _UrlValidator())
+    await connector.configure(_Resolver())
+
+    results = await connector.search("hinge importer", country="US", limit=1)
+
+    assert results[0].title == expected_title
+    assert results[0].description == expected_content
+
+
+@pytest.mark.parametrize("field", ["title", "content"])
+@pytest.mark.parametrize("value", [None, 5, {"text": "Acme"}])
+async def test_search_display_normalization_does_not_coerce_nontext(
+    field: str, value: object,
+) -> None:
+    """将异常结构直接转字符串会让伪造摘要混入搜索结果。"""
+    transport = _Transport()
+    transport.result[field] = value
+    connector = TavilySearchConnector(transport, _UrlValidator())
+    await connector.configure(_Resolver())
+
+    with pytest.raises(ValidationError):
+        await connector.search("hinge importer", country="US", limit=1)
+
+
+@pytest.mark.parametrize("field", ["title", "content"])
+@pytest.mark.parametrize("prefix_length", [0, 2500])
+async def test_search_rejects_hidden_controls_before_truncation_without_leaking_content(
+    field: str, prefix_length: int,
+) -> None:
+    """先截断后检查会漏掉尾部控制字符，且异常不得带回供应商正文。"""
+    canary = "provider-private-canary"
+    transport = _Transport()
+    transport.result[field] = "A" * prefix_length + "\0" + canary
+    connector = TavilySearchConnector(transport, _UrlValidator())
+    await connector.configure(_Resolver())
+
+    with pytest.raises(ValidationError) as failure:
+        await connector.search("hinge importer", country="US", limit=1)
+
+    assert canary not in str(failure.value)
+    assert canary not in repr(failure.value)
+
+
+async def test_search_does_not_truncate_url_before_security_validation() -> None:
+    """摘要清理不能改写 URL；安全读取器必须看见供应商返回的完整地址。"""
+    urls: list[str] = []
+
+    class UrlValidator(_UrlValidator):
+        async def validate_url(self, url: str) -> str:
+            urls.append(url)
+            return url
+
+    transport = _Transport()
+    raw_url = "https://example.com/" + "x" * 2500
+    transport.result["url"] = raw_url
+    connector = TavilySearchConnector(transport, UrlValidator())
+    await connector.configure(_Resolver())
+
+    with pytest.raises(ValidationError):
+        await connector.search("hinge importer", country="US", limit=1)
+
+    assert urls == [raw_url]
 
 
 def test_transport_uses_only_fixed_basic_no_extras_payload(
@@ -196,6 +273,40 @@ async def test_usage_missing_fields_remain_unknown_instead_of_zero() -> None:
     assert usage.used is None
     assert usage.paygo_enabled is None
     assert usage.cost_status is SearchCostStatus.UNKNOWN
+    assert usage.included_credits_free is False
+
+
+async def test_researcher_null_paygo_limit_preserves_unknown_cost() -> None:
+    """真实免费账号可返回 null；不能把网页套餐名称当作 API 按量关闭证明。"""
+    transport = _Transport()
+
+    async def null_paygo_usage(*, api_key: str) -> TavilyHttpResponse:
+        del api_key
+        return TavilyHttpResponse(
+            status_code=200,
+            payload={
+                "account": {
+                    "current_plan": "Researcher",
+                    "plan_usage": 0,
+                    "plan_limit": 1000,
+                    "paygo_usage": 0,
+                    "paygo_limit": None,
+                }
+            },
+        )
+
+    transport.usage = null_paygo_usage  # type: ignore[method-assign]
+    connector = TavilySearchConnector(transport, _UrlValidator())
+    await connector.configure(_Resolver())
+
+    usage = await connector.usage()
+
+    assert usage.plan == "Researcher"
+    assert usage.limit == 1000
+    assert usage.used == 0
+    assert usage.paygo_enabled is None
+    assert usage.cost_status is SearchCostStatus.UNKNOWN
+    assert usage.included_credits_free is True
 
 
 async def test_usage_decoding_recognizes_only_exact_paid_plan() -> None:
@@ -221,7 +332,84 @@ async def test_usage_decoding_recognizes_only_exact_paid_plan() -> None:
     connector = TavilySearchConnector(transport, _UrlValidator())
     await connector.configure(_Resolver())
 
-    assert (await connector.usage()).cost_status is SearchCostStatus.PAID
+    usage = await connector.usage()
+    assert usage.cost_status is SearchCostStatus.PAID
+    assert usage.included_credits_free is False
+
+
+@pytest.mark.parametrize(
+    ("changes", "missing", "expected"),
+    [
+        ({}, None, True),
+        ({"paygo_limit": 0}, None, True),
+        ({"plan_limit": 0}, None, True),
+        ({"plan_usage": 1001}, None, True),
+        ({"current_plan": "researcher"}, None, False),
+        ({"current_plan": "Project"}, None, False),
+        ({"current_plan": "Unknown"}, None, False),
+        ({"paygo_usage": 1}, None, False),
+        ({"paygo_limit": 1}, None, False),
+        ({"plan_limit": None}, None, False),
+        ({"plan_usage": None}, None, False),
+        ({"paygo_usage": None}, None, False),
+        ({}, "current_plan", False),
+        ({}, "plan_limit", False),
+        ({}, "plan_usage", False),
+        ({}, "paygo_usage", False),
+        ({}, "paygo_limit", False),
+    ],
+)
+async def test_included_free_credit_fact_requires_complete_exact_provider_evidence(
+    changes: dict[str, object], missing: str | None, expected: bool,
+) -> None:
+    """把缺失键与显式 null 合并，或按别名猜套餐，都会错误放行未知额度。"""
+    account: dict[str, object] = {
+        "current_plan": "Researcher", "plan_limit": 1000, "plan_usage": 0,
+        "paygo_usage": 0, "paygo_limit": None,
+    }
+    account.update(changes)
+    if missing is not None:
+        del account[missing]
+    transport = _Transport()
+
+    async def usage_response(*, api_key: str) -> TavilyHttpResponse:
+        del api_key
+        return TavilyHttpResponse(200, {"account": account})
+
+    transport.usage = usage_response  # type: ignore[method-assign]
+    connector = TavilySearchConnector(transport, _UrlValidator())
+    await connector.configure(_Resolver())
+
+    usage = await connector.usage()
+
+    assert usage.included_credits_free is expected
+    if account.get("paygo_limit") is None:
+        assert usage.paygo_enabled is None
+
+
+@pytest.mark.parametrize("field", ["plan_limit", "plan_usage", "paygo_usage", "paygo_limit"])
+@pytest.mark.parametrize("value", [True, False, -1, "0", 0.0])
+async def test_free_credit_evidence_rejects_noninteger_or_negative_counts(
+    field: str, value: object,
+) -> None:
+    """零值必须来自真实整数，不能将 bool、浮点或字符串转成免费证明。"""
+    account: dict[str, object] = {
+        "current_plan": "Researcher", "plan_limit": 1000, "plan_usage": 0,
+        "paygo_usage": 0, "paygo_limit": None,
+    }
+    account[field] = value
+    transport = _Transport()
+
+    async def usage_response(*, api_key: str) -> TavilyHttpResponse:
+        del api_key
+        return TavilyHttpResponse(200, {"account": account})
+
+    transport.usage = usage_response  # type: ignore[method-assign]
+    connector = TavilySearchConnector(transport, _UrlValidator())
+    await connector.configure(_Resolver())
+
+    with pytest.raises(ValidationError):
+        await connector.usage()
 
 
 @pytest.mark.parametrize(

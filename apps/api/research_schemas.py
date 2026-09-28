@@ -42,6 +42,7 @@ class DiscoveryProposalView(ProposalView):
         "outreach_preparation"
     )
     planned_discovery_lanes: tuple[str, ...] = ()
+    planned_source_channels: tuple[str, ...] = ()
     can_confirm: bool = False
     confirmation_blocked_reason: str | None = None
     research_access: ResearchAccessView | None = None

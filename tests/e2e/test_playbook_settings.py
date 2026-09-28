@@ -43,9 +43,9 @@ async def test_real_playbook_settings_creates_candidate_and_run(
                 f"{e2e_stack.web_origin}/settings",
                 wait_until="networkidle",
             )
-            await expect(page.get_by_text("尚未配置 Company Playbook")).to_be_visible()
+            await expect(page.get_by_text("尚未配置公司业务规则")).to_be_visible()
             readiness_message = await page.get_by_label(
-                "Playbook 联系人补全就绪状态"
+                "公司业务规则联系人补全就绪状态"
             ).locator("strong").inner_text()
             assert readiness_message in {
                 "尚无任何已激活国家政策，联系人补全保持阻断。",
@@ -80,7 +80,7 @@ async def test_real_playbook_settings_creates_candidate_and_run(
             assert candidate_id is not None
             assert run_id is not None
             await expect(page.get_by_role("link", name="前往审批中心")).to_be_visible()
-            await expect(page.get_by_role("link", name="查看 Run")).to_have_attribute(
+            await expect(page.get_by_role("link", name="查看运行记录")).to_have_attribute(
                 "href", f"/runs/{run_id}"
             )
             if screenshot_dir is not None:

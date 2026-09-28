@@ -551,7 +551,7 @@ async def test_real_opportunity_board_and_handoff_queue(
             await provenance_trigger.click()
             provenance_dialog = page.get_by_role("dialog")
             for label, value in (
-                ("来源类型", "conversation"),
+                ("来源类型", "客户会话"),
                 ("来源标识", "e2e-message-1"),
                 ("提取者", "human"),
                 ("提取时间", scenario.provenance_extracted_at),

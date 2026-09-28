@@ -49,7 +49,7 @@ function safeSourceUrl(value: string | null | undefined): string | null {
 }
 
 function confidenceLabel(value: string): string {
-  return ({ high: "高档", medium: "中档", low: "低档" }[value] ?? value);
+  return ({ high: "高档", medium: "中档", low: "低档", low_mid: "中低", mid: "中档", mid_high: "中高", very_high: "很高", extreme: "极高" }[value] ?? value);
 }
 
 function fieldLabel(value: string): string {

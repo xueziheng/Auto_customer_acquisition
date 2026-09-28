@@ -58,6 +58,7 @@ async def test_controlled_preview_confirm_result_and_run_flow(monkeypatch):
         assert result.status_code == 200, result.text
         proposal = result.json()
         assert proposal["can_confirm"] is True
+        assert proposal["planned_source_channels"] == ["public_web", "industry_directory"]
         confirmed = await client.post(
             f"/commands/discovery-proposals/{proposal['proposal_id']}/confirm"
         )
@@ -71,6 +72,9 @@ async def test_controlled_preview_confirm_result_and_run_flow(monkeypatch):
         run = await client.get(f"/runs/{confirmed.json()['run_id']}")
         assert run.status_code == 200, run.text
         assert run.json()["summary"]["research"]["consumed_credits"] == 3
+        assert run.json()["summary"]["research"]["planned_source_channels"] == ["public_web", "industry_directory"]
+        assert run.json()["summary"]["research"]["searched_source_channels"] == ["public_web"]
+        assert run.json()["summary"]["research"]["source_channels"] == ["public_web"]
         from apps.api.research import ResearchAccessService
         from tests.research_ui_preview import dependencies
 

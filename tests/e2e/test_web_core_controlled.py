@@ -218,7 +218,7 @@ async def test_original_launcher_browser_research_and_independent_reply_chain(
             page.on("pageerror", lambda error: errors.append(type(error).__name__))
             await page.goto(state["web_url"] + "/settings")
             await expect(
-                page.get_by_text("尚未配置 Company Playbook", exact=True)
+                page.get_by_text("尚未配置公司业务规则", exact=True)
             ).to_be_visible()
             await screenshot(page, directory, "settings-empty-1440", pages)
             from infra.controlled.research import ControlledResearchCalls
@@ -255,7 +255,7 @@ async def test_original_launcher_browser_research_and_independent_reply_chain(
             ]:
                 await page.locator(f'[name="{name}"]').fill(value)
             await page.locator(
-                '[aria-label="Playbook 候选表单"] button[type="submit"]'
+                '[aria-label="公司业务规则候选表单"] button[type="submit"]'
             ).click()
             await expect(page.get_by_text("候选版本已创建", exact=True)).to_be_visible(
                 timeout=15000
@@ -479,7 +479,7 @@ async def test_original_launcher_browser_research_and_independent_reply_chain(
                         None,
                     ),
                     ("cost", "/costing-quotes?opportunity_id=" + opportunity_id, None),
-                    ("runs", "/runs", "Run 全景"),
+                    ("runs", "/runs", "运行记录"),
                 ]:
                     await page.goto(state["web_url"] + path)
                     if heading:

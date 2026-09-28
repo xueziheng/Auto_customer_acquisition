@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Literal, Protocol, runtime_checkable
 
 from connectors.search_contracts import SearchCostStatus, SearchUsage
+from shared.errors import ValidationError
 from shared.schemas.identifiers import RunId, TenantId
 from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
 
@@ -56,6 +57,22 @@ class SearchQuotaSnapshot:
     usage_used: int | None
     paygo_enabled: bool | None
     checked_at: datetime | None
+    included_credits_free: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.included_credits_free) is not bool or (
+            self.included_credits_free
+            and (
+                not isinstance(self.cost_status, SearchCostStatus)
+                or self.cost_status is SearchCostStatus.PAID
+                or (self.paygo_enabled is not None and self.paygo_enabled is not False)
+                or any(
+                    type(value) is not int or value < 0
+                    for value in (self.usage_limit, self.usage_used)
+                )
+            )
+        ):
+            raise ValidationError("免费搜索套餐资格快照无效")
 
 
 @dataclass(frozen=True)
@@ -105,14 +122,21 @@ class SearchQuotaRepository(Protocol):
 
 
 def verified_free_remaining(usage: SearchUsage) -> int | None:
-    """只承认精确免费套餐和明确关闭 paygo；缺失字段不是零也不是关闭。"""
+    """精确套餐须有独立免费额度证明或旧明确免费状态；未知字段不回填。"""
     if (
         not isinstance(usage, SearchUsage)
         or usage.plan != "Researcher"
-        or usage.cost_status is not SearchCostStatus.FREE
-        or usage.paygo_enabled is not False
+        or usage.cost_status is SearchCostStatus.PAID
+        or usage.paygo_enabled is True
         or usage.limit is None
         or usage.used is None
+        or not (
+            usage.included_credits_free
+            or (
+                usage.cost_status is SearchCostStatus.FREE
+                and usage.paygo_enabled is False
+            )
+        )
     ):
         return None
     return max(0, usage.limit - usage.used)

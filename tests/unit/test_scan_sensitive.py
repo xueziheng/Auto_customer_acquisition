@@ -73,6 +73,11 @@ def _hunter_key_canary() -> str:
     return "a1b2c3d4e5" + "f60718293a" + "4b5c6d7e8f" + "9012345678"
 
 
+def _tavily_key_canary(environment: str) -> str:
+    """明显合成的 Tavily 形态；仅运行时拼接，不接触真实密钥。"""
+    return "tvly-" + environment + "-" + "SyntheticCanaryOnly" + "NeverIssued123456"
+
+
 def _placeholder_dsn() -> str:
     """占位 DSN 形态：源码不写完整 DSN，运行时拼接。"""
     return "postgresql://<" + "user" + ">:<" + "pass" + ">@host:5432/db"
@@ -208,6 +213,55 @@ def test_hunter_key_field_case_separator_boundaries_and_placeholders() -> None:
     assert findings == [(1, "hunter-api-key"), (2, "hunter-api-key")]
 
 
+@pytest.mark.parametrize("environment", ["dev", "prod"])
+def test_tavily_keys_are_detected_without_requiring_a_field_name(environment: str) -> None:
+    module = _load_scanner()
+    canary = _tavily_key_canary(environment)
+    sample = "\n".join([
+        canary,
+        '{"api_key":"' + canary + '"}',
+        "Authorization: Bearer " + canary,
+    ])
+
+    assert module.scan_text(sample) == [
+        (1, "tavily-api-key"), (2, "tavily-api-key"), (3, "tavily-api-key"),
+    ]
+
+
+@pytest.mark.parametrize("environment", ["dev", "prod"])
+def test_tavily_placeholders_and_masked_values_are_allowed(environment: str) -> None:
+    module = _load_scanner()
+    prefix = "tvly-" + environment + "-"
+    canary = _tavily_key_canary(environment)
+    sample = "\n".join([
+        prefix + "<your-tavily-api-key>",
+        prefix + "your_api_key_placeholder",
+        prefix + "X" * 32,
+        prefix + "*" * 32,
+        prefix + "...",
+        canary + "...",
+        canary + "****",
+    ])
+
+    assert module.scan_text(sample) == []
+
+
+def test_tavily_cli_reports_fixed_metadata_without_exposing_canaries() -> None:
+    canaries = [_tavily_key_canary("dev"), _tavily_key_canary("prod")]
+    with tempfile.TemporaryDirectory(dir=_REPO_ROOT) as td:
+        source = Path(td) / "provider-validation.json"
+        source.write_text("\n".join(canaries) + "\n", encoding="utf-8")
+        result = _run_cli([str(source)], quiet=True)
+        rel = source.resolve().relative_to(_REPO_ROOT.resolve()).as_posix()
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    assert result.stdout.splitlines() == [
+        f"{rel}:1:tavily-api-key", f"{rel}:2:tavily-api-key",
+    ]
+    assert all(canary not in result.stdout + result.stderr for canary in canaries)
+
+
 def test_cli_clean_exit_zero() -> None:
     if not _SCRIPT.exists():
         pytest.fail(f"RED：{_SCRIPT} 尚未创建")
@@ -283,6 +337,78 @@ def test_self_scan_clean() -> None:
         pytest.fail(f"RED：{_SCRIPT} 尚未创建")
     result = _run_cli([str(_SCRIPT), str(Path(__file__))])
     assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize("expression", [
+    "secrets.token_urlsafe(32)", "SecretStr(secrets.token_urlsafe(32))",
+    "await setup_auth(engine)", "account.secret", "supplied_value",
+    "(\n    read_password() if action in {'create', 'reset'} else None\n)",
+    "getpass.getpass('请输入密码：')",
+])
+def test_python_runtime_password_expressions_are_not_credentials(expression):
+    with tempfile.TemporaryDirectory(dir=_REPO_ROOT) as td:
+        source = Path(td) / "runtime.py"
+        source.write_text("password = " + expression + "\n")
+        assert _run_cli([str(source)]).returncode == 0
+
+
+@pytest.mark.parametrize("wrapper", ["{}", "SecretStr({})", "str({})", "{} if allowed else None"])
+def test_python_literal_passwords_remain_blocked(wrapper):
+    with tempfile.TemporaryDirectory(dir=_REPO_ROOT) as td:
+        source = Path(td) / "literal.py"
+        source.write_text("password = " + wrapper.format(repr(_password_secret())) + "\n")
+        assert _run_cli([str(source)]).returncode == 1
+
+
+def test_python_numeric_password_wrapper_remains_blocked():
+    source = "password = " + "str(123456789)\n"
+    assert _load_scanner().scan_text(source, suffix=".py")
+
+
+def test_runtime_looking_env_password_is_still_a_secret():
+    with tempfile.TemporaryDirectory(dir=_REPO_ROOT) as td:
+        source = Path(td) / ".env"
+        source.write_text("DB_PASSWORD=" + "secrets.token_urlsafe(32)" + "\n")
+        assert _run_cli([str(source)]).returncode == 1
+
+
+def test_python_dsn_interpolation_only_exempts_dynamic_password():
+    with tempfile.TemporaryDirectory(dir=_REPO_ROOT) as td:
+        source = Path(td) / "dsn.py"
+        prefix = "dsn = f'postgresql://user:"
+        suffix = "@localhost:{port}/db'\n"
+        source.write_text(prefix + "{password}" + suffix)
+        assert _run_cli([str(source)]).returncode == 0
+        source.write_text(prefix + _password_secret() + "{extra}" + suffix)
+        assert _run_cli([str(source)]).returncode == 1
+        source.write_text("dsn = 'postgresql://user:" + "{password}" + "@host/db'; label = f'{port}'\n")
+        assert _run_cli([str(source)]).returncode == 1
+
+
+def test_runtime_values_inside_embedded_python_and_slices():
+    with tempfile.TemporaryDirectory(dir=_REPO_ROOT) as td:
+        source = Path(td) / "embedded.py"
+        body = "password = " + "lambda: read_password()\n"
+        source.write_text('plugin = """import os\n' + body + '"""\n'
+                          + "password = " + "SecretStr(secrets.token_urlsafe(32)[:15])\n")
+        assert _run_cli([str(source)]).returncode == 0
+        source.write_text('plugin = """import os\n' + "password = "
+                          + repr(_password_secret()) + '\n"""\n')
+        assert _run_cli([str(source)]).returncode == 1
+
+
+def test_empty_vue_ref_and_explicit_documentation_placeholder():
+    with tempfile.TemporaryDirectory(dir=_REPO_ROOT) as td:
+        vue = Path(td) / "login.vue"
+        vue.write_text('const password = ' + 'ref("");\n')
+        assert _run_cli([str(vue)]).returncode == 0
+        vue.write_text('const password = ' + 'ref("' + _password_secret() + '");\n')
+        assert _run_cli([str(vue)]).returncode == 1
+        doc = Path(td) / "guide.md"
+        doc.write_text('`login(password=' + 'SecretStr(...))`\n')
+        assert _run_cli([str(doc)]).returncode == 0
+        doc.write_text('`login(password=' + 'SecretStr("' + _password_secret() + '"))`\n')
+        assert _run_cli([str(doc)]).returncode == 1
 
 
 # --- 回归：真实本地凭证与 Unicode 密码仍命中；文档占位 token 精确通过 ---------------

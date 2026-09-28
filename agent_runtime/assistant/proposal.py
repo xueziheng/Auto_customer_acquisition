@@ -9,12 +9,10 @@ from typing import cast
 from pydantic import ValidationError as SchemaError
 
 from agent_runtime.assistant.context import AssistantContext
+from agent_runtime.assistant.discovery_queries import build_discovery_queries
 from domains.assistant.schemas import Clarification, ResearchDraft, SourcedField
-from domains.directives.schemas import (
-    DemandDiscoveryPlanInput,
-    DiscoverySearchQueryInput,
-)
-from shared.errors import PermissionDenied
+from domains.directives.schemas import DemandDiscoveryPlanInput
+from shared.errors import PermissionDenied, ValidationError
 from shared.schemas.evidence import ConfidenceTier
 
 LABELS: dict[str, tuple[str, ...]] = {
@@ -169,18 +167,15 @@ class ResearchProposalBuilder:
             return missing(
                 ["max_search_queries", "target_countries", "target_categories"]
             )
-        queries = tuple(
-            DiscoverySearchQueryInput(
-                query=f"{country} {category} {lane}",
-                country=country,
-                category=category,
-                limit=budgets["query_limit"],
-                discovery_lane=lane,
+        try:
+            queries = build_discovery_queries(
+                countries=countries,
+                categories=categories,
+                max_queries=budgets["max_search_queries"],
+                result_limit=budgets["query_limit"],
             )
-            for country in countries
-            for category in categories
-            for lane in ("importer", "distributor", "ecommerce")
-        )
+        except ValidationError:
+            return missing(["target_categories"])
         return DemandDiscoveryPlanInput(
             objective=values["objective"],
             queries=queries,

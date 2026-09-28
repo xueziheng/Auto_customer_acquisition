@@ -619,13 +619,28 @@ class ResearchEvidence(BaseModel):
             "identity_status": "pending_verification",
             "source_kind": "unverified_public_page",
         }
-        if re.search(
+        source_host = (urlsplit(url).hostname or "").lower().rstrip(".")
+        third_party_hosts = (
+            "linkedin.com", "importyeti.com", "importgenius.com", "panjiva.com",
+            "ted.europa.eu", "find-tender.service.gov.uk", "alibaba.com",
+            "globalsources.com", "made-in-china.com",
+        )
+        # 名录、社交主页和采购门户的第一人称介绍属于被收录企业，不能把平台
+        # 域名绑定成客户官网；仍保留独立信号，不要求先跨来源补齐才可收录。
+        if any(
+            source_host == host or source_host.endswith("." + host)
+            for host in third_party_hosts
+        ) or re.search(
             r"\b(?:directory|directories|dealer locator|find a dealer|dealer listings|"
-            r"business listings|brand dealers)\b|经销商目录|企业名录|行业目录",
+            r"business listings|brand dealers|exhibitor (?:list|profile)|"
+            r"association member (?:list|profile)|member directory)\b|"
+            r"经销商目录|企业名录|行业目录|参展商名录|参展商介绍|会员名录",
             text,
             re.IGNORECASE,
         ) or re.search(
-            r"/(?:directory|directories|dealers|companies)(?:/|$)", urlsplit(url).path
+            r"/(?:directory|directories|dealers|companies|exhibitors|members)(?:/|$)",
+            urlsplit(url).path,
+            re.IGNORECASE,
         ):
             return cls.model_validate({**base, "source_kind": "directory_listing"})
         identity = re.search(

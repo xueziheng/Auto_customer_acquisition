@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict
 from typing import Protocol
 
+from agent_runtime.assistant.discovery_queries import query_source_channel
 from connectors.search_contracts import SearchCostStatus
 from domains.directives.schemas import ProposalView
 from domains.directives.service import DirectiveService
@@ -101,8 +102,11 @@ class ResearchAccessService:
         ):
             state = "paid_enabled"
         elif (
-            snapshot.cost_status is not SearchCostStatus.FREE
-            or snapshot.paygo_enabled is not False
+            not snapshot.included_credits_free
+            and (
+                snapshot.cost_status is not SearchCostStatus.FREE
+                or snapshot.paygo_enabled is not False
+            )
         ):
             state = "usage_unknown"
         else:
@@ -126,9 +130,11 @@ class ResearchAccessService:
         access = await self.status(tenant_id) if research else None
         reason = None
         lanes: tuple[str, ...] = ()
+        source_channels: tuple[str, ...] = ()
         if research:
             try:
                 queries = json.loads(proposal.parsed_fields.get("queries", "[]"))
+                queries = queries if isinstance(queries, list) else []
                 lanes = tuple(
                     dict.fromkeys(
                         item["discovery_lane"]
@@ -136,6 +142,15 @@ class ResearchAccessService:
                         if isinstance(item, dict)
                         and item.get("discovery_lane")
                         in {"importer", "distributor", "ecommerce"}
+                    )
+                )
+                source_channels = tuple(
+                    dict.fromkeys(
+                        query_source_channel(item["query"])
+                        for item in queries
+                        if isinstance(item, dict)
+                        and isinstance(item.get("query"), str)
+                        and item["query"].strip()
                     )
                 )
             except (ValueError, TypeError):
@@ -159,6 +174,7 @@ class ResearchAccessService:
             **asdict(proposal),
             execution_mode="research_only" if research else "outreach_preparation",
             planned_discovery_lanes=lanes,
+            planned_source_channels=source_channels,
             can_confirm=reason is None,
             confirmation_blocked_reason=reason,
             research_access=access,

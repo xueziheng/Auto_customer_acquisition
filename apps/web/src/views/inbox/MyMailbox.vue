@@ -25,6 +25,7 @@ const error = ref("");
 const notice = ref("");
 const syncing = ref(false);
 let disposed = false;
+let polling = false;
 let timer: ReturnType<typeof globalThis.setInterval> | undefined;
 const current = computed(() => mailboxes.value.find(item => item.mailbox_id === mailboxId.value));
 const phases = { backfill: "正在补齐历史邮件", catch_up: "正在追平最新变更", synced: "历史已补齐" };
@@ -50,26 +51,36 @@ function fail(status: number) {
   error.value = [401, 403].includes(status) ? "当前账号无权查看此邮箱" : "邮箱服务暂不可用，请重试";
 }
 async function loadMailboxes() {
-  if (!gate.hasIdentity.value || disposed) return;
-  const op = gate.begin("accounts"); if (!op) return;
+  if (!gate.hasIdentity.value || disposed) return false;
+  const op = gate.begin("accounts"); if (!op) return false;
   try {
     const result = await client.GET("/inbox/mailboxes", { signal: op.signal });
-    if (!op.valid()) return;
-    if (!result.data || !result.response.ok) { fail(result.response.status); return; }
+    if (!op.valid()) return false;
+    if (!result.data || !result.response.ok) { fail(result.response.status); return false; }
+    const previous = current.value;
     mailboxes.value = result.data;
     if (!result.data.some(item => item.mailbox_id === mailboxId.value)) mailboxId.value = result.data[0]?.mailbox_id ?? "";
+    const updated = current.value;
+    return previous !== undefined && updated !== undefined && previous.mailbox_id === updated.mailbox_id
+      && (previous.last_attempt_at !== updated.last_attempt_at || previous.last_synced_at !== updated.last_synced_at
+        || previous.message_count !== updated.message_count || previous.phase !== updated.phase);
   } catch { if (op.valid()) error.value = "无法连接邮箱服务"; }
+  return false;
 }
-async function loadThreads(page = 0) {
+async function loadThreads(page = 0, background = false) {
   if (!mailboxId.value) return;
   const op = gate.begin("threads"); if (!op) return;
-  loading.value = true; error.value = "";
+  if (!background) loading.value = true;
+  error.value = "";
   try {
     const result = await client.GET("/inbox/mailboxes/{mailbox_id}/threads", {
       params: { path: { mailbox_id: mailboxId.value }, query: { search: search.value, label: label.value || undefined, offset: page, limit: 50 } }, signal: op.signal,
     });
     if (!op.valid()) return;
-    if (!result.data || !result.response.ok) { threads.value = []; messages.value = []; fail(result.response.status); return; }
+    if (!result.data || !result.response.ok) {
+      if (!background) { threads.value = []; messages.value = []; }
+      fail(result.response.status); return;
+    }
     threads.value = result.data.items; nextOffset.value = result.data.next_offset; offset.value = page;
   } catch { if (op.valid()) error.value = "无法读取邮件列表"; }
   finally { if (op.valid()) loading.value = false; }
@@ -103,12 +114,18 @@ async function requestSync() {
 }
 function find() { if (search.value === query.value.trim()) void loadThreads(); else search.value = query.value.trim(); }
 async function refresh() { await loadMailboxes(); await loadThreads(offset.value); if (selected.value) await readThread(selected.value); }
+async function poll() {
+  if (polling || loading.value || reading.value || syncing.value) return;
+  polling = true;
+  try { if (await loadMailboxes()) await loadThreads(offset.value, true); }
+  finally { polling = false; }
+}
 watch([mailboxId, label, search], () => {
   threads.value = []; messages.value = []; selected.value = ""; nextMessage.value = null; nextOffset.value = null;
   loading.value = false; reading.value = false; syncing.value = false; notice.value = "";
   void loadThreads();
 }, { flush: "sync" });
-onMounted(() => { void loadMailboxes(); timer = globalThis.setInterval(() => void loadMailboxes(), 5000); });
+onMounted(() => { void loadMailboxes(); timer = globalThis.setInterval(() => void poll(), 5000); });
 onBeforeUnmount(() => { disposed = true; if (timer) globalThis.clearInterval(timer); });
 </script>
 
@@ -281,7 +298,7 @@ onBeforeUnmount(() => { disposed = true; if (timer) globalThis.clearInterval(tim
 </template>
 
 <style scoped>
-.mailbox-page { padding: 24px; max-width: 1500px; margin: auto; color: #172a3a; }
+.mailbox-page { flex: 1; min-height: 0; overflow-y: auto; width: 100%; padding: 24px; max-width: 1500px; margin: 0 auto; color: #172a3a; }
 .mailbox-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .mailbox-header h1 { margin: 0; }.mailbox-header p { color: #61717f; }
 .mailbox-status,.mailbox-empty { padding: 18px; background: #f3f7fa; border: 1px solid #dce5ec; border-radius: 10px; margin: 16px 0; }

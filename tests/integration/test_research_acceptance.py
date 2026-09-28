@@ -71,7 +71,7 @@ async def test_second_acceptance_entry_is_not_run_while_first_is_in_flight(
         kwargs = {
             "factory": factory,
             "tenant_id": tenant,
-            "actor_id": UserId(new_id("emp")),
+            "actor_id": UserId(new_id("usr")),
             "proposal_id": "proposal:test",
             "reader": Reader(),
             "composition": WebDiscoveryToolComposition(
@@ -216,7 +216,7 @@ async def test_source_acceptance_uses_gateway_snapshots_and_cannot_be_polled_by_
     except ModuleNotFoundError:
         pytest.fail("RED: 缺少真实来源验收装配")
     async with _source_database(integration_engine) as (factory, tenant):
-        actor = UserId(new_id("emp"))
+        actor = UserId(new_id("usr"))
 
         class Reader:
             async def load_confirmed(self, requested, proposal, user):
@@ -343,7 +343,7 @@ async def test_source_acceptance_uses_gateway_snapshots_and_cannot_be_polled_by_
             tools = (
                 (
                     await session.execute(
-                        select(ToolCallRow.tool_id).where(
+                        select(ToolCallRow).where(
                             ToolCallRow.tenant_id == tenant
                         )
                     )
@@ -351,7 +351,8 @@ async def test_source_acceptance_uses_gateway_snapshots_and_cannot_be_polled_by_
                 .scalars()
                 .all()
             )
-            assert set(tools) == {"web.search", "web.read_page"}
+            assert {tool.tool_id for tool in tools} == {"web.search", "web.read_page"}
+            assert {tool.user_id for tool in tools} == {actor}
             assert (
                 len(
                     (

@@ -347,6 +347,25 @@ class ConfiguredApiDependencies:
 
 
 @dataclass(frozen=True)
+class MailboxApiDependencies:
+    """本人邮箱的最小依赖；不伪装为已配置的完整业务 runtime。"""
+
+    employees: EmployeeServiceScope
+    employee_lookup_actor: EmployeeActor
+    mailbox: MailboxService
+
+    def __post_init__(self) -> None:
+        actor = self.employee_lookup_actor
+        if (
+            actor.scope is not EmployeeScope.SYSTEM
+            or actor.role != "system"
+            or not actor.actor_id
+            or not actor.actor_id.strip()
+        ):
+            raise ValueError("employee lookup actor 必须是显式最小 SYSTEM actor")
+
+
+@dataclass(frozen=True)
 class UnconfiguredApiDependencies:
     """zero-arg 工厂的固定未配置态；不持有任何空 handler 或外部资源。"""
 
@@ -354,7 +373,8 @@ class UnconfiguredApiDependencies:
     reason_code: str = "API_DEPENDENCIES_NOT_CONFIGURED"
 
 
-ApiDependencies = ConfiguredApiDependencies | UnconfiguredApiDependencies
+IdentityApiDependencies = ConfiguredApiDependencies | MailboxApiDependencies
+ApiDependencies = IdentityApiDependencies | UnconfiguredApiDependencies
 
 
 def get_api_settings(request: Request) -> ApiSettings:
@@ -370,6 +390,14 @@ def get_api_dependencies(request: Request) -> ConfiguredApiDependencies:
     dependencies = request.app.state.dependencies
     if not isinstance(dependencies, ConfiguredApiDependencies):
         raise TransientError("API runtime 尚未配置")
+    return dependencies
+
+
+def get_identity_dependencies(request: Request) -> IdentityApiDependencies:
+    """登录和本人邮箱只需真实员工依赖；不放宽完整业务 getter。"""
+    dependencies = request.app.state.dependencies
+    if not isinstance(dependencies, (ConfiguredApiDependencies, MailboxApiDependencies)):
+        raise TransientError("API 身份服务尚未配置")
     return dependencies
 
 
@@ -409,7 +437,7 @@ from .identity import RequestIdentity, resolve_request_identity
 async def get_request_identity(
     request: Request,
     settings: Annotated[ApiSettings, Depends(get_api_settings)],
-    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    dependencies: Annotated[IdentityApiDependencies, Depends(get_identity_dependencies)],
 ) -> RequestIdentity:
     """经 dev assertion 和 public EmployeeService DTO 解析请求身份。"""
     return await resolve_request_identity(request, settings, dependencies)

@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import boto3
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from botocore.config import Config as BotoConfig
 from pydantic import SecretStr
 from sqlalchemy import text
@@ -36,6 +38,14 @@ from shared.schemas.identifiers import TenantId, new_id
 
 ROOT = Path(__file__).resolve().parents[2]
 EVIDENCE = ROOT / "docs/acceptance/web-core-delivery/backup-restore.json"
+
+
+def _current_schema_head() -> str:
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("path_separator", "os")
+    head = ScriptDirectory.from_config(config).get_current_head()
+    assert head is not None
+    return head
 
 
 def _close_safely(
@@ -403,7 +413,7 @@ async def test_owned_static_pg_and_original_restore_to_distinct_empty_target(
             if (
                 original != restored
                 or original["row_count"] != 1
-                or original["schema_head"] != "0066"
+                or original["schema_head"] != _current_schema_head()
             ):
                 raise ControlledError("backup_integrity_mismatch")
             try:

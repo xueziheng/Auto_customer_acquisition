@@ -26,6 +26,8 @@ from tool_gateway.pipeline import ToolCallContext
         (SearchUsage("Unknown", 10, 0, False, SearchCostStatus.FREE), None),
         (SearchUsage("Researcher", None, 0, False, SearchCostStatus.FREE), None),
         (SearchUsage("Researcher", 10, 0, False, SearchCostStatus.UNKNOWN), None),
+        (SearchUsage("Researcher", 10, 0, False, SearchCostStatus.PAID), None),
+        (SearchUsage("Researcher", 10, None, False, SearchCostStatus.FREE), None),
     ],
 )
 def test_only_verified_free_usage_has_spendable_credit(usage, expected) -> None:
@@ -34,6 +36,94 @@ def test_only_verified_free_usage_has_spendable_credit(usage, expected) -> None:
     except ModuleNotFoundError:
         pytest.fail("RED：免费成本策略尚未实现")
     assert module.verified_free_remaining(usage) == expected
+
+
+@pytest.mark.parametrize(("limit", "used", "expected"), [(10, 9, 1), (10, 10, 0), (10, 11, 0)])
+def test_included_free_credits_remain_spendable_with_unknown_paygo(
+    limit: int, used: int, expected: int,
+) -> None:
+    """独立的套餐免费事实可证明余额，不能将 null 按量配置误判为余额未知。"""
+    from tool_gateway.free_search_contracts import verified_free_remaining
+
+    usage = SearchUsage(
+        "Researcher", limit, used, None, SearchCostStatus.UNKNOWN,
+        included_credits_free=True,
+    )
+
+    assert verified_free_remaining(usage) == expected
+    assert usage.paygo_enabled is None
+    assert usage.cost_status is SearchCostStatus.UNKNOWN
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "true"])
+def test_included_free_credit_fact_rejects_non_boolean_values(value: object) -> None:
+    """如果允许 truthy 值充当事实，反序列化的字符串可绕过免费额度门禁。"""
+    with pytest.raises(ValidationError):
+        SearchUsage(
+            "Researcher", 10, 0, None, SearchCostStatus.UNKNOWN,
+            included_credits_free=value,
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"plan": "Unknown"},
+        {"plan": "researcher"},
+        {"plan": None},
+        {"limit": None},
+        {"used": None},
+        {"cost_status": SearchCostStatus.PAID},
+        {"paygo_enabled": True},
+    ],
+)
+def test_included_free_credit_fact_cannot_contradict_usage(changes: dict[str, object]) -> None:
+    """可信事实不能与未知套餐、缺失计数或明确付费状态同时成立。"""
+    fields = {
+        "plan": "Researcher", "limit": 10, "used": 0,
+        "paygo_enabled": None, "cost_status": SearchCostStatus.UNKNOWN,
+        "included_credits_free": True,
+    }
+    fields.update(changes)
+
+    with pytest.raises(ValidationError):
+        SearchUsage(**fields)
+
+
+def test_legacy_usage_does_not_infer_included_free_credit_fact() -> None:
+    """旧调用者的 FREE 分类继续可用，但新事实不能由构造默认值虚构。"""
+    from tool_gateway.free_search_contracts import verified_free_remaining
+
+    usage = SearchUsage("Researcher", 10, 0, False, SearchCostStatus.FREE)
+
+    assert usage.included_credits_free is False
+    assert verified_free_remaining(usage) == 10
+
+
+def test_legacy_snapshot_defaults_to_unproven_included_credits() -> None:
+    """新增事实不能让老快照反序列化后自动获得免费资格。"""
+    from tool_gateway.free_search_contracts import SearchQuotaSnapshot
+
+    snapshot = SearchQuotaSnapshot(
+        TenantId("tn_test"), "tavily", 9, 1, SearchCostStatus.UNKNOWN,
+        10, 0, None, None,
+    )
+
+    assert snapshot.included_credits_free is False
+
+
+@pytest.mark.parametrize("paygo_enabled", [1, "false"])
+def test_snapshot_included_free_fact_rejects_nonboolean_paygo_state(
+    paygo_enabled: object,
+) -> None:
+    """快照不能把整数或字符串按量状态当作免费资格的兼容证明。"""
+    from tool_gateway.free_search_contracts import SearchQuotaSnapshot
+
+    with pytest.raises(ValidationError):
+        SearchQuotaSnapshot(
+            TenantId("tn_test"), "tavily", 9, 1, SearchCostStatus.UNKNOWN,
+            10, 0, paygo_enabled, None, included_credits_free=True,
+        )
 
 
 class BoundReader:
@@ -238,6 +328,81 @@ async def test_gateway_uncertain_without_readable_run_state_stays_typed_and_nonr
     assert failure.value.reason == "request_uncertain"
     assert failure.value.is_retryable is False
     assert "sensitive" not in str(failure.value)
+
+
+@pytest.mark.parametrize("category", ["rate_limited", "provider_transient"])
+@pytest.mark.parametrize("state_kind", ["uncertain", "unreadable"])
+async def test_gateway_transient_with_uncertain_or_unreadable_quota_cannot_retry(
+    category: str, state_kind: str
+) -> None:
+    from datetime import UTC, datetime
+
+    from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
+    from tool_gateway.free_search_contracts import (
+        FreeSearchError,
+        FreeSearchStopReason,
+        SearchQuotaRunState,
+    )
+    from tool_gateway.handlers.free_search import FreeSearchGatewaySearcher
+
+    tenant, run = TenantId("tn_test"), RunId("run_test")
+
+    class FailedGateway:
+        async def search(self, *args):
+            raise ToolGatewayError(ToolErrorCategory(category), retry_after_seconds=17)
+
+    class StateReader:
+        async def run_state(self, run_id):
+            if state_kind == "unreadable":
+                raise RuntimeError("sensitive-database-detail")
+            return SearchQuotaRunState(
+                tenant, run_id, FreeSearchStopReason.REQUEST_UNCERTAIN,
+                datetime(2026, 9, 26, tzinfo=UTC),
+            )
+
+    adapter = FreeSearchGatewaySearcher(FailedGateway(), StateReader(), tenant)
+    with pytest.raises(FreeSearchError) as failure:
+        await adapter.search(tenant, run, "factory", "US", "hinges", 1)
+
+    assert failure.value.reason is FreeSearchStopReason.REQUEST_UNCERTAIN
+    assert failure.value.is_retryable is False
+    assert failure.value.retry_after_seconds is None
+    assert "sensitive" not in str(failure.value)
+
+
+@pytest.mark.parametrize("category", ["rate_limited", "provider_transient"])
+@pytest.mark.parametrize("state_kind", ["missing", "clear"])
+async def test_gateway_transient_without_pending_reservation_keeps_original_error(
+    category: str, state_kind: str
+) -> None:
+    from datetime import UTC, datetime
+
+    from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
+    from tool_gateway.free_search_contracts import SearchQuotaRunState
+    from tool_gateway.handlers.free_search import FreeSearchGatewaySearcher
+
+    tenant, run = TenantId("tn_test"), RunId("run_test")
+    original = ToolGatewayError(ToolErrorCategory(category), retry_after_seconds=17)
+
+    class FailedGateway:
+        async def search(self, *args):
+            raise original
+
+    class StateReader:
+        async def run_state(self, run_id):
+            if state_kind == "missing":
+                return None
+            return SearchQuotaRunState(
+                tenant, run_id, None, datetime(2026, 9, 26, tzinfo=UTC)
+            )
+
+    adapter = FreeSearchGatewaySearcher(FailedGateway(), StateReader(), tenant)
+    with pytest.raises(ToolGatewayError) as failure:
+        await adapter.search(tenant, run, "factory", "US", "hinges", 1)
+
+    assert failure.value is original
+    assert failure.value.is_retryable is True
+    assert failure.value.retry_after_seconds == 17
 
 
 @pytest.mark.parametrize(

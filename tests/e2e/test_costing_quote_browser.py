@@ -117,7 +117,7 @@ async def create_sheet_quote(page, manifest, evidence, locator, *, revision=Fals
     await expect(page.locator('[name="opportunity-id"]')).to_have_value(manifest["opportunity"])
     new = page.locator("article.panel").filter(has=page.get_by_role("heading", name="创建成本表版本"))
     await new.get_by_label("版本类型").select_option("quoted")
-    for label, value in (("数量", "50"), ("核算币种", "USD"), ("报价币种", "USD"), ("汇率快照 ID", "controlled-cost-fx")):
+    for label, value in (("数量", "50"), ("核算币种", "USD"), ("报价币种", "USD"), ("汇率快照编号", "controlled-cost-fx")):
         await new.get_by_label(label, exact=True).fill(value)
     sheet = await action(page, "创建新版本", "/costing-quotes/opportunities/" + manifest["opportunity"] + "/cost-sheets", status=201)
     await fill(page, {"item-amount": "2.00", "item-source": evidence["evidence_id"]})
@@ -223,10 +223,10 @@ async def exercise_browser(stack, artifacts):
             assert second["replaces_quote_id"] == first["quote_id"]
             submitted = await action(product, "提交此版本审批", f'/costing-quotes/quotes/{second["quote_id"]}/submit', status=202)
             pending = await wait_quote(client, stack, second["quote_id"])
-            run_link = product.get_by_role("link", name="查看本次报价审批 Run", exact=True)
+            run_link = product.get_by_role("link", name="查看本次报价审批运行记录", exact=True)
             await expect(run_link).to_have_attribute("href", "/runs?run=" + submitted["run_id"])
             await run_link.click()
-            await expect(product.get_by_text("只有老板可以查看 Run 审计记录", exact=False).first).to_be_visible()
+            await expect(product.get_by_text("只有老板可以查看运行记录审计记录", exact=False).first).to_be_visible()
             await boss.goto(origins["boss"] + "/runs?run=" + submitted["run_id"])
             approval_link = boss.get_by_role("link", name=pending["approval_id"], exact=True)
             await expect(approval_link).to_have_attribute("href", "/approvals?approval_id=" + pending["approval_id"])
@@ -441,8 +441,8 @@ async def probe_initial_unit_read(stack, _artifacts):
             panel = page.locator("section.panel").filter(has=page.get_by_role("heading", name="客户单位确认", exact=True))
             assert response is not None and response.status == 200
             prepared = await response.json()
-            await expect(panel.get_by_text("数量 hash", exact=False)).to_be_visible()
-            summary = await panel.get_by_text("数量 hash", exact=False).is_visible()
+            await expect(panel.get_by_text("数量校验值", exact=False)).to_be_visible()
+            summary = await panel.get_by_text("数量校验值", exact=False).is_visible()
             await action(page, "预览客户消息", "/costing-quotes/evidence/preview")
             await select_excerpt(page, "unit-preview", "50 pieces")
             await action(page, "定位客户单位原话", "/costing-quotes/evidence/locator")

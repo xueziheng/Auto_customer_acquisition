@@ -17,7 +17,9 @@ dependencies = [
     "redis",
     "boto3",
     "docker>=7.1,<8",
-    "psutil>=7,<8",
+    # macOS 7.2 的校时修正会使跨进程出生时间漂移；严格 PID 核验要求稳定内核值。
+    "psutil==7.0.0; sys_platform == 'darwin'",
+    "psutil>=7,<8; sys_platform != 'darwin'",
     "python-dotenv>=1.2.3",
     "openai",
     "dnspython==2.8.0",

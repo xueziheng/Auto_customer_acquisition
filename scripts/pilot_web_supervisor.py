@@ -8,6 +8,7 @@ import select
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Literal
@@ -187,6 +188,15 @@ class PilotSupervisor:
             self.profile.client.close()
 
 
+def reap_in_background(process: subprocess.Popen[bytes]) -> threading.Thread:
+    """持有并回收后台 supervisor，启动调用者不等待服务寿命结束。"""
+    worker = threading.Thread(
+        target=process.wait, name="tradeos-pilot-supervisor-reaper", daemon=True
+    )
+    worker.start()
+    return worker
+
+
 def launch(path: Path) -> None:
     """子 supervisor 握手：收到真实 ready 才返回，失败不伪装部分启动成功。"""
     read_fd, write_fd = os.pipe()
@@ -225,6 +235,7 @@ def launch(path: Path) -> None:
             if readable:
                 message = os.read(read_fd, 64).decode("ascii", errors="ignore")
                 if message == "ready":
+                    reap_in_background(process)
                     return
                 raise PilotError(
                     message if message in START_FAILURES else "application_start_failed"

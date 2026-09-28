@@ -19,7 +19,7 @@ from ..authentication import (
     SessionResponse,
     header_values,
 )
-from ..dependencies import get_api_dependencies, get_api_settings
+from ..dependencies import get_api_settings, get_identity_dependencies
 from ..identity import resolve_request_identity
 from ..middleware import _error_response
 
@@ -38,7 +38,7 @@ async def _private_response(request: Request, issued: IssuedSession) -> SessionR
     """使用当前员工公共服务重建权限信息，验证映射后才向浏览器提供材料。"""
     request.state.auth_principal = issued.principal
     identity = await resolve_request_identity(
-        request, get_api_settings(request), get_api_dependencies(request)
+        request, get_api_settings(request), get_identity_dependencies(request)
     )
     return SessionResponse(
         employee=identity.employee,

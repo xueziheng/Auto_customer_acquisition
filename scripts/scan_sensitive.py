@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import subprocess
 import sys
@@ -87,6 +88,14 @@ _PATTERNS: list[tuple[str, re.Pattern[str], str | None]] = [
     ("slack-token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), None),
     ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), None),
     (
+        "tavily-api-key",
+        re.compile(
+            r"(?<![A-Za-z0-9_-])tvly-(?:dev|prod)-(?P<key>[A-Za-z0-9_-]{20,})"
+            r"(?![A-Za-z0-9_*-]|\.\.\.)"
+        ),
+        "key",
+    ),
+    (
         "hunter-api-key",
         re.compile(
             r"(?i)(?<![A-Za-z0-9_-])(?:hunter_api_key|X-API-KEY)"
@@ -103,15 +112,102 @@ _PATTERNS: list[tuple[str, re.Pattern[str], str | None]] = [
 ]
 
 
-def scan_text(text: str) -> list[tuple[int, str]]:
+def _runtime_value(node: ast.AST, *, argument: bool = False) -> bool:
+    """识别运行期表达式；包装函数中的硬编码字符串仍须拦截。"""
+    if isinstance(node, ast.Name):
+        return True
+    if isinstance(node, ast.Attribute):
+        return _runtime_value(node.value)
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, str):
+            return _is_placeholder(node.value)
+        return node.value is None or node.value is Ellipsis or argument
+    if isinstance(node, ast.Await):
+        return _runtime_value(node.value)
+    if isinstance(node, ast.IfExp):
+        return _runtime_value(node.body) and _runtime_value(node.orelse)
+    if isinstance(node, ast.Lambda):
+        return _runtime_value(node.body)
+    if isinstance(node, ast.Subscript):
+        return _runtime_value(node.value)
+    if isinstance(node, ast.Call):
+        function = ast.unparse(node.func)
+        if function == "getpass.getpass":
+            return True  # 参数是提示文案，返回值由终端读取。
+        if function in {"str", "bytes", "SecretStr"} and any(
+            isinstance(arg, ast.Constant) and isinstance(arg.value, (int, float))
+            for arg in node.args
+        ):
+            return False
+        return all(_runtime_value(arg, argument=True) for arg in node.args) and all(
+            _runtime_value(item.value, argument=True) for item in node.keywords
+        )
+    if isinstance(node, ast.BinOp):
+        return _runtime_value(node.left, argument=argument) and _runtime_value(
+            node.right, argument=argument
+        )
+    return False
+
+
+def _python_runtime_spans(text: str, *, embedded: bool = False) -> list[tuple[int, int, int, int]]:
+    """仅对可解析的 Python 建立豁免区间；语法失败保留原始扫描。"""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    spans = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.Assign, ast.AnnAssign, ast.keyword))
+            and node.value is not None
+            and _runtime_value(node.value)
+        ):
+            spans.append((node.lineno, node.col_offset, node.end_lineno or node.lineno,
+                          node.end_col_offset or node.col_offset))
+        if (
+            not embedded and isinstance(node, ast.Constant)
+            and isinstance(node.value, str) and "\n" in node.value
+            and "\\" not in (ast.get_source_segment(text, node) or "")
+        ):
+            for a, b, c, d in _python_runtime_spans(node.value, embedded=True):
+                # 首行列位置受字符串引号影响，保守地只处理后续完整代码行。
+                if a > 1:
+                    spans.append((node.lineno + a - 1, b, node.lineno + c - 1, d))
+    return spans
+
+
+def scan_text(text: str, *, suffix: str = "") -> list[tuple[int, str]]:
     """返回 ``(line, kind)`` 列表；占位形态跳过，不输出匹配内容。"""
     findings: list[tuple[int, str]] = []
+    spans = _python_runtime_spans(text) if suffix == ".py" else []
     for lineno, line in enumerate(text.splitlines(), 1):
         for kind, regex, placeholder_group in _PATTERNS:
             for match in regex.finditer(line):
                 value = match.group(placeholder_group) if placeholder_group else match.group(0)
                 if _is_placeholder(value):
                     continue
+                if kind == "password-assignment" and suffix == ".py":
+                    position = (lineno, len(line[:match.start()].encode("utf-8")))
+                    if any((a, b) <= position < (c, d) for a, b, c, d in spans):
+                        continue
+                if kind == "password-assignment" and (
+                    (suffix in {".vue", ".ts", ".js"} and re.match(r'''ref\(["']["']\)''', line[match.start("val"):]))
+                    or (suffix == ".md" and re.fullmatch(r"SecretStr\(\.\.\.\)\)?", value))
+                ):
+                    continue
+                # 只接受 f-string 内完整的变量插值；静态前后缀与 .env 不豁免。
+                if kind == "dsn-userinfo" and suffix == ".py" and re.fullmatch(r"\{[A-Za-z_]\w*\}", value):
+                    try:
+                        parsed = ast.parse(line.strip())
+                    except SyntaxError:
+                        parsed = ast.Module(body=[], type_ignores=[])
+                    column = len(line[:match.start()].lstrip().encode("utf-8"))
+                    if any(
+                        isinstance(node, ast.JoinedStr)
+                        and node.col_offset <= column < (node.end_col_offset or 0)
+                        for node in ast.walk(parsed)
+                    ):
+                        continue
                 findings.append((lineno, kind))
     return findings
 
@@ -138,7 +234,7 @@ def scan_file(path: Path) -> list[Finding]:
         content = full.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return []
-    return [Finding(rel.as_posix(), line, kind) for line, kind in scan_text(content)]
+    return [Finding(rel.as_posix(), line, kind) for line, kind in scan_text(content, suffix=rel.suffix)]
 
 
 def _is_relevant(path: Path) -> bool:
@@ -210,7 +306,7 @@ def _scan_repo_safe(rel: Path) -> list[Finding]:
         content = full.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return []
-    return [Finding(rel_resolved.as_posix(), line, kind) for line, kind in scan_text(content)]
+    return [Finding(rel_resolved.as_posix(), line, kind) for line, kind in scan_text(content, suffix=rel_resolved.suffix)]
 
 
 def _scan_explicit(paths: list[Path]) -> list[Finding]:
@@ -224,7 +320,7 @@ def _scan_explicit(paths: list[Path]) -> list[Finding]:
             content = full.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        findings.extend(Finding(rel.as_posix(), line, kind) for line, kind in scan_text(content))
+        findings.extend(Finding(rel.as_posix(), line, kind) for line, kind in scan_text(content, suffix=rel.suffix))
     return findings
 
 
@@ -247,7 +343,7 @@ def _scan_staged() -> list[Finding]:
         content = read_index_blob(rel.as_posix())
         if content is None:
             continue
-        findings.extend(Finding(rel.as_posix(), line, kind) for line, kind in scan_text(content))
+        findings.extend(Finding(rel.as_posix(), line, kind) for line, kind in scan_text(content, suffix=rel.suffix))
     return findings
 
 

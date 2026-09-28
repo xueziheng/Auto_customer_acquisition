@@ -8,7 +8,7 @@ const error = ref("");
 async function submit(): Promise<void> {
   if (busy.value) return;
   busy.value = true; error.value = "";
-  const pending = login(username.value, password.value);
+  const pending = login(username.value.trim(), password.value);
   password.value = "";
   try { await pending; }
   catch { error.value = "登录失败，请检查账号、密码及本机服务；尝试过多时请稍后重试。"; }
@@ -28,14 +28,15 @@ async function submit(): Promise<void> {
         TradeOS
       </p>
       <h1>登录内部运营台</h1>
-      <p>使用本机管理员创建的员工账号登录。</p>
-      <label for="pilot-username">账号</label>
+      <p>使用已配置的登录邮箱或员工用户名登录。</p>
+      <label for="pilot-username">邮箱或用户名</label>
       <input
         id="pilot-username"
         v-model="username"
         autocomplete="username"
+        placeholder="邮箱或用户名"
         required
-        maxlength="64"
+        maxlength="254"
         :disabled="busy"
       >
       <label for="pilot-password">密码</label>
@@ -62,7 +63,7 @@ async function submit(): Promise<void> {
         {{ busy ? '正在登录…' : '登录' }}
       </button>
       <p class="meta">
-        本机内测 · 外部模型、搜索与邮件未配置 · 通知仅站内投递
+        登录后查看当前账号已连接的邮箱与可用功能。
       </p>
     </form>
   </section>

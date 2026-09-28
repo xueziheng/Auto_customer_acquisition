@@ -7,7 +7,8 @@
 """
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import os
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 import pytest_asyncio
@@ -17,6 +18,19 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.pool import StaticPool
 
 from shared.schemas.identifiers import TenantId
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _local_http_bypasses_system_proxy() -> Iterator[None]:
+    """本机测试服务直连，避免 macOS 系统代理将 loopback 请求转发为 502。"""
+    exclusions = ",".join(filter(None, (
+        os.environ.get("NO_PROXY"), os.environ.get("no_proxy"),
+        "127.0.0.1,localhost,::1",
+    )))
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("NO_PROXY", exclusions)
+        patch.setenv("no_proxy", exclusions)
+        yield
 
 
 class FixtureBase(DeclarativeBase):

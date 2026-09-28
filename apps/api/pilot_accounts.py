@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
-import re
 import sys
 from dataclasses import dataclass
 from typing import Literal, Never
@@ -19,7 +18,7 @@ from domains.employees.schemas import EmployeeView
 from domains.employees.service import validate_employee_provisioning
 from infra.authentication.service import PostgresAuthentication
 from infra.db.tables import EmployeeRow
-from shared.authentication import AuthenticationInputInvalid
+from shared.authentication import AuthenticationInputInvalid, normalize_login_username
 from shared.errors import ValidationError
 from shared.schemas.identifiers import EmployeeId, TenantId, new_id
 
@@ -35,8 +34,7 @@ class AccountCommand:
     manager_id: str | None = None
 
     def __post_init__(self) -> None:
-        if re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", self.username, re.ASCII) is None:
-            raise AuthenticationInputInvalid()
+        object.__setattr__(self, "username", normalize_login_username(self.username))
         if self.action == "create":
             if self.role is None or self.name is None or self.manager_id == "":
                 raise AuthenticationInputInvalid()

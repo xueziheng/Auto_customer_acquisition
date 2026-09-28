@@ -101,7 +101,7 @@ async def test_assistant_create_clarify_refresh_and_source(width,height):
                 await page.goto(origin+'/settings')
                 panel=page.get_by_role('region',name='DeepSeek 模型连接')
                 await expect(panel).to_be_visible()
-                model_input=panel.get_by_label('模型 ID',exact=True)
+                model_input=panel.get_by_label('模型编号',exact=True)
                 await model_input.fill('my-edit')
                 model_settings.update(configuration_version='v2',model='other-admin-model')
                 model_settings['limits']['tenant_calls']=3

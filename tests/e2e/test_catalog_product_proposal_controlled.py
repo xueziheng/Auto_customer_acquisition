@@ -1049,7 +1049,7 @@ async def _run_controlled_acceptance(stack: E2EStack, temporary: Path) -> None:
                 has_text=second_proposal_id
             )
             await expect(stale_card).to_be_visible()
-            await expect(stale_card).to_contain_text("stale")
+            await expect(stale_card).to_contain_text("已失效")
             await page.set_viewport_size({"width": 390, "height": 844})
             await _assert_page_safe(page)
             await expect(

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
@@ -116,6 +118,26 @@ class _WebPagePayload:
     tenant_id: TenantId
     url: str = field(repr=False)
     uploaded_by: UserId
+    run_id: RunId | None
+
+
+@dataclass(frozen=True, repr=False)
+class _PageReuse:
+    owner: object
+    handler: object
+    tenant_id: TenantId
+    run_id: RunId
+    user_id: UserId
+    snapshots: dict[str, PageSnapshot]
+
+
+# 只活在当前 asyncio task 的上下文；子 task 必须重新绑定且不能复用父 task 正文。
+_PAGE_REUSE: ContextVar[_PageReuse | None] = ContextVar("tradeos_public_page_reuse", default=None)
+_MAX_REUSED_PAGES = 50
+
+
+def _discard_page_reuse() -> None:
+    _PAGE_REUSE.set(None)
 
 
 class WebReadPageHandler:
@@ -179,7 +201,7 @@ class WebReadPageHandler:
             fingerprint,
             version,
             {"search_batch_id": handle, "result_index": index},
-            _WebPagePayload(ctx.tenant_id, url, ctx.user_id),
+            _WebPagePayload(ctx.tenant_id, url, ctx.user_id, ctx.run_id),
         )
 
     async def execute(
@@ -187,35 +209,58 @@ class WebReadPageHandler:
         tenant_id: TenantId,
         prepared: PreparedToolCall,
     ) -> Mapping[str, SafeScalar]:
-        payload = prepared.payload
-        if not isinstance(payload, _WebPagePayload) or payload.tenant_id != tenant_id:
-            raise ValidationError("公开页面 payload 无效")
         try:
-            snapshot = await self._reader.read_page(
-                tenant_id,
-                payload.url,
-                payload.uploaded_by,
-            )
-        except (
-            ToolGatewayError,
-            WebSearchAuthRequiredError,
-            WebSearchRateLimitedError,
-            WebSearchProviderError,
-            PublicPageRejectedError,
-            TransientError,
-            ValidationError,
-        ) as error:
-            self._page_slot.discard_all()
-            raise map_web_provider_error(error) from None
-        if not isinstance(snapshot, PageSnapshot):
-            self._page_slot.discard_all()
-            raise ValidationError("公开页面 reader 结果无效")
-        try:
+            payload = prepared.payload
+            if not isinstance(payload, _WebPagePayload) or payload.tenant_id != tenant_id:
+                raise ValidationError("公开页面 payload 无效")
+            owner = asyncio.current_task()
+            reuse = _PAGE_REUSE.get()
+            if owner is None or payload.run_id is None:
+                _discard_page_reuse()
+                reuse = None
+            elif (
+                reuse is None
+                or reuse.owner is not owner
+                or reuse.handler is not self
+                or reuse.tenant_id != tenant_id
+                or reuse.run_id != payload.run_id
+                or reuse.user_id != payload.uploaded_by
+            ):
+                reuse = _PageReuse(owner, self, tenant_id, payload.run_id, payload.uploaded_by, {})
+                _PAGE_REUSE.set(reuse)
+            snapshot = None if reuse is None else reuse.snapshots.get(payload.url)
+            if snapshot is None:
+                try:
+                    snapshot = await self._reader.read_page(
+                        tenant_id, payload.url, payload.uploaded_by,
+                    )
+                except (
+                    ToolGatewayError,
+                    WebSearchAuthRequiredError,
+                    WebSearchRateLimitedError,
+                    WebSearchProviderError,
+                    PublicPageRejectedError,
+                    TransientError,
+                    ValidationError,
+                ) as error:
+                    raise map_web_provider_error(error) from None
+            if not isinstance(snapshot, PageSnapshot):
+                raise ValidationError("公开页面 reader 结果无效")
             handle = self._page_slot.put(snapshot)
+            if reuse is not None:
+                snapshots = dict(reuse.snapshots)
+                # 只按安全传输返回的最终 URL 索引；原 redirect URL 必须重新经过传输。
+                if snapshot.url not in snapshots and len(snapshots) >= _MAX_REUSED_PAGES:
+                    del snapshots[next(iter(snapshots))]
+                snapshots[snapshot.url] = snapshot
+                _PAGE_REUSE.set(_PageReuse(
+                    reuse.owner, self, tenant_id, reuse.run_id, payload.uploaded_by, snapshots,
+                ))
+            return {"provider_ref": handle}
         except BaseException:
             self._page_slot.discard_all()
+            _discard_page_reuse()
             raise
-        return {"provider_ref": handle}
 
 
 class ToolGatewayWebPageReader:
@@ -245,9 +290,9 @@ class ToolGatewayWebPageReader:
         batch: SearchResultBatch,
         result_index: int,
     ) -> PageSnapshot:
-        if not isinstance(batch, SearchResultBatch) or batch.tenant_id != tenant_id:
-            raise ValidationError("公开页面搜索批次无效")
         try:
+            if not isinstance(batch, SearchResultBatch) or batch.tenant_id != tenant_id:
+                raise ValidationError("公开页面搜索批次无效")
             result = await self._gateway.invoke(
                 ToolCallContext(
                     tenant_id,
@@ -276,6 +321,7 @@ class ToolGatewayWebPageReader:
             return snapshot
         except BaseException:
             self._page_slot.discard_all()
+            _discard_page_reuse()
             raise
 
 

@@ -154,7 +154,7 @@ def test_stack_ready_restart_and_term_owned_cleanup(tmp_path: Path) -> None:
                 errors = []
                 page.on("pageerror", lambda error: errors.append(type(error).__name__))
                 page.goto(state["web_url"] + "/settings")
-                page.get_by_text("API / 调度 / Web 当前就绪", exact=True).wait_for(
+                page.get_by_text("接口 / 调度 / Web 当前就绪", exact=True).wait_for(
                     timeout=10000
                 )
                 page.get_by_label("演练角色").select_option(
@@ -170,7 +170,7 @@ def test_stack_ready_restart_and_term_owned_cleanup(tmp_path: Path) -> None:
                 page.get_by_role("heading", name="首次配置", exact=True).wait_for(
                     timeout=10000
                 )
-                page.get_by_text("尚未配置 Company Playbook", exact=True).wait_for(
+                page.get_by_text("尚未配置公司业务规则", exact=True).wait_for(
                     timeout=10000
                 )
                 assert page.evaluate("document.documentElement.scrollWidth") <= 390

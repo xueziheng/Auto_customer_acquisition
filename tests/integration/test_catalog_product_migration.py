@@ -1104,7 +1104,7 @@ async def test_0057_downgrade_refuses_catalog_or_recurring_fact_data(db_url: str
         _alembic(db_url, "upgrade", "head")
 
 
-def test_0057_is_the_only_script_head() -> None:
+def test_catalog_migrations_have_a_single_head() -> None:
     """新增 revision 不能制造第二个 Alembic head。"""
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "heads"],
@@ -1114,7 +1114,8 @@ def test_0057_is_the_only_script_head() -> None:
         check=False,
     )
     assert result.returncode == 0
-    assert result.stdout.strip().splitlines() == ["0066 (head)"]
+    heads = result.stdout.strip().splitlines()
+    assert len(heads) == 1 and heads[0].endswith(" (head)")
 
 
 async def test_0057_policy_binding_requires_exact_subject_and_approved_state(
@@ -2252,6 +2253,10 @@ async def test_0057_downgrade_refuses_catalog_approval_before_any_ddl(
     suffix = "catalog_approval_downgrade"
     engine = create_engine_from(db_url)
     try:
+        async with engine.connect() as connection:
+            original_revision = await connection.scalar(
+                text("SELECT version_num FROM alembic_version")
+            )
         async with engine.begin() as connection:
             await _seed_parents(connection, tenant=tenant, suffix=suffix)
             await _insert_catalog_approval(
@@ -2280,7 +2285,8 @@ async def test_0057_downgrade_refuses_catalog_approval_before_any_ddl(
                 stderr=subprocess.DEVNULL,
             )
             try:
-                await asyncio.wait_for(process.wait(), timeout=1.5)
+                # 给并行测试中的解释器启动留余量；DDL 锁始终持有，错误顺序仍必然超时。
+                await asyncio.wait_for(process.wait(), timeout=10)
             except TimeoutError:
                 process.kill()
                 await process.wait()
@@ -2301,7 +2307,7 @@ async def test_0057_downgrade_refuses_catalog_approval_before_any_ddl(
             )
         assert set(_TABLES) <= names
         assert "recurring_requirement" in recurring
-        assert revision == "0066"
+        assert revision == original_revision
     finally:
         async with engine.begin() as connection:
             await _delete_approvals(connection, tenant=tenant)

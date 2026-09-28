@@ -18,7 +18,7 @@ from apps.scheduler_worker.web_discovery import (
 from infra.db.tables import SearchQuotaReservationRow, WorkflowRunRow
 from infra.db.workflow_engine import PostgresWorkflowEngine
 from shared.errors import ValidationError
-from shared.schemas.identifiers import EmployeeId, RunId, TenantId, UserId, new_id
+from shared.schemas.identifiers import EmployeeId, RunId, TenantId, UserId
 from tool_gateway.checks.contact_provider import CountryPolicyDecisionReader
 from tool_gateway.errors import ToolGatewayError
 from tool_gateway.fingerprint import HmacFingerprintProvider
@@ -179,7 +179,7 @@ async def run_source_acceptance(
         tools = build_web_discovery_tools(
             factory=factory,
             tenant_id=tenant_id,
-            tool_user=UserId(new_id("usr")),
+            tool_user=actor_id,
             fingerprints=fingerprints,
             composition=composition,
             country_policy=country_policy,

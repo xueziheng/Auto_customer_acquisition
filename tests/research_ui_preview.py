@@ -69,7 +69,7 @@ class Preview:
             max_hypotheses=3,
             queries=(
                 *base.queries,
-                replace(base.queries[0], query="US industrial hinges importer"),
+                replace(base.queries[0], query="US hinges industry directory companies"),
             ),
         )
         return json.dumps(
@@ -206,6 +206,9 @@ class Preview:
             research=RunResearchView(
                 planned_discovery_lanes=LANES,
                 discovery_lanes=LANES,
+                planned_source_channels=("public_web", "industry_directory"),
+                searched_source_channels=("public_web",),
+                source_channels=("public_web",),
                 completion_reason="quota_exhausted",
                 stop_reason="quota_exhausted",
                 searches_used=4,

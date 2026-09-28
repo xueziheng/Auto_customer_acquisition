@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from agent_runtime.assistant.discovery_queries import query_source_channel
 from agent_runtime.base import AgentTask
 from domains.demand.schemas import ResearchEvidence, SignalCaptureRequest
 from domains.demand.service import DemandService
@@ -16,9 +17,11 @@ from shared.schemas.model_invocation import ModelGenerationError
 from shared.schemas.provenance import Provenance, SourceType
 from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
 from tool_gateway.free_search_contracts import FreeSearchError
+from tool_gateway.handlers.web_slots import SearchResultBatch
 from workflows.demand_discovery.ports import (
     DemandDiscoveryTaskReader,
     DemandIntelligenceCapability,
+    DiscoverySearchQuery,
     WebDiscoveryPageReader,
     WebDiscoverySearcher,
 )
@@ -46,10 +49,41 @@ def _evidence_text(value: object) -> str:
     return value
 
 
+def _spread_queries(
+    queries: tuple[DiscoverySearchQuery, ...],
+) -> list[DiscoverySearchQuery]:
+    """来源方向轮转；仅重排已确认查询，页面预算小时优先扩大方向覆盖。"""
+    groups: dict[str, list[DiscoverySearchQuery]] = {}
+    for query in queries:
+        groups.setdefault(query_source_channel(query.query), []).append(query)
+    scheduled: list[DiscoverySearchQuery] = []
+    scope_uses: dict[tuple[str, str], int] = {}
+    while any(groups.values()):
+        for group in groups.values():
+            if not group:
+                continue
+            # 来源轮转中优先分给尚未覆盖的市场/品类，避免小预算全落在首个市场。
+            index = min(range(len(group)), key=lambda i: scope_uses.get(
+                (group[i].country, group[i].category), 0
+            ))
+            query = group.pop(index)
+            scope = (query.country, query.category)
+            scope_uses[scope] = scope_uses.get(scope, 0) + 1
+            scheduled.append(query)
+    return scheduled
+
+
 @dataclass
 class _PreparedSignal:
     request: SignalCaptureRequest
     model_indexes: list[int]
+
+
+@dataclass
+class _PendingQuery:
+    query: DiscoverySearchQuery
+    batch: SearchResultBatch
+    next_index: int = 0
 
 
 def _source_signals(
@@ -213,8 +247,15 @@ class ResearchExecuteSearchStep:
             "validated_need_count": 0,
             "qualified_opportunity_count": 0,
             "queued_count": 0,
-            "planned_discovery_lanes": ["importer", "distributor", "ecommerce"],
+            "planned_discovery_lanes": list(dict.fromkeys(
+                query.discovery_lane for query in plan.queries
+            )),
             "discovery_lanes": [],
+            "planned_source_channels": list(dict.fromkeys(
+                query_source_channel(query.query) for query in plan.queries
+            )),
+            "searched_source_channels": [],
+            "source_channels": [],
             "signal_ids": [],
             "hypothesis_ids": [],
         }
@@ -224,12 +265,67 @@ class ResearchExecuteSearchStep:
         stop_reason = "plan_completed"
         results_seen = 0
         disallowed = 0
+        pending: list[_PendingQuery] = []
+        page_sources: set[tuple[str, str]] = set()
+        search_failed = False
+
+        def capacity_available() -> bool:
+            return (
+                result["pages_used"] < plan.max_pages_read
+                and len(pages) < plan.max_signals
+            )
+
+        async def read_next(item: _PendingQuery) -> bool:
+            nonlocal disallowed
+            index = item.next_index
+            item.next_index += 1
+            result["pages_used"] += 1
+            try:
+                snapshot = await self._pages.read_page(
+                    run.tenant_id, run.run_id, item.batch, index
+                )
+            except ToolGatewayError as error:
+                if error.category in {
+                    ToolErrorCategory.PROVIDER_PERMANENT,
+                    ToolErrorCategory.VALIDATION,
+                    ToolErrorCategory.PAGE_ACCESS_FORBIDDEN,
+                    ToolErrorCategory.LOGIN_OR_CAPTCHA,
+                    ToolErrorCategory.UNSAFE_REDIRECT,
+                }:
+                    disallowed += 1
+                    return False
+                raise
+            query = item.query
+            assert query.discovery_lane is not None
+            evidence = ResearchEvidence.from_page(
+                proposal_id=run.subject_ref,
+                query=query.query,
+                discovery_lane=query.discovery_lane,
+                query_country=query.country,
+                query_category=query.category,
+                text=snapshot.text,
+                url=snapshot.url,
+            )
+            identity = (evidence.discovery_key, snapshot.content_hash)
+            if identity in page_sources:
+                return True
+            page_sources.add(identity)
+            pages.append({
+                "text": snapshot.text,
+                "url": snapshot.url,
+                "observed_at": snapshot.observed_at,
+                "content_hash": snapshot.content_hash,
+                "snapshot_artifact_ref": str(snapshot.snapshot_artifact_ref),
+                "research_evidence": evidence,
+            })
+            return True
+
         try:
-            for query in plan.queries:
+            scheduled_queries = _spread_queries(plan.queries)
+            for query_index, query in enumerate(scheduled_queries):
                 if (
                     result["searches_used"] >= plan.max_search_queries
-                    or result["pages_used"] >= plan.max_pages_read
-                    or len(pages) >= plan.max_signals
+                    or not capacity_available()
                 ):
                     stop_reason = "budget_exhausted"
                     break
@@ -245,54 +341,42 @@ class ResearchExecuteSearchStep:
                     )
                 except FreeSearchError as error:
                     stop_reason = error.reason.value
+                    search_failed = True
                     break
-                try:
-                    results_seen += len(batch.results)
-                    for index in range(len(batch.results)):
-                        if (
-                            result["pages_used"] >= plan.max_pages_read
-                            or len(pages) >= plan.max_signals
-                        ):
-                            stop_reason = "budget_exhausted"
-                            break
-                        result["pages_used"] += 1
-                        try:
-                            snapshot = await self._pages.read_page(
-                                run.tenant_id, run.run_id, batch, index
-                            )
-                        except ToolGatewayError as error:
-                            if error.category in {
-                                ToolErrorCategory.PROVIDER_PERMANENT,
-                                ToolErrorCategory.VALIDATION,
-                            }:
-                                disallowed += 1
-                                continue
-                            raise
-                        assert query.discovery_lane is not None
-                        evidence = ResearchEvidence.from_page(
-                            proposal_id=run.subject_ref,
-                            query=query.query,
-                            discovery_lane=query.discovery_lane,
-                            query_country=query.country,
-                            query_category=query.category,
-                            text=snapshot.text,
-                            url=snapshot.url,
-                        )
-                        pages.append(
-                            {
-                                "text": snapshot.text,
-                                "url": snapshot.url,
-                                "observed_at": snapshot.observed_at,
-                                "content_hash": snapshot.content_hash,
-                                "snapshot_artifact_ref": str(
-                                    snapshot.snapshot_artifact_ref
-                                ),
-                                "research_evidence": evidence,
-                            }
-                        )
-                finally:
-                    self._searcher.release(batch)
+                except BaseException:
+                    search_failed = True
+                    raise
+                item = _PendingQuery(query, batch)
+                pending.append(item)
+                channel = query_source_channel(query.query)
+                if channel not in result["searched_source_channels"]:
+                    result["searched_source_channels"].append(channel)
+                results_seen += len(batch.results)
+                # 拒绝页可在本批份额内继续；为尚未执行的查询保留页面机会。
+                # 成功后立即换查询，避免后续搜索失败清槽前还没读到本批可读页。
+                queries_left = min(len(scheduled_queries), plan.max_search_queries) - query_index
+                pages_left = plan.max_pages_read - result["pages_used"]
+                allowance = (pages_left + queries_left - 1) // queries_left
+                for _ in range(allowance):
+                    if not capacity_available() or item.next_index >= len(batch.results):
+                        break
+                    if await read_next(item):
+                        break
+            while not search_failed and any(
+                item.next_index < len(item.batch.results) for item in pending
+            ):
+                if not capacity_available():
+                    if stop_reason == "plan_completed":
+                        stop_reason = "budget_exhausted"
+                    break
+                for item in pending:
+                    if not capacity_available():
+                        break
+                    if item.next_index < len(item.batch.results):
+                        await read_next(item)
         finally:
+            # search adapter 在失败时已作废所有句柄；统一清槽，不能逐个释放
+            # 过期句柄而覆盖 quota/permission 等原始原因，也不再读取旧批次。
             self._searcher.discard_all()
         if not pages:
             if stop_reason in {"plan_completed", "budget_exhausted"}:
@@ -347,6 +431,9 @@ class ResearchExecuteSearchStep:
             result["signal_ids"].append(signal_id)
             if evidence.discovery_lane not in result["discovery_lanes"]:
                 result["discovery_lanes"].append(evidence.discovery_lane)
+            channel = query_source_channel(evidence.query)
+            if channel not in result["source_channels"]:
+                result["source_channels"].append(channel)
             if evidence.identity_status == "pending_verification":
                 result["pending_verification_count"] += 1
         for change in hypotheses:

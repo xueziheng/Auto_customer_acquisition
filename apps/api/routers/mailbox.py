@@ -5,8 +5,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from apps.api.dependencies import (
-    ConfiguredApiDependencies,
-    get_api_dependencies,
+    IdentityApiDependencies,
+    get_identity_dependencies,
     get_request_identity,
 )
 from apps.api.identity import RequestIdentity
@@ -23,7 +23,7 @@ Identity = Annotated[RequestIdentity, Depends(get_request_identity)]
 
 
 def service(
-    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    dependencies: Annotated[IdentityApiDependencies, Depends(get_identity_dependencies)],
 ) -> MailboxService:
     if dependencies.mailbox is None:
         raise HTTPException(503, "邮箱服务未配置")

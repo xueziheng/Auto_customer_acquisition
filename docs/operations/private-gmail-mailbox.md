@@ -23,11 +23,55 @@ Google 外部应用测试模式、受限 Gmail scope 和正式发布的审核/�
 
 ## 准备运行环境
 
-使用 Python 3.12+，安装项目依赖并构建前端。运行环境还须有已初始化的持久 profile 和操作者本人的
-真实员工账号，参见 [持久内测说明](web-internal-pilot.md)。不得用验收的合成政策/员工代替真实业务配置。
+使用 Python 3.12+，安装项目依赖并构建前端。可以选择下文的本人邮箱专用环境，也可以复用已初始化的
+完整持久 profile 和操作者本人的真实员工账号，参见 [持久内测说明](web-internal-pilot.md)。
+不得用验收的合成政策/员工代替真实业务配置。
 本功能本身不需要 DeepSeek 密钥，不调用大模型，不消耗模型额度。
 
-先停应用，备份已有 profile，再显式迁移到当前单一 head `0067`：
+## 本人邮箱专用持久环境
+
+这个入口不要求评分、货币或交接政策，不启动其他业务 worker。所有邮箱存入独立持久 PostgreSQL，
+只有当前登录员工可以读取。数据库和 Web 仅监听本机回环地址。
+
+```sh
+python scripts/run_mailbox.py init --profile PRIVATE_DIRECTORY/config.json
+```
+
+`init` 是显式初始化与迁移操作；中断后可对同一配置重试，只接续归属验证通过的资源，不删除旧卷。
+`PROFILE_FILE` 在下面均指 `config.json` 文件。先完成后面的 Google 只读授权，再运行：
+
+```sh
+python scripts/mailbox_account.py --profile PROFILE_FILE \
+  --username LOGIN_EMAIL --email MAILBOX_EMAIL \
+  --credentials-file PRIVATE_DIRECTORY/gmail-credentials.json
+```
+
+第一次创建只读登录账号，显示姓名使用登录邮箱。密码在真实终端输入两次，至少15字符，不接受密码参数。
+登录账号与邮箱绑定分离：同一登录邮箱可以追加多个 `MAILBOX_EMAIL`，追加时须输入现有密码，每个邮箱分别授权、
+分别保存凭证文件。不要把绑定邮箱改成另一名员工来规避归属保护。旧短用户名登录继续兼容。
+
+```sh
+python scripts/run_mailbox.py install --profile PROFILE_FILE --web-build apps/web/dist
+python scripts/run_mailbox.py status --profile PROFILE_FILE
+```
+
+`install` 安装 macOS 登录后运行的 LaunchAgent，参数只引用私有文件路径。状态返回的 `origin` 加
+`/inbox/mailbox` 即为页面入口；登录后按“邮箱账号”切换，选择“收件箱”“已发送”或“全部邮件”。
+新增绑定会由后台发现。`start` 可仅启动当前本机后台，不安装 LaunchAgent。
+
+```sh
+python scripts/run_mailbox.py stop --profile PROFILE_FILE
+python scripts/run_mailbox.py migrate --profile PROFILE_FILE
+```
+
+`stop` 停止进程与数据库但保留所有数据，停止后更新代码再显式 `migrate`，随后 `install` 或 `start`。
+应用启动只检查 schema，不自动迁移。持久配置权限0700/0600；数据卷不能手动删除。
+电脑关机、休眠、外置工作目录未挂载或 Docker 停止时无法实时同步，恢复条件后后台继续从检查点补齐。
+“后台已运行”不代表历史已补齐，以页面同步阶段和最近完成时间为准。
+
+## 复用完整持久环境
+
+先停应用，备份已有 profile，再显式迁移到当前单一 head `0069`：
 
 ```sh
 python scripts/run_web_pilot.py migrate --profile PROFILE
@@ -47,7 +91,7 @@ python -m apps.email_feedback_worker.mailbox authorize \
 
 ```sh
 python -m apps.email_feedback_worker.mailbox sync \
-  --profile PROFILE --employee-id EMPLOYEE_ID --email EMAIL \
+  --profile PROFILE/config.json --employee-id EMPLOYEE_ID --email EMAIL \
   --credentials-file PRIVATE_DIRECTORY/gmail-credentials.json --watch
 ```
 

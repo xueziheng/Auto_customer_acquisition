@@ -50,6 +50,9 @@ async def test_research_summary_whitelists_and_aggregates_only_tenant_run(
                             "ecommerce",
                         ],
                         "discovery_lanes": ["importer"],
+                        "planned_source_channels": ["public_web", "industry_directory", "public_linkedin_company"],
+                        "searched_source_channels": ["public_web", "industry_directory"],
+                        "source_channels": ["industry_directory"],
                         "completion_reason": "budget_exhausted",
                         "sensitive": "must-not-leak",
                     },
@@ -95,6 +98,9 @@ async def test_research_summary_whitelists_and_aggregates_only_tenant_run(
             "distributor",
             "ecommerce",
         )
+        assert research.planned_source_channels == ("public_web", "industry_directory", "public_linkedin_company")
+        assert research.searched_source_channels == ("public_web", "industry_directory")
+        assert research.source_channels == ("industry_directory",)
         assert "must-not-leak" not in detail.model_dump_json()
         assert await repo.get_run(other, run) is None
         from infra.db.discovery_execution import PostgresDiscoveryExecutionReader

@@ -4120,6 +4120,11 @@ export interface components {
              * @default []
              */
             planned_discovery_lanes: string[];
+            /**
+             * Planned Source Channels
+             * @default []
+             */
+            planned_source_channels: string[];
             /** Proposal Id */
             proposal_id: string;
             /** Raw Text */
@@ -7350,6 +7355,11 @@ export interface components {
              */
             planned_discovery_lanes: ("importer" | "distributor" | "ecommerce")[];
             /**
+             * Planned Source Channels
+             * @default []
+             */
+            planned_source_channels: ("public_web" | "industry_directory" | "association_members" | "trade_show_exhibitors" | "public_procurement" | "company_news" | "public_linkedin_company" | "public_trade_records")[];
+            /**
              * Qualified Opportunity Count
              * @default 0
              */
@@ -7365,6 +7375,11 @@ export interface components {
              */
             reserved_credits: number;
             /**
+             * Searched Source Channels
+             * @default []
+             */
+            searched_source_channels: ("public_web" | "industry_directory" | "association_members" | "trade_show_exhibitors" | "public_procurement" | "company_news" | "public_linkedin_company" | "public_trade_records")[];
+            /**
              * Searches Used
              * @default 0
              */
@@ -7374,6 +7389,11 @@ export interface components {
              * @default 0
              */
             signal_count: number;
+            /**
+             * Source Channels
+             * @default []
+             */
+            source_channels: ("public_web" | "industry_directory" | "association_members" | "trade_show_exhibitors" | "public_procurement" | "company_news" | "public_linkedin_company" | "public_trade_records")[];
             /** Stop Reason */
             stop_reason?: ("plan_completed" | "budget_exhausted" | "no_results" | "page_disallowed" | "no_readable_pages" | "pending_verification" | "no_supported_signals" | "quota_exhausted" | "usage_unknown" | "paid_enabled" | "request_uncertain" | "unsupported" | "model_permission" | "model_configuration" | "model_quota" | "model_authentication" | "model_insufficient_balance" | "model_invalid_request" | "model_rate_limit" | "model_provider_error" | "model_invalid_response" | "model_unknown") | null;
             /**

@@ -5,7 +5,10 @@ import io
 import json
 import os
 import secrets
+import subprocess
+import sys
 import tarfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -177,6 +180,18 @@ def test_process_birth_mismatch_never_treated_as_stopped():
         stale.live()
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS 进程出生时间回归")
+def test_process_identity_survives_macos_boot_clock_adjustment(monkeypatch):
+    import psutil._psosx as macos
+
+    from infra.pilot.resources import ProcessIdentity
+
+    current = ProcessIdentity.current()
+    original_boot = macos.boot_time()
+    monkeypatch.setattr(macos, "boot_time", lambda: original_boot - 10)
+    assert current.live()
+
+
 def test_atomic_publish_refuses_even_empty_existing_directory(tmp_path):
     from infra.pilot.backup import _rename_new
     from infra.pilot.config import PilotError
@@ -207,6 +222,27 @@ def test_cli_start_launch_failure_never_claims_ready(tmp_path, capsys, monkeypat
         "reason": "application_start_failed",
     }
     assert not (tmp_path / "not-created").exists()
+
+
+def test_ready_supervisor_is_reaped_without_blocking_launcher():
+    from scripts.pilot_web_supervisor import reap_in_background
+
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.buffer.read(1)"],
+        stdin=subprocess.PIPE,
+    )
+    try:
+        worker = reap_in_background(process)
+        assert isinstance(worker, threading.Thread) and worker.is_alive()
+        assert process.returncode is None
+        assert process.stdin is not None
+        process.stdin.close()
+        worker.join(timeout=5)
+        assert not worker.is_alive() and process.returncode == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
 
 
 def test_cli_missing_policy_is_safe_no_profile(tmp_path, capsys):

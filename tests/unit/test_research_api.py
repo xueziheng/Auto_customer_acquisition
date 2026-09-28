@@ -1,6 +1,6 @@
 """研究状态与确认契约：只读快照不等于真实供应商验证。"""
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from importlib import import_module
 
@@ -107,6 +107,36 @@ async def test_snapshot_read_failure_stays_closed_until_read_recovers():
     assert recovered.confirmation_requires_recheck is True
 
 
+@pytest.mark.parametrize("remaining", [0, 7])
+async def test_verified_included_credits_are_visible_with_unknown_overage_state(remaining):
+    value = snapshot(
+        cost_status=SearchCostStatus.UNKNOWN,
+        paygo_enabled=None,
+        included_credits_free=True,
+        remaining=remaining,
+    )
+    service = module().ResearchAccessService(TENANT, Quota(value), configured=True)
+
+    result = await service.status(TENANT)
+
+    assert result.state == ("free_last_verified" if remaining else "quota_exhausted")
+    assert result.remaining_lower_bound == remaining
+    assert result.checked_at == NOW
+    assert result.runtime_activation == "not_verified"
+    assert value.cost_status is SearchCostStatus.UNKNOWN
+    assert value.paygo_enabled is None
+
+
+async def test_unverified_unknown_overage_does_not_claim_available_free_credits():
+    value = snapshot(cost_status=SearchCostStatus.UNKNOWN, paygo_enabled=None)
+    result = await module().ResearchAccessService(
+        TENANT, Quota(value), configured=True,
+    ).status(TENANT)
+
+    assert result.state == "usage_unknown"
+    assert result.remaining_lower_bound is None
+
+
 @pytest.mark.parametrize("case", ["read_failure", "not_current", "not_configured", "missing_budget"])
 async def test_execution_recovery_requires_known_absence_and_current_allowed_proposal(case):
     from types import SimpleNamespace
@@ -194,6 +224,46 @@ async def test_proposal_projection_requires_budget_and_does_not_require_campaign
     assert (
         await service.proposal(TENANT, legacy)
     ).execution_mode == "outreach_preparation"
+
+
+async def test_proposal_source_coverage_uses_saved_queries_without_claiming_execution():
+    import json
+
+    proposal = ProposalView(
+        "dpr_sources", "多来源研究", "推断", [], {
+            "execution_mode": "research_only",
+            **{key: "8" for key in ("max_search_queries", "max_pages_read", "max_signals", "max_hypotheses")},
+            "queries": json.dumps([
+                {"query": "US hinges importer", "discovery_lane": "importer"},
+                {"query": "US hinges industry directory companies", "discovery_lane": "distributor"},
+                {"query": "US hinges site:linkedin.com/company/", "discovery_lane": "distributor"},
+                {"query": "US locks site:linkedin.com/company/", "discovery_lane": "distributor"},
+                {"query": "US hinges public shipment records bill of lading importer", "discovery_lane": "importer"},
+                {"query": "arbitrary legacy query", "discovery_lane": "importer"},
+                {"source_channel": "association_members"},
+            ]),
+        }, "pending_confirmation", NOW,
+    )
+    projected = await module().ResearchAccessService(
+        TENANT, Quota(), configured=True,
+    ).proposal(TENANT, proposal)
+    assert projected.planned_source_channels == (
+        "public_web", "industry_directory", "public_linkedin_company", "public_trade_records",
+    )
+    assert "searched_source_channels" not in asdict(projected)
+
+
+@pytest.mark.parametrize("queries", ["null", "{}", "12", "[null, 12, {}]", "invalid"])
+async def test_malformed_historical_queries_do_not_invent_source_coverage(queries):
+    proposal = ProposalView(
+        "dpr_sources", "历史研究", "推断", [],
+        {"execution_mode": "research_only", "queries": queries},
+        "confirmed", NOW,
+    )
+    projected = await module().ResearchAccessService(
+        TENANT, Quota(), configured=True,
+    ).proposal(TENANT, proposal)
+    assert projected.planned_source_channels == ()
 
 
 @pytest.mark.parametrize("configured,expected", [(False, 409), (True, 200)])

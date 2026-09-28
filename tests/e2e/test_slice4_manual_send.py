@@ -1004,9 +1004,9 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
             await expect(page.get_by_text(str(enrollment))).to_be_visible()
             await assert_no_overflow(page)
             # 选中入组记录后详情区才出现「准备发送」
-            await page.locator('li[aria-label="入组记录（Enrollment）"]').first.click()
+            await page.locator('li[aria-label="入组记录"]').first.click()
             await page.get_by_role("button", name="准备发送").click()
-            await expect(page.get_by_text("邮件主题（Subject）")).to_be_visible()
+            await expect(page.get_by_text("邮件主题")).to_be_visible()
             await page.locator("#send-subject").fill("Re: hardware sourcing needs")
             await page.locator("#send-body").fill(
                 "Hello, would you be open to a short call this week?"
@@ -1209,7 +1209,7 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
             await page.goto(f"{web_origin}/crm/outreach", wait_until="networkidle")
             await expect(page.get_by_text(str(enrollment))).to_be_visible()
             # 选中入组记录后详情区才出现「准备发送」
-            await page.locator('li[aria-label="入组记录（Enrollment）"]').first.click()
+            await page.locator('li[aria-label="入组记录"]').first.click()
             await page.get_by_role("button", name="准备发送").click()
             await expect(page.get_by_text("无法准备发送，请稍后重试")).to_be_visible(
                 timeout=10000

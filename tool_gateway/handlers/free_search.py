@@ -189,8 +189,11 @@ class FreeSearchGatewaySearcher:
             if error.category not in {
                 ToolErrorCategory.PROVIDER_PERMANENT,
                 ToolErrorCategory.RECONCILIATION_REQUIRED,
+                ToolErrorCategory.RATE_LIMITED,
+                ToolErrorCategory.PROVIDER_TRANSIENT,
             }:
                 raise
+            # 技术账本保留 429/暂时故障分类；已派发的额度状态决定能否重试。
             try:
                 state = await self._quota.run_state(run_id)
             except Exception:  # noqa: BLE001 - 状态查询失败必须保守停止。

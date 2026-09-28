@@ -162,6 +162,7 @@ class PostgresSearchQuotaRepository(TenantScopedRepository):
                 account.usage_limit = usage.limit
                 account.usage_used = usage.used
                 account.paygo_enabled = usage.paygo_enabled
+                account.included_credits_free = usage.included_credits_free
                 if available is not None:
                     account.ceiling = (
                         available
@@ -204,6 +205,7 @@ class PostgresSearchQuotaRepository(TenantScopedRepository):
             account.usage_limit = None
             account.usage_used = None
             account.paygo_enabled = None
+            account.included_credits_free = False
             account.checked_at = self._timestamp()
             await self._record_run(session, run_id, FreeSearchStopReason.USAGE_UNKNOWN)
 
@@ -354,6 +356,7 @@ class PostgresSearchQuotaRepository(TenantScopedRepository):
                 row.usage_used,
                 row.paygo_enabled,
                 row.checked_at,
+                row.included_credits_free,
             )
 
     async def get(self, run_id: RunId, request_key: str) -> SearchReservation | None:

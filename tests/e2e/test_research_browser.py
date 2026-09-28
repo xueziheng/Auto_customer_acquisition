@@ -97,6 +97,8 @@ async def test_research_confirm_refresh_and_radar_tabs_are_operable_across_origi
                     ),
                 )
                 await page.goto(f"{web_origin}/commands")
+                assert page.url == f"{web_origin}/commands"
+                assert await page.title()
                 assert await page.evaluate("window.innerWidth") == width
                 await expect(
                     page.get_by_role("heading", name="指挥中心", exact=True)
@@ -105,6 +107,9 @@ async def test_research_confirm_refresh_and_radar_tabs_are_operable_across_origi
                     "只研究美国铰链进口商、分销商、电商，最多4个检索式、6页、6信号、3假设。"
                 )
                 await page.get_by_role("button", name="生成待确认提案").click()
+                await expect(page.get_by_label("计划来源方向")).to_contain_text(
+                    "公开官网与店铺 / 行业企业名录"
+                )
                 await expect(page.get_by_label("免费研究账户状态")).to_contain_text(
                     "不发送、不报价"
                 )
@@ -126,6 +131,18 @@ async def test_research_confirm_refresh_and_radar_tabs_are_operable_across_origi
                 ).click()
                 await expect(page.get_by_label("研究执行摘要")).to_contain_text(
                     "尝试次数不等于额度消耗"
+                )
+                await expect(page.get_by_label("计划来源方向")).to_contain_text(
+                    "行业企业名录"
+                )
+                await expect(page.get_by_label("已搜索来源方向")).to_contain_text(
+                    "公开官网与店铺"
+                )
+                await expect(page.get_by_label("已搜索来源方向")).not_to_contain_text(
+                    "行业企业名录"
+                )
+                await expect(page.get_by_label("已留证来源方向")).not_to_contain_text(
+                    "行业企业名录"
                 )
                 tabs = page.get_by_role("navigation", name="需求雷达数据层")
                 for label in ("需求假设", "已验证需求", "需求簇", "需求信号"):
@@ -152,6 +169,9 @@ async def test_research_confirm_refresh_and_radar_tabs_are_operable_across_origi
                     page.get_by_text("正在刷新研究运行摘要", exact=False)
                 ).to_have_count(0)
                 assert await page.locator("vite-error-overlay").count() == 0
+                assert await page.evaluate(
+                    "document.documentElement.scrollWidth <= window.innerWidth"
+                )
                 assert not errors
                 screenshot_dir = Path(
                     os.environ.get("TRADEOS_E2E_SCREENSHOTS", temporary)

@@ -371,6 +371,7 @@ def _minimal_process_env() -> dict[str, str]:
         "PATH": os.environ["PATH"],
         "PYTHONPATH": str(_REPO_ROOT),
         "LANG": "C.UTF-8",
+        "NO_PROXY": "127.0.0.1,localhost,::1",
     }
 
 

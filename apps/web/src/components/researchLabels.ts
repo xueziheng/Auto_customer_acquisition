@@ -4,10 +4,25 @@ export function laneLabel(lane: string): string {
   return ({ importer: "进口商候选", distributor: "分销商候选", ecommerce: "电商候选" }[lane] ?? "线路待核验");
 }
 
+const sourceChannelLabels: Record<components["schemas"]["RunResearchView"]["source_channels"][number], string> = {
+  public_web: "公开官网与店铺",
+  industry_directory: "行业企业名录",
+  association_members: "协会会员",
+  trade_show_exhibitors: "展会参展名单",
+  public_procurement: "公开采购公告",
+  company_news: "企业动态",
+  public_linkedin_company: "领英公开公司页面",
+  public_trade_records: "公开贸易记录索引",
+};
+
+export function sourceChannelLabel(channel: string): string {
+  return sourceChannelLabels[channel as keyof typeof sourceChannelLabels] ?? "来源方向待核验";
+}
+
 export const researchAccessLabels: Record<components["schemas"]["ResearchAccessView"]["state"], string> = {
   not_configured: "未配置免费研究账户",
   configured_unverified: "已配置，账户尚未核实",
-  free_last_verified: "上次核验为免费账户，执行前仍须复核",
+  free_last_verified: "上次核验有可用免费额度，执行前仍须复核",
   usage_unknown: "上次核验用量未知",
   paid_enabled: "上次核验发现付费已开启",
   quota_exhausted: "上次核验免费额度耗尽",

@@ -9,7 +9,7 @@ import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
 import AgentConversation from "./AgentConversation.vue";
 import ResearchAccessCard from "../../components/ResearchAccessCard.vue";
-import { laneLabel, stopLabel } from "../../components/researchLabels";
+import { laneLabel, sourceChannelLabel, stopLabel } from "../../components/researchLabels";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type Proposal = components["schemas"]["DiscoveryProposalView"];
@@ -570,6 +570,11 @@ onMounted(() => void loadPage());
         class="research-plan"
       >
         <strong>只研究 · 计划线路：{{ proposal.planned_discovery_lanes?.map(laneLabel).join(" / ") }}</strong>
+        <p aria-label="计划来源方向">
+          计划来源方向：{{ proposal.planned_source_channels?.map(sourceChannelLabel).join(" / ") || "尚未记录来源计划" }}
+        </p>
+        <p>各来源独立检索，按本轮预算执行；免费额度耗尽即停止。</p>
+        <p>领英与贸易记录仅检索公开页面，不代表已接入商业数据库；联系方式仍需核验。</p>
         <p>进口商候选不代表运输记录或客户采购确认；无需活动，不执行联系人、邮箱验证、发送和报价。</p>
         <ResearchAccessCard :status="proposal.research_access ?? null" />
         <p

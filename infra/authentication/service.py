@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hmac
-import re
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -34,6 +33,7 @@ from shared.authentication import (
     AuthenticationRateLimited,
     AuthPrincipal,
     IssuedSession,
+    normalize_login_username,
 )
 from shared.schemas.identifiers import EmployeeId, TenantId, UserId
 
@@ -139,6 +139,10 @@ class PostgresAuthentication:
     async def login(self, username: str, password: SecretStr) -> IssuedSession:
         """限流计数失败也提交；每次发行新随机会话，至多保留五个活动会话。"""
         await self._attempt()
+        try:
+            username = normalize_login_username(username)
+        except AuthenticationInputInvalid:
+            username = ""
         failure: AuthenticationDenied | AuthenticationRateLimited | None = None
         issued: IssuedSession | None = None
         async with self._transaction() as session:
@@ -317,9 +321,11 @@ class PostgresAuthentication:
 
     @staticmethod
     def _valid_username(username: str) -> bool:
-        return (
-            re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", username, re.ASCII) is not None
-        )
+        try:
+            normalize_login_username(username)
+            return True
+        except AuthenticationInputInvalid:
+            return False
 
     async def create_account(
         self,
@@ -336,9 +342,8 @@ class PostgresAuthentication:
         不允许调用前锁住或修改既有 Employee/账号而反转租户→账号→员工锁序。
         不创建员工、不接受角色；租户由实例固定，不由传入 session 推断。
         """
-        if not self._valid_username(username) or (
-            session is not None and not session.in_transaction()
-        ):
+        username = normalize_login_username(username)
+        if session is not None and not session.in_transaction():
             raise AuthenticationInputInvalid()
         record = await password_work(hash_password, password)
 
@@ -381,6 +386,7 @@ class PostgresAuthentication:
 
     async def reset_password(self, username: str, password: SecretStr) -> None:
         """可信本机重置密码；同事务增加版本、清失败计数并撤销全部旧会话。"""
+        username = normalize_login_username(username)
         record = await password_work(hash_password, password)
         async with self._transaction() as session:
             await self._bucket(session, "attempts")
@@ -394,6 +400,7 @@ class PostgresAuthentication:
 
     async def set_enabled(self, username: str, enabled: bool) -> None:
         """可信本机启停账号；每次变更版本并撤销会话，重新启用不复活旧会话。"""
+        username = normalize_login_username(username)
         async with self._transaction() as session:
             await self._bucket(session, "attempts")
             account = await self._account(session, username)
@@ -408,6 +415,8 @@ class PostgresAuthentication:
 
         username=None 用于静止环境恢复后撤销。完成后新的正确密码登录仍可发行。
         """
+        if username is not None:
+            username = normalize_login_username(username)
         async with self._transaction() as session:
             await self._bucket(session, "attempts")
             await self._revoke(session, username)

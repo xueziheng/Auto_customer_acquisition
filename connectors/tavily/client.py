@@ -102,6 +102,8 @@ class TavilySearchConnector:
                 or not isinstance(description, str)
             ):
                 raise ValidationError("Tavily 搜索响应无效")
+            title = _display_summary(title, 500)
+            description = _display_summary(description, 2_000)
             canonical_url = await self._page_transport.validate_url(url)
             results.append(SearchResult(title, canonical_url, description))
         return tuple(results)
@@ -116,6 +118,16 @@ class TavilySearchConnector:
         if self._api_key is None:
             raise TavilyAuthRequiredError()
         return self._api_key.value
+
+
+def _display_summary(value: str, maximum: int) -> str:
+    """定位摘要可折叠空白和截短；原件证据仍须另走页面读取与快照。"""
+    if any(
+        (ord(character) < 32 or ord(character) == 127) and not character.isspace()
+        for character in value
+    ):
+        raise ValidationError("Tavily 搜索响应无效")
+    return " ".join(value.split())[:maximum].rstrip()
 
 
 def _decode_usage(payload: Mapping[str, object]) -> SearchUsage:
@@ -142,6 +154,14 @@ def _decode_usage(payload: Mapping[str, object]) -> SearchUsage:
         used,
         paygo_enabled,
         _classify_cost_status(plan, paygo_enabled),
+        included_credits_free=(
+            plan == "Researcher"
+            and limit is not None
+            and used is not None
+            and paygo_usage == 0
+            and "paygo_limit" in account
+            and paygo_limit in (None, 0)
+        ),
     )
 
 

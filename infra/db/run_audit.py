@@ -87,6 +87,9 @@ class PostgresRunAuditRepository:
             "completion_reason",
             "planned_discovery_lanes",
             "discovery_lanes",
+            "planned_source_channels",
+            "searched_source_channels",
+            "source_channels",
             "searches_used",
             "pages_used",
             "signal_count",
@@ -305,7 +308,10 @@ class PostgresRunAuditRepository:
         ):
             return None
         values = {key: value for key, value in metadata.items() if value is not None}
-        for key in ("planned_discovery_lanes", "discovery_lanes"):
+        for key in (
+            "planned_discovery_lanes", "discovery_lanes",
+            "planned_source_channels", "searched_source_channels", "source_channels",
+        ):
             values[key] = tuple(values.get(key, ()))
         for status in ("consumed", "reserved", "uncertain"):
             values[f"{status}_credits"] = getattr(row, f"{status}_credits", 0)

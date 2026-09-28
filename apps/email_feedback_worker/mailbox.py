@@ -7,10 +7,12 @@ import asyncio
 import json
 import logging
 import signal
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from connectors.gmail.mailbox import GmailMailboxReader
@@ -22,7 +24,8 @@ from infra.db.schema import assert_database_schema_current
 from infra.db.session import create_engine_from
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from infra.pilot.config import PilotConfig
-from shared.schemas.identifiers import TenantId, UserId, new_id
+from infra.pilot.mailbox_config import MailboxConfig
+from shared.schemas.identifiers import EmployeeId, TenantId, UserId, new_id
 from shared.schemas.mailbox import MailboxFailure, MailboxPage
 from tool_gateway.checks.permission import PermissionCheck
 from tool_gateway.errors import ToolCallStatus
@@ -139,35 +142,78 @@ class MailboxSync:
             self.slot.clear()
 
 
-async def run(args: argparse.Namespace) -> int:
+@dataclass(frozen=True)
+class SyncConfiguration:
+    """进程内窄配置，秘密只用于仓储连接和 Gateway 指纹。"""
+
+    database_url: SecretStr
+    tenant_id: str
+    employee_id: str
+    email: str
+    credentials_file: Path
+    fingerprint_version: str
+    fingerprint_key: SecretStr
+
+
+def load_sync_configuration(args: argparse.Namespace) -> SyncConfiguration:
+    """旧完整 profile 与新邮箱 profile 互斥，禁止命令行覆盖已绑定归属。"""
+    if getattr(args, "mailbox_profile", None) is not None:
+        if any(getattr(args, key, None) is not None for key in (
+            "profile", "employee_id", "email", "credentials_file"
+        )):
+            raise MailboxFailure("configuration_invalid")
+        config = MailboxConfig.read(args.mailbox_profile)
+        binding = next((item for item in config.bindings
+                        if item.binding_id == args.binding_id), None)
+        if binding is None:
+            raise MailboxFailure("configuration_invalid")
+        return SyncConfiguration(
+            config.database_url, config.tenant_id, binding.employee_id,
+            binding.email, binding.credentials_file, "mailbox-local-v1",
+            config.fingerprint_key,
+        )
+    if getattr(args, "binding_id", None) is not None or not all(
+        getattr(args, key, None) is not None
+        for key in ("profile", "employee_id", "email", "credentials_file")
+    ):
+        raise MailboxFailure("configuration_invalid")
     profile = PilotConfig.read(args.profile)
-    engine = create_engine_from(profile.database_url.get_secret_value())
+    env = profile.runtime_environment()
+    return SyncConfiguration(
+        profile.database_url, profile.tenant_id, args.employee_id, args.email,
+        args.credentials_file, env["TOOL_CALL_FINGERPRINT_KEY_VERSION"],
+        SecretStr(profile.resolve(env["TOOL_CALL_FINGERPRINT_KEY_REF"])),
+    )
+
+
+async def run(args: argparse.Namespace) -> int:
+    config = load_sync_configuration(args)
+    engine = create_engine_from(config.database_url.get_secret_value())
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     actor = MailboxActor(
-        tenant_id=TenantId(profile.tenant_id), employee_id=args.employee_id
+        tenant_id=TenantId(config.tenant_id), employee_id=EmployeeId(config.employee_id)
     )
     repository = SqlMailboxRepository(sessions)
     lock = None
     try:
         await assert_database_schema_current(engine)
-        mailbox_id = await repository.register(actor, args.email)
+        mailbox_id = await repository.register(actor, config.email)
         lock = PostgresAdvisoryLock(
             engine, derive_advisory_lock_key(actor.tenant_id, "mailbox:" + mailbox_id)
         )
         if not await lock.acquire():
             print(json.dumps({"status": "already_running"}))
             return 0
-        env = profile.runtime_environment()
         sync = MailboxSync(
             repository,
             actor,
             mailbox_id,
             GmailMailboxReader(
-                GmailMailboxHttpProvider(args.credentials_file), args.email
+                GmailMailboxHttpProvider(config.credentials_file), config.email
             ),
             HmacFingerprintProvider(
-                env["TOOL_CALL_FINGERPRINT_KEY_VERSION"],
-                profile.resolve(env["TOOL_CALL_FINGERPRINT_KEY_REF"]).encode(),
+                config.fingerprint_version,
+                config.fingerprint_key.get_secret_value().encode(),
             ),
             lock,
         )
@@ -232,10 +278,13 @@ def main() -> int:
     connect.add_argument("--client-file", type=Path, required=True)
     connect.add_argument("--credentials-file", type=Path, required=True)
     sync = commands.add_parser("sync")
-    sync.add_argument("--profile", type=Path, required=True)
-    sync.add_argument("--employee-id", required=True)
-    sync.add_argument("--email", required=True)
-    sync.add_argument("--credentials-file", type=Path, required=True)
+    profiles = sync.add_mutually_exclusive_group(required=True)
+    profiles.add_argument("--profile", type=Path)
+    profiles.add_argument("--mailbox-profile", type=Path)
+    sync.add_argument("--binding-id")
+    sync.add_argument("--employee-id")
+    sync.add_argument("--email")
+    sync.add_argument("--credentials-file", type=Path)
     sync.add_argument("--watch", action="store_true")
     sync.add_argument("--interval", type=int, default=60)
     args = parser.parse_args()

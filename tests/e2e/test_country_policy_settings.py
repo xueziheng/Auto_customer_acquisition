@@ -112,8 +112,8 @@ async def test_real_country_policy_settings_approval_and_activation(
                 "local_representative_required",
             ):
                 await page.locator(f'select[name="{field}"]').select_option("false")
-            await page.get_by_label("退订期限（天） opt_out_deadline_days").fill("10")
-            await page.get_by_label("附加要求代码 requirements").fill(
+            await page.get_by_label("退订期限（天） 退订处理期限（天）").fill("10")
+            await page.get_by_label("附加要求代码 要求").fill(
                 "synthetic_verified_requirement"
             )
             await page.get_by_label("核验说明").fill(

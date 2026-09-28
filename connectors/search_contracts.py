@@ -62,7 +62,7 @@ class SearchCapabilities:
 
 
 class SearchCostStatus(str, Enum):
-    """账号成本状态。UNKNOWN 必须由额度门禁按不可免费处理。"""
+    """账号计费状态；UNKNOWN 不代表套餐内额度已被证明免费。"""
 
     FREE = "free"
     PAID = "paid"
@@ -78,6 +78,7 @@ class SearchUsage:
     used: int | None
     paygo_enabled: bool | None
     cost_status: SearchCostStatus = SearchCostStatus.UNKNOWN
+    included_credits_free: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -92,6 +93,17 @@ class SearchUsage:
                 and not isinstance(self.paygo_enabled, bool)
             )
             or not isinstance(self.cost_status, SearchCostStatus)
+            or type(self.included_credits_free) is not bool
+            or (
+                self.included_credits_free
+                and (
+                    self.plan != "Researcher"
+                    or self.limit is None
+                    or self.used is None
+                    or self.cost_status is SearchCostStatus.PAID
+                    or self.paygo_enabled is True
+                )
+            )
         ):
             raise ValidationError("公开搜索用量无效")
 

@@ -661,6 +661,9 @@ def test_orm_metadata_parity_with_head() -> None:
 
     schema 仍由 Alembic 迁移管理（不用 create_all）；本断言防 ORM 与迁移漂移。
     """
+    from infra.db import (
+        mailbox_tables,  # noqa: F401 - 显式注册独立表，避免依赖其他测试的导入顺序
+    )
     from infra.db.tables import Base
 
     metadata = Base.metadata
@@ -1134,6 +1137,8 @@ def test_orm_metadata_parity_with_head() -> None:
             ),
         }
     expected_indexes.update({
+        "ix_mailbox_owner": ("tenant_id", "employee_id"),
+        "ix_mailbox_thread": ("tenant_id", "mailbox_id", "thread_id", "occurred_at"),
         "ix_auth_sessions_account": ("tenant_id", "username", "created_at"),
         "ix_model_invocations_quota": ("tenant_id", "created_at", "employee_id"),
         "uq_agent_turn_active": ("tenant_id", "session_id"),

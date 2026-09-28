@@ -15,6 +15,7 @@ const proposal = {
   expected_behavior_changes: ["不补全联系人、不发信、不报价"], state: "pending_confirmation",
   created_at: "2026-08-27T00:00:00Z", execution_mode: "research_only", can_confirm: true,
   planned_discovery_lanes: ["importer", "distributor", "ecommerce"], research_access: access,
+  planned_source_channels: ["public_web", "industry_directory", "association_members", "trade_show_exhibitors", "public_procurement", "company_news", "public_linkedin_company", "public_trade_records"],
   confirmation_blocked_reason: null,
   parsed_fields: { execution_mode: "research_only", target_countries: "US", target_categories: "hinges", max_search_queries: "3", max_pages_read: "7", max_signals: "5", max_hypotheses: "2", campaign_id: "", queries: '[{"query":"US hinges importer","discovery_lane":"importer","country":"US","category":"hinges","limit":3}]' },
 };
@@ -25,7 +26,7 @@ const signal = {
   source_url: "https://example.test/about", page_hash: "a".repeat(64), snapshot_artifact_ref: "art_controlled",
   research_evidence: { proposal_id: "dpr_controlled", query: "US hinges importer", discovery_lane: "importer", query_country: "US", query_category: "hinges", source_kind: "directory_listing", identity_status: "pending_verification", company_name: null, website_domain: null, country: null, identity_quote: null, country_quote: null, source_url: "https://example.test/about" },
 };
-const research = { execution_mode: "research_only", planned_discovery_lanes: ["importer", "distributor", "ecommerce"], discovery_lanes: ["importer"], completion_reason: "budget_exhausted", stop_reason: "quota_exhausted", searches_used: 9, pages_used: 1, signal_count: 1, hypothesis_count: 0, pending_verification_count: 1, validated_need_count: 0, qualified_opportunity_count: 0, queued_count: 0, consumed_credits: 1, reserved_credits: 2, uncertain_credits: 3 };
+const research = { execution_mode: "research_only", planned_discovery_lanes: ["importer", "distributor", "ecommerce"], discovery_lanes: ["importer"], planned_source_channels: proposal.planned_source_channels, searched_source_channels: ["public_web", "industry_directory"], source_channels: ["industry_directory"], completion_reason: "budget_exhausted", stop_reason: "quota_exhausted", searches_used: 9, pages_used: 1, signal_count: 1, hypothesis_count: 0, pending_verification_count: 1, validated_need_count: 0, qualified_opportunity_count: 0, queued_count: 0, consumed_credits: 1, reserved_credits: 2, uncertain_credits: 3 };
 const run = { run_id: "run_controlled", workflow_type: "demand_discovery", workflow_version: 2, subject_ref: "dpr_controlled", current_step: "complete", status: "completed", created_at: "2026-08-27T00:00:00Z", last_activity_at: "2026-08-27T00:00:00Z", next_poll_at: null, retry_count: 0, last_error: null, research };
 
 async function mount(component: Parameters<typeof createApp>[0], routes: Record<string, unknown>) {
@@ -59,6 +60,42 @@ async function settle() {
 }
 
 describe("公开研究展示", () => {
+  it("提案展示独立来源方向，保留免费额度边界和公开索引含义", async () => {
+    const { root } = await mount(CommandCenter, { "/commands/discovery-proposals": proposal });
+    const input = root.querySelector("textarea")!;
+    input.value = "多方面寻找潜在客户";
+    input.dispatchEvent(new Event("input"));
+    root.querySelector("form")!.dispatchEvent(new Event("submit"));
+    await settle();
+    const sources = root.querySelector('[aria-label="计划来源方向"]')!;
+    for (const label of ["公开官网与店铺", "行业企业名录", "协会会员", "展会参展名单", "公开采购公告", "企业动态", "领英公开公司页面", "公开贸易记录索引"]) {
+      expect(sources.textContent).toContain(label);
+    }
+    expect(root.textContent).toContain("各来源独立检索");
+    expect(root.textContent).toContain("免费额度耗尽即停止");
+    expect(root.textContent).toContain("不代表已接入商业数据库");
+    expect(root.querySelector('[aria-label="已留证来源方向"]')).toBeNull();
+  });
+
+  it("研究摘要不把计划覆盖或搜索尝试展示成已有证据", async () => {
+    const { root } = await mount(DemandRadar, { "/runs": [run] });
+    expect(root.querySelector('[aria-label="计划来源方向"]')!.textContent).toContain("领英公开公司页面");
+    expect(root.querySelector('[aria-label="已搜索来源方向"]')!.textContent).toContain("公开官网与店铺 / 行业企业名录");
+    expect(root.querySelector('[aria-label="已搜索来源方向"]')!.textContent).not.toContain("领英");
+    const evidence = root.querySelector('[aria-label="已留证来源方向"]')!.textContent;
+    expect(evidence).toContain("行业企业名录");
+    expect(evidence).not.toContain("官网");
+    expect(evidence).not.toContain("领英");
+  });
+
+  it("历史运行未记录来源覆盖时展示未知，不从线路推断来源", async () => {
+    const { root } = await mount(DemandRadar, {
+      "/runs": [{ ...run, research: { ...research, planned_source_channels: [], searched_source_channels: [], source_channels: [] } }],
+    });
+    expect(root.querySelector('[aria-label="计划来源方向"]')!.textContent).toContain("尚未记录来源计划");
+    expect(root.querySelector('[aria-label="已搜索来源方向"]')!.textContent).toContain("暂无已记录搜索");
+    expect(root.querySelector('[aria-label="已留证来源方向"]')!.textContent).toContain("暂无已持久证据");
+  });
   it.each([
     ["model_unknown", "模型请求结果不确定，禁止自动重试"],
     ["model_quota", "本地模型调用额度或并发上限已触发"],

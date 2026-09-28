@@ -23,6 +23,16 @@ from shared.schemas.identifiers import (
 from .observability import RunObservation, WebCoreObservation
 
 DiscoveryLane = Literal["importer", "distributor", "ecommerce"]
+ResearchSourceChannel = Literal[
+    "public_web",
+    "industry_directory",
+    "association_members",
+    "trade_show_exhibitors",
+    "public_procurement",
+    "company_news",
+    "public_linkedin_company",
+    "public_trade_records",
+]
 ResearchStopReason = Literal[
     "plan_completed",
     "budget_exhausted",
@@ -56,6 +66,9 @@ class RunResearchView(BaseModel):
     execution_mode: Literal["research_only"] = "research_only"
     planned_discovery_lanes: tuple[DiscoveryLane, ...] = ()
     discovery_lanes: tuple[DiscoveryLane, ...] = ()
+    planned_source_channels: tuple[ResearchSourceChannel, ...] = ()
+    searched_source_channels: tuple[ResearchSourceChannel, ...] = ()
+    source_channels: tuple[ResearchSourceChannel, ...] = ()
     completion_reason: ResearchStopReason | None = None
     stop_reason: ResearchStopReason | None = None
     searches_used: int = Field(default=0, ge=0)

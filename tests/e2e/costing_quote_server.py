@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import traceback
@@ -77,6 +78,10 @@ async def serve(connection, mode):
                     case.app, host="0.0.0.0", port=8000, lifespan="off", access_log=False,
                 ))
                 # 真lifespan由runtime_case持有；Uvicorn不得第二次启动/关闭parser。
+                # Uvicorn 退出时会重放信号；必须完成外层 worker/engine 清理后才退出 PID 1。
+                previous_handler = signal.signal(
+                    signal.SIGTERM, lambda *_: setattr(server, "should_exit", True)
+                )
                 task = asyncio.create_task(server.serve())
                 try:
                     async with asyncio.timeout(900 if mode == "visual" else 300):
@@ -88,6 +93,7 @@ async def serve(connection, mode):
                     server.should_exit = True
                     if not task.done():
                         await asyncio.wait_for(task, timeout=10)
+                    signal.signal(signal.SIGTERM, previous_handler)
     finally:
         await engine.dispose()
 

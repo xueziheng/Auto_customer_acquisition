@@ -6,15 +6,17 @@ import re
 from datetime import datetime
 from http.cookies import CookieError, SimpleCookie
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from starlette._utils import get_route_path
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domains.employees.schemas import EmployeeView
 from shared.authentication import (
     AuthenticationDenied,
+    AuthenticationInputInvalid,
     AuthenticationService,
     AuthPrincipal,
+    normalize_login_username,
 )
 
 from .middleware import AnonymousRouteMatcher, ApiSettings, _error_response
@@ -29,8 +31,16 @@ class LoginRequest(BaseModel):
     """仅用于登录的小型输入；原值不得进入错误诊断。"""
 
     model_config = ConfigDict(strict=True, extra="forbid", hide_input_in_errors=True)
-    username: str = Field(pattern=r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+    username: str = Field(min_length=1, max_length=254)
     password: SecretStr = Field(repr=False)
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        try:
+            return normalize_login_username(value)
+        except AuthenticationInputInvalid:
+            raise ValueError("登录用户名无效") from None
 
 
 class SessionResponse(BaseModel):

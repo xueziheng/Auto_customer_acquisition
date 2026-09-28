@@ -12,6 +12,7 @@
 |---|---|
 | 项目规矩与硬边界 | [AGENTS.md](AGENTS.md) ← **先读这个** |
 | 怎么动手实现 | [HANDBOOK.md](HANDBOOK.md) ← **要写代码就读这个** |
+| 交接给 Windows / WSL2 同事 | [安装、启动与交接说明](docs/operations/windows-wsl2-handoff.md) |
 | 术语的准确含义 | [GLOSSARY.md](GLOSSARY.md) |
 | 现在做什么、不做什么 | [ROADMAP.md](ROADMAP.md) |
 | 总体架构 | [docs/architecture/00-overview.md](docs/architecture/00-overview.md) |

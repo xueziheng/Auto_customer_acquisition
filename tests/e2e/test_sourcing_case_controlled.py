@@ -42,6 +42,8 @@ from tests.e2e.conftest import (
     e2e_stack_lifecycle,
 )
 
+pytestmark = pytest.mark.e2e
+
 _NOW = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
 
 

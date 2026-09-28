@@ -133,6 +133,34 @@ def test_research_failure_projection_rejects_arbitrary_provider_text() -> None:
         ))
 
 
+def test_source_coverage_keeps_planned_searched_and_persisted_evidence_separate() -> None:
+    row = _run_row()
+    row.research_metadata = {
+        "execution_mode": "research_only",
+        "planned_source_channels": ["public_web", "industry_directory", "public_linkedin_company"],
+        "searched_source_channels": ["public_web", "industry_directory"],
+        "source_channels": ["industry_directory"],
+    }
+    research = PostgresRunAuditRepository._research(row)
+    assert research is not None
+    assert research.planned_source_channels == ("public_web", "industry_directory", "public_linkedin_company")
+    assert research.searched_source_channels == ("public_web", "industry_directory")
+    assert research.source_channels == ("industry_directory",)
+    legacy = PostgresRunAuditRepository._research(SimpleNamespace(
+        research_metadata={"execution_mode": "research_only"},
+    ))
+    assert legacy is not None
+    assert legacy.planned_source_channels == legacy.searched_source_channels == legacy.source_channels == ()
+
+
+@pytest.mark.parametrize("key", ["planned_source_channels", "searched_source_channels", "source_channels"])
+def test_source_coverage_rejects_arbitrary_provider_text(key: str) -> None:
+    row = _run_row()
+    row.research_metadata = {"execution_mode": "research_only", key: ["private-provider-payload"]}
+    with pytest.raises(ValidationError):
+        PostgresRunAuditRepository._research(row)
+
+
 def test_get_run_queries_every_audit_source_with_tenant_and_omits_payload_columns() -> None:
     step = SimpleNamespace(
         step_id="wfs_01K39P9M5D6K4A91YEQ80EJZ0X",

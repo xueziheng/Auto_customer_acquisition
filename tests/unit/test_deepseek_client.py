@@ -1,5 +1,6 @@
 """真实 SDK + 受控 HTTP，验证模型协议、无重试与脱敏。"""
 
+import asyncio
 import json
 import logging
 
@@ -167,6 +168,34 @@ async def test_sdk_request_and_usage_are_explicit(caplog):
     }
     for sensitive in (KEY, SENTINEL, "PRIVATE_THINKING"):
         assert sensitive not in caplog.text
+
+
+async def test_private_sdk_logging_does_not_hide_other_tasks(caplog):
+    caplog.set_level(logging.DEBUG)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def respond(req):
+        entered.set()
+        await release.wait()
+        logging.getLogger("httpcore.http11").debug("PRIVATE_PROVIDER_RESPONSE")
+        return httpx.Response(200, json=body())
+
+    connector = client(httpx.MockTransport(respond))
+    task = asyncio.create_task(connector.generate(request()))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        logging.getLogger("openai._base_client").info("unrelated-task-diagnostic")
+        release.set()
+        await task
+        logging.getLogger("httpcore.http11").info("after-call-diagnostic")
+        assert "unrelated-task-diagnostic" in caplog.text
+        assert "after-call-diagnostic" in caplog.text
+        assert SENTINEL not in caplog.text
+        assert "PRIVATE_PROVIDER_RESPONSE" not in caplog.text
+    finally:
+        release.set()
+        await task
+        await connector.aclose()
 
 
 @pytest.mark.parametrize(

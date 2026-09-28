@@ -36,7 +36,7 @@ from tool_gateway.provider_readiness import (
 
 _COUNTRY = "Hunter Readiness Synthetic Market"
 _PROVIDER_NOT_CONFIGURED = "部署尚未声明 Hunter 安全配置版本。"
-_VALIDATION_PENDING = "Hunter 配置已声明，等待人工 Provider 验证。"
+_VALIDATION_PENDING = "Hunter 配置已声明，等待人工服务商验证。"
 
 
 @pytest_asyncio.fixture(scope="function", loop_scope="session")
@@ -58,7 +58,7 @@ async def _assert_no_horizontal_overflow(page: Page) -> None:
 
 async def _expect_both_readiness_banners(page: Page, message: str) -> None:
     await expect(
-        page.get_by_label("Playbook 联系人补全就绪状态").get_by_text(
+        page.get_by_label("公司业务规则联系人补全就绪状态").get_by_text(
             message, exact=True
         )
     ).to_be_visible()

@@ -30,7 +30,7 @@ from shared.schemas.identifiers import EmployeeId, TenantId
 from .middleware import ApiSettings
 
 if TYPE_CHECKING:
-    from .dependencies import ConfiguredApiDependencies
+    from .dependencies import IdentityApiDependencies
 
 _KNOWN_ROLES = frozenset(
     {"boss", "manager", "sales", "sourcing", "product", "finance", "viewer"}
@@ -134,7 +134,7 @@ def _opportunity_actor(
 async def resolve_request_identity(
     request: Request,
     settings: ApiSettings,
-    dependencies: ConfiguredApiDependencies,
+    dependencies: IdentityApiDependencies,
 ) -> RequestIdentity:
     """在同一个 employee service request scope 内完成查询与身份推导。"""
     principal = getattr(request.state, "auth_principal", None)

@@ -15,6 +15,7 @@ from openai import (
 )
 from pydantic import ValidationError
 
+from connectors.deepseek.sdk_logging import private_sdk_logs
 from shared.schemas.model_invocation import ModelRequest, ModelResponse, ModelUsage
 
 FailureCode = Literal[
@@ -168,15 +169,16 @@ class DeepSeekClient:
         """单次调用，不自行重试；所有返回均经本地完成状态与 JSON 校验。"""
         sdk = await self._sdk()
         try:
-            response = await sdk.responses.create(
-                model=request.model,
-                instructions=request.system_prompt,
-                input=json.dumps(request.payload, ensure_ascii=False, allow_nan=False),
-                max_output_tokens=request.max_output_tokens,
-                store=False,
-                text={"format": {"type": "json_object"}},
-                reasoning={"effort": "none"},
-            )
+            with private_sdk_logs():
+                response = await sdk.responses.create(
+                    model=request.model,
+                    instructions=request.system_prompt,
+                    input=json.dumps(request.payload, ensure_ascii=False, allow_nan=False),
+                    max_output_tokens=request.max_output_tokens,
+                    store=False,
+                    text={"format": {"type": "json_object"}},
+                    reasoning={"effort": "none"},
+                )
             return decode_response(response.model_dump(), request.model)
         except DeepSeekFailure:
             raise

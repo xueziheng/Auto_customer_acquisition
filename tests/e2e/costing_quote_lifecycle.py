@@ -49,6 +49,7 @@ def active_run():
 
 def minimal_env():
     return {"PATH": os.environ["PATH"], "PYTHONPATH": str(ROOT), "LANG": "C.UTF-8",
+            "NO_PROXY": "127.0.0.1,localhost,::1",
             "PYTHON_DOTENV_DISABLED": "1"}
 
 
