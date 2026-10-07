@@ -50,8 +50,17 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from tests.migration_database_fixtures import (
+    current_migration_head,
+)
+from tests.migration_database_fixtures import (
+    migration_database_url as _migration_database_url,
+)
+
+migration_database_url = _migration_database_url
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ALEMBIC_HEAD = "0069"
+_ALEMBIC_HEAD = current_migration_head()
 
 # 六表（Schema 附录）：opportunities / score_snapshots / handoffs /
 # loss_records / provenance_records / outbox_events。
@@ -140,9 +149,10 @@ _NOW = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
 
 
 async def test_0052_sourcing_admission_base_version_roundtrip_and_guard(
-    db_url: str,
+    migration_database_url: str,
 ) -> None:
     """0052 保留历史 NULL，冻结非负基线，并拒绝丢失新证据的降级。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
     from infra.db.tables import DirectiveProposalRow
 
@@ -348,8 +358,9 @@ def _sync_table_names(conn: Connection) -> list[str]:
     return inspect(conn).get_table_names()
 
 
-async def test_costing_quote_evidence_0041_roundtrip_only_adds_four_tables(db_url: str) -> None:
+async def test_costing_quote_evidence_0041_roundtrip_only_adds_four_tables(migration_database_url: str) -> None:
     """0041 只管理四表，降级不改变已有成本与利润规则。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     expected = {"costing_policies", "costing_price_evidence", "costing_coverage", "costing_quote_fx"}
@@ -772,12 +783,13 @@ async def test_six_tables_exist_with_tenant_id(db_url: str) -> None:
         await engine.dispose()
 
 
-async def test_roundtrip_downgrade_base_then_upgrade_head(db_url: str) -> None:
+async def test_roundtrip_downgrade_base_then_upgrade_head(migration_database_url: str) -> None:
     """迁移 round-trip：head 六表在 → downgrade base 消失 → upgrade head 恢复。
 
     用独立引擎（不共享 integration_engine 的会话级连接池，避免缓存 schema）；
     finally 兜底恢复 head，绝不因异常留下降级后的库。
     """
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -1598,8 +1610,9 @@ async def test_sending_identity_schema_and_orm_contract_are_exact(db_url: str) -
         await engine.dispose()
 
 
-async def test_sending_identity_roundtrip_0008_0007_0008(db_url: str) -> None:
+async def test_sending_identity_roundtrip_0008_0007_0008(migration_database_url: str) -> None:
     """0008→0007 删除七表，再 upgrade head 精确恢复。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -1874,8 +1887,9 @@ async def test_sending_identity_database_guards(db_url: str) -> None:
         await engine.dispose()
 
 
-async def test_0009_outreach_schema_and_roundtrip(db_url: str) -> None:
+async def test_0009_outreach_schema_and_roundtrip(migration_database_url: str) -> None:
     """0009 八表必须可 0009→0008→0009 精确往返。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -2099,9 +2113,10 @@ async def test_0009_outreach_database_guards(db_url: str) -> None:
 
 
 async def test_0010_tool_call_schema_is_safe_tenant_scoped_and_roundtrips(
-    db_url: str,
+    migration_database_url: str,
 ) -> None:
     """0010 只新增安全账本两表，降级/升级后精确恢复。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     forbidden = {
@@ -2398,8 +2413,9 @@ async def test_0010_tool_call_database_guards_fail_closed(db_url: str) -> None:
         await engine.dispose()
 
 
-async def test_0011_outreach_send_claim_roundtrip_and_state_guard(db_url: str) -> None:
+async def test_0011_outreach_send_claim_roundtrip_and_state_guard(migration_database_url: str) -> None:
     """0011 的 claim 证据可往返，非法状态组合由真实 PostgreSQL 拒绝。"""
+    db_url = migration_database_url
     import importlib
 
     from infra.db.session import create_engine_from
@@ -2495,8 +2511,9 @@ async def test_0011_outreach_send_claim_roundtrip_and_state_guard(db_url: str) -
         await engine.dispose()
 
 
-async def test_0012_email_feedback_schema_and_roundtrip(db_url: str) -> None:
+async def test_0012_email_feedback_schema_and_roundtrip(migration_database_url: str) -> None:
     """0012 四表和 Attempt correlation 必须 0012→0011→0012 精确恢复。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -2693,8 +2710,9 @@ async def test_0012_email_feedback_schema_and_roundtrip(db_url: str) -> None:
         await engine.dispose()
 
 
-async def test_0013_receipt_fingerprint_schema_and_roundtrip(db_url: str) -> None:
+async def test_0013_receipt_fingerprint_schema_and_roundtrip(migration_database_url: str) -> None:
     """已应用 0012 的数据库必须经 0013 显式获得安全 payload fingerprint。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -2794,8 +2812,9 @@ async def _artifact_insert_rejected(
             await conn.execute(statement, values)
 
 
-async def test_artifact_store_0014_roundtrip_and_guards(db_url: str) -> None:
+async def test_artifact_store_0014_roundtrip_and_guards(migration_database_url: str) -> None:
     """0014 只增加两张 tenant metadata 表，并由真实 PostgreSQL 拒绝非法记录。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -2994,8 +3013,9 @@ async def test_artifact_store_0014_roundtrip_and_guards(db_url: str) -> None:
         await engine.dispose()
 
 
-async def test_0015_notification_jobs_roundtrip(db_url: str) -> None:
+async def test_0015_notification_jobs_roundtrip(migration_database_url: str) -> None:
     """0015 的表、列、索引、约束和 FK 可精确回退并恢复。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -3190,9 +3210,10 @@ async def test_0012_email_feedback_database_guards(db_url: str) -> None:
 
 
 async def test_0016_authentication_check_requests_roundtrip_and_guards(
-    db_url: str,
+    migration_database_url: str,
 ) -> None:
     """0016→0015→0016 保留唯一/FK/状态/不可变边界。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -3321,8 +3342,9 @@ async def test_0016_authentication_check_requests_roundtrip_and_guards(
         await engine.dispose()
 
 
-async def test_0017_email_complaints_schema_and_roundtrip(db_url: str) -> None:
+async def test_0017_email_complaints_schema_and_roundtrip(migration_database_url: str) -> None:
     """0017→0016→0017：complaint 进入 receipt kind/target 词表并可逆恢复。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -3581,9 +3603,10 @@ async def test_0017_email_complaints_schema_and_roundtrip(db_url: str) -> None:
 
 
 async def test_0018_conversation_classifications_roundtrip_and_guards(
-    db_url: str,
+    migration_database_url: str,
 ) -> None:
     """0018→0017→0018：分类留痕表可逆往返；表/列/PK/CHECK 与 ORM 一致。"""
+    db_url = migration_database_url
     from sqlalchemy import CheckConstraint, inspect
 
     from infra.db.session import create_engine_from
@@ -3802,10 +3825,11 @@ async def test_0020_classification_corrections_contract_matches_orm(
 
 
 async def test_0020_classification_corrections_downgrade_roundtrip(
-    db_url: str,
+    migration_database_url: str,
 ) -> None:
     """0020→0019→0020 roundtrip：downgrade 后新表消失、revision 回 0019，
     upgrade head 后表与契约恢复。"""
+    db_url = migration_database_url
     from sqlalchemy import text
 
     from infra.db.session import create_engine_from
@@ -3832,9 +3856,10 @@ async def test_0020_classification_corrections_downgrade_roundtrip(
 
 
 async def test_0019_conversations_messages_roundtrip_and_guards(
-    db_url: str,
+    migration_database_url: str,
 ) -> None:
     """0019→0018→0019：会话/消息表可逆往返；列/PK/FK/UNIQUE/CHECK 与 ORM 一致。"""
+    db_url = migration_database_url
     from sqlalchemy import inspect
 
     from infra.db.session import create_engine_from
@@ -4173,9 +4198,10 @@ async def test_0021_demand_signals_contract_matches_orm(db_url: str) -> None:
         assert _canonical(orm_checks[name]) == expected_tokens, name
 
 
-async def test_0021_demand_signals_downgrade_roundtrip(db_url: str) -> None:
+async def test_0021_demand_signals_downgrade_roundtrip(migration_database_url: str) -> None:
     """0021→0020→0021：downgrade 后新表消失、revision 回 0020，
     upgrade head 后表与契约恢复。"""
+    db_url = migration_database_url
     from sqlalchemy import text
 
     from infra.db.session import create_engine_from
@@ -4578,8 +4604,9 @@ async def test_0022_need_hypotheses_contract_matches_orm(db_url: str) -> None:
     assert db_values == orm_values == frozenset({"inferred", "contacting"})
 
 
-async def test_0022_downgrade_roundtrip(db_url: str) -> None:
+async def test_0022_downgrade_roundtrip(migration_database_url: str) -> None:
     """head→0021→head：验证 0022 三表可删除并恢复。"""
+    db_url = migration_database_url
     from sqlalchemy import text
 
     from infra.db.session import create_engine_from
@@ -4746,9 +4773,10 @@ async def test_0024_prospecting_contract_matches_orm(db_url: str) -> None:
 
 
 async def test_0024_verification_observation_downgrade_roundtrip(
-    db_url: str,
+    migration_database_url: str,
 ) -> None:
     """head→0023→head：观察列和 CHECK 可逆，且 head 最终恢复。"""
+    db_url = migration_database_url
     from sqlalchemy import inspect, text
 
     from infra.db.session import create_engine_from
@@ -4786,8 +4814,9 @@ async def test_0024_verification_observation_downgrade_roundtrip(
         await engine.dispose()
 
 
-async def test_0023_downgrade_roundtrip(db_url: str) -> None:
+async def test_0023_downgrade_roundtrip(migration_database_url: str) -> None:
     """head→0022→head：只移除并恢复 prospecting 五表。"""
+    db_url = migration_database_url
     from sqlalchemy import text
 
     from infra.db.session import create_engine_from
@@ -4930,8 +4959,9 @@ async def test_0031_company_playbook_contract_matches_orm(db_url: str) -> None:
     assert function_count == 1
 
 
-async def test_0031_company_playbook_downgrade_roundtrip(db_url: str) -> None:
+async def test_0031_company_playbook_downgrade_roundtrip(migration_database_url: str) -> None:
     """head→0030→head 只移除并恢复 Playbook 两表和迁移版本。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     tables = {"company_playbook_versions", "company_playbook_activations"}
@@ -5098,8 +5128,9 @@ async def test_0032_country_policy_contract_matches_orm(db_url: str) -> None:
     }
 
 
-async def test_0032_country_policy_downgrade_roundtrip(db_url: str) -> None:
+async def test_0032_country_policy_downgrade_roundtrip(migration_database_url: str) -> None:
     """head→0031→head 只移除并恢复国家政策三表。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     tables = {
@@ -5130,9 +5161,10 @@ async def test_0032_country_policy_downgrade_roundtrip(db_url: str) -> None:
 
 
 async def test_0034_snapshot_artifact_backfill_downgrade_upgrade_roundtrip(
-    db_url: str,
+    migration_database_url: str,
 ) -> None:
     """0034 降级后从不可变 raw artifact 元数据确定性恢复需求信号引用。"""
+    db_url = migration_database_url
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -5242,9 +5274,10 @@ async def test_0034_snapshot_artifact_backfill_downgrade_upgrade_roundtrip(
 
 
 async def test_0035_reply_field_evidence_roundtrip_matches_orm(
-    db_url: str,
+    migration_database_url: str,
 ) -> None:
     """0035→0034→0035：候选证据列可逆，JSON array 约束与 ORM 精确一致。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
     from infra.db.tables import ConversationClassificationRow
 
@@ -5303,9 +5336,10 @@ async def test_0035_reply_field_evidence_roundtrip_matches_orm(
 
 
 async def test_0036_reply_scope_and_owner_work_roundtrip_match_orm(
-    db_url: str,
+    migration_database_url: str,
 ) -> None:
     """0036→0035→0036：typed scope 与 metadata-only owner queue 可逆且 ORM 同构。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
     from infra.db.tables import (
         ConversationClassificationRow,
@@ -5440,9 +5474,10 @@ async def test_0036_reply_scope_and_owner_work_roundtrip_match_orm(
 
 
 async def test_0037_enrollment_source_hypothesis_roundtrip_matches_orm(
-    db_url: str,
+    migration_database_url: str,
 ) -> None:
     """0037→0036→0037：Enrollment 来源假设的 tenant-bound FK 可逆且 ORM 同构。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
     from infra.db.tables import OutreachEnrollmentRow
 
@@ -5512,9 +5547,10 @@ async def test_0037_enrollment_source_hypothesis_roundtrip_matches_orm(
 
 
 async def test_0038_prospect_account_field_provenance_roundtrip_matches_orm(
-    db_url: str,
+    migration_database_url: str,
 ) -> None:
     """0038→0037→0038：企业字段证据可逆，且数据库与 ORM 契约同构。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
     from infra.db.tables import ProspectAccountRow
     from shared.schemas.identifiers import new_id
@@ -5641,9 +5677,10 @@ async def test_0038_prospect_account_field_provenance_roundtrip_matches_orm(
 
 
 async def test_0034_snapshot_artifact_backfill_missing_match_fails_closed(
-    db_url: str,
+    migration_database_url: str,
 ) -> None:
     """0034 不为无法关联到 RawArtifact 的历史网页信号伪造证据引用。"""
+    db_url = migration_database_url
     from sqlalchemy import text
 
     from infra.db.session import create_engine_from
@@ -5690,9 +5727,10 @@ async def test_0034_snapshot_artifact_backfill_missing_match_fails_closed(
 
 
 async def test_0034_snapshot_artifact_backfill_ambiguous_match_fails_closed(
-    db_url: str,
+    migration_database_url: str,
 ) -> None:
     """0034 遇到同租户同 hash 多快照时拒绝任意挑选，证据不得降级。"""
+    db_url = migration_database_url
     from sqlalchemy import text
 
     from infra.db.session import create_engine_from

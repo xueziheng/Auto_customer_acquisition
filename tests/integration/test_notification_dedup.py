@@ -47,6 +47,11 @@ from notification_gateway.models import (
 from notification_gateway.router import NotificationRouter
 from shared.errors import PolicyViolation, TransientError
 from shared.schemas.identifiers import EmployeeId, TenantId
+from tests.migration_database_fixtures import (
+    migration_database_url as _migration_database_url,
+)
+
+migration_database_url = _migration_database_url
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -257,8 +262,9 @@ def test_dedup_store_protocol_contract() -> None:
 # --- 0002→0005→0006 upgrade / downgrade round-trip -------------------------------
 
 
-async def test_0006_upgrade_creates_notification_deliveries(db_url: str) -> None:
+async def test_0006_upgrade_creates_notification_deliveries(migration_database_url: str) -> None:
     """0006 upgrade：notification_deliveries 全列 + tenant_id + status/attempts 默认值。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -292,9 +298,10 @@ async def test_0006_upgrade_creates_notification_deliveries(db_url: str) -> None
         await engine.dispose()
 
 
-async def test_0006_unique_tenant_dedup_channel(db_url: str) -> None:
+async def test_0006_unique_tenant_dedup_channel(migration_database_url: str) -> None:
     """UNIQUE(tenant_id, dedup_key, channel_name)：同租户同 dedup 同渠道拒重；
     不同渠道 / 不同租户允许（部分渠道失败可 durable resume）。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -333,8 +340,9 @@ async def test_0006_unique_tenant_dedup_channel(db_url: str) -> None:
         await engine.dispose()
 
 
-async def test_0006_downgrade_removes_table_roundtrip(db_url: str) -> None:
+async def test_0006_downgrade_removes_table_roundtrip(migration_database_url: str) -> None:
     """0006 downgrade round-trip：回到 0005 表消失，再 upgrade head 恢复。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)

@@ -63,6 +63,11 @@ from shared.schemas.identifiers import (
     RunId,
     TenantId,
 )
+from tests.migration_database_fixtures import (
+    migration_database_url as _migration_database_url,
+)
+
+migration_database_url = _migration_database_url
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -239,8 +244,9 @@ async def _assert_outbox_deliveries_exists(engine: AsyncEngine) -> None:
 # --- 0002→0005 upgrade：schema / 约束 / guard ---------------------------------
 
 
-async def test_0005_upgrade_adds_outbox_delivery_columns(db_url: str) -> None:
+async def test_0005_upgrade_adds_outbox_delivery_columns(migration_database_url: str) -> None:
     """0005 upgrade：outbox_events 加列 next_attempt_at/last_error（0002 基线无此列）。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -259,8 +265,9 @@ async def test_0005_upgrade_adds_outbox_delivery_columns(db_url: str) -> None:
         await engine.dispose()
 
 
-async def test_0005_upgrade_creates_outbox_deliveries_table(db_url: str) -> None:
+async def test_0005_upgrade_creates_outbox_deliveries_table(migration_database_url: str) -> None:
     """0005 upgrade：outbox_deliveries 全列 + 默认值 + handler_name NOT NULL。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -304,8 +311,9 @@ async def test_0005_upgrade_creates_outbox_deliveries_table(db_url: str) -> None
         await engine.dispose()
 
 
-async def test_0005_upgrade_status_check_allows_dead(db_url: str) -> None:
+async def test_0005_upgrade_status_check_allows_dead(migration_database_url: str) -> None:
     """0005 upgrade：status CHECK 重建为含 dead（0002 基线拒绝 dead）。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -336,9 +344,10 @@ async def test_0005_upgrade_status_check_allows_dead(db_url: str) -> None:
         await engine.dispose()
 
 
-async def test_0005_upgrade_guard_allows_delivery_fields(db_url: str) -> None:
+async def test_0005_upgrade_guard_allows_delivery_fields(migration_database_url: str) -> None:
     """0005 upgrade：guard 允许 status/delivered_at/attempt/next_attempt_at/last_error，
     仍拒绝 event_type/event_payload（0002 基线拒绝 attempt 更新）。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -403,8 +412,9 @@ async def test_0005_upgrade_guard_allows_delivery_fields(db_url: str) -> None:
         await engine.dispose()
 
 
-async def test_0005_upgrade_adds_unique_tenant_event(db_url: str) -> None:
+async def test_0005_upgrade_adds_unique_tenant_event(migration_database_url: str) -> None:
     """0005 upgrade：outbox_events 加 UNIQUE(tenant_id, event_id)（复合 FK 前置契约）。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -418,12 +428,13 @@ async def test_0005_upgrade_adds_unique_tenant_event(db_url: str) -> None:
         await engine.dispose()
 
 
-async def test_outbox_deliveries_unique_tenant_event_handler(db_url: str) -> None:
+async def test_outbox_deliveries_unique_tenant_event_handler(migration_database_url: str) -> None:
     """outbox_deliveries UNIQUE(tenant_id, event_id, handler_name)：同租户同事件同 handler 拒重。
 
     outbox_events 的 ``event_id`` 是全局主键（0002），同一事件跨租户不共存；
     跨租户绑定由 ``test_outbox_deliveries_composite_fk_tenant_isolation`` 单独覆盖。
     """
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -463,8 +474,9 @@ async def test_outbox_deliveries_unique_tenant_event_handler(db_url: str) -> Non
         await engine.dispose()
 
 
-async def test_outbox_deliveries_composite_fk_tenant_isolation(db_url: str) -> None:
+async def test_outbox_deliveries_composite_fk_tenant_isolation(migration_database_url: str) -> None:
     """outbox_deliveries 复合 FK (tenant_id, event_id)→outbox_events：跨租户/悬空引用被拒。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -500,8 +512,9 @@ async def test_outbox_deliveries_composite_fk_tenant_isolation(db_url: str) -> N
 # --- 0005 downgrade：恢复 0002 精确语义 ---------------------------------------
 
 
-async def test_0005_downgrade_restores_0002_semantics(db_url: str) -> None:
+async def test_0005_downgrade_restores_0002_semantics(migration_database_url: str) -> None:
     """0005 downgrade：加列/新表消失，status CHECK 与 guard 回到 0002 精确语义。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)
@@ -543,7 +556,7 @@ async def test_0005_downgrade_restores_0002_semantics(db_url: str) -> None:
         await engine.dispose()
 
 
-async def test_0005_downgrade_maps_dead_rows_to_pending(db_url: str) -> None:
+async def test_0005_downgrade_maps_dead_rows_to_pending(migration_database_url: str) -> None:
     """0005 downgrade 有存量 dead 行时：先确定性映射为 pending，再恢复 0002 精确约束。
 
     ``dead`` 是 0005 新增状态，0002 CHECK 只允许 ``pending/delivered``——直接重建
@@ -551,6 +564,7 @@ async def test_0005_downgrade_maps_dead_rows_to_pending(db_url: str) -> None:
     dead→pending（dead 事件从未投递成功，回退为待投递是唯一语义无损选择），
     再恢复 0002 CHECK/guard。
     """
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)

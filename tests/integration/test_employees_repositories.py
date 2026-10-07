@@ -46,6 +46,11 @@ from shared.schemas.identifiers import (
     TenantId,
     UserId,
 )
+from tests.migration_database_fixtures import (
+    migration_database_url as _migration_database_url,
+)
+
+migration_database_url = _migration_database_url
 
 Employee = models.Employee
 Role = models.Role
@@ -294,8 +299,9 @@ async def test_four_table_column_sets_match_appendix(db_url: str) -> None:
         await engine.dispose()
 
 
-async def test_roundtrip_downgrade_0002_then_upgrade_head(db_url: str) -> None:
+async def test_roundtrip_downgrade_0002_then_upgrade_head(migration_database_url: str) -> None:
     """0002→0003→0002→0003 round-trip；finally 恢复 head，不依赖测试顺序。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)

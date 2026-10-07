@@ -28,6 +28,11 @@ from domains.opportunities.permissions import (
 from shared.errors import TransientError
 from shared.events.catalog import HandoffAccepted, HandoffRequested
 from shared.schemas.identifiers import EmployeeId, HandoffId, OpportunityId, TenantId
+from tests.migration_database_fixtures import (
+    migration_database_url as _migration_database_url,
+)
+
+migration_database_url = _migration_database_url
 
 _ROOT = Path(__file__).resolve().parents[2]
 _BASE = datetime(2026, 8, 9, 1, 0, 0, tzinfo=UTC)
@@ -63,8 +68,9 @@ async def _unique_names(engine: AsyncEngine, table: str) -> set[str]:
         return await conn.run_sync(_sync_unique_names, table)
 
 
-async def test_0007_roundtrip_exact_schema_and_append_only(db_url: str) -> None:
+async def test_0007_roundtrip_exact_schema_and_append_only(migration_database_url: str) -> None:
     """0007→0006→head 精确 round-trip；新审计表 UPDATE/DELETE 被 guard 拒绝。"""
+    db_url = migration_database_url
     from infra.db.session import create_engine_from
 
     engine = create_engine_from(db_url)

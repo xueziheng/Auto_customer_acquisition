@@ -11,6 +11,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from infra.db.tables import EmployeeRow
 from shared.schemas.identifiers import EmployeeId, TenantId, new_id
+from tests.migration_database_fixtures import (
+    migration_database_url as _migration_database_url,
+)
+
+migration_database_url = _migration_database_url
 
 
 async def setup_auth(engine):
@@ -359,7 +364,8 @@ async def test_concurrent_sessions_never_exceed_cap(integration_engine):
     assert valid == 5
 
 
-async def test_authentication_migration_roundtrip(db_url):
+async def test_authentication_migration_roundtrip(migration_database_url):
+    db_url = migration_database_url
     import os
     import subprocess
     import sys
