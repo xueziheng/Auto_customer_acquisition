@@ -143,5 +143,5 @@ dd { margin: 0; font-weight: 600; }
 .indicative-prices { padding-left: 20px; }
 .empty { padding: var(--space5); color: var(--text-secondary); text-align: center; }
 .source-filter { display: flex; align-items: center; gap: var(--space2); color: var(--text-secondary); font-size: 13px; }
-.catalog-regions { display: grid; gap: var(--space5); margin-top: var(--space6); }
+.catalog-regions { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space5); margin-top: var(--space6); }
 </style>

@@ -318,14 +318,15 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.catalog-region { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space5); display: grid; gap: var(--space4); }
+.catalog-region { min-width: 0; grid-template-columns: minmax(0, 1fr); overflow-wrap: anywhere; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space5); display: grid; gap: var(--space4); }
 .region-head, .evaluation-card > header, .proposal-card > header, .rule-list li > div { display: flex; align-items: center; justify-content: space-between; gap: var(--space3); }
 .region-head h2 { font-size: 20px; }
-.evaluation-block, .proposal-block { display: grid; gap: var(--space3); }
-.evaluation-card, .proposal-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space3); display: grid; gap: var(--space3); }
-.evaluation-card header div { display: grid; }
+.evaluation-block, .proposal-block { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: var(--space3); }
+.evaluation-card, .proposal-card { min-width: 0; grid-template-columns: minmax(0, 1fr); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space3); display: grid; gap: var(--space3); }
+.evaluation-card header div { display: grid; min-width: 0; }
 .evaluation-card header div span, .rule-list small { color: var(--text-secondary); }
-.rule-list { list-style-position: inside; display: grid; gap: var(--space2); }
+.rule-list { list-style-position: inside; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space2); }
+.rule-list li > div { flex-wrap: wrap; }
 .rule-list li { background: var(--canvas); padding: var(--space2); }
 .rule-list p { margin-top: var(--space1); }
 .status { border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
@@ -334,7 +335,7 @@ onMounted(() => {
 .status.unknown { color: var(--warning); }
 .proposal-filters { display: flex; flex-wrap: wrap; gap: var(--space2); }
 .proposal-filters .selected { color: var(--action); border-color: var(--action); }
-.proposal-card dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--space2); }
+.proposal-card dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: var(--space2); }
 .proposal-card dt { color: var(--text-secondary); font-size: 12px; }
 .proposal-card dd { margin: 0; overflow-wrap: anywhere; }
 .region-empty { color: var(--text-secondary); padding: var(--space3); text-align: center; }
