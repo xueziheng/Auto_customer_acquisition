@@ -25,7 +25,7 @@ import docker
 import pytest
 import pytest_asyncio
 from botocore.config import Config
-from botocore.exceptions import BotoCoreError
+from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
@@ -98,6 +98,7 @@ from infra.db.organization_uow import SqlAlchemyOrganizationUnitOfWork
 from infra.db.session import create_engine_from
 from infra.db.tables import EmployeeRow, TerritoryAssignmentRow
 from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
+from infra.pilot.resources import PILOT_MINIO_IMAGE
 from infra.secrets import EnvironmentSecretResolver
 from shared.events.catalog import DomainEvent
 from shared.public_page_url import canonical_public_page_url
@@ -112,7 +113,6 @@ from shared.schemas.provenance import SourceType
 from tests.runtime_database_fixtures import runtime_database_scope
 
 _CONTAINER_IMAGE = "pgvector/pgvector:pg16"
-_MINIO_IMAGE = "minio/minio:RELEASE.2025-04-22T22-12-26Z"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SEED_TIME = datetime(2026, 8, 10, tzinfo=UTC)
 _CONTROLLED_PAGE_URL = "https://supplier.example.test/catalog/marine-hinges"
@@ -788,7 +788,8 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
     container = PostgresContainer(_CONTAINER_IMAGE)
     container_started = False
     minio_container: DockerContainer | None = None
-    minio_started = False
+    minio_resources = AsyncExitStack()
+    primary: BaseException | None = None
     engine: AsyncEngine | None = None
     runtime_resources = AsyncExitStack()
     api_process: ManagedProcess | None = None
@@ -835,14 +836,23 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
         secret = f"secret{secrets.token_urlsafe(24)}"
         bucket = f"artifacts-{secrets.token_hex(8)}"
         minio_container = (
-            DockerContainer(_MINIO_IMAGE)
+            DockerContainer(PILOT_MINIO_IMAGE)
             .with_env("MINIO_ROOT_USER", access)
             .with_env("MINIO_ROOT_PASSWORD", secret)
-            .with_command("server /data --address :9000")
+            .with_command(
+                "server /bitnami/minio/data --address :9000 --console-address 127.0.0.1:9001"
+            )
             .with_exposed_ports(9000)
         )
-        await asyncio.to_thread(minio_container.start)
-        minio_started = True
+        # 先注册清理，start 部分成功后抛错也只移除本实例已取得的容器 ID。
+        minio_resources.push_async_callback(asyncio.to_thread, minio_container.stop)
+        minio_start = asyncio.create_task(asyncio.to_thread(minio_container.start))
+        try:
+            await asyncio.shield(minio_start)
+        except asyncio.CancelledError:
+            # to_thread 不会随 await 取消；先等创建结束再进入精确清理。
+            await asyncio.gather(minio_start, return_exceptions=True)
+            raise
         minio_endpoint = f"http://127.0.0.1:{minio_container.get_exposed_port(9000)}"
         minio_client = boto3.client(
             "s3",
@@ -850,14 +860,26 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
             aws_access_key_id=access,
             aws_secret_access_key=secret,
             region_name="us-east-1",
-            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+            config=Config(
+                signature_version="s3v4", s3={"addressing_style": "path"},
+                proxies={}, connect_timeout=2, read_timeout=2,
+                retries={"max_attempts": 0},
+            ),
         )
+        minio_resources.push_async_callback(asyncio.to_thread, minio_client.close)
         deadline = time.monotonic() + 30
         while True:
             try:
-                await asyncio.to_thread(minio_client.create_bucket, Bucket=bucket)
+                bucket_creation = asyncio.create_task(
+                    asyncio.to_thread(minio_client.create_bucket, Bucket=bucket)
+                )
+                await asyncio.shield(bucket_creation)
                 break
-            except BotoCoreError:
+            except asyncio.CancelledError:
+                # SDK 调用退出后才能关闭同一客户端或移除其容器。
+                await asyncio.gather(bucket_creation, return_exceptions=True)
+                raise
+            except (BotoCoreError, ClientError):
                 if time.monotonic() >= deadline:
                     raise AssertionError("Task 15 MinIO 未在 30 秒内就绪") from None
                 await asyncio.sleep(0.2)
@@ -940,9 +962,11 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
         scheduler_env = _scheduler_runtime_env(
             runtime_database_url, tenant_id, _free_port()
         )
+        object_transport = S3ObjectBlobTransport(object_settings, object_secrets)
+        runtime_resources.push_async_callback(object_transport.aclose)
         raw_artifacts = RawArtifactStoreImpl(
             lambda bound_tenant: SqlAlchemyArtifactUnitOfWork(runtime_factory, bound_tenant),
-            S3ObjectBlobTransport(object_settings, object_secrets),
+            object_transport,
             object_settings.raw_max_bytes,
             lambda: _SEED_TIME,
             new_id,
@@ -1071,6 +1095,9 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
             scheduler_audience=scheduler_audience,
         )
         yield stack
+    except BaseException as error:
+        primary = error
+        raise
     finally:
         try:
             if scheduler_task is not None and scheduler_stop is not None:
@@ -1107,13 +1134,12 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
                                         temporary.cleanup()
                                     finally:
                                         try:
-                                            if (
-                                                minio_started
-                                                and minio_container is not None
-                                            ):
-                                                await asyncio.to_thread(
-                                                    minio_container.stop
-                                                )
+                                            await minio_resources.aclose()
+                                        except Exception:  # noqa: BLE001 - 清理错误只保留固定类别
+                                            summary = "E2E MinIO 客户端或测试容器清理失败"
+                                            if primary is None:
+                                                raise RuntimeError(summary) from None
+                                            primary.add_note(summary)
                                         finally:
                                             if container_started:
                                                 await asyncio.to_thread(container.stop)
