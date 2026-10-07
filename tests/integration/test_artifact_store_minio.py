@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from testcontainers.core.container import DockerContainer
 
 from artifact_store.errors import (
+    ArtifactCommitUnknownError,
     ArtifactConflictError,
     ArtifactIntegrityError,
     ArtifactNotFoundError,
@@ -27,7 +28,6 @@ from artifact_store.errors import (
 from artifact_store.store import GeneratedArtifactKind, RawArtifactKind
 from connectors.object_store.config import S3ObjectStoreSettings
 from infra.db.tables import GeneratedArtifactRow, RawArtifactRow
-from shared.errors import TransientError
 from shared.schemas.identifiers import IdempotencyKey, RunId, TenantId, new_id
 
 _MINIO_IMAGE = "minio/minio:RELEASE.2025-04-22T22-12-26Z"
@@ -376,7 +376,7 @@ async def test_unavailable_minio_does_not_create_metadata(
         lambda: datetime.now(UTC),
         new_id,
     )
-    with pytest.raises(TransientError, match="^Artifact 对象存储暂不可用$"):
+    with pytest.raises(ArtifactCommitUnknownError):
         await store.put(tenant, RawArtifactKind.PDF, b"pdf", "application/pdf")
     async with AsyncSession(artifact_engine) as session:
         assert await session.scalar(
@@ -386,7 +386,7 @@ async def test_unavailable_minio_does_not_create_metadata(
         ) == 0
 
 
-async def test_commit_failure_removes_real_object_and_body_marker_is_not_in_sql(
+async def test_commit_failure_keeps_real_object_and_body_marker_is_not_in_sql(
     artifact_engine: AsyncEngine, minio_runtime: _MinioRuntime
 ) -> None:
     from artifact_store.service_impl import RawArtifactStoreImpl
@@ -402,16 +402,19 @@ async def test_commit_failure_removes_real_object_and_body_marker_is_not_in_sql(
     )
     tenant = TenantId(new_id("tn"))
     marker = b"unique-customer-body-marker"
+    transport = S3ObjectBlobTransport(minio_runtime.settings, minio_runtime.secrets)
     store = RawArtifactStoreImpl(
         lambda requested: SqlAlchemyArtifactUnitOfWork(factory, requested),
-        S3ObjectBlobTransport(minio_runtime.settings, minio_runtime.secrets),
+        transport,
         1024,
         lambda: datetime.now(UTC),
         new_id,
     )
-    with pytest.raises(RuntimeError, match="^commit-marker$"):
+    with pytest.raises(ArtifactCommitUnknownError):
         await store.put(tenant, RawArtifactKind.PDF, marker, "application/pdf")
-    assert _object_keys(minio_runtime, f"raw/{tenant}/") == []
+    keys = _object_keys(minio_runtime, f"raw/{tenant}/")
+    assert len(keys) == 1
+    assert await transport.get(keys[0]) == marker
     async with artifact_engine.connect() as conn:
         textual = await conn.scalar(
             text(

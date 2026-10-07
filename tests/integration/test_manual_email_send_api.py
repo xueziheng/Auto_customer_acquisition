@@ -750,11 +750,8 @@ async def test_manual_send_is_atomic_idempotent_and_never_persists_raw_material(
         }
         assert all(response.status_code in {200, 409} for response in responses)
         assert any(response.status_code == 200 for response in responses)
-        assert raced.status_code == 409
-        assert raced.json() == {
-            "code": "reconciliation_required",
-            "message": "发送结果需要人工对账",
-        }
+        # 发送已经在途时新增抑制不能撤回已发生的发送；成功事实必须落账。
+        assert raced.status_code == 200
         assert repeated_race.status_code == 403
         assert repeated_race.json() == {
             "code": "suppressed",
@@ -827,11 +824,14 @@ async def test_manual_send_is_atomic_idempotent_and_never_persists_raw_material(
         )
         assert race_attempt_row is not None
         assert (race_attempt_row.state, race_attempt_row.provider_ref) == (
-            "sending",
-            None,
+            "sent",
+            "gmail_ref_manual_1",
         )
         assert race_enrollment_row is not None
         assert race_enrollment_row.state == "stopped_suppressed"
+        assert race_enrollment_row.stop_reason == "suppression"
+        assert race_enrollment_row.stopped_at == _NOW
+        assert race_enrollment_row.next_send_at is None
         assert commit_failure_attempt_row is not None
         assert (
             commit_failure_attempt_row.state,
@@ -839,7 +839,7 @@ async def test_manual_send_is_atomic_idempotent_and_never_persists_raw_material(
         ) == ("sending", None)
         assert len(reservations) == 3
         assert tenant_b_calls == []
-        assert Counter(row.status for row in calls)["succeeded"] == 1
+        assert Counter(row.status for row in calls)["succeeded"] == 2
         assert events
         persisted = repr([row.__dict__ for row in [*calls, *events, *reservations]])
         for raw in (

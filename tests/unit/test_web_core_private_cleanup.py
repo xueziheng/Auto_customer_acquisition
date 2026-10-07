@@ -25,7 +25,10 @@ def test_reply_model_files_removed_only_after_owner_stops(tmp_path, stop_fails):
     stopped = []
 
     class Process:
-        def stop(self):
+        def request_stop(self):
+            assert all((supervisor.directory / name).exists() for name in names)
+
+        def finish_stop(self):
             assert all((supervisor.directory / name).exists() for name in names)
             stopped.append(True)
             if stop_fails:

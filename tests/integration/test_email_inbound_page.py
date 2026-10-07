@@ -7,7 +7,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
+from pydantic import SecretStr
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from apps.api.composition.runtime import build_phase1_dependencies
@@ -27,60 +29,70 @@ from shared.schemas.identifiers import TenantId, new_id
 from tests.integration.test_email_inbound_gateway import (
     owned_infrastructure,  # noqa: F401
 )
+from tests.runtime_database_fixtures import runtime_database_scope
 
 NOW = datetime(2026, 9, 5, tzinfo=UTC)
 
 
 @pytest_asyncio.fixture
-async def page_runtime(owned_infrastructure, tmp_path):  # noqa: F811 - 复用owned fixture
+async def page_runtime(owned_infrastructure, tmp_path, db_url):  # noqa: F811 - 复用owned fixture
     config = owned_infrastructure.config
     tenant = TenantId(new_id("tn"))
-    engine = create_engine_from(config.database_url.get_secret_value())
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    provider = ControlledGmailTransport(tmp_path / "mail.sqlite", tenant_id=tenant)
-    env = config.runtime_environment()
-    env["TRADEOS_TENANT_ID"] = tenant
-    deps = build_phase1_dependencies(
-        Phase1RuntimeSettings.from_environ(env),
-        factory,
-        now=lambda: NOW,
-        secret_resolver=config,
-        gmail_transport=provider,
-    )
-    try:
-        boss = Actor(
-            new_id("emp"), SendingIdentityScope(level=ScopeLevel.TENANT), "boss"
+    async with runtime_database_scope(db_url) as provision:
+        runtime_url = await provision(str(tenant))
+        # 对象存储沿用本 owner；业务配置、连接池与后续独立 composition 同属本例企业。
+        config = config.model_copy(update={
+            "tenant_id": tenant,
+            "database_url": SecretStr(runtime_url),
+            "database_port": make_url(runtime_url).port or 5432,
+        })
+        engine = create_engine_from(config.database_url.get_secret_value())
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        provider = ControlledGmailTransport(tmp_path / "mail.sqlite", tenant_id=tenant)
+        env = config.runtime_environment()
+        env["TRADEOS_TENANT_ID"] = tenant
+        deps = build_phase1_dependencies(
+            Phase1RuntimeSettings.from_environ(env),
+            factory,
+            now=lambda: NOW,
+            secret_resolver=config,
+            gmail_transport=provider,
         )
-        sid = await deps.sending_identities.register(
-            tenant,
-            IdentityRegisterRequest(
-                "sender@tradeos-controlled.test",
-                "tradeos-controlled.test",
-                DomainRole.COLD_OUTREACH,
-            ),
-            actor=boss,
-        )
-        route = InboundRoute(
-            tenant_id=tenant,
-            mailbox_alias="primary",
-            configured_identity_id=sid,
-            route_id="controlled",
-            config_version="v1",
-        )
-        yield {
-            "factory": factory,
-            "route": route,
-            "deps": deps,
-            "provider": provider,
-            "config": config,
-            "boss": boss,
-        }
-    finally:
-        if deps.model_lifecycle:
-            await deps.model_lifecycle.aclose()
-        await engine.dispose()
-        for suffix in ("", "-journal", "-wal", "-shm"):
-            (tmp_path / ("mail.sqlite" + suffix)).unlink(missing_ok=True)
+        try:
+            boss = Actor(
+                new_id("emp"), SendingIdentityScope(level=ScopeLevel.TENANT), "boss"
+            )
+            sid = await deps.sending_identities.register(
+                tenant,
+                IdentityRegisterRequest(
+                    "sender@tradeos-controlled.test",
+                    "tradeos-controlled.test",
+                    DomainRole.COLD_OUTREACH,
+                ),
+                actor=boss,
+            )
+            route = InboundRoute(
+                tenant_id=tenant,
+                mailbox_alias="primary",
+                configured_identity_id=sid,
+                route_id="controlled",
+                config_version="v1",
+            )
+            yield {
+                "factory": factory,
+                "db_url": runtime_url,
+                "route": route,
+                "deps": deps,
+                "provider": provider,
+                "config": config,
+                "boss": boss,
+            }
+        finally:
+            if deps.model_lifecycle:
+                await deps.model_lifecycle.aclose()
+            await engine.dispose()
+            for suffix in ("", "-journal", "-wal", "-shm"):
+                (tmp_path / ("mail.sqlite" + suffix)).unlink(missing_ok=True)
 
 
 async def test_initial_cursor_is_durable_and_binding_cannot_change_identity(

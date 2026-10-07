@@ -44,6 +44,10 @@ from shared.schemas.identifiers import (
     TenantId,
     new_id,
 )
+from tests.runtime_database_fixtures import RuntimeDatabaseFactory
+from tests.runtime_database_fixtures import (
+    runtime_database_url as runtime_database_url,  # noqa: PLC0414 - 真实受限运行角色夹具
+)
 
 NOW = datetime(2026, 9, 8, tzinfo=UTC)
 INTERVAL = timedelta(seconds=7200)
@@ -220,7 +224,7 @@ async def test_delivery_holds_acceptance_until_real_in_app_commit(scenario):
 
 
 async def test_real_workflow_jobs_worker_two_hour_boundary_restart_and_delayed_acceptance(
-    scenario, db_url
+    scenario, runtime_database_url: RuntimeDatabaseFactory,
 ):
     from pydantic import SecretStr
 
@@ -294,7 +298,7 @@ async def test_real_workflow_jobs_worker_two_hour_boundary_restart_and_delayed_a
     with reserve_port(0) as listener:
         port = listener.getsockname()[1]
     settings = NotificationWorkerConfig(
-        SecretStr(str(db_url)), tenant, 1, 20, port, "owner-reminder-test"
+        SecretStr(await runtime_database_url(str(tenant))), tenant, 1, 20, port, "owner-reminder-test"
     )
     async with notification_worker_runtime(
         settings, mode=NotificationRuntimeMode.LOCAL_IN_APP, now=clock.now
@@ -444,7 +448,9 @@ def _scheduler_factory(profile, settings, env, now):
 
 
 @pytest.mark.parametrize("accept_at", ["before_scan", "queued_initial", "repeat"])
-async def test_pilot_api_scheduler_outbox_and_real_notification_roots(scenario, db_url, accept_at):
+async def test_pilot_api_scheduler_outbox_and_real_notification_roots(
+    scenario, runtime_database_url: RuntimeDatabaseFactory, accept_at,
+):
     from apps.api.pilot import UnconfiguredModelClient
     from apps.api.runtime import create_runtime_app_from_settings
     from apps.notification_worker.config import NotificationWorkerConfig
@@ -459,7 +465,7 @@ async def test_pilot_api_scheduler_outbox_and_real_notification_roots(scenario, 
     from shared.events.catalog import HandoffRequested
     from tests.integration.test_human_handoff_workflow import _Clock
     factory, tenant, owner, opp, hand, service, actor, _system = scenario
-    profile, settings, env = _pilot_settings(tenant, db_url)
+    profile, settings, env = _pilot_settings(tenant, await runtime_database_url(str(tenant)))
     app = create_runtime_app_from_settings(settings, secret_resolver=profile, model_client=UnconfiguredModelClient(), object_store_settings=S3ObjectStoreSettings.from_pilot_environ(env))
     clock = _Clock(NOW)
     async with app.router.lifespan_context(app):
@@ -500,7 +506,9 @@ async def test_pilot_api_scheduler_outbox_and_real_notification_roots(scenario, 
 
 
 @pytest.mark.parametrize("existing,configured", [(1,7200), (7201,None), (3601,7200)])
-async def test_real_startups_reject_incompatible_active_run_without_side_effects(scenario, db_url, existing, configured):
+async def test_real_startups_reject_incompatible_active_run_without_side_effects(
+    scenario, runtime_database_url: RuntimeDatabaseFactory, existing, configured,
+):
     from dataclasses import replace
 
     from apps.api.pilot import UnconfiguredModelClient
@@ -515,7 +523,7 @@ async def test_real_startups_reject_incompatible_active_run_without_side_effects
     engine = PostgresWorkflowEngine(factory, {"wait":FixedWaitStep("test")}, now=lambda:NOW)
     engine.register(WorkflowDefinition("human_handoff", existing, (StepDefinition("wait","wait"),)))
     await engine.start(tenant,"human_handoff",hand,{},new_id("key"))
-    profile, settings, env = _pilot_settings(tenant, db_url)
+    profile, settings, env = _pilot_settings(tenant, await runtime_database_url(str(tenant)))
     settings = replace(settings, owner_reminder_interval=None if configured is None else timedelta(seconds=configured))
     if configured is None:
         env.pop("TRADEOS_HANDOFF_OWNER_REMINDER_INTERVAL_SECONDS")
@@ -674,14 +682,16 @@ async def test_transfer_history_and_owner_guard_commit_without_deadlock(
     assert await store.list_for_recipient(tenant, owner, limit=20, before=None) == ()
 
 
-async def test_matching_active_run_allows_real_api_and_scheduler_startups(scenario, db_url):
+async def test_matching_active_run_allows_real_api_and_scheduler_startups(
+    scenario, runtime_database_url: RuntimeDatabaseFactory,
+):
     from apps.api.pilot import UnconfiguredModelClient
     from apps.api.runtime import create_runtime_app_from_settings
     from connectors.object_store.config import S3ObjectStoreSettings
     from infra.db.tables import WorkflowRunRow
 
     factory, tenant, owner, opp, hand, _service, _actor, _system = scenario
-    profile, settings, env = _pilot_settings(tenant, db_url)
+    profile, settings, env = _pilot_settings(tenant, await runtime_database_url(str(tenant)))
     app = create_runtime_app_from_settings(settings, secret_resolver=profile,
         model_client=UnconfiguredModelClient(),
         object_store_settings=S3ObjectStoreSettings.from_pilot_environ(env))

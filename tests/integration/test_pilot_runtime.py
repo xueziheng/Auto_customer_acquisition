@@ -180,7 +180,7 @@ def test_actual_three_process_start_health_stop_and_schema_refusal(owned_profile
 
         from infra.db.session import create_engine_from
 
-        engine = create_engine_from(profile.config.database_url.get_secret_value())
+        engine = create_engine_from(profile.config.migration_database_url.get_secret_value())
         try:
             async with engine.begin() as connection:
                 await connection.execute(

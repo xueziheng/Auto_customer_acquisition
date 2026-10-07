@@ -32,7 +32,7 @@ async def test_controlled_job_is_actually_delivered_with_priority_and_dedup(
     from apps.notification_worker.config import NotificationWorkerConfig
 
     config = owned_infrastructure.config
-    tenant = TenantId(new_id("tn"))
+    tenant = TenantId(config.tenant_id)
     listener = reserve(0)
     port = listener.getsockname()[1]
     listener.close()
@@ -131,7 +131,7 @@ async def test_cancel_after_socket_bind_before_runtime_ready_reclaims_listener(
 
     monkeypatch.setattr(health.NotificationHealthServer, "wait_started", hold_ready)
     settings = NotificationWorkerConfig(
-        config.database_url, TenantId(new_id("tn")), 1, 10, port, "cancel-startup"
+        config.database_url, TenantId(config.tenant_id), 1, 10, port, "cancel-startup"
     )
     before = asyncio.all_tasks()
 

@@ -24,6 +24,10 @@ from connectors.object_store.config import S3ObjectStoreSettings
 from infra.secrets import EnvironmentSecretResolver
 from shared.schemas.identifiers import TenantId
 from tests.integration.test_api_runtime import _runtime_env
+from tests.runtime_database_fixtures import RuntimeDatabaseFactory
+from tests.runtime_database_fixtures import (
+    runtime_database_url as runtime_database_url,  # noqa: PLC0414 -- 真实受限运行角色夹具
+)
 
 
 def _health() -> SchedulerHealthState:
@@ -205,7 +209,7 @@ def _api(db_url: str, monkeypatch: pytest.MonkeyPatch):
     def forbidden(*args: object, **kwargs: object) -> None:
         pytest.fail("显式模型注入不得构造真实 Provider")
 
-    monkeypatch.setattr("apps.api.composition.runtime.OpenAIJsonModelClient", forbidden)
+    monkeypatch.setattr("connectors.openai.OpenAIJsonModelClient.__init__", forbidden)
     app = builder(
         Phase1RuntimeSettings.from_environ(env),
         secret_resolver=EnvironmentSecretResolver(env),
@@ -216,8 +220,9 @@ def _api(db_url: str, monkeypatch: pytest.MonkeyPatch):
 
 
 async def test_typed_factory_keeps_injected_model_borrowed(
-    db_url: str, monkeypatch: pytest.MonkeyPatch
+    runtime_database_url: RuntimeDatabaseFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    db_url = await runtime_database_url("tenant-runtime-integration")
     _, app, client = _api(db_url, monkeypatch)
     async with app.router.lifespan_context(app):
         assert await app.state.readiness_probe.is_ready()
@@ -236,10 +241,11 @@ async def test_typed_factory_keeps_injected_model_borrowed(
     "primary", [None, RuntimeError("primary-marker"), asyncio.CancelledError()]
 )
 async def test_api_cleanup_failure_attempts_every_resource_and_preserves_primary(
-    db_url: str,
+    runtime_database_url: RuntimeDatabaseFactory,
     monkeypatch: pytest.MonkeyPatch,
     primary: BaseException | None,
 ) -> None:
+    db_url = await runtime_database_url("tenant-runtime-integration")
     module, app, _ = _api(db_url, monkeypatch)
     dependencies = app.state.dependencies
     order: list[str] = []
@@ -398,20 +404,17 @@ async def test_activation_failure_is_primary_even_when_observer_cleanup_fails(
     await _unlocked(integration_engine)
 
 
-async def test_default_api_owns_opened_model_and_object_clients(
-    db_url: str, monkeypatch: pytest.MonkeyPatch
+async def test_default_api_owns_only_opened_object_client(
+    runtime_database_url: RuntimeDatabaseFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from connectors.openai import OpenAIJsonModelClient
 
+    db_url = await runtime_database_url("tenant-runtime-integration")
     module = importlib.import_module("apps.api.runtime")
     env = _runtime_env(db_url)
     env["OPENAI_API_KEY"] = "m" * 32
     env["OPENAI_API_KEY_REF"] = "OPENAI_API_KEY"
     closed: list[str] = []
-
-    class ModelSDK:
-        async def close(self) -> None:
-            closed.append("model")
 
     class ObjectSDK:
         def put_object(self, **kwargs: object) -> None:
@@ -421,7 +424,8 @@ async def test_default_api_owns_opened_model_and_object_clients(
             closed.append("object")
 
     monkeypatch.setattr(
-        OpenAIJsonModelClient, "_default_client", staticmethod(lambda *args: ModelSDK())
+        OpenAIJsonModelClient, "_default_client",
+        staticmethod(lambda *args: pytest.fail("默认 API 不得创建直连模型 SDK")),
     )
     monkeypatch.setattr(
         "connectors.object_store.s3.boto3.client", lambda *args, **kwargs: ObjectSDK()
@@ -434,13 +438,14 @@ async def test_default_api_owns_opened_model_and_object_clients(
     async with app.router.lifespan_context(app):
         resources = app.state.dependencies
         # 直接执行资源端口以隔离业务授权；没有外部网络或业务写入。
-        await resources.model_lifecycle._get_client()
+        assert resources.model_lifecycle is None
+        assert resources.trade_manager is None
         await resources.object_store_lifecycle.put(
             "raw/tn_01K00000000000000000000001/art_01K00000000000000000000002", b"owned"
         )
         assert closed == []
         assert await app.state.readiness_probe.is_ready()
-    assert closed == ["model", "object"]
+    assert closed == ["object"]
     assert app.state.runtime_engine.pool.checkedout() == 0
 
 
@@ -501,8 +506,9 @@ async def test_missing_checkpoint_cannot_become_running_ready(
     "failure", [RuntimeError("dispose-private-marker"), asyncio.CancelledError()]
 )
 async def test_api_engine_cleanup_failure_is_visible(
-    db_url: str, monkeypatch: pytest.MonkeyPatch, failure: BaseException
+    runtime_database_url: RuntimeDatabaseFactory, monkeypatch: pytest.MonkeyPatch, failure: BaseException
 ) -> None:
+    db_url = await runtime_database_url("tenant-runtime-integration")
     module, app, _ = _api(db_url, monkeypatch)
     dispose = AsyncEngine.dispose
 
@@ -526,7 +532,7 @@ async def test_api_engine_cleanup_failure_is_visible(
     "failure", [RuntimeError("startup-private-marker"), asyncio.CancelledError()]
 )
 async def test_actual_api_quotation_start_failure_closes_parser_and_database(
-    db_url: str,
+    runtime_database_url: RuntimeDatabaseFactory,
     monkeypatch: pytest.MonkeyPatch,
     failure: BaseException,
 ) -> None:
@@ -535,6 +541,7 @@ async def test_actual_api_quotation_start_failure_closes_parser_and_database(
     from connectors.evidence_text.client import LinuxEvidenceTextParser
     from tests.quotation_runtime_fixtures import quotation_settings_values
 
+    db_url = await runtime_database_url("tenant-runtime-integration")
     module = importlib.import_module("apps.api.runtime")
     env = _runtime_env(db_url)
     env["TRADEOS_QUOTATION_SETTINGS_JSON"] = json.dumps(quotation_settings_values())
@@ -569,7 +576,7 @@ async def test_actual_api_quotation_start_failure_closes_parser_and_database(
 
 
 async def test_actual_scheduler_missing_step_registration_rejects_before_health(
-    db_url: str,
+    runtime_database_url: RuntimeDatabaseFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from apps.scheduler_worker import runtime as worker
@@ -579,6 +586,7 @@ async def test_actual_scheduler_missing_step_registration_rejects_before_health(
         _FactoryResolver,
     )
 
+    db_url = await runtime_database_url("tn_01K00000000000000000000003")
     disposed: list[AsyncEngine] = []
     dispose = AsyncEngine.dispose
 

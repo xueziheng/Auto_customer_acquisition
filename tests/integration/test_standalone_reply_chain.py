@@ -16,6 +16,7 @@ import pytest
 import pytest_asyncio
 from pydantic import SecretStr
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from apps.api.composition.runtime import build_phase1_dependencies
@@ -46,6 +47,7 @@ from tests.integration.test_email_inbound_page import prepare_sent
 from tests.integration.test_pilot_persistence import initialized
 from tests.integration.test_pilot_persistence import owned_profiles as _owned_profiles
 from tests.integration.test_reply_completion import advance, configure_playbook
+from tests.runtime_database_fixtures import runtime_database_scope
 from tests.unit.test_email_inbound import mime
 from tests.unit.test_standalone_model_settings import settings
 
@@ -152,8 +154,35 @@ async def standalone_reply_chain(
     model_resolver: SecretResolver,
     model_provider: ReplyProvider | None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """复用同一生产组合；Provider 必须显式给出，None 才走真实 Connector。"""
+    """每例独立企业角色；API、worker、数据准备共享同一真实受限身份。"""
     tenant = TenantId(new_id("tn"))
+    async with runtime_database_scope(
+        reply_storage.migration_database_url.get_secret_value()
+    ) as provision:
+        url = make_url(await provision(tenant))
+        profile = reply_storage.model_copy(update={
+            "tenant_id": tenant,
+            "database_username": url.username,
+            "database_runtime_password": SecretStr(url.password),
+        })
+        async with _configured_standalone_reply_chain(
+            profile, tmp_path, model=model,
+            model_resolver=model_resolver, model_provider=model_provider,
+        ) as chain:
+            yield chain
+
+
+@asynccontextmanager
+async def _configured_standalone_reply_chain(
+    reply_storage: PilotConfig,
+    tmp_path: Path,
+    *,
+    model: StandaloneModelSettings,
+    model_resolver: SecretResolver,
+    model_provider: ReplyProvider | None,
+) -> AsyncIterator[dict[str, Any]]:
+    """复用同一生产组合；Provider 必须显式给出，None 才走真实 Connector。"""
+    tenant = TenantId(reply_storage.tenant_id)
     staff = tuple(
         ControlledIdentity(
             employee_id=new_id("emp"),

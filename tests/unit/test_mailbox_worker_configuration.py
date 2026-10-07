@@ -1,6 +1,7 @@
 """只读后台按持久绑定选择邮箱，不接受命令行覆盖私有身份。"""
 
 import argparse
+import logging
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,15 @@ import pytest
 from apps.email_feedback_worker import mailbox
 from infra.pilot.mailbox_config import MailboxConfig
 from shared.schemas.mailbox import MailboxFailure
+
+
+@pytest.fixture(autouse=True)
+def restore_logging():
+    previous = logging.root.manager.disable
+    try:
+        yield
+    finally:
+        logging.disable(previous)
 
 
 def _args(path: Path, selected: str, **overrides):

@@ -2253,10 +2253,13 @@ async def test_0057_downgrade_refuses_catalog_approval_before_any_ddl(
     suffix = "catalog_approval_downgrade"
     engine = create_engine_from(db_url)
     try:
+        # 只检查0057自身的preflight；后续迁移的DDL不得进入本次持锁窗口。
+        _alembic(db_url, "downgrade", "0057")
         async with engine.connect() as connection:
             original_revision = await connection.scalar(
                 text("SELECT version_num FROM alembic_version")
             )
+        assert original_revision == "0057"
         async with engine.begin() as connection:
             await _seed_parents(connection, tenant=tenant, suffix=suffix)
             await _insert_catalog_approval(

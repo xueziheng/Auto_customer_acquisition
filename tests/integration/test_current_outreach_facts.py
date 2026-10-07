@@ -30,6 +30,9 @@ from shared.schemas.identifiers import ProspectAccountId, TenantId, new_id
 from tests.integration.test_need_units import (
     unit_engine as unit_engine,  # noqa: PLC0414 -- 不可变提案使用既有独立库生命周期
 )
+from tests.runtime_database_fixtures import (
+    runtime_database_url as runtime_database_url,  # noqa: PLC0414 -- 真实受限企业运行角色
+)
 
 NOW = datetime(2026, 9, 5, tzinfo=UTC)
 
@@ -258,7 +261,7 @@ async def test_real_sender_reader_does_not_reserve_and_reads_exhaustion(
     assert not fact.sendable and fact.remaining_slots == 0
 
 
-async def test_canonical_bootstrap_builds_real_domains_without_campaign(db_url):
+async def test_canonical_bootstrap_builds_real_domains_without_campaign(runtime_database_url):
     import importlib
 
     from apps.api.runtime_config import Phase1RuntimeSettings
@@ -271,8 +274,9 @@ async def test_canonical_bootstrap_builds_real_domains_without_campaign(db_url):
     )
 
     module = importlib.import_module("apps.scheduler_worker.bootstrap")
-    settings = Phase1RuntimeSettings.from_environ(_runtime_env(str(db_url)))
     tenant = TenantId(new_id("tn"))
+    db_url = await runtime_database_url(tenant)
+    settings = Phase1RuntimeSettings.from_environ(_runtime_env(str(db_url)))
     bootstrap = module.CanonicalSchedulerBootstrap(
         settings.scoring_policy, settings.handoff_policy
     )
@@ -306,7 +310,8 @@ async def test_api_transport_only_composes_current_facts(integration_engine, db_
     from apps.api.composition.runtime import ResolvedManualSendGateway
 
     assert isinstance(dependencies.tool_gateway, ResolvedManualSendGateway)
-    await dependencies.model_lifecycle.aclose()
+    if dependencies.model_lifecycle is not None:
+        await dependencies.model_lifecycle.aclose()
 
 
 async def test_account_actor_uses_persistent_user_mapping(integration_engine):
@@ -776,7 +781,7 @@ def test_requested_group_without_ports_is_configuration_error(group):
     ids=["account_reader_load", "research_sourcing_single_directive"],
 )
 async def test_enabled_groups_load_actual_accounts_and_share_single_directive(
-    db_url, monkeypatch, sourcing_enabled
+    runtime_database_url, monkeypatch, sourcing_enabled
 ):
     from apps.api.runtime_config import Phase1RuntimeSettings
     from apps.scheduler_worker import runtime as worker
@@ -795,8 +800,9 @@ async def test_enabled_groups_load_actual_accounts_and_share_single_directive(
         _FactoryResolver,
     )
 
-    settings = Phase1RuntimeSettings.from_environ(_runtime_env(str(db_url)))
     tenant = TenantId(new_id("tn"))
+    db_url = await runtime_database_url(tenant)
+    settings = Phase1RuntimeSettings.from_environ(_runtime_env(str(db_url)))
     env = _factory_environ(str(db_url), tenant, hunter_enabled=False)
     import json
 

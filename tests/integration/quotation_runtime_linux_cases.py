@@ -318,7 +318,7 @@ async def test_actual_linux_api_worker_quote_approval_file_chain(
 
         monkeypatch.setattr(worker, "EnvironmentSecretResolver", lambda _: Secrets())
         disabled = worker.SchedulerRuntimeFactory(
-            worker_environment(unit_engine, case.tenant, "no_config"),
+            worker_environment(unit_engine, case.tenant, "no_config", database_url=case.database_url),
             _factory_dependencies(worker, with_hunter=False),
             resolver_factory=_FactoryResolver,
             health_server_factory=_FactoryHealthServer,
@@ -332,7 +332,7 @@ async def test_actual_linux_api_worker_quote_approval_file_chain(
             )
             assert old_runtime.quote_expiry_driver is None
         factory = worker.SchedulerRuntimeFactory(
-            worker_environment(unit_engine, case.tenant, "enabled"),
+            worker_environment(unit_engine, case.tenant, "enabled", database_url=case.database_url),
             _factory_dependencies(worker, with_hunter=False),
             resolver_factory=_FactoryResolver,
             health_server_factory=_FactoryHealthServer,

@@ -207,6 +207,7 @@ def _source_paths(
             "tests/integration/test_scheduler_worker.py",
             "tests/unit/test_api_runtime_config.py",
             "tests/quotation_runtime_fixtures.py",
+            "tests/runtime_database_fixtures.py",
             "tests/integration/quotation_runtime_linux_cases.py",
             "tests/integration/quotation_runtime_linux_support.py",
         ):

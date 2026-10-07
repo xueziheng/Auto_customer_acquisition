@@ -82,6 +82,7 @@ from tests.integration.test_scheduler_worker import (
     _FactoryResolver,
 )
 from tests.quotation_runtime_fixtures import quotation_settings_values
+from tests.runtime_database_fixtures import runtime_database_scope
 from tests.unit.test_evidence_text_profiles import pdf_bytes
 from tool_gateway.pipeline import ToolGateway
 from workflows.employee_work_intake.schemas import WorkSourceKind
@@ -318,86 +319,88 @@ async def initialize_public_case(case):
 async def runtime_case(engine, monkeypatch, *, cors_origins=()):
     """保留实际API lifespan与独立worker工厂，SDK网络才是替身。"""
     tenant = TenantId(new_id("tn"))
-    environ = _runtime_env(engine.url.render_as_string(False))
-    environ.update(TRADEOS_TENANT_ID=tenant,
-                   TRADEOS_QUOTATION_SETTINGS_JSON=json.dumps(quotation_settings_values()),
-                   TRADEOS_CORS_ALLOWED_ORIGINS=json.dumps(list(cors_origins) or ["http://127.0.0.1:4173"]),
-                   PYTHON_DOTENV_DISABLED="1")
-    objects, calls = ControlledObjects(), Counter()
-    monkeypatch.setattr(s3.boto3, "client", objects.client)
-    monkeypatch.setattr(api.os, "environ", environ)
+    async with runtime_database_scope(engine.url.render_as_string(False)) as provision:
+        database_url = await provision(tenant)
+        environ = _runtime_env(database_url)
+        environ.update(TRADEOS_TENANT_ID=tenant,
+                       TRADEOS_QUOTATION_SETTINGS_JSON=json.dumps(quotation_settings_values()),
+                       TRADEOS_CORS_ALLOWED_ORIGINS=json.dumps(list(cors_origins) or ["http://127.0.0.1:4173"]),
+                       PYTHON_DOTENV_DISABLED="1")
+        objects, calls = ControlledObjects(), Counter()
+        monkeypatch.setattr(s3.boto3, "client", objects.client)
+        monkeypatch.setattr(api.os, "environ", environ)
 
-    class BusinessClock(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return NOW
+        class BusinessClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return NOW
 
-    monkeypatch.setattr(api, "datetime", BusinessClock)
-    invoke = ToolGateway.invoke
+        monkeypatch.setattr(api, "datetime", BusinessClock)
+        invoke = ToolGateway.invoke
 
-    async def counted(gateway, context):
-        calls[context.tool_id] += 1
-        return await invoke(gateway, context)
+        async def counted(gateway, context):
+            calls[context.tool_id] += 1
+            return await invoke(gateway, context)
 
-    monkeypatch.setattr(ToolGateway, "invoke", counted)
-    app = api.create_runtime_app()
-    deps = get_api_dependencies(Request({"type": "http", "app": app, "headers": [], "method": "GET", "path": "/"}))
-    async with app.router.lifespan_context(app), AsyncClient(
-        transport=ASGITransport(app), base_url="http://test",
-    ) as client:
-        assert deps.quotation.evidence.parser.capability().status == "available"
-        case = SimpleNamespace(
-            app=app, client=client, dependencies=deps, tenant=tenant, clock=[NOW], objects=objects,
-            sessions=async_sessionmaker(engine, expire_on_commit=False),
-            gateway_calls=MappingProxyType(calls),
-        )
-        await initialize_public_case(case)
-        worker_env = worker_environment(engine, tenant, "enabled")
-        worker_env.update(TEST_ACCESS="controlled-test-access", TEST_SECRET="controlled-test-secret",
-                          TRADEOS_SCHEDULER_INTERVAL_SECONDS="1")
-        factory = worker.SchedulerRuntimeFactory(
-            worker_env, _factory_dependencies(worker, with_hunter=False),
-            resolver_factory=_FactoryResolver, health_server_factory=_FactoryHealthServer, now=lambda: NOW,
-        )
-        async with factory() as runtime:
-            assert runtime.activation.quotation_lifecycle._parser is not deps.quotation.evidence.parser
-            case.worker = runtime
-            stop = asyncio.Event()
-            first_cycle = asyncio.Event()
+        monkeypatch.setattr(ToolGateway, "invoke", counted)
+        app = api.create_runtime_app()
+        deps = get_api_dependencies(Request({"type": "http", "app": app, "headers": [], "method": "GET", "path": "/"}))
+        async with app.router.lifespan_context(app), AsyncClient(
+            transport=ASGITransport(app), base_url="http://test",
+        ) as client:
+            assert deps.quotation.evidence.parser.capability().status == "available"
+            case = SimpleNamespace(
+                app=app, client=client, dependencies=deps, tenant=tenant, clock=[NOW], objects=objects,
+                sessions=async_sessionmaker(engine, expire_on_commit=False),
+                gateway_calls=MappingProxyType(calls),
+            )
+            await initialize_public_case(case)
+            worker_env = worker_environment(engine, tenant, "enabled", database_url=database_url)
+            worker_env.update(TEST_ACCESS="controlled-test-access", TEST_SECRET="controlled-test-secret",
+                              TRADEOS_SCHEDULER_INTERVAL_SECONDS="1")
+            factory = worker.SchedulerRuntimeFactory(
+                worker_env, _factory_dependencies(worker, with_hunter=False),
+                resolver_factory=_FactoryResolver, health_server_factory=_FactoryHealthServer, now=lambda: NOW,
+            )
+            async with factory() as runtime:
+                assert runtime.activation.quotation_lifecycle._parser is not deps.quotation.evidence.parser
+                case.worker = runtime
+                stop = asyncio.Event()
+                first_cycle = asyncio.Event()
 
-            async def observed_wait(interval, stop_event):
-                # 原公开 wait 在真实循环计数递增后调用，沿用原 interval/stop 语义。
-                first_cycle.set()
+                async def observed_wait(interval, stop_event):
+                    # 原公开 wait 在真实循环计数递增后调用，沿用原 interval/stop 语义。
+                    first_cycle.set()
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                    except TimeoutError:
+                        pass
+
+                task = asyncio.create_task(run_scheduler_worker(
+                    runtime, stop_event=stop, install_signal_handlers=False, wait=observed_wait,
+                ))
+                case.worker_task = task
+                readiness = asyncio.create_task(first_cycle.wait())
                 try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=interval)
-                except TimeoutError:
-                    pass
-
-            task = asyncio.create_task(run_scheduler_worker(
-                runtime, stop_event=stop, install_signal_handlers=False, wait=observed_wait,
-            ))
-            case.worker_task = task
-            readiness = asyncio.create_task(first_cycle.wait())
-            try:
-                # 外层 launcher 原有启动 deadline 仍是总上界；提前退出须立即暴露。
-                done, _ = await asyncio.wait(
-                    {readiness, task}, return_when=asyncio.FIRST_COMPLETED,
-                )
-                if task in done:
-                    await task
-                    raise AssertionError("scheduler exited before fixture readiness")
-                yield case
-            finally:
-                readiness.cancel()
-                await asyncio.gather(readiness, return_exceptions=True)
-                stop.set()
-                result = await asyncio.wait_for(task, timeout=10)
-                assert result.status is WorkerStartStatus.STARTED
-                assert result.cycles_completed > 0
-                assert all(calls.get(name, 0) == 0 for name in (
-                    "email.send", "contact.enrich", "contact.verify", "web.search"))
-                print(f"t10_worker_started_cycles={result.cycles_completed}", flush=True)
-                print("t10_forbidden_gateway_calls=0", flush=True)
+                    # 外层 launcher 原有启动 deadline 仍是总上界；提前退出须立即暴露。
+                    done, _ = await asyncio.wait(
+                        {readiness, task}, return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if task in done:
+                        await task
+                        raise AssertionError("scheduler exited before fixture readiness")
+                    yield case
+                finally:
+                    readiness.cancel()
+                    await asyncio.gather(readiness, return_exceptions=True)
+                    stop.set()
+                    result = await asyncio.wait_for(task, timeout=10)
+                    assert result.status is WorkerStartStatus.STARTED
+                    assert result.cycles_completed > 0
+                    assert all(calls.get(name, 0) == 0 for name in (
+                        "email.send", "contact.enrich", "contact.verify", "web.search"))
+                    print(f"t10_worker_started_cycles={result.cycles_completed}", flush=True)
+                    print("t10_forbidden_gateway_calls=0", flush=True)
 
 
 async def wait_until(read, predicate, *, label):

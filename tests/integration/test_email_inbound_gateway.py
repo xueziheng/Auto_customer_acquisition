@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
@@ -36,6 +37,9 @@ from shared.schemas.email_inbound import (
 )
 from shared.schemas.evidence_read import ObjectReadLimits
 from shared.schemas.identifiers import SendingIdentityId, TenantId, UserId, new_id
+from tests.runtime_database_fixtures import (
+    runtime_database_url as _runtime_database_url,
+)
 from tests.unit.test_email_inbound import DATE, REPLY, mime
 from tool_gateway.checks.email_inbound import InboundTenantCheck
 from tool_gateway.checks.permission import PermissionCheck
@@ -51,6 +55,7 @@ from tool_gateway.manifest import ToolRegistry
 from tool_gateway.pipeline import ToolCallContext, ToolGateway
 
 ROOT = Path(__file__).resolve().parents[2]
+runtime_database_url = _runtime_database_url
 
 
 @pytest.fixture(scope="module")
@@ -73,9 +78,11 @@ def owned_infrastructure(tmp_path_factory):
 
 
 @pytest_asyncio.fixture
-async def runtime(owned_infrastructure, tmp_path):
+async def runtime(owned_infrastructure, tmp_path, runtime_database_url):
     config = owned_infrastructure.config
-    engine = create_engine_from(config.database_url.get_secret_value())
+    tenant = TenantId(new_id("tn"))
+    # 每例独立企业运行角色；owned supervisor 仅提供本机对象存储和受控凭证。
+    engine = create_engine_from(await runtime_database_url(str(tenant)))
     factory = async_sessionmaker(engine, expire_on_commit=False)
     transport = None
     try:
@@ -109,7 +116,7 @@ async def runtime(owned_infrastructure, tmp_path):
             ),
         )
         route = InboundRoute(
-            tenant_id=TenantId(new_id("tn")),
+            tenant_id=tenant,
             mailbox_alias="primary",
             configured_identity_id=SendingIdentityId(new_id("sid")),
             route_id="controlled",
@@ -286,7 +293,6 @@ async def test_gateway_denial_zero_provider_and_lazy_secret(runtime):
     params = {"mailbox_alias": "primary", "cursor": runtime["start"], "page_limit": 20}
     for user, tenant, parameters in [
         (UserId(new_id("usr")), route.tenant_id, params),
-        (runtime["user"], TenantId(new_id("tn")), params),
         (runtime["user"], route.tenant_id, {**params, "identity": "override"}),
         (runtime["user"], route.tenant_id, {**params, "page_limit": 21}),
     ]:
@@ -299,6 +305,17 @@ async def test_gateway_denial_zero_provider_and_lazy_secret(runtime):
             )
         )
         assert result.status != ToolCallStatus.SUCCEEDED
+    # 错企业在真实 RLS 的 ledger 写入处即拒绝，仍须保证零 Provider/凭证调用。
+    with pytest.raises(DBAPIError) as denied:
+        await runtime["gateway"].invoke(
+            ToolCallContext(
+                tenant_id=TenantId(new_id("tn")),
+                user_id=runtime["user"],
+                tool_id=MANIFEST.tool_id,
+                params=params,
+            )
+        )
+    assert getattr(denied.value.orig, "sqlstate", None) == "42501"
     assert runtime["resolves"] == []
     assert await runtime["provider"].list_calls() == ()
     assert runtime["slot"].is_empty
@@ -386,15 +403,17 @@ async def test_child_cannot_take_or_discard_parent_slot(runtime):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("target_status", ["executing", "succeeded"])
-async def test_real_ledger_storage_failure_blocks_delivery(runtime, target_status):
+async def test_real_ledger_storage_failure_blocks_delivery(
+    runtime, target_status, integration_engine,
+):
     from sqlalchemy import text
 
     tenant = runtime["route"].tenant_id
     await runtime["provider"].receive_inbound(mime(), internal_date=DATE)
     anchor = await fetch(runtime, runtime["start"])
     before = len(await runtime["provider"].list_calls())
-    # 数据库故障注入，不替代Gateway handler、规则、Repository或事务。
-    async with runtime["factory"]() as session, session.begin():
+    # 管理连接只安装故障触发器；Gateway、Store、Repository 始终使用真实受限角色。
+    async with integration_engine.begin() as session:
         await session.execute(
             text(
                 "CREATE OR REPLACE FUNCTION inbound_test_ledger_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.tenant_id = TG_ARGV[0] AND NEW.status = TG_ARGV[1] THEN RAISE EXCEPTION 'controlled_ledger_failure'; END IF; RETURN NEW; END $$"
@@ -427,7 +446,7 @@ async def test_real_ledger_storage_failure_blocks_delivery(runtime, target_statu
                 )
                 assert raw == mime()
     finally:
-        async with runtime["factory"]() as session, session.begin():
+        async with integration_engine.begin() as session:
             await session.execute(
                 text("DROP TRIGGER inbound_test_failure ON tool_calls")
             )
@@ -481,7 +500,7 @@ async def test_cancellation_during_archive_clears_slot_and_never_returns_page(
 
 
 @pytest.mark.asyncio
-async def test_raw_commit_unknown_then_dedup_unreadable_fails(runtime, monkeypatch):
+async def test_raw_commit_unknown_preserves_bytes_and_dedup_retry(runtime, monkeypatch):
     tenant = runtime["route"].tenant_id
     await runtime["provider"].receive_inbound(mime(), internal_date=DATE)
     anchor = await fetch(runtime, runtime["start"])
@@ -510,9 +529,22 @@ async def test_raw_commit_unknown_then_dedup_unreadable_fails(runtime, monkeypat
             )
         ).all()
         assert len(rows) == 1
-    # 原Raw补偿在commit未知时已删除candidate对象，metadata去重仍不足以交付。
-    with pytest.raises(ToolGatewayError):
-        await fetch(runtime, anchor.next_cursor)
+    # commit 未知仍须保留已持久化原件；重试复用同一份 metadata 与 bytes。
+    meta, raw = await runtime["store"].get_bounded(
+        tenant, rows[0].artifact_id, maximum_bytes=MIME_BYTES
+    )
+    assert raw == mime() and meta.content_hash == hashlib.sha256(raw).hexdigest()
+    page = await fetch(runtime, anchor.next_cursor)
+    assert len(page.items) == 1
+    assert page.items[0].raw.artifact_id == rows[0].artifact_id
+    async with runtime["factory"]() as session:
+        stored_ids = list((await session.scalars(
+            select(RawArtifactRow.artifact_id).where(RawArtifactRow.tenant_id == tenant)
+        )).all())
+        assert stored_ids == [rows[0].artifact_id]
+    calls = await runtime["provider"].list_calls()
+    assert await fetch(runtime, anchor.next_cursor) == page
+    assert await runtime["provider"].list_calls() == calls
     assert runtime["slot"].is_empty
 
 

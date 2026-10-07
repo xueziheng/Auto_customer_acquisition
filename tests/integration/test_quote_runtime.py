@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
 
 from apps.scheduler_worker import runtime as worker
 from connectors.evidence_text.client import LinuxEvidenceTextParser
@@ -23,6 +24,13 @@ from tests.integration.test_scheduler_worker import (
     _TrackingEnvironmentSecrets,
 )
 from tests.quotation_runtime_fixtures import quotation_settings_values
+from tests.runtime_database_fixtures import runtime_database_scope
+
+
+@pytest_asyncio.fixture
+async def quote_runtime_database_url(unit_engine):
+    async with runtime_database_scope(unit_engine.url.render_as_string(False)) as provision:
+        yield provision
 
 
 class ControlledObjects:
@@ -65,50 +73,53 @@ async def actual_api_case(engine, monkeypatch, *, files=True):
     from tests.integration.test_api_runtime import _runtime_env
 
     tenant = new_id("tn")
-    clock = [datetime(2026, 8, 29, 8, tzinfo=UTC)]
+    async with runtime_database_scope(engine.url.render_as_string(False)) as provision:
+        database_url = await provision(tenant)
+        clock = [datetime(2026, 8, 29, 8, tzinfo=UTC)]
 
-    class BusinessClock(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return clock[0]
+        class BusinessClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock[0]
 
-    environ = _runtime_env(engine.url.render_as_string(False))
-    settings = quotation_settings_values()
-    if not files:
-        settings["files"] = None
-    environ.update(
-        {
-            "TRADEOS_TENANT_ID": tenant,
-            "TRADEOS_QUOTATION_SETTINGS_JSON": json.dumps(settings),
-        }
-    )
-    objects = ControlledObjects()
-    monkeypatch.setattr(s3.boto3, "client", objects.client)
-    monkeypatch.setattr(api.os, "environ", environ)
-    monkeypatch.setattr(api, "datetime", BusinessClock)
-    app = api.create_runtime_app()
-    assert objects.clients == 0 and objects.calls == []
-    request = Request(
-        {"type": "http", "app": app, "headers": [], "method": "GET", "path": "/"}
-    )
-    dependencies = get_api_dependencies(request)
-    parser = dependencies.quotation.evidence.parser
-    assert parser.capability().status == "unavailable"
-    async with (
-        app.router.lifespan_context(app),
-        AsyncClient(transport=ASGITransport(app), base_url="http://test") as client,
-    ):
-        yield SimpleNamespace(
-            app=app,
-            client=client,
-            dependencies=dependencies,
-            parser=parser,
-            objects=objects,
-            tenant=tenant,
-            clock=clock,
-            sessions=async_sessionmaker(engine, expire_on_commit=False),
+        environ = _runtime_env(database_url)
+        settings = quotation_settings_values()
+        if not files:
+            settings["files"] = None
+        environ.update(
+            {
+                "TRADEOS_TENANT_ID": tenant,
+                "TRADEOS_QUOTATION_SETTINGS_JSON": json.dumps(settings),
+            }
         )
-    assert parser._closed
+        objects = ControlledObjects()
+        monkeypatch.setattr(s3.boto3, "client", objects.client)
+        monkeypatch.setattr(api.os, "environ", environ)
+        monkeypatch.setattr(api, "datetime", BusinessClock)
+        app = api.create_runtime_app()
+        assert objects.clients == 0 and objects.calls == []
+        request = Request(
+            {"type": "http", "app": app, "headers": [], "method": "GET", "path": "/"}
+        )
+        dependencies = get_api_dependencies(request)
+        parser = dependencies.quotation.evidence.parser
+        assert parser.capability().status == "unavailable"
+        async with (
+            app.router.lifespan_context(app),
+            AsyncClient(transport=ASGITransport(app), base_url="http://test") as client,
+        ):
+            yield SimpleNamespace(
+                app=app,
+                database_url=database_url,
+                client=client,
+                dependencies=dependencies,
+                parser=parser,
+                objects=objects,
+                tenant=tenant,
+                clock=clock,
+                sessions=async_sessionmaker(engine, expire_on_commit=False),
+            )
+        assert parser._closed
 
 
 async def seed_runtime_facts(case, actor="boss-runtime"):
@@ -385,9 +396,9 @@ async def test_actual_api_factory_degraded_parser_keeps_safe_metadata_and_core(
         assert {b["field"] for b in context["blockers"]} == {"unit"}
 
 
-def worker_environment(engine, tenant, mode):
+def worker_environment(engine, tenant, mode, *, database_url=None):
     environ = _factory_environ(
-        engine.url.render_as_string(False), tenant, hunter_enabled=False
+        database_url or engine.url.render_as_string(False), tenant, hunter_enabled=False
     )
     if mode != "no_config":
         values = quotation_settings_values()
@@ -414,7 +425,7 @@ def worker_environment(engine, tenant, mode):
 
 @pytest.mark.parametrize("mode", ["enabled", "no_files", "no_config", "no_store"])
 async def test_actual_worker_factory_binds_unique_approvals_and_defers_probe_until_activation(
-    unit_engine, monkeypatch, mode
+    unit_engine, quote_runtime_database_url, monkeypatch, mode
 ):
     secrets = _TrackingEnvironmentSecrets()
     monkeypatch.setattr(worker, "EnvironmentSecretResolver", lambda _: secrets)
@@ -429,8 +440,10 @@ async def test_actual_worker_factory_binds_unique_approvals_and_defers_probe_unt
         return await original_probe(parser)
 
     monkeypatch.setattr(LinuxEvidenceTextParser, "probe", probe)
+    tenant = new_id("tn")
+    database_url = await quote_runtime_database_url(tenant)
     factory = worker.SchedulerRuntimeFactory(
-        worker_environment(unit_engine, new_id("tn"), mode),
+        worker_environment(unit_engine, tenant, mode, database_url=database_url),
         _factory_dependencies(worker, with_hunter=False),
         resolver_factory=_FactoryResolver,
         health_server_factory=_FactoryHealthServer,
@@ -459,13 +472,15 @@ async def test_actual_worker_factory_binds_unique_approvals_and_defers_probe_unt
 
 
 async def test_worker_explicit_invalid_quotation_json_is_not_silently_disabled(
-    unit_engine, monkeypatch
+    unit_engine, quote_runtime_database_url, monkeypatch
 ):
     monkeypatch.setattr(
         worker, "EnvironmentSecretResolver", lambda _: _TrackingEnvironmentSecrets()
     )
+    tenant = new_id("tn")
+    database_url = await quote_runtime_database_url(tenant)
     factory = worker.SchedulerRuntimeFactory(
-        worker_environment(unit_engine, new_id("tn"), "malformed"),
+        worker_environment(unit_engine, tenant, "malformed", database_url=database_url),
         _factory_dependencies(worker, with_hunter=False),
         resolver_factory=_FactoryResolver,
         health_server_factory=_FactoryHealthServer,
@@ -477,7 +492,7 @@ async def test_worker_explicit_invalid_quotation_json_is_not_silently_disabled(
 
 @pytest.mark.parametrize("failure", ["no_lock", "probe", "cancel", "before_yield"])
 async def test_actual_worker_singleton_activation_and_cleanup(
-    unit_engine, monkeypatch, failure
+    unit_engine, quote_runtime_database_url, monkeypatch, failure
 ):
     import asyncio
 
@@ -519,7 +534,9 @@ async def test_actual_worker_singleton_activation_and_cleanup(
     monkeypatch.setattr(LinuxEvidenceTextParser, "probe", probe)
     monkeypatch.setattr(LinuxEvidenceTextParser, "aclose", close)
     monkeypatch.setattr(AsyncEngine, "dispose", dispose)
-    environ = worker_environment(unit_engine, new_id("tn"), "enabled")
+    tenant = new_id("tn")
+    database_url = await quote_runtime_database_url(tenant)
+    environ = worker_environment(unit_engine, tenant, "enabled", database_url=database_url)
     factory = worker.SchedulerRuntimeFactory(
         environ,
         _factory_dependencies(worker, with_hunter=False),
@@ -571,7 +588,7 @@ async def test_actual_worker_singleton_activation_and_cleanup(
 
 @pytest.mark.parametrize("lose_lock", [False, True])
 async def test_actual_worker_only_lock_owner_scans_expiry_and_stops_on_loss(
-    unit_engine, monkeypatch, lose_lock
+    unit_engine, quote_runtime_database_url, monkeypatch, lose_lock
 ):
     import asyncio
 
@@ -583,8 +600,10 @@ async def test_actual_worker_only_lock_owner_scans_expiry_and_stops_on_loss(
     monkeypatch.setattr(
         worker, "EnvironmentSecretResolver", lambda _: _TrackingEnvironmentSecrets()
     )
+    tenant = new_id("tn")
+    database_url = await quote_runtime_database_url(tenant)
     factory = worker.SchedulerRuntimeFactory(
-        worker_environment(unit_engine, new_id("tn"), "enabled"),
+        worker_environment(unit_engine, tenant, "enabled", database_url=database_url),
         _factory_dependencies(worker, with_hunter=False),
         resolver_factory=_FactoryResolver,
         health_server_factory=_FactoryHealthServer,
@@ -640,7 +659,7 @@ async def test_actual_worker_only_lock_owner_scans_expiry_and_stops_on_loss(
 
 @pytest.mark.parametrize("phase", ["activation", "campaign"])
 async def test_actual_worker_loss_during_phase_never_enters_expiry(
-    unit_engine, monkeypatch, phase
+    unit_engine, quote_runtime_database_url, monkeypatch, phase
 ):
     import asyncio
     from dataclasses import replace
@@ -653,8 +672,10 @@ async def test_actual_worker_loss_during_phase_never_enters_expiry(
     monkeypatch.setattr(
         worker, "EnvironmentSecretResolver", lambda _: _TrackingEnvironmentSecrets()
     )
+    tenant = new_id("tn")
+    database_url = await quote_runtime_database_url(tenant)
     factory = worker.SchedulerRuntimeFactory(
-        worker_environment(unit_engine, new_id("tn"), "enabled"),
+        worker_environment(unit_engine, tenant, "enabled", database_url=database_url),
         _factory_dependencies(worker, with_hunter=False),
         resolver_factory=_FactoryResolver,
         health_server_factory=_FactoryHealthServer,

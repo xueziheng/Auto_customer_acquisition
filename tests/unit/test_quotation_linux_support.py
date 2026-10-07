@@ -393,6 +393,7 @@ def test_runtime_image_uses_explicit_b2_whitelist_without_changing_a_chain(
     assert (
         "tests/integration/quotation_runtime_linux_cases.py" in seen["names"]
     ) is quotation
+    assert ("tests/runtime_database_fixtures.py" in seen["names"]) is quotation
     assert not any(
         ".env" in name or ".git" in name or name.startswith(("apps/web/", "tmp/"))
         for name in seen["names"]

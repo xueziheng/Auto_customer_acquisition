@@ -290,8 +290,11 @@ async def test_correction_lock_linearizes_real_current_fact_change(
             actor.tenant_id, message, ReplyCategory.REJECTION, "controlled:v1"
         )
         original = ClassificationRepositoryImpl.add_correction
+        correction_pid: int | None = None
 
         async def hold(self, correction):
+            nonlocal correction_pid
+            correction_pid = await self._session.scalar(text("SELECT pg_backend_pid()"))
             inside.set()
             await release.wait()
             return await original(self, correction)
@@ -308,24 +311,32 @@ async def test_correction_lock_linearizes_real_current_fact_change(
         )
         tasks.append(correction)
         await asyncio.wait_for(inside.wait(), 3)
+        assert isinstance(correction_pid, int)
         change_task = asyncio.create_task(change_access(runtime, account, change))
         tasks.append(change_task)
         # 第三条连接查看真实PG阻塞，不能用单连接savepoint或睡眠冒充竞争。
         blocked = False
         async with runtime["factory"]() as session:
             for _ in range(100):
+                # 同一事务会缓存活动快照；每轮刷新才能看见稍后建立的变更连接。
+                await session.execute(text("SELECT pg_stat_clear_snapshot()"))
                 blocked = bool(
                     (
                         await session.execute(
                             text(
-                                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND cardinality(pg_blocking_pids(pid)) > 0)"
-                            )
+                                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                                "WHERE datname=current_database() "
+                                "AND :correction_pid = ANY(pg_blocking_pids(pid)))"
+                            ),
+                            {"correction_pid": correction_pid},
                         )
                     ).scalar_one()
                 )
                 if blocked or change_task.done():
                     break
                 await asyncio.sleep(0.01)
+        if change_task.done():
+            await change_task  # 提前失败必须暴露原异常，不能伪装成未观察到锁。
         assert blocked and not change_task.done(), (
             "current fact UPDATE must block until correction commit"
         )
@@ -538,9 +549,12 @@ async def test_current_fact_transaction_wins_before_correction(
             else (EmployeeRepositoryImpl, "update")
         )
         original = getattr(cls, method)
+        update_pid: int | None = None
 
         async def hold_update(self, *args, **kwargs):
+            nonlocal update_pid
             result = await original(self, *args, **kwargs)
+            update_pid = await self._session.scalar(text("SELECT pg_backend_pid()"))
             inside.set()
             await release.wait()
             return result
@@ -549,6 +563,7 @@ async def test_current_fact_transaction_wins_before_correction(
         update_task = asyncio.create_task(change_access(runtime, account, change))
         tasks.append(update_task)
         await asyncio.wait_for(inside.wait(), 3)
+        assert isinstance(update_pid, int)
         correction = asyncio.create_task(
             service.correct_classification(
                 actor.tenant_id,
@@ -562,18 +577,24 @@ async def test_current_fact_transaction_wins_before_correction(
         blocked = False
         async with runtime["factory"]() as session:
             for _ in range(100):
+                await session.execute(text("SELECT pg_stat_clear_snapshot()"))
                 blocked = bool(
                     (
                         await session.execute(
                             text(
-                                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND cardinality(pg_blocking_pids(pid)) > 0)"
-                            )
+                                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                                "WHERE datname=current_database() "
+                                "AND :update_pid = ANY(pg_blocking_pids(pid)))"
+                            ),
+                            {"update_pid": update_pid},
                         )
                     ).scalar_one()
                 )
                 if blocked or correction.done():
                     break
                 await asyncio.sleep(0.01)
+        if correction.done():
+            await correction
         assert blocked and not correction.done()
         release.set()
         await asyncio.wait_for(update_task, 3)

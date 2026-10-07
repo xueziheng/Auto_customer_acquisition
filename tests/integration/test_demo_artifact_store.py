@@ -115,7 +115,12 @@ def _run(environ: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "scripts/demo_artifact_store.py"],
         cwd=_REPO_ROOT,
-        env={**environ, "PYTHONPATH": str(_REPO_ROOT)},
+        env={
+            **environ,
+            "PYTHONPATH": str(_REPO_ROOT),
+            "NO_PROXY": "127.0.0.1,localhost,::1",
+            "no_proxy": "127.0.0.1,localhost,::1",
+        },
         capture_output=True,
         text=True,
         timeout=120,

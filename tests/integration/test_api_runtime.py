@@ -39,6 +39,10 @@ from shared.schemas.identifiers import (
     TenantId,
     new_id,
 )
+from tests.runtime_database_fixtures import RuntimeDatabaseFactory
+from tests.runtime_database_fixtures import (
+    runtime_database_url as runtime_database_url,  # noqa: PLC0414 -- 真实受限运行角色夹具
+)
 from tool_gateway.provider_readiness import (
     HUNTER_CONTACT_CAPABILITIES,
     ProviderReadinessPermission,
@@ -198,9 +202,10 @@ async def test_database_readiness_returns_false_for_unavailable_database() -> No
 
 
 async def test_runtime_lifespan_builds_real_registered_components_and_disposes(
-    db_url: str,
+    runtime_database_url: RuntimeDatabaseFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    db_url = await runtime_database_url("tenant-runtime-integration")
     module = _runtime_module()
     env = _runtime_env(str(db_url))
     monkeypatch.setattr(os, "environ", env)

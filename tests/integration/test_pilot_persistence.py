@@ -51,8 +51,9 @@ def owned_profiles(tmp_path):
 
 
 def initialized(tmp_path, profiles):
-    from infra.pilot.config import PilotConfig
+    from infra.pilot.config import PilotConfig, exclusive_profile_lock
     from infra.pilot.resources import PilotProfile
+    from scripts.configure_enterprise_database import configure
 
     directory = tmp_path / "source"
     PilotConfig.create(directory, synthetic_policy(tmp_path / "policy.json"))
@@ -60,7 +61,31 @@ def initialized(tmp_path, profiles):
     profiles.append(profile)
     profile.provision_storage()
     profile.migrate()
+    with exclusive_profile_lock(profile.path):
+        profile.reload()
+        asyncio.run(configure(profile.path, profile.config))
+        profile.reload()
     return profile
+
+
+def test_initialized_profile_uses_verified_tenant_runtime_role(owned_profiles):
+    from infra.db.tenant_security import (
+        assert_tenant_database_isolation,
+        tenant_database_role,
+    )
+
+    tmp_path, profiles = owned_profiles
+    profile = initialized(tmp_path, profiles)
+    assert profile.config.database_username == tenant_database_role(profile.config.tenant_id)
+
+    async def verify():
+        engine = create_engine_from(profile.config.database_url.get_secret_value())
+        try:
+            await assert_tenant_database_isolation(engine, profile.config.tenant_id)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(verify())
 
 
 async def write_employee_session(config):
