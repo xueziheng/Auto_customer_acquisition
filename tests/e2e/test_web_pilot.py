@@ -36,6 +36,7 @@ from infra.pilot.resources import OWNER_LABEL, PilotProfile
 from scripts.configure_enterprise_database import configure
 from scripts.run_web_pilot import start_profile
 from shared.schemas.identifiers import TenantId, new_id
+from tests.e2e.authentication_order import AuthenticationOrderProbe
 from tests.unit.test_pilot_profile import synthetic_policy
 
 pytestmark = pytest.mark.e2e
@@ -631,6 +632,8 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             logout_response_seen = asyncio.Event()
             login_request_seen = asyncio.Event()
             order: list[str] = []
+            authentication_order = AuthenticationOrderProbe(page, second)
+            await authentication_order.install()
 
             async def hold_logout_response(route: Route) -> None:
                 if route.request.method != "POST":
@@ -682,9 +685,11 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             await asyncio.wait_for(logout_response_seen.wait(), timeout=10)
             await asyncio.wait_for(login_request_seen.wait(), timeout=10)
             require(
-                order == ["logout_response", "login_request"],
-                "AUTHENTICATION_LOCK_ORDER_INVALID",
+                order.count("logout_response") == 1 and order.count("login_request") == 1,
+                "AUTHENTICATION_EVENT_COUNT_INVALID",
             )
+            await authentication_order.assert_serialized()
+            await authentication_order.close()
             await page.unroute("**/api/auth/logout", hold_logout_response)
             await expect(page.get_by_role("button", name="登录", exact=True)).to_be_visible()
             await expect(page.get_by_text(sales.name, exact=True)).to_have_count(0)
