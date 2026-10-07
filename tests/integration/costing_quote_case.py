@@ -345,10 +345,37 @@ async def runtime_case(engine, monkeypatch, *, cors_origins=()):
         monkeypatch.setattr(ToolGateway, "invoke", counted)
         app = api.create_runtime_app()
         deps = get_api_dependencies(Request({"type": "http", "app": app, "headers": [], "method": "GET", "path": "/"}))
+        parser = deps.quotation.evidence.parser
+        parser_run = parser._run
+        probe_diagnostics = []
+
+        async def record_probe(module, header, *args):
+            result = await parser_run(module, header, *args)
+            if module == "connectors.evidence_text.probe" and len(probe_diagnostics) < 4:
+                action = header.get("action")
+                action = action if action in {"cpu", "as", "wall", "ipc"} else "unknown"
+                code, _payload, reason = result
+                exit_code = str(code) if type(code) is int and -128 <= code <= 255 else "unknown"
+                reason = "ok" if reason is None else reason
+                reason = reason if reason in {"ok", "short", "timeout", "oversized"} else "unknown"
+                probe_diagnostics.append(
+                    f"t10_parser_probe={action};exit={exit_code};reason={reason}"
+                )
+            return result
+
+        monkeypatch.setattr(parser, "_run", record_probe)
         async with app.router.lifespan_context(app), AsyncClient(
             transport=ASGITransport(app), base_url="http://test",
         ) as client:
-            assert deps.quotation.evidence.parser.capability().status == "available"
+            report = parser.capability()
+            if report.status != "available":
+                failure = report.failure if report.failure in {
+                    "platform", "resource", "protocol", "runtime",
+                } else "unknown"
+                print(f"t10_parser_status=unavailable;failure={failure}")
+                for diagnostic in probe_diagnostics:
+                    print(diagnostic)
+                raise AssertionError("真实受限解析器探测失败")
             case = SimpleNamespace(
                 app=app, client=client, dependencies=deps, tenant=tenant, clock=[NOW], objects=objects,
                 sessions=async_sessionmaker(engine, expire_on_commit=False),

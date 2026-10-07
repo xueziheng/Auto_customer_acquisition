@@ -32,11 +32,16 @@ def integration(connection):
          "-q", "--tb=short", "-p", "no:cacheprovider"],
         cwd=Path(__file__).resolve().parents[2],
         env={"PATH": "/usr/local/bin:/usr/bin:/bin", "TEST_DATABASE_URL": connection,
-             "PYTHON_DOTENV_DISABLED": "1"},
+             "TRADEOS_T10_ISOLATED_CHILD": "1", "PYTHON_DOTENV_DISABLED": "1"},
         capture_output=True, check=False, timeout=240,
     )
     for line in result.stdout.decode("utf-8", errors="replace").splitlines():
-        if re.fullmatch(r"runtime_http_error=[A-Za-z0-9_]+", line):
+        if re.fullmatch(
+            r"t10_parser_(?:status=unavailable;failure=(?:platform|resource|protocol|runtime|unknown)"
+            r"|probe=(?:cpu|as|wall|ipc|unknown);exit=(?:-?[0-9]{1,3}|unknown)"
+            r";reason=(?:ok|short|timeout|oversized|unknown))",
+            line,
+        ) or re.fullmatch(r"runtime_http_error=[A-Za-z0-9_]+", line):
             print(line)
         elif line.startswith(("FAILED tests/", "ERROR tests/")):
             print(line.split(" - ", 1)[0])

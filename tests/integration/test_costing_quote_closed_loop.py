@@ -1,6 +1,7 @@
 """T10公开需求晋升→真实工厂成本报价→审批→PDF，不产生发送或成交。"""
 
 import io
+import os
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -54,7 +55,13 @@ def history_projection_case(*, category="hardware", status="inferred"):
             account_id=account, category=category, status=status))),
         dependencies=SimpleNamespace(prospecting=SimpleNamespace(get_account_detail=AsyncMock(return_value=detail)))), point, account
 
-if sys.platform == "linux":
+def runs_in_isolated_child():
+    """Linux宿主不代表已审计环境；只有固定容器入口显式标记子pytest。"""
+    return os.environ.get("TRADEOS_T10_ISOLATED_CHILD") == "1"
+
+
+if runs_in_isolated_child():
+    assert sys.platform == "linux", "T10隔离子入口必须运行于Linux"
     from tests.integration.test_need_units import unit_engine
 
     __all__ = ["unit_engine"]
@@ -72,7 +79,7 @@ if sys.platform == "linux":
 else:
     @pytest_asyncio.fixture
     async def quote_case():
-        """宿主只调度Linux；不在Mac伪造parser或业务fixture。"""
+        """所有宿主只调度已审计Linux容器；不伪造parser或业务fixture。"""
         yield None
 
 

@@ -16,15 +16,16 @@ from uuid import uuid4
 
 import docker
 
-from tests.integration.quote_evidence_linux_support import build_parser_image
-
-BASE_IMAGE = "sha256:2b0b00d817e767647f6d629902f5d391c13598cc481b75a5fabbaf7b2c229a33"
+from tests.integration.quote_evidence_linux_support import (
+    audited_dependency_image_id,
+    build_parser_image,
+)
 
 
 @lru_cache(maxsize=1)
 def current_image():
     """当前白名单源码覆盖已验收依赖，不读取.env或联网装包。"""
-    return build_parser_image(BASE_IMAGE, chain=True, quotation=True, costing_quote=True)
+    return build_parser_image(audited_dependency_image_id(), chain=True, quotation=True, costing_quote=True)
 
 
 def free_port():
@@ -54,7 +55,11 @@ def safe_output(raw):
     """只回传固定诊断/pytest摘要，不暴露Uvicorn和依赖任意日志。"""
     lines = []
     for line in raw.decode("utf-8", errors="replace").splitlines():
-        if (re.fullmatch(r"t10_runtime_stop_exit=-?[0-9]+", line)
+        if (re.fullmatch(
+            r"t10_parser_(?:status=unavailable;failure=(?:platform|resource|protocol|runtime|unknown)"
+            r"|probe=(?:cpu|as|wall|ipc|unknown);exit=(?:-?[0-9]{1,3}|unknown)"
+            r";reason=(?:ok|short|timeout|oversized|unknown))", line)
+            or re.fullmatch(r"t10_runtime_stop_exit=-?[0-9]+", line)
             or re.fullmatch(r"t10_relay_(?:saturated|active|exec_active|completed|reload_cost)=[0-9]+", line)
             or re.fullmatch(r"(?:runtime_http_error|fixed_exception_type|t10_fixture_error)=[A-Za-z0-9_.]+", line)
             or re.fullmatch(r"[a-zA-Z0-9_/]+\.py:[0-9]+: in [a-zA-Z0-9_]+", line)
