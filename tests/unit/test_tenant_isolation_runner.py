@@ -1,0 +1,108 @@
+"""隔离验收入口必须拥有测试库、透传失败且不回显连接材料。"""
+
+from __future__ import annotations
+
+import importlib
+import secrets
+import subprocess
+from pathlib import Path
+
+import pytest
+from sqlalchemy.engine import URL
+
+
+def _runner():
+    try:
+        return importlib.import_module("tests.run_tenant_isolation")
+    except ModuleNotFoundError:
+        pytest.fail("独立企业隔离验收入口尚未实现")
+
+
+@pytest.mark.parametrize(("exit_code", "skipped", "expected"), [(0, False, 0), (1, False, 1), (5, False, 5), (0, True, 1)])
+def test_runner_uses_owned_database_and_preserves_pytest_failure(
+    monkeypatch, capsys, exit_code: int, skipped: bool, expected: int,
+) -> None:
+    module = _runner()
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    for name in ("TEST_DATABASE_URL", "DATABASE_URL", "TRADEOS_ISOLATION_TEST_DATABASE_URL"):
+        monkeypatch.setenv(name, "inherited-database-canary")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--ignore=tests/integration/test_tenant_row_security.py")
+    instances = []
+    url_canary = secrets.token_hex(16)
+
+    class Container:
+        def __init__(self, image, **kwargs):
+            self.image, self.options, self.stopped = image, kwargs, False
+            instances.append(self)
+
+        def start(self):
+            return self
+
+        def stop(self):
+            self.stopped = True
+
+        def get_connection_url(self, *, driver):
+            redact_credentials = False
+            return URL.create(
+                "postgresql+" + driver, username="synthetic", password=url_canary,
+                host="127.0.0.1", port=5432, database=self.options["dbname"],
+            ).render_as_string(hide_password=redact_credentials)
+
+    def run(command, **kwargs):
+        assert command[:3] == [module.sys.executable, "-m", "pytest"]
+        assert command[3:5] == [
+            "tests/integration/test_tenant_row_security.py",
+            "tests/integration/test_enterprise_api_isolation.py",
+        ]
+        env = kwargs["env"]
+        assert "TEST_DATABASE_URL" not in env
+        assert "DATABASE_URL" not in env
+        assert "PYTEST_ADDOPTS" not in env
+        assert url_canary in env["TRADEOS_ISOLATION_TEST_DATABASE_URL"]
+        assert "inherited-database-canary" not in repr(env)
+        assert kwargs["capture_output"] is True
+        report = next(value.split("=", 1)[1] for value in command if value.startswith("--junitxml="))
+        result = "<skipped/>" if skipped else ""
+        Path(report).write_text(f'<testsuites><testsuite><testcase name="owned">{result}</testcase></testsuite></testsuites>')
+        return subprocess.CompletedProcess(command, exit_code, "private-output-canary", "private-error-canary")
+
+    monkeypatch.setattr(module, "PostgresContainer", Container)
+    monkeypatch.setattr(module.subprocess, "run", run)
+    assert module.main() == expected
+    assert len(instances) == 1
+    assert instances[0].image == "pgvector/pgvector:pg16"
+    assert instances[0].options["dbname"].startswith("tradeos_isolation_test_")
+    assert instances[0].stopped
+    captured = capsys.readouterr()
+    assert "canary" not in captured.out + captured.err
+    assert url_canary not in captured.out + captured.err
+
+
+def test_docker_failure_is_nonzero_and_still_cleans_partial_container(monkeypatch, capsys) -> None:
+    module = _runner()
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    stopped = []
+
+    class BrokenContainer:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("private-docker-canary")
+
+        def stop(self):
+            stopped.append(True)
+
+    monkeypatch.setattr(module, "PostgresContainer", BrokenContainer)
+    assert module.main() == 2
+    assert stopped == [True]
+    captured = capsys.readouterr()
+    assert "Docker" in captured.out
+    assert "canary" not in captured.out + captured.err
+
+
+def test_runner_rejects_remote_docker_before_container_creation(monkeypatch) -> None:
+    module = _runner()
+    monkeypatch.setenv("DOCKER_HOST", "tcp://remote.invalid:2376")
+    monkeypatch.setattr(module, "PostgresContainer", lambda *args, **kwargs: pytest.fail("不可访问远程Docker"))
+    assert module.main() == 2

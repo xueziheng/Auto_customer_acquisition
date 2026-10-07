@@ -9,8 +9,8 @@ permissions:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -56,8 +56,28 @@ jobs:
         run: python3 scripts/check_boundaries.py
       - name: Sensitive scan
         run: python3 scripts/scan_sensitive.py
+      - name: Prepare audited Linux test dependencies
+        run: |
+          docker pull pgvector/pgvector:pg16
+          python - <<'PY'
+          import docker
+          from infra.pilot.resources import PILOT_MINIO_IMAGE
+          from tests.integration.quote_evidence_linux_support import (
+              PYTHON_IMAGE, bootstrap_dependency_image, audited_dependency_image_id,
+          )
+          client = docker.from_env()
+          try:
+              client.images.pull(PILOT_MINIO_IMAGE)
+              client.images.pull(PYTHON_IMAGE, platform="linux/arm64")
+          finally:
+              client.close()
+          bootstrap_dependency_image()
+          print(audited_dependency_image_id())
+          PY
       - name: Tests
         run: pytest -q -m "not e2e"
+      - name: Enterprise isolation acceptance
+        run: python -m tests.run_tenant_isolation
       - name: Browser E2E
         env:
           TRADEOS_REQUIRE_E2E: "1"
