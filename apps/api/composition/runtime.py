@@ -60,7 +60,6 @@ from connectors.object_store.bounded import S3BoundedObjectBlobTransport
 from connectors.object_store.config import S3ObjectStoreSettings
 from connectors.object_store.deferred import DeferredS3ObjectBlobTransport
 from connectors.object_store.quote_pdf import S3QuotePdfObjectBlobTransport
-from connectors.openai import OpenAIJsonModelClient
 from domains.approvals.service import (
     ApprovalService,
     ApprovalState,
@@ -859,8 +858,8 @@ def build_phase1_dependencies(
 ) -> ConfiguredApiDependencies:
     """同步装配，零数据库连接、Provider SDK 初始化与解析器进程启动。
 
-    注入模型由调用者拥有；默认模型和旧对象传输由返回的 lifecycle 暴露。
-    直接调用者须关闭这两项及可选 quotation，再关闭自己拥有的 engine。
+    旧模型入口只接线 dev_mode 下的显式测试模型，生产注入也不接线；无默认直连。
+    测试模型由调用者拥有；直接调用者须关闭对象传输及可选 quotation，再关闭 engine。
     """
     tenant = TenantId(settings.tenant_id)
     opportunity_authorizer = Phase1OpportunityAuthorizer(tenant)
@@ -1204,22 +1203,14 @@ def build_phase1_dependencies(
         directive_employees,
         now=now,
     )
-    owned_model = (
-        OpenAIJsonModelClient(settings.openai_api_key_ref, resolved_secret_resolver)
-        if model_client is None
-        else None
-    )
-    resolved_model = model_client if model_client is not None else owned_model
-    assert resolved_model is not None
-    trade_manager = TradeManagerAgent(
-        settings.trade_manager_model,
-        StructuredTradeManagerModelPort(
-            resolved_model,
+    trade_manager = None
+    if settings.dev_mode and model_client is not None:
+        trade_manager = TradeManagerAgent(
             settings.trade_manager_model,
-        ),
-        None,
-        CredentialMarkerGuard(),
-    )
+            StructuredTradeManagerModelPort(model_client, settings.trade_manager_model),
+            None,
+            CredentialMarkerGuard(),
+        )
     if manual_send is None:
         manual_gateway: ToolGatewayInvoker = _UnavailableToolGateway()
         delivery_materials: DeliveryMaterialProvider = unavailable_send_sources
@@ -1550,6 +1541,9 @@ def build_phase1_dependencies(
             else "worker_required",
         )
         for name in capability_names
+    ) + (
+        RuntimeCapability(name="builtin_assistant", status="disabled", reason="required_ports_missing"),
+        RuntimeCapability(name="model", status="disabled", reason="required_ports_missing"),
     )
     inbound = None
     if inbound_mailbox is not None:
@@ -1634,7 +1628,6 @@ def build_phase1_dependencies(
         research_execution=PostgresDiscoveryExecutionReader(factory),
         research_evidence=PostgresResearchEvidenceReader(factory),
         quotation=quotation,
-        model_lifecycle=owned_model,
         object_store_lifecycle=object_transport,
         sourcing=sourcing,
         sourcing_application=sourcing_application,

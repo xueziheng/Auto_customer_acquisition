@@ -11,14 +11,14 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from apps.api.dependencies import UnconfiguredApiDependencies
+from apps.api.dependencies import UnconfiguredApiDependencies, get_request_identity
 from apps.api.main import create_app
 from apps.api.middleware import ApiSettings
 from apps.api.runtime_config import Phase1RuntimeSettings
 from domains.approvals.service import ApprovalState, ApprovalType
 from domains.compliance.service import ComplianceService
 from domains.organization.service import OrganizationService
-from shared.errors import TransientError
+from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import RunId, TenantId
 from tool_gateway.provider_readiness import (
     ProviderReadinessPermission,
@@ -408,6 +408,94 @@ def test_runtime_config_parses_only_secret_references_for_unsubscribe_keys() -> 
         ("2026-v1", "UNSUBSCRIBE_HMAC_2026"),
     )
     assert "UNSUBSCRIBE_HMAC_2026" not in repr(settings)
+
+
+@pytest.mark.parametrize("dev_mode", [False, True])
+async def test_default_runtime_discovery_endpoint_has_no_direct_model_fallback(
+    dev_mode: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from connectors.openai import OpenAIJsonModelClient
+    from tests.unit.test_command_center_router import TENANT, _identity
+
+    module = importlib.import_module("apps.api.composition.runtime")
+    calls: list[str] = []
+
+    async def controlled_completion(self, **kwargs):
+        calls.append("legacy-model")
+        return "{}"
+
+    monkeypatch.setattr(OpenAIJsonModelClient, "complete_json", controlled_completion)
+    settings = replace(
+        Phase1RuntimeSettings.from_environ(
+            _runtime_environ("postgresql+asyncpg://db.invalid/tradeos")
+        ),
+        tenant_id=str(TENANT), dev_mode=dev_mode,
+    )
+    secrets = _ManualSecrets()
+    dependencies = module.build_phase1_dependencies(
+        settings, object(), now=lambda: datetime.now(UTC), secret_resolver=secrets,
+    )
+    app = create_app(
+        settings=ApiSettings(tenant_id=str(TENANT), dev_mode=dev_mode, retry_after_seconds=30),
+        dependencies=dependencies,
+    )
+    app.dependency_overrides[get_request_identity] = lambda: _identity("boss")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/commands/discovery-proposals", json={"message": "Find buyers for hinges"},
+            headers={"X-Tenant-Id": str(TENANT)},
+        )
+        capabilities = await client.get(
+            "/health/capabilities", headers={"X-Tenant-Id": str(TENANT)}
+        )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "service_unavailable"
+    assert calls == []
+    assert settings.openai_api_key_ref not in secrets.refs
+    assert dependencies.model_lifecycle is None
+    states = {item["name"]: item["status"] for item in capabilities.json()}
+    assert states["model"] == states["builtin_assistant"] == "disabled"
+
+
+class _ControlledJsonModel:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete_json(self, **kwargs) -> str:
+        self.calls += 1
+        return "{}"
+
+
+async def test_production_runtime_does_not_bind_direct_injected_model() -> None:
+    module = importlib.import_module("apps.api.composition.runtime")
+    settings = replace(Phase1RuntimeSettings.from_environ(
+        _runtime_environ("postgresql+asyncpg://db.invalid/tradeos")
+    ), dev_mode=False)
+    model = _ControlledJsonModel()
+    dependencies = module.build_phase1_dependencies(
+        settings, object(), now=lambda: datetime.now(UTC), secret_resolver=_ManualSecrets(),
+        model_client=model,
+    )
+    assert dependencies.trade_manager is None
+    assert dependencies.model_lifecycle is None
+    assert model.calls == 0
+
+
+async def test_development_runtime_borrows_only_explicit_controlled_model() -> None:
+    module = importlib.import_module("apps.api.composition.runtime")
+    settings = Phase1RuntimeSettings.from_environ(
+        _runtime_environ("postgresql+asyncpg://db.invalid/tradeos")
+    )
+    model = _ControlledJsonModel()
+    dependencies = module.build_phase1_dependencies(
+        settings, object(), now=lambda: datetime.now(UTC), secret_resolver=_ManualSecrets(),
+        model_client=model,
+    )
+    with pytest.raises(ValidationError, match="输出不满足"):
+        await dependencies.trade_manager.propose_discovery("Find buyers for hinges")
+    assert model.calls == 1
+    assert dependencies.model_lifecycle is None
 
 
 @pytest.mark.parametrize(

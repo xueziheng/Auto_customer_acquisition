@@ -121,7 +121,7 @@ def create_runtime_app_from_settings(
     authentication_cookie: AuthenticationCookieSettings | None = None,
     assistant_factory: Callable[[async_sessionmaker[AsyncSession], ConfiguredApiDependencies], AssistantApiComposition] | None = None,
 ) -> FastAPI:
-    """按显式配置与端口装配；借用注入模型，自有资源只在 lifespan 关闭。
+    """按显式配置与端口装配；旧模型仅借给开发测试，生产模型须由 assistant Gateway 装配。
 
     构造严格无连接或 SDK/解析器启动；失败时没有已打开资源需要新事件循环。
     """
@@ -141,8 +141,18 @@ def create_runtime_app_from_settings(
         )
         assistant = assistant_factory(factory, dependencies) if assistant_factory is not None else None
         if assistant is not None:
-            dependencies = replace(dependencies, assistant=assistant.service, model_configuration=assistant.configuration, trade_manager=None,
-                runtime_capabilities=(*dependencies.runtime_capabilities,RuntimeCapability(name="builtin_assistant",status="enabled",reason="composed"),RuntimeCapability(name="model",status="enabled",reason="composed")))
+            dependencies = replace(
+                dependencies,
+                assistant=assistant.service,
+                model_configuration=assistant.configuration,
+                trade_manager=None,
+                runtime_capabilities=(
+                    *(capability for capability in dependencies.runtime_capabilities
+                      if capability.name not in {"builtin_assistant", "model"}),
+                    RuntimeCapability(name="builtin_assistant", status="enabled", reason="composed"),
+                    RuntimeCapability(name="model", status="enabled", reason="composed"),
+                ),
+            )
     except Exception as exc:  # noqa: BLE001 装配异常只记录类型并固定映射
         logger.error("API runtime 装配失败", extra={"error_type": type(exc).__name__})
         raise RuntimeStartupError() from None
