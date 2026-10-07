@@ -81,7 +81,7 @@ async def test_real_playbook_settings_creates_candidate_and_run(
             assert run_id is not None
             await expect(page.get_by_role("link", name="前往审批中心")).to_be_visible()
             await expect(page.get_by_role("link", name="查看运行记录")).to_have_attribute(
-                "href", f"/runs/{run_id}"
+                "href", f"/runs?run={run_id}"
             )
             if screenshot_dir is not None:
                 await page.locator(".form-message.success").screenshot(

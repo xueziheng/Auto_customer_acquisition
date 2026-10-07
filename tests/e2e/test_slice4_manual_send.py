@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -87,6 +88,7 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from tests.outreach_fakes import FakeApprovals, FakeContacts, FakeReplies, FakeSenders
+from tests.runtime_database_fixtures import runtime_database_scope
 
 _NOW = datetime(2026, 8, 15, 9, 0, tzinfo=UTC)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -354,6 +356,7 @@ async def slice4_stack() -> AsyncIterator[dict[str, object]]:
     container_started = False
     fake_gmail = _FakeGmailServer()
     engine: AsyncEngine | None = None
+    runtime_resources = AsyncExitStack()
     processes: list[object] = []
     dns_resources: list[asyncio.DatagramTransport] = []
     try:
@@ -373,6 +376,10 @@ async def slice4_stack() -> AsyncIterator[dict[str, object]]:
         engine = create_engine_from(database_url)
         factory = async_sessionmaker(bind=engine, expire_on_commit=False)
         tenant = TenantId(new_id("tn"))
+        provision = await runtime_resources.enter_async_context(
+            runtime_database_scope(database_url)
+        )
+        runtime_database_url = await provision(str(tenant))
         boss = EmployeeId(new_id("emp"))
         campaign = CampaignId(new_id("cmp"))
         approval = ApprovalId(new_id("apr"))
@@ -383,7 +390,7 @@ async def slice4_stack() -> AsyncIterator[dict[str, object]]:
 
         def env_for(vite_origin: str) -> dict[str, str]:
             return _runtime_env(
-                database_url,
+                runtime_database_url,
                 tenant,
                 vite_origin,
                 fake_gmail.base_url,
@@ -760,13 +767,20 @@ async def slice4_stack() -> AsyncIterator[dict[str, object]]:
         fake_gmail.stop()
         for transport in dns_resources:
             transport.close()
-        if engine is not None:
-            await engine.dispose()
-        for handle in list(logs.values()) if "logs" in dir() else []:
-            handle.close()
-        temporary.cleanup()
-        if container_started:
-            await asyncio.to_thread(container.stop)
+        try:
+            try:
+                await runtime_resources.aclose()
+            finally:
+                if engine is not None:
+                    await engine.dispose()
+        finally:
+            try:
+                for handle in list(logs.values()) if "logs" in dir() else []:
+                    handle.close()
+                temporary.cleanup()
+            finally:
+                if container_started:
+                    await asyncio.to_thread(container.stop)
 
 _SLICE4_APP_FACTORY_SOURCE = r"""
 import os
@@ -796,6 +810,7 @@ from domains.outreach.schemas import (
 )
 from infra.db.schema import assert_database_schema_current
 from infra.db.session import create_engine_from
+from infra.db.tenant_security import assert_tenant_database_isolation
 from infra.secrets import EnvironmentSecretResolver
 from shared.schemas.identifiers import (
     ApprovalId,
@@ -885,6 +900,7 @@ def build_app(environ):
         del app
         try:
             await assert_database_schema_current(engine)
+            await assert_tenant_database_isolation(engine, str(tenant))
             yield
         finally:
             await engine.dispose()
@@ -1003,9 +1019,11 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
             await page.goto(f"{web_origin}/crm/outreach", wait_until="networkidle")
             await expect(page.get_by_text(str(enrollment))).to_be_visible()
             await assert_no_overflow(page)
-            # 选中入组记录后详情区才出现「准备发送」
+            # 选中入组记录后手工准备草稿，再显式发送。
             await page.locator('li[aria-label="入组记录"]').first.click()
-            await page.get_by_role("button", name="准备发送").click()
+            await page.get_by_role("button", name="手工准备草稿", exact=True).click()
+            await expect(page.get_by_role("dialog", name="发送编辑")).to_be_visible()
+            assert fake_gmail.send_count == 0
             await expect(page.get_by_text("邮件主题")).to_be_visible()
             await page.locator("#send-subject").fill("Re: hardware sourcing needs")
             await page.locator("#send-body").fill(
@@ -1208,9 +1226,9 @@ async def test_slice4_manual_send_fixed_journey(slice4_stack: dict[str, object])
             capture(page)
             await page.goto(f"{web_origin}/crm/outreach", wait_until="networkidle")
             await expect(page.get_by_text(str(enrollment))).to_be_visible()
-            # 选中入组记录后详情区才出现「准备发送」
+            # 身份熔断后，同一草稿准备入口必须拒绝继续发送。
             await page.locator('li[aria-label="入组记录"]').first.click()
-            await page.get_by_role("button", name="准备发送").click()
+            await page.get_by_role("button", name="手工准备草稿", exact=True).click()
             await expect(page.get_by_text("无法准备发送，请稍后重试")).to_be_visible(
                 timeout=10000
             )

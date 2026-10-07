@@ -785,14 +785,49 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
                 0
             )
 
+            campaign_start_requests: list[str] = []
+            page.on(
+                "request",
+                lambda outbound: (
+                    campaign_start_requests.append(outbound.url)
+                    if outbound.method == "POST"
+                    and outbound.url.endswith(("/start", "/activate"))
+                    else None
+                ),
+            )
             await page.goto(f"{stack.web_origin}/campaigns")
             await assert_surface("/campaigns", "自动发邮件")
             await expect(page.get_by_text("v1 · US")).to_be_visible()
-            await page.get_by_role("button", name="启动自动发邮件").click()
-            await expect(page.get_by_text("自动发送运行中")).to_be_visible()
+            await expect(
+                page.get_by_role("button", name="启动自动发邮件")
+            ).to_be_disabled()
+            await expect(page.get_by_text(
+                "真实搜索、联系人验证、发信或回复处理尚未完整接通；当前不能启动外发活动。",
+                exact=True,
+            )).to_be_visible()
+            assert campaign_start_requests == []
             approval_view = await dependencies.approvals.get(tenant, approval_id)
             assert approval_view.state == "approved"
             assert approval_view.decided_by_employee == stack.employees.boss
+
+            # 此栈验收浏览器审批与受控回复闭环，不装配完整自动发送部署。
+            # 激活已有精确审批仍走真实 HTTP 的老板身份/审批/状态校验。
+            activation = await page.request.post(
+                f"{stack.api_origin}/crm/campaigns/{campaign_id}/activate",
+                headers={
+                    "X-Tenant-Id": str(tenant),
+                    "X-Employee-Id": str(stack.employees.boss),
+                },
+            )
+            assert activation.status == 200, await activation.text()
+            activated = await activation.json()
+            assert activated["state"] == "active"
+            assert activated["approval_id"] == str(approval_id)
+            assert (await dependencies.approvals.get(tenant, approval_id)).state == "applied"
+            await page.reload()
+            await expect(
+                page.locator(".campaign-detail .version")
+            ).to_have_text("运行中")
 
             await stack.scheduler_runtime.outbox.drain()
             for _ in range(20):

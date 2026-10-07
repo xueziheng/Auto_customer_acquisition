@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -108,6 +109,7 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from shared.schemas.provenance import SourceType
+from tests.runtime_database_fixtures import runtime_database_scope
 
 _CONTAINER_IMAGE = "pgvector/pgvector:pg16"
 _MINIO_IMAGE = "minio/minio:RELEASE.2025-04-22T22-12-26Z"
@@ -788,6 +790,7 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
     minio_container: DockerContainer | None = None
     minio_started = False
     engine: AsyncEngine | None = None
+    runtime_resources = AsyncExitStack()
     api_process: ManagedProcess | None = None
     vite_process: ManagedProcess | None = None
     scheduler_context = None
@@ -818,6 +821,15 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
             sales_b=EmployeeId(new_id("emp")),
         )
         await _seed_employees_and_territories(factory, tenant_id, employees)
+        provision = await runtime_resources.enter_async_context(
+            runtime_database_scope(database_url)
+        )
+        runtime_database_url = await provision(str(tenant_id))
+        runtime_engine = create_engine_from(runtime_database_url)
+        runtime_resources.push_async_callback(runtime_engine.dispose)
+        runtime_factory = async_sessionmaker(
+            bind=runtime_engine, expire_on_commit=False
+        )
         # 网页快照必须经过真实 Artifact Store；仅 Tavily/Page/Model 三个外部端口受控。
         access = f"access{secrets.token_hex(12)}"
         secret = f"secret{secrets.token_urlsafe(24)}"
@@ -870,7 +882,7 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
         listener.listen()
         api_port = int(listener.getsockname()[1])
         api_origin = f"http://127.0.0.1:{api_port}"
-        runtime_env = _runtime_process_env(database_url, tenant_id, web_origin)
+        runtime_env = _runtime_process_env(runtime_database_url, tenant_id, web_origin)
         runtime_settings = Phase1RuntimeSettings.from_environ(runtime_env)
 
         for name in ("api.stdout", "api.stderr", "vite.stdout", "vite.stderr"):
@@ -925,9 +937,11 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
             f"{web_origin}/crm/opportunities",
             vite_process,
         )
-        scheduler_env = _scheduler_runtime_env(database_url, tenant_id, _free_port())
+        scheduler_env = _scheduler_runtime_env(
+            runtime_database_url, tenant_id, _free_port()
+        )
         raw_artifacts = RawArtifactStoreImpl(
-            lambda bound_tenant: SqlAlchemyArtifactUnitOfWork(factory, bound_tenant),
+            lambda bound_tenant: SqlAlchemyArtifactUnitOfWork(runtime_factory, bound_tenant),
             S3ObjectBlobTransport(object_settings, object_secrets),
             object_settings.raw_max_bytes,
             lambda: _SEED_TIME,
@@ -935,7 +949,7 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
         )
         controls = ControlledSourcingPorts()
         opportunities = OpportunityServiceImpl(
-            lambda: SqlAlchemyOpportunityUnitOfWork(factory, tenant_id),
+            lambda: SqlAlchemyOpportunityUnitOfWork(runtime_factory, tenant_id),
             OpportunityScorerImpl(runtime_settings.scoring_policy),
             runtime_settings.handoff_policy,
             authorizer=Phase1OpportunityAuthorizer(tenant_id),
@@ -944,7 +958,7 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
         )
         employee_scope = partial(
             employee_service_scope,
-            factory,
+            runtime_factory,
             now=lambda: _SEED_TIME,
             authorizer=Phase1EmployeeAuthorizer(tenant_id),
             audit=EmployeeStandardAuditLogger(),
@@ -953,12 +967,12 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
             tenant_id,
             OrganizationServiceImpl(
                 lambda bound_tenant: SqlAlchemyOrganizationUnitOfWork(
-                    factory, bound_tenant
+                    runtime_factory, bound_tenant
                 ),  # type: ignore[arg-type, return-value]
                 Phase1OrganizationAuthorizer(tenant_id),
                 now=lambda: _SEED_TIME,
             ),
-            AcceptanceEmployees(factory),
+            AcceptanceEmployees(runtime_factory),
         )
         playbook_reader.bind_actor(employees.boss)
         scheduler_audience = _E2ESchedulerAudience()
@@ -1079,8 +1093,11 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
                                 await asyncio.to_thread(api_process.stop)
                         finally:
                             try:
-                                if engine is not None:
-                                    await engine.dispose()
+                                try:
+                                    await runtime_resources.aclose()
+                                finally:
+                                    if engine is not None:
+                                        await engine.dispose()
                             finally:
                                 try:
                                     for handle in log_handles:

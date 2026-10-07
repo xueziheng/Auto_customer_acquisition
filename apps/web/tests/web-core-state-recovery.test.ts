@@ -49,6 +49,24 @@ it('Settings 503冻结Playbook payload，同键恢复先读取历史',async()=>{
  root.querySelector('form')!.dispatchEvent(new Event('submit',{cancelable:true}));await flush();expect(requests).toHaveLength(2);expect(requests[1]!.headers.get('Idempotency-Key')).toBe(requests[0]!.headers.get('Idempotency-Key'));expect(bodies[1]).toEqual(bodies[0]);const posts=order.map((x,i)=>x.startsWith('POST')?i:-1).filter(i=>i>=0);expect(order.slice(posts[0]!+1,posts[1])).toContain('GET /settings/playbook/versions');
 });
 const identity:components['schemas']['IdentityView']={identity_id:'sid-one',address:'one@example.test',domain:'example.test',role:'cold_outreach',state:'auth_pending',created_at:'2026-09-06T00:00:00Z',remaining_today:0,can_send_today:false,usable_for_cold_outreach:false,warmup_complete:false,auth:{checked_at:'2026-09-06T00:00:00Z',spf_passed:false,dkim_passed:true,dmarc_passed:true,failures:[]}};
+it('Campaign 能力核实前不能启动，齐备后点击仅提交一次精确活动',async()=>{
+ const capabilities=deferred();const writes:string[]=[];let active=false;
+ const {root}=await mount(CampaignCenter,async input=>{
+  const request=input as Request,path=new URL(request.url).pathname;
+  const current={...campaign,state:active?'active':'draft',paused_reason:null};
+  if(request.method==='POST'){writes.push(path);active=true;return json({...current,state:'active'});}
+  if(path==='/health/capabilities')return capabilities.promise;
+  if(path==='/crm/sending-identities')return json([{...identity,usable_for_cold_outreach:true,can_send_today:true}]);
+  return path==='/crm/campaigns'?json([current]):json([]);
+ });
+ const start=button(root,'启动自动发邮件');
+ expect(start.disabled).toBe(true);start.click();await flush();expect(writes).toEqual([]);
+ capabilities.resolve(json(['research','contacts','campaign','reply'].map(name=>({name,status:'enabled',reason:'composed'}))));
+ await flush();expect(start.disabled).toBe(false);start.click();start.click();await flush();
+ expect(writes).toEqual(['/crm/campaigns/cmp-one/start']);
+ expect(root.querySelector('.campaign-detail .version')?.textContent).toBe('运行中');
+ expect(root.textContent).toContain('活动边界已启动');
+});
 it('未通过认证不可启动预热；入站未来重试期限不能提前解除',async()=>{
  const post=vi.fn();const {root}=await mount(SendingIdentityCenter,async input=>{const r=input as Request;if(r.method==='POST')post();return new URL(r.url).pathname.endsWith('/management')?json([identity]):json({state:'waiting',identity_id:'sid-one',reason:'rate_limited',version:7,next_retry_at:'2099-09-06T01:00:00Z'});});
  field(root,'[aria-label="预热目标日量"]','15');await flush();expect(button(root,'启动预热').disabled).toBe(true);expect(root.textContent).toContain('需先通过');expect(root.textContent).toContain('2099');expect(button(root,'原位重试').disabled).toBe(true);expect(post).not.toHaveBeenCalled();
