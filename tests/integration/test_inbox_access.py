@@ -16,6 +16,7 @@ from tests.integration.test_email_inbound_gateway import (
     owned_infrastructure,  # noqa: F401
 )
 from tests.integration.test_email_inbound_page import NOW, page_runtime  # noqa: F401
+from tests.runtime_database_fixtures import runtime_database_url  # noqa: F401
 
 
 def inbox_actor(runtime, role):
@@ -370,7 +371,7 @@ async def test_correction_lock_linearizes_real_current_fact_change(
 
 @pytest.mark.parametrize("mode", ["transfer_during_read", "wrong_kind", "other_tenant"])
 async def test_raw_gateway_rechecks_and_rejects_mismatched_artifact(
-    page_runtime, monkeypatch, mode
+    page_runtime, runtime_database_url, monkeypatch, mode
 ):
     from apps.api.inbox_evidence import build_inbox_evidence_reader
     from artifact_store.store import RawArtifactKind
@@ -383,15 +384,46 @@ async def test_raw_gateway_rechecks_and_rejects_mismatched_artifact(
         sales = inbox_actor(runtime, "sales")
         tenant = sales.tenant_id
         raw_bytes = mime()
-        meta = await c.bounded_raw_store.put(
-            TenantId(new_id("tn")) if mode == "other_tenant" else tenant,
-            RawArtifactKind.EMAIL_RAW
-            if mode != "wrong_kind"
-            else RawArtifactKind.WEB_SNAPSHOT,
-            raw_bytes,
-            "text/html" if mode == "wrong_kind" else "message/rfc822",
-            uploaded_by=None,
-        )
+        if mode == "other_tenant":
+            from contextlib import AsyncExitStack
+
+            from sqlalchemy.ext.asyncio import async_sessionmaker
+
+            from artifact_store.service_impl import RawArtifactStoreImpl
+            from connectors.object_store.config import S3ObjectStoreSettings
+            from connectors.object_store.s3 import S3ObjectBlobTransport
+            from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
+            from infra.db.session import create_engine_from
+
+            other_tenant = TenantId(new_id("tn"))
+            other_url = await runtime_database_url(other_tenant)
+            async with AsyncExitStack() as resources:
+                engine = create_engine_from(other_url)
+                resources.push_async_callback(engine.dispose)
+                sessions = async_sessionmaker(engine, expire_on_commit=False)
+                settings = S3ObjectStoreSettings.from_environ(
+                    runtime["config"].runtime_environment(),
+                )
+                transport = S3ObjectBlobTransport(settings, runtime["config"])
+                resources.push_async_callback(transport.aclose)
+                foreign_store = RawArtifactStoreImpl(
+                    lambda tenant_id: SqlAlchemyArtifactUnitOfWork(sessions, tenant_id),
+                    transport, settings.raw_max_bytes, lambda: NOW, new_id,
+                )
+                meta = await foreign_store.put(
+                    other_tenant, RawArtifactKind.EMAIL_RAW, raw_bytes,
+                    "message/rfc822", uploaded_by=None,
+                )
+        else:
+            meta = await c.bounded_raw_store.put(
+                tenant,
+                RawArtifactKind.EMAIL_RAW
+                if mode != "wrong_kind"
+                else RawArtifactKind.WEB_SNAPSHOT,
+                raw_bytes,
+                "text/html" if mode == "wrong_kind" else "message/rfc822",
+                uploaded_by=None,
+            )
         account, _, _ = await message_for(runtime, sales.employee_id)
         message = await runtime["deps"].conversations.ingest_inbound(
             tenant,

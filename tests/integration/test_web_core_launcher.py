@@ -164,7 +164,7 @@ def test_stack_ready_restart_and_term_owned_cleanup(tmp_path: Path) -> None:
                     page.get_by_label("演练角色").input_value()
                     == state["identities"][1]["employee_id"]
                 )
-                page.get_by_role("heading", name="系统设置", exact=True).wait_for(
+                page.get_by_role("heading", name="企业设置", exact=True).wait_for(
                     timeout=10000
                 )
                 page.get_by_role("heading", name="首次配置", exact=True).wait_for(

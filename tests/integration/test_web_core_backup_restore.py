@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -32,7 +33,11 @@ from infra.controlled.config import ControlledConfig, ControlledError
 from infra.controlled.resources import OwnedContainers
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.session import create_engine_from
-from scripts.controlled_web_supervisor import Supervisor
+from scripts.controlled_web_supervisor import (
+    CONTROLLED_MINIO_IMAGE,
+    Supervisor,
+    prepare_runtime_database,
+)
 from scripts.run_web_core_controlled import reserve
 from shared.schemas.identifiers import TenantId, new_id
 
@@ -179,12 +184,12 @@ def _empty_target(
             raise ControlledError("backup_target_not_ready")
         time.sleep(0.1)
     _, object_port = target.containers.create(
-        "minio/minio:RELEASE.2025-04-22T22-12-26Z",
+        CONTROLLED_MINIO_IMAGE,
         port=9000,
         environment={"MINIO_ROOT_USER": access, "MINIO_ROOT_PASSWORD": secret},
         command=[
             "server",
-            "/data",
+            "/bitnami/minio/data",
             "--address",
             ":9000",
             "--console-address",
@@ -384,7 +389,7 @@ async def test_owned_static_pg_and_original_restore_to_distinct_empty_target(
         try:
             source = Supervisor(ROOT, tmp_path, [reserve(0) for _ in range(3)])
             supervisors.append(source)
-            source.start_infrastructure()
+            await asyncio.to_thread(source.start_infrastructure)
             source_config = _verify(source)
             stage = "source_artifact"
             original = await _artifact(source, cleanup_errors=resource_errors)
@@ -398,9 +403,17 @@ async def test_owned_static_pg_and_original_restore_to_distinct_empty_target(
             stage = "create_target"
             target = Supervisor(ROOT, tmp_path, [reserve(0) for _ in range(3)])
             supervisors.append(target)
-            _empty_target(target, source_config, resource_errors)
+            await asyncio.to_thread(_empty_target, target, source_config, resource_errors)
             stage = "restore"
-            _restore(source, target, resource_errors)
+            await asyncio.to_thread(_restore, source, target, resource_errors)
+            target.config = target.config.model_copy(update={
+                "database_url": await prepare_runtime_database(
+                    target.config.database_url, target.config.tenant_id,
+                ),
+            })
+            runtime_config_path = target.directory / "restored-runtime-config.json"
+            target.config.write(runtime_config_path)
+            runtime_config_path.replace(target.directory / "config.json")
             stage = "verify_metadata_and_original"
             restored = await _artifact(
                 target, original["metadata"]["artifact_id"], resource_errors

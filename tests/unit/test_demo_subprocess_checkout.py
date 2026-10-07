@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from shared.schemas.identifiers import new_id
+
 
 @pytest.mark.parametrize(
     "demo",
@@ -55,6 +57,8 @@ def test_demo_launcher_loads_selected_checkout_without_parent_environment(
         result = launcher._run(
             {"DATABASE_URL": "unused", "PYTHONPATH": str(other_checkout)}
         )
+    elif demo == "email_feedback":
+        result = launcher._run_demo("unused", tenant_id=new_id("tn"))
     elif demo == "slice4_manual_send":
         result = launcher._run_demo(
             "unused", extra_env={"PYTHONPATH": str(other_checkout)}

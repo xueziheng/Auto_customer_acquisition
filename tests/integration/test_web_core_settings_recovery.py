@@ -15,16 +15,23 @@ from apps.api.main import create_app
 from apps.api.middleware import ApiSettings
 from shared.errors import TransientError
 from shared.schemas.identifiers import new_id
+from tests.integration.conftest import RedactedUrl, _to_asyncpg
 from tests.integration.test_email_inbound_gateway import (
     owned_infrastructure,  # noqa: F401
 )
 from tests.integration.test_email_inbound_page import page_runtime  # noqa: F401
 
 
+@pytest.fixture
+def db_url(_postgres_container, _migrated):
+    """故障注入只作用于本测试拥有的容器，忽略外部连接配置。"""
+    return RedactedUrl(_to_asyncpg(_postgres_container.get_connection_url()))
+
+
 @pytest.mark.parametrize("failure", ["start_error", "database_unavailable"])
 async def test_playbook_candidate_commit_then_start_failure_recovers_exact_command(
     page_runtime,  # noqa: F811
-    owned_infrastructure,  # noqa: F811
+    _postgres_container,
     failure,
     monkeypatch,
     caplog,
@@ -51,12 +58,13 @@ async def test_playbook_candidate_commit_then_start_failure_recovers_exact_comma
         calls.append(args)
         if failure == "start_error":
             raise TransientError("受控start故障")
-        containers = owned_infrastructure.containers
-        container = containers.verify(containers.ids[0])
+        container = _postgres_container.get_wrapped_container()
+        container.reload()
 
         async def restore_database():
             await asyncio.sleep(2)
-            owned = containers.verify(containers.ids[0])
+            container.reload()
+            owned = container
             if owned.status == "paused":
                 await asyncio.to_thread(owned.unpause)
 
@@ -66,13 +74,15 @@ async def test_playbook_candidate_commit_then_start_failure_recovers_exact_comma
             return await asyncio.wait_for(original(*args, **kwargs), timeout=1)
         finally:
             await asyncio.shield(restoration)
-            owned = containers.verify(containers.ids[0])
+            container.reload()
+            owned = container
             if owned.status == "paused":
                 await asyncio.to_thread(owned.unpause)
-            owned = containers.verify(containers.ids[0])
+            container.reload()
+            owned = container
             assert owned.status == "running"
             ready = await asyncio.to_thread(
-                owned.exec_run, ["pg_isready", "-U", "controlled", "-d", "controlled"]
+                owned.exec_run, ["pg_isready"]
             )
             assert ready.exit_code == 0
             async with runtime["factory"]() as probe:
