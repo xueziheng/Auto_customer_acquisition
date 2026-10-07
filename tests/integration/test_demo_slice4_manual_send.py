@@ -19,8 +19,8 @@ from pathlib import Path
 from urllib.parse import urlunsplit
 
 import pytest_asyncio
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from infra.db.session import create_engine_from
 from infra.db.tables import (
@@ -33,6 +33,7 @@ from infra.db.tables import (
     OutreachMessageAttemptRow,
     ToolCallRow,
 )
+from infra.db.tenant_security import tenant_database_role
 from shared.schemas.identifiers import TenantId
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -155,6 +156,15 @@ def _successful_summary(result: subprocess.CompletedProcess[str]) -> dict[str, o
     return summary
 
 
+async def _assert_runtime_role_released(session: AsyncSession, tenant_id: str) -> None:
+    """演练成功或失败都只能回收自己创建的临时登录角色，业务事实仍保留。"""
+    remaining = await session.scalar(
+        text("SELECT count(*) FROM pg_catalog.pg_roles WHERE rolname = :role"),
+        {"role": tenant_database_role(tenant_id)},
+    )
+    assert remaining == 0
+
+
 async def _readback(
     database_url: str, summary: dict[str, object]
 ) -> dict[str, object]:
@@ -163,6 +173,7 @@ async def _readback(
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with factory() as session:
+            await _assert_runtime_role_released(session, str(tenant))
             attempts = (
                 await session.execute(
                     select(OutreachMessageAttemptRow)
@@ -393,6 +404,8 @@ async def test_demo_invalid_dns_config_fails_inside_auth_workflow(db_url: str) -
                     )
                 )
             ).scalars().all()
+            for tenant_id in {row.tenant_id for row in auth_rows}:
+                await _assert_runtime_role_released(session, tenant_id)
     finally:
         await engine.dispose()
     # 证据：运行确实进入认证 workflow/DNS 阶段后 fail-closed——

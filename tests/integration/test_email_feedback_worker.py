@@ -14,6 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from shared.schemas.email_feedback import EmailFeedbackPage
 from shared.schemas.identifiers import TenantId, new_id
+from tests.runtime_database_fixtures import (
+    runtime_database_url as runtime_database_url,  # noqa: PLC0414 - pytest fixture
+)
 
 
 @pytest_asyncio.fixture
@@ -229,10 +232,11 @@ def _worker_environment(db_url: str) -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_production_composition_registers_feedback_read_only_and_fetches_typed_page(
-    db_url: str,
+    db_url: str, runtime_database_url,
 ) -> None:
     runtime = importlib.import_module("apps.email_feedback_worker.runtime")
     environment = _worker_environment(db_url)
+    environment["DATABASE_URL"] = await runtime_database_url(environment["TRADEOS_TENANT_ID"])
     tenant_id = environment["TRADEOS_TENANT_ID"]
     factory = runtime.EmailFeedbackRuntimeFactory(
         environment,
@@ -253,10 +257,12 @@ async def test_production_composition_registers_feedback_read_only_and_fetches_t
 
 @pytest.mark.asyncio
 async def test_production_composition_resolves_oauth_only_inside_connector_fetch(
-    db_url: str,
+    db_url: str, runtime_database_url,
 ) -> None:
     runtime = importlib.import_module("apps.email_feedback_worker.runtime")
-    environment = _TrackingEnvironment(_worker_environment(db_url))
+    values = _worker_environment(db_url)
+    values["DATABASE_URL"] = await runtime_database_url(values["TRADEOS_TENANT_ID"])
+    environment = _TrackingEnvironment(values)
     tenant_id = environment["TRADEOS_TENANT_ID"]
     environment.reads.clear()
     factory = runtime.EmailFeedbackRuntimeFactory(
@@ -275,11 +281,13 @@ async def test_production_composition_resolves_oauth_only_inside_connector_fetch
 
 @pytest.mark.asyncio
 async def test_runtime_factory_propagates_cleanup_failure_without_primary(
-    db_url: str,
+    db_url: str, runtime_database_url,
 ) -> None:
     runtime = importlib.import_module("apps.email_feedback_worker.runtime")
+    environment = _worker_environment(db_url)
+    environment["DATABASE_URL"] = await runtime_database_url(environment["TRADEOS_TENANT_ID"])
     factory = runtime.EmailFeedbackRuntimeFactory(
-        _worker_environment(db_url),
+        environment,
         transport_factory=lambda _base_url: _CleanupFailingTransport(),
         now=lambda: datetime(2026, 8, 13, 10, 0, tzinfo=UTC),
     )
@@ -297,10 +305,11 @@ async def test_runtime_factory_propagates_cleanup_failure_without_primary(
 
 @pytest.mark.asyncio
 async def test_production_composition_passes_validated_base_url_to_transport(
-    db_url: str,
+    db_url: str, runtime_database_url,
 ) -> None:
     runtime = importlib.import_module("apps.email_feedback_worker.runtime")
     environment = _worker_environment(db_url)
+    environment["DATABASE_URL"] = await runtime_database_url(environment["TRADEOS_TENANT_ID"])
     environment["TRADEOS_DEV_MODE"] = "true"
     environment["TRADEOS_EMAIL_FEEDBACK_GMAIL_BASE_URL"] = (
         "http://127.0.0.1:18111"

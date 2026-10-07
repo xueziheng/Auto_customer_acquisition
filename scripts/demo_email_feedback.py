@@ -1,4 +1,8 @@
-"""离线演示真实 PostgreSQL 邮件反馈闭环，不构成生产 composition。"""
+"""离线演示真实 PostgreSQL 邮件反馈闭环，不构成生产 composition。
+
+显式提供 TRADEOS_TENANT_ID 与对应受限角色 DATABASE_URL；仅使用隔离演示库。
+启动前必须完成迁移和角色配置，本入口不创建角色、不绕过租户门禁。
+"""
 
 from __future__ import annotations
 
@@ -61,6 +65,7 @@ from infra.db.tables import (
     ReputationEventRow,
     UnsubscribeTokenRow,
 )
+from infra.db.tenant_security import assert_tenant_database_isolation
 from shared.errors import PermissionDenied
 from shared.schemas.email_feedback import EmailFeedbackPage
 from shared.schemas.identifiers import (
@@ -421,7 +426,7 @@ async def _readback(
 async def _exercise(database_url: str) -> dict[str, object]:
     if os.environ.get("TRADEOS_EMAIL_FEEDBACK_DEMO_MODE") != "controlled":
         raise RuntimeError("邮件反馈演示模式未启用")
-    tenant = TenantId(new_id("tn"))
+    tenant = TenantId(os.environ["TRADEOS_TENANT_ID"])
     employee = EmployeeId(new_id("emp"))
     contacts = _DemoContacts(tenant)
     senders = _DemoSenders(tenant)
@@ -431,6 +436,7 @@ async def _exercise(database_url: str) -> dict[str, object]:
     no_send = _NoSendTransport()
     engine = create_engine_from(database_url)
     try:
+        await assert_tenant_database_isolation(engine, tenant)
         factory = async_sessionmaker(engine, expire_on_commit=False)
         await _seed_employee(factory, tenant, employee)
         dependencies = build_phase1_dependencies(

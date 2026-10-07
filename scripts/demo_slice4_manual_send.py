@@ -14,9 +14,12 @@ import base64
 import json
 import logging
 import os
+import secrets
 import socket
 import sys
 import threading
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
@@ -25,8 +28,10 @@ import dns.asyncresolver
 import dns.message
 import dns.rdatatype
 import dns.rrset
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from pydantic import SecretStr
+from sqlalchemy import func, select, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from apps.api.composition.runtime import (
     ManualSendComposition,
@@ -81,6 +86,11 @@ from infra.db.tables import (
     NotificationDeliveryRow,
     NotificationJobRow,
     ToolCallRow,
+)
+from infra.db.tenant_security import (
+    assert_tenant_database_isolation,
+    provision_tenant_role,
+    tenant_database_role,
 )
 from shared.errors import PermissionDenied
 from shared.events.catalog import DomainEvent
@@ -410,10 +420,12 @@ class _StubEmployees:
         raise NotImplementedError("演示不提供员工查询")
 
 
-def _settings(tenant: TenantId, fake_gmail_url: str) -> Phase1RuntimeSettings:
+def _settings(
+    tenant: TenantId, fake_gmail_url: str, database_url: str
+) -> Phase1RuntimeSettings:
     return Phase1RuntimeSettings.from_environ(
         {
-            "DATABASE_URL": "postgresql+asyncpg://unused.invalid/tradeos",
+            "DATABASE_URL": database_url,
             "TRADEOS_TENANT_ID": str(tenant),
             "TRADEOS_DEV_MODE": "true",
             "TRADEOS_CORS_ALLOWED_ORIGINS": '["http://127.0.0.1:4173"]',
@@ -626,6 +638,38 @@ def _worker_env(
     }
 
 
+@asynccontextmanager
+async def _runtime_database(
+    admin: AsyncEngine, database_url: str, tenant: TenantId
+) -> AsyncIterator[tuple[SecretStr, AsyncEngine]]:
+    """新建本次演练角色，真实校验后运行；退出仅撤销本次角色的权限。"""
+    role = tenant_database_role(str(tenant))
+    password = SecretStr(secrets.token_urlsafe(32))
+    role_created = False
+    runtime: AsyncEngine | None = None
+    try:
+        async with admin.begin() as connection:
+            await provision_tenant_role(
+                connection, str(tenant), password, create_only=True
+            )
+        role_created = True
+        runtime_url = SecretStr(make_url(database_url).set(
+            username=role, password=password.get_secret_value(),
+        ).render_as_string(hide_password=False))
+        runtime = create_engine_from(runtime_url.get_secret_value())
+        await assert_tenant_database_isolation(runtime, str(tenant))
+        yield runtime_url, runtime
+    finally:
+        try:
+            if runtime is not None:
+                await runtime.dispose()
+        finally:
+            if role_created:
+                async with admin.begin() as connection:
+                    await connection.execute(text(f'DROP OWNED BY "{role}"'))
+                    await connection.execute(text(f'DROP ROLE "{role}"'))
+
+
 async def _exercise(database_url: str) -> dict[str, object]:
     environ = dict(os.environ)
     # 默认受控凭证值：显式覆盖引用缺失时才判为无效配置
@@ -662,11 +706,16 @@ async def _exercise(database_url: str) -> dict[str, object]:
     materials = _DemoMaterials()
     secrets = _DemoSecrets(environ, gmail_ref)
     engine = create_engine_from(database_url)
+    runtime_resources = AsyncExitStack()
     try:
         factory = async_sessionmaker(engine, expire_on_commit=False)
         await _seed_employee(factory, tenant, employee_id)
+        runtime_url, runtime_engine = await runtime_resources.enter_async_context(
+            _runtime_database(engine, database_url, tenant)
+        )
+        factory = async_sessionmaker(runtime_engine, expire_on_commit=False)
         dependencies = build_phase1_dependencies(
-            _settings(tenant, fake_gmail_url),
+            _settings(tenant, fake_gmail_url, runtime_url.get_secret_value()),
             factory,
             now=lambda: datetime.now(UTC),
             manual_send=ManualSendComposition(
@@ -680,7 +729,7 @@ async def _exercise(database_url: str) -> dict[str, object]:
             ),
             secret_resolver=secrets,
         )
-        scheduler_env = _scheduler_env(database_url, tenant)
+        scheduler_env = _scheduler_env(runtime_url.get_secret_value(), tenant)
         audience = _DemoAudience(tenant, employee_id)
 
         # 1) 冷开发身份：登记 → 认证请求 → 真实 scheduler/workflow/DNS
@@ -923,7 +972,8 @@ async def _exercise(database_url: str) -> dict[str, object]:
         # 7) 真实 notification worker 双渠道投递
         await _dispatch_notifications(
             _worker_env(
-                database_url, tenant, employee_id, transactional_identity, fake_gmail_url
+                runtime_url.get_secret_value(), tenant, employee_id,
+                transactional_identity, fake_gmail_url,
             ),
             fake_gmail_url,
         )
@@ -1034,10 +1084,15 @@ async def _exercise(database_url: str) -> dict[str, object]:
             ],
         }
     finally:
-        if dns_transport is not None:
-            dns_transport.close()
-        fake_gmail.stop()
-        await engine.dispose()
+        try:
+            if dns_transport is not None:
+                dns_transport.close()
+            fake_gmail.stop()
+        finally:
+            try:
+                await runtime_resources.aclose()
+            finally:
+                await engine.dispose()
 
 
 def main() -> int:

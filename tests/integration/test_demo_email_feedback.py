@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from infra.db.session import create_engine_from
@@ -28,6 +28,7 @@ from infra.db.tables import (
     EmailFeedbackCursorRow,
     EmailFeedbackQuarantineRow,
     EmailFeedbackReceiptRow,
+    EmployeeRow,
     OutboxEventRow,
     OutreachActionRow,
     OutreachEnrollmentRow,
@@ -36,7 +37,10 @@ from infra.db.tables import (
     ReputationEventRow,
     UnsubscribeTokenRow,
 )
-from shared.schemas.identifiers import TenantId
+from shared.schemas.identifiers import TenantId, new_id
+from tests.runtime_database_fixtures import (
+    runtime_database_url as runtime_database_url,  # noqa: PLC0414 - pytest fixture
+)
 
 _ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _ROOT / "scripts" / "demo_email_feedback.py"
@@ -69,11 +73,12 @@ _WORKER_OAUTH_MARKER = "worker-oauth-private-marker"
 
 
 def _run_demo(
-    database_url: str, *, secret_ref: str | None = None
+    database_url: str, *, tenant_id: str, secret_ref: str | None = None
 ) -> subprocess.CompletedProcess[str]:
     environment = {
         "DATABASE_URL": database_url,
         "TRADEOS_EMAIL_FEEDBACK_DEMO_MODE": "controlled",
+        "TRADEOS_TENANT_ID": tenant_id,
     }
     if secret_ref is not None:
         environment["TRADEOS_EMAIL_FEEDBACK_DEMO_SECRET_REF"] = secret_ref
@@ -550,11 +555,16 @@ async def _readback(
 
 @pytest.mark.asyncio
 async def test_demo_email_feedback_runs_twice_with_isolated_readback(
-    db_url: str,
+    db_url: str, runtime_database_url,
 ) -> None:
-    first = _summary(await asyncio.to_thread(_run_demo, db_url))
+    first_tenant, second_tenant = new_id("tn"), new_id("tn")
+    first_url = await runtime_database_url(first_tenant)
+    second_url = await runtime_database_url(second_tenant)
+    first = _summary(await asyncio.to_thread(_run_demo, first_url, tenant_id=first_tenant))
+    assert first["tenant_id"] == first_tenant
     first_before = await _readback(db_url, first)
-    second = _summary(await asyncio.to_thread(_run_demo, db_url))
+    second = _summary(await asyncio.to_thread(_run_demo, second_url, tenant_id=second_tenant))
+    assert second["tenant_id"] == second_tenant
     second_state = await _readback(db_url, second)
     first_after = await _readback(db_url, first)
 
@@ -569,9 +579,12 @@ async def test_demo_email_feedback_runs_twice_with_isolated_readback(
 
 @pytest.mark.asyncio
 async def test_real_worker_subprocess_bootstrap_restart_signal_and_degraded_health(
-    db_url: str,
+    db_url: str, runtime_database_url,
 ) -> None:
-    summary = _summary(await asyncio.to_thread(_run_demo, db_url))
+    tenant = new_id("tn")
+    runtime_url = await runtime_database_url(tenant)
+    summary = _summary(await asyncio.to_thread(_run_demo, runtime_url, tenant_id=tenant))
+    assert summary["tenant_id"] == tenant
     correlations = await _attempt_correlations(db_url, summary)
     raw_messages = {
         "worker-hard-ref": _dsn("5.1.1", *correlations[0]),
@@ -586,7 +599,7 @@ async def test_real_worker_subprocess_bootstrap_restart_signal_and_degraded_heal
     captured: list[str] = []
 
     with _gmail_server(raw_messages) as (base_url, scenario):
-        environment = _worker_environment(db_url, summary, base_url, health_port)
+        environment = _worker_environment(runtime_url, summary, base_url, health_port)
         first = _start_worker(environment)
         try:
             assert await asyncio.to_thread(scenario.raw_started.wait, 15)
@@ -694,10 +707,27 @@ async def test_real_worker_subprocess_bootstrap_restart_signal_and_degraded_heal
         await _health(health_port)
 
 
+@pytest.mark.asyncio
+async def test_demo_email_feedback_rejects_admin_before_seeding(db_url: str) -> None:
+    tenant = new_id("tn")
+    result = await asyncio.to_thread(_run_demo, db_url, tenant_id=tenant)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr == _FAILURE
+    engine = create_engine_from(db_url)
+    try:
+        async with async_sessionmaker(engine)() as session:
+            assert await session.scalar(
+                select(func.count()).select_from(EmployeeRow).where(EmployeeRow.tenant_id == tenant)
+            ) == 0
+    finally:
+        await engine.dispose()
+
+
 def test_demo_email_feedback_invalid_dsn_is_fixed_and_redacted() -> None:
     marker = "feedback_invalid_dsn_marker"
     result = _run_demo(
-        f"postgresql+asyncpg://{marker}@127.0.0.1:1/db"
+        f"postgresql+asyncpg://{marker}@127.0.0.1:1/db", tenant_id=new_id("tn")
     )
 
     assert result.returncode != 0
@@ -706,11 +736,14 @@ def test_demo_email_feedback_invalid_dsn_is_fixed_and_redacted() -> None:
     assert marker not in result.stdout + result.stderr
 
 
-def test_demo_email_feedback_invalid_secret_ref_is_fixed_and_redacted(
-    db_url: str,
+@pytest.mark.asyncio
+async def test_demo_email_feedback_invalid_secret_ref_is_fixed_and_redacted(
+    runtime_database_url,
 ) -> None:
     marker = "MISSING_SECRET_MARKER"
-    result = _run_demo(db_url, secret_ref=marker)
+    tenant = new_id("tn")
+    runtime_url = await runtime_database_url(tenant)
+    result = await asyncio.to_thread(_run_demo, runtime_url, tenant_id=tenant, secret_ref=marker)
 
     assert result.returncode != 0
     assert result.stdout == ""
