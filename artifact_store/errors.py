@@ -18,7 +18,7 @@ class ArtifactReadLimitExceeded(TradeOSError):
 
 
 class ArtifactCommitUnknownError(TransientError):
-    """PDF对象尝试写入后结果未知，原key可核对但不得删除candidate。"""
+    """对象尝试写入后结果未知，可核对原绑定但不得删除candidate。"""
 
     code = "artifact_commit_unknown"
 

@@ -192,10 +192,11 @@ class RawArtifactStoreImpl:
                 await self._transport.put(candidate.object_key, value)
                 result = await uow.raw.insert_if_absent(candidate)
         except BaseException as primary:
+            if isinstance(primary, asyncio.CancelledError):
+                raise
             if put_attempted:
-                await _cleanup_object(
-                    self._transport, candidate.object_key, primary=primary
-                )
+                # metadata commit 或 close 失败不证明回滚；保留可能已被引用的原件。
+                raise ArtifactCommitUnknownError() from None
             raise
         assert result is not None
         if result.status is ArtifactInsertStatus.EXISTING:
@@ -326,16 +327,12 @@ class GeneratedArtifactStoreImpl:
                 await self._transport.put(candidate.object_key, value)
                 result = await uow.generated.insert_if_absent(candidate)
         except BaseException as primary:
-            if kind is GeneratedArtifactKind.QUOTE_PDF:
-                if isinstance(primary, (asyncio.CancelledError, ArtifactConflictError)):
-                    raise
-                if put_attempted:
-                    raise ArtifactCommitUnknownError() from None
-                raise ArtifactUnavailableError() from None
+            if isinstance(primary, (asyncio.CancelledError, ArtifactConflictError)):
+                raise
             if put_attempted:
-                await _cleanup_object(
-                    self._transport, candidate.object_key, primary=primary
-                )
+                raise ArtifactCommitUnknownError() from None
+            if kind is GeneratedArtifactKind.QUOTE_PDF:
+                raise ArtifactUnavailableError() from None
             raise
         assert result is not None
         if result.status is ArtifactInsertStatus.EXISTING:

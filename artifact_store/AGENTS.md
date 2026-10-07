@@ -37,9 +37,9 @@ PostgreSQL metadata 只由 `infra/db/` 实现。本目录只依赖两个窄 Prot
 模板只读共享`shared.schemas.quote_files`注册集合；Store验证内容完整性和幂等绑定，
 不判断run是否真实、报价是否获批、员工是否可使用客户文件。
 
-仅QUOTE_PDF在object put尝试后的未知提交/关闭/传输错误或取消时保留candidate bytes。
+Raw与所有Generated在object put尝试后的未知提交/关闭/传输错误或取消时保留candidate bytes。
 非取消固定artifact_commit_unknown，不因rollback成功或暂时查不到metadata就删除。
-只有已确认EXISTING loser可以清理自身未引用candidate；Raw/email旧补偿保持。
+只有已确认EXISTING loser可以清理自身未引用candidate；禁止以异常或rollback成功推断可删除。
 未知状态不得自动重试、换key或重新渲染；可能留下孤立bytes，本期无清扫器。
 
 `get_meta_by_key`仅供受信Gateway恢复按原稳定键读取安全metadata，不访问对象。
@@ -67,5 +67,5 @@ ADR0021的有限恢复只补metadata关联，不保证对象bytes存在，后续
   它只能通过注入的 settings、secret resolver、UoW 与 Store 公开接口运行。
 
 Task5a通过Gateway内infra适配器复用Raw EMAIL_RAW去重，并在put后实际bounded get核tenant/kind/hash/size/bytes。
-Raw旧补偿不改变；未知提交后metadata可能存在而bytes丢失，入站必须整体失败，不能假报已归档。
+未知提交保留原件；入站仍须整体失败，不能仅凭metadata假报已归档。
 业务PG事务回滚不删除已确认不可变原件；没有新增清扫器或公开删除接口（ADR0026）。

@@ -11,6 +11,7 @@ from typing import Self
 import pytest
 
 from artifact_store.errors import (
+    ArtifactCommitUnknownError,
     ArtifactConflictError,
     ArtifactIntegrityError,
     ArtifactNotFoundError,
@@ -52,6 +53,7 @@ class _MemoryDatabase:
         self.generated_by_key: dict[tuple[str, str], GeneratedArtifactRecord] = {}
         self.events: list[str] = []
         self.commit_error: BaseException | None = None
+        self.close_error: BaseException | None = None
         self.forced_raw_winner: RawArtifactRecord | None = None
         self.forced_generated_winner: GeneratedArtifactRecord | None = None
 
@@ -182,6 +184,9 @@ class _UnitOfWork:
         if exc_type is None and self._db.commit_error is not None:
             raise self._db.commit_error
         self._db.events.append("uow_exit")
+        if self._db.close_error is not None:
+            failure, self._db.close_error = self._db.close_error, None
+            raise failure
 
 
 class _Transport:
@@ -336,21 +341,49 @@ async def test_blob_failure_does_not_insert_metadata() -> None:
     blob = _Transport()
     blob.put_error = failure
     raw, _, db, _ = _stores(transport=blob)
-    with pytest.raises(TransientError) as exc:
+    with pytest.raises(ArtifactCommitUnknownError):
         await raw.put(TENANT, RawArtifactKind.PDF, b"pdf", "application/pdf")
-    assert exc.value is failure
     assert db.raw_by_id == {}
+    assert "delete" not in blob.events
 
 
-async def test_commit_failure_removes_attempted_object_and_preserves_primary() -> None:
+async def test_commit_failure_keeps_candidate_despite_successful_rollback() -> None:
     db = _MemoryDatabase()
     primary = RuntimeError("commit-marker")
     db.commit_error = primary
     raw, _, _, blob = _stores(db=db)
-    with pytest.raises(RuntimeError) as exc:
+    with pytest.raises(ArtifactCommitUnknownError):
         await raw.put(TENANT, RawArtifactKind.PDF, b"pdf", "application/pdf")
-    assert exc.value is primary
-    assert blob.objects == {}
+    assert list(blob.objects.values()) == [b"pdf"]
+    assert db.raw_by_id == {}
+
+
+@pytest.mark.parametrize("generated", [False, True], ids=["raw", "email_draft"])
+@pytest.mark.parametrize("cancelled", [False, True], ids=["close_error", "close_cancelled"])
+async def test_committed_metadata_close_failure_keeps_readable_original_on_retry(
+    generated: bool, cancelled: bool,
+) -> None:
+    raw, drafts, db, blob = _stores()
+    failure = asyncio.CancelledError("close-marker") if cancelled else RuntimeError("close-marker")
+    db.close_error = failure
+
+    async def put():
+        if generated:
+            return await _put_generated(drafts, b"original")
+        return await raw.put(TENANT, RawArtifactKind.PDF, b"original", "application/pdf")
+
+    with pytest.raises(asyncio.CancelledError if cancelled else ArtifactCommitUnknownError) as caught:
+        await put()
+    if cancelled:
+        assert caught.value is failure
+    records = db.generated_by_id if generated else db.raw_by_id
+    assert len(records) == 1
+    original = next(iter(records.values())).meta
+    retried = await put()
+    assert retried == original
+    store = drafts if generated else raw
+    assert await store.get(TENANT, original.artifact_id) == (original, b"original")
+    assert blob.events == ["put", "get"]
 
 
 async def test_loser_object_is_deleted_then_raw_winner_returned() -> None:
@@ -370,27 +403,13 @@ async def test_loser_object_is_deleted_then_raw_winner_returned() -> None:
     assert list(blob.objects) == [f"raw/{TENANT}/{winner.artifact_id}"]
 
 
-async def test_cleanup_failure_preserves_primary_or_becomes_fixed_transient() -> None:
-    primary = RuntimeError("primary-marker")
-    db = _MemoryDatabase()
-    db.commit_error = primary
+async def test_loser_cleanup_failure_becomes_fixed_transient() -> None:
     blob = _Transport()
+    raw, _, db, _ = _stores(transport=blob)
+    await raw.put(TENANT, RawArtifactKind.PDF, b"pdf", "application/pdf")
+    db.forced_raw_winner = next(iter(db.raw_by_id.values()))
+    db.raw_by_hash.clear()
     blob.delete_error = RuntimeError("cleanup-secret")
-    raw, _, _, _ = _stores(db=db, transport=blob)
-    with pytest.raises(RuntimeError) as exc:
-        await raw.put(TENANT, RawArtifactKind.PDF, b"pdf", "application/pdf")
-    assert exc.value is primary
-
-    db.commit_error = None
-    db.forced_raw_winner = RawArtifactRecord(
-        next(iter(db.raw_by_id.values())).meta,
-        next(iter(db.raw_by_id.values())).object_key,
-    ) if db.raw_by_id else None
-    if db.forced_raw_winner is None:
-        clean_blob = _Transport()
-        clean_raw, _, clean_db, _ = _stores(transport=clean_blob)
-        await clean_raw.put(TENANT, RawArtifactKind.PDF, b"pdf", "application/pdf")
-        db.forced_raw_winner = next(iter(clean_db.raw_by_id.values()))
     with pytest.raises(TransientError, match="^Artifact 对象存储暂不可用$"):
         await raw.put(TENANT, RawArtifactKind.PDF, b"pdf", "application/pdf")
 
@@ -441,22 +460,27 @@ async def test_generated_get_rechecks_same_length_hash() -> None:
         await generated.get(TENANT, meta.artifact_id)
 
 
-async def test_cancellation_after_completed_put_triggers_cleanup_and_preserves_object() -> None:
+@pytest.mark.parametrize("generated", [False, True], ids=["raw", "email_draft"])
+async def test_cancellation_after_completed_put_keeps_candidate(generated: bool) -> None:
     class CancellationTransport(_Transport):
         async def put(self, object_key: str, content: bytes) -> None:
             self.objects[object_key] = content
             raise asyncio.CancelledError("put-cancelled")
 
     cancellation_transport = CancellationTransport()
-    raw, _, db, blob = _stores(transport=cancellation_transport)
+    raw, drafts, db, blob = _stores(transport=cancellation_transport)
     cancellation = None
     try:
-        await raw.put(TENANT, RawArtifactKind.PDF, b"pdf", "application/pdf")
+        if generated:
+            await _put_generated(drafts, b"pdf")
+        else:
+            await raw.put(TENANT, RawArtifactKind.PDF, b"pdf", "application/pdf")
     except asyncio.CancelledError as exc:
         cancellation = exc
     assert cancellation is not None
-    assert blob.objects == {}
+    assert list(blob.objects.values()) == [b"pdf"]
     assert db.raw_by_id == {}
+    assert db.generated_by_id == {}
 
 
 def test_service_repr_and_errors_hide_content_and_object_keys() -> None:

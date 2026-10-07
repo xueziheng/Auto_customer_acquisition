@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -368,3 +369,70 @@ def test_repositories_expose_no_public_mutation_or_cross_tenant_listing() -> Non
     forbidden = {"update", "delete", "list", "list_all", "unsafe_cross_tenant_query"}
     assert forbidden.isdisjoint(vars(RawArtifactRepository))
     assert forbidden.isdisjoint(vars(GeneratedArtifactRepository))
+
+
+@pytest.mark.parametrize("generated", [False, True], ids=["raw", "email_draft"])
+@pytest.mark.parametrize("fault", ["commit_ack", "close", "close_cancelled"])
+async def test_committed_artifact_remains_readable_after_unknown_uow_exit(
+    artifact_engine: AsyncEngine, generated: bool, fault: str,
+) -> None:
+    from artifact_store.errors import ArtifactCommitUnknownError
+    from artifact_store.service_impl import (
+        GeneratedArtifactStoreImpl,
+        RawArtifactStoreImpl,
+    )
+    from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
+    from tests.unit.test_artifact_store_service import _Transport
+
+    fault_pending = True
+
+    class FaultySession(AsyncSession):
+        async def commit(self) -> None:
+            nonlocal fault_pending
+            await super().commit()
+            if fault == "commit_ack" and fault_pending:
+                fault_pending = False
+                raise RuntimeError("controlled commit acknowledgement lost")
+
+        async def close(self) -> None:
+            nonlocal fault_pending
+            await super().close()
+            if fault in {"close", "close_cancelled"} and fault_pending:
+                fault_pending = False
+                if fault == "close_cancelled":
+                    raise asyncio.CancelledError("controlled close cancelled")
+                raise RuntimeError("controlled close failed")
+
+    sessions = async_sessionmaker(
+        artifact_engine, class_=FaultySession, expire_on_commit=False,
+    )
+    tenant = TenantId(new_id("tn"))
+    blobs = _Transport()
+    factory = lambda requested: SqlAlchemyArtifactUnitOfWork(sessions, requested)
+    store = (
+        GeneratedArtifactStoreImpl(factory, blobs, 1024, lambda: NOW, new_id)
+        if generated else RawArtifactStoreImpl(factory, blobs, 1024, lambda: NOW, new_id)
+    )
+    args = {
+        "tenant_id": tenant,
+        "kind": GeneratedArtifactKind.EMAIL_DRAFT if generated else RawArtifactKind.PDF,
+        "content": b"controlled-original",
+        "mime_type": GENERATED_MIME if generated else "application/pdf",
+    }
+    if generated:
+        enrollment = new_id("enr")
+        args.update(
+            workflow_run_id=RunId(new_id("run")), subject_ref=enrollment,
+            sequence_number=1, idempotency_key=IdempotencyKey(f"{enrollment}:1:draft"),
+            generated_by="outreach_agent_v1",
+        )
+
+    with pytest.raises(
+        asyncio.CancelledError if fault == "close_cancelled" else ArtifactCommitUnknownError
+    ):
+        await store.put(**args)
+
+    retried = await store.put(**args)
+    assert await store.get(tenant, retried.artifact_id) == (retried, b"controlled-original")
+    assert blobs.events == ["put", "get"]
+    assert len(blobs.objects) == 1
