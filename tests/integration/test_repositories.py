@@ -1573,10 +1573,10 @@ async def test_handoff_list_pending_ordered_by_requested_at(repo_session: AsyncS
     ]
 
 
-async def test_list_pending_scoped_uses_assignment_snapshot_and_authoritative_join(
+async def test_list_pending_scoped_uses_current_owner_and_authoritative_join(
     repo_session: AsyncSession,
 ) -> None:
-    """pending scope 先 WHERE 再 LIMIT；owner 看 snapshot，国家/品类看关联机会。"""
+    """pending scope 先 WHERE 再 LIMIT；三个权限维度都看当前关联机会。"""
     OpportunityRepositoryImpl = _load("OpportunityRepositoryImpl")
     HandoffRepositoryImpl = _load("HandoffRepositoryImpl")
     tenant = TenantId("tScopeHo")
@@ -1594,6 +1594,7 @@ async def test_list_pending_scoped_uses_assignment_snapshot_and_authoritative_jo
             "opp-hs-country",
             "tScopeHo",
             "need-hs-country",
+            owner=EmployeeId("sales-1"),
             country="DE",
             product_category="hinges",
         ),
@@ -1601,6 +1602,7 @@ async def test_list_pending_scoped_uses_assignment_snapshot_and_authoritative_jo
             "opp-hs-category",
             "tScopeHo",
             "need-hs-category",
+            owner=EmployeeId("sales-1"),
             country="US",
             product_category="bolts",
         ),
@@ -1608,7 +1610,7 @@ async def test_list_pending_scoped_uses_assignment_snapshot_and_authoritative_jo
             "opp-hs-a",
             "tScopeHo",
             "need-hs-a",
-            owner=EmployeeId("different-current-owner"),
+            owner=EmployeeId("sales-1"),
             country="US",
             product_category="hinges",
         ),
@@ -1616,7 +1618,7 @@ async def test_list_pending_scoped_uses_assignment_snapshot_and_authoritative_jo
             "opp-hs-b",
             "tScopeHo",
             "need-hs-b",
-            owner=EmployeeId("different-current-owner"),
+            owner=EmployeeId("sales-1"),
             country="US",
             product_category="hinges",
         ),
@@ -1651,7 +1653,7 @@ async def test_list_pending_scoped_uses_assignment_snapshot_and_authoritative_jo
             "tScopeHo",
             "opp-hs-owner",
             requested_at=_NOW - timedelta(hours=5),
-            assigned_to=EmployeeId("sales-2"),
+            assigned_to=EmployeeId("sales-1"),
         ),
         # packet.country 固定为 US，但关联机会是 DE；国家 ABAC 必须排除它。
         _handoff(
@@ -2312,3 +2314,29 @@ def test_feedback_receipt_kind_and_target_constraints_include_complaint() -> Non
     }
     assert "complaint" in texts["ck_email_feedback_receipt_kind"]
     assert "complaint" in texts["ck_email_feedback_receipt_target"]
+
+
+async def test_reassignment_moves_pending_handoff_but_preserves_accepted_history(repo_session: AsyncSession) -> None:
+    tenant = TenantId("tReassigned")
+    opportunity_repo = _load("OpportunityRepositoryImpl")(repo_session, tenant)
+    handoffs = _load("HandoffRepositoryImpl")(repo_session, tenant)
+    opp = _opp("opp-reassigned", str(tenant), "need-reassigned", owner=EmployeeId("sales-1"))
+    await opportunity_repo.add(opp)
+    await repo_session.commit()
+    await handoffs.add(_handoff("handoff-history", str(tenant), str(opp.opportunity_id), assigned_to=EmployeeId("sales-1")))
+    await repo_session.commit()
+    assert await handoffs.accept_if_requested(tenant, HandoffId("handoff-history"), EmployeeId("sales-1"), _NOW)
+    await repo_session.commit()
+    await handoffs.add(_handoff("handoff-pending", str(tenant), str(opp.opportunity_id), assigned_to=EmployeeId("sales-1")))
+    await repo_session.commit()
+    assert await opportunity_repo.assign_owner(tenant, opp.opportunity_id, EmployeeId("sales-2"), EmployeeId("boss"), _NOW)
+    await repo_session.commit()
+    pending = await handoffs.get(tenant, HandoffId("handoff-pending"))
+    history = await handoffs.get(tenant, HandoffId("handoff-history"))
+    assert pending.assigned_to == EmployeeId("sales-2")
+    assert history.assigned_to == EmployeeId("sales-1")
+    assert history.accepted_by == EmployeeId("sales-1")
+    old = OpportunityScope(level=ScopeLevel.SELF, allowed_owners=frozenset({EmployeeId("sales-1")}))
+    new = OpportunityScope(level=ScopeLevel.SELF, allowed_owners=frozenset({EmployeeId("sales-2")}))
+    assert await handoffs.list_pending_scoped(tenant, old, 10) == []
+    assert [p.handoff_id for p in await handoffs.list_pending_scoped(tenant, new, 10)] == [HandoffId("handoff-pending")]

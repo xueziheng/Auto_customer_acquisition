@@ -820,3 +820,24 @@ async def test_pending_handoff_rejects_mismatched_linked_opportunity_id() -> Non
 
     assert str(caught.value) == "接管关联机会标识不一致"
     assert all(row["rule"] != "allow:test" for row in audit.rows)
+
+
+@pytest.mark.asyncio
+async def test_pending_handoff_rejects_former_owner_after_reassignment() -> None:
+    service, uow, _, _, audit, _ = _service()
+    uow.handoffs.scoped_rows = [_packet("transferred", "transferred", assigned_to="sales-1")]
+    uow.opportunities.rows[OpportunityId("transferred")] = _opp("transferred", owner="sales-2")
+    with pytest.raises(PermissionDenied):
+        await service.list_pending_handoffs(_TENANT, _actor(_owner_scope("sales-1")))
+    assert audit.rows[-1]["rule"] == "deny:abac:owner"
+
+
+@pytest.mark.asyncio
+async def test_pending_handoff_current_owner_can_read_stale_assignment_snapshot() -> None:
+    service, uow, *_ = _service()
+    uow.handoffs.scoped_rows = [_packet("transferred", "transferred", assigned_to="sales-1")]
+    uow.opportunities.rows[OpportunityId("transferred")] = _opp("transferred", owner="sales-2")
+    items = await service.list_pending_handoffs(_TENANT, Actor(actor_id="sales-2", role="sales", scope=_owner_scope("sales-2")))
+    assert len(items) == 1
+    assert items[0].assigned_to == "sales-2"
+    assert items[0].customer_verbatim == "Please send a formal quote."

@@ -38,6 +38,12 @@ class OpportunityRepository(Protocol):
         self, tenant_id: TenantId, opportunity_id: OpportunityId
     ) -> Opportunity | None: ...
 
+    async def get_for_handoff(
+        self, tenant_id: TenantId, opportunity_id: OpportunityId
+    ) -> Opportunity | None:
+        """接管写入专用：锁定当前机会直到事务结束，先机会后接管，与转交同序。"""
+        ...
+
     async def update(self, opportunity: Opportunity) -> None: ...
 
     async def find_by_need(
@@ -170,6 +176,12 @@ class HandoffRepository(Protocol):
     async def get(
         self, tenant_id: TenantId, handoff_id: HandoffId
     ) -> HandoffPacket | None: ...
+
+    async def get_for_accept(
+        self, tenant_id: TenantId, handoff_id: HandoffId
+    ) -> HandoffPacket | None:
+        """调用方已锁机会后，锁定并重读接管当前指向；禁止反向获取机会锁。"""
+        ...
 
     async def update(self, packet: HandoffPacket) -> None: ...
 

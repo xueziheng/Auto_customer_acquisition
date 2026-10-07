@@ -890,7 +890,7 @@ class OpportunityServiceImpl:
         action = OpportunityAction.HANDOFF_REQUEST
         rule = self._authorize(actor, action, tenant_id)
         async with self._uow_factory() as uow:
-            opp = await uow.opportunities.get(
+            opp = await uow.opportunities.get_for_handoff(
                 tenant_id, OpportunityId(request.opportunity_id)
             )
             if opp is None:
@@ -1014,8 +1014,11 @@ class OpportunityServiceImpl:
             packet = await uow.handoffs.get(tenant_id, handoff_id)
             if packet is None:
                 raise ValidationError("接管不存在或不属于该租户")
-            linked = await uow.opportunities.get(tenant_id, packet.opportunity_id)
+            linked = await uow.opportunities.get_for_handoff(tenant_id, packet.opportunity_id)
             if linked is None:
+                raise ValidationError("接管关联的机会或负责人无效")
+            packet = await uow.handoffs.get_for_accept(tenant_id, handoff_id)
+            if packet is None or packet.opportunity_id != linked.opportunity_id:
                 raise ValidationError("接管关联的机会或负责人无效")
             self._enforce_resource_abac(
                 actor,
@@ -1430,7 +1433,7 @@ class OpportunityServiceImpl:
                     raise ValidationError("接管关联机会标识不一致")
                 self._enforce_resource_abac(
                     actor,
-                    owner=packet.assigned_to,
+                    owner=opportunity.owner,
                     country=opportunity.country,
                     product_category=opportunity.product_category,
                     tenant_id=tenant_id,
@@ -1440,7 +1443,7 @@ class OpportunityServiceImpl:
 
             now = self._now()
             items: list[HandoffQueueItemView] = []
-            for packet, _ in linked:
+            for packet, opportunity in linked:
                 wait_seconds = packet.wait_seconds(now)
                 if wait_seconds is None:
                     raise ValidationError("待接管数据缺等待时长")
@@ -1457,8 +1460,8 @@ class OpportunityServiceImpl:
                         wait_seconds=wait_seconds,
                         state=packet.state.value,
                         assigned_to=(
-                            str(packet.assigned_to)
-                            if packet.assigned_to is not None
+                            str(opportunity.owner)
+                            if opportunity.owner is not None
                             else None
                         ),
                         suggested_next_step=packet.suggested_next_step,

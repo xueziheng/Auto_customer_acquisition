@@ -210,6 +210,9 @@ class _FakeOpportunityRepo:
     async def get(self, tenant_id: TenantId, opportunity_id: OpportunityId) -> Opportunity | None:
         return self.row
 
+    async def get_for_handoff(self, tenant_id: TenantId, opportunity_id: OpportunityId) -> Opportunity | None:
+        return await self.get(tenant_id, opportunity_id)
+
     async def update(self, opportunity: Opportunity) -> None:
         raise AssertionError("handoff/查询不应调用 opportunities.update")
 
@@ -288,6 +291,9 @@ class _FakeHandoffRepo:
 
     async def get(self, tenant_id: TenantId, handoff_id: HandoffId) -> HandoffPacket | None:
         return self.row
+
+    async def get_for_accept(self, tenant_id: TenantId, handoff_id: HandoffId) -> HandoffPacket | None:
+        return await self.get(tenant_id, handoff_id)
 
     async def update(self, packet: HandoffPacket) -> None:
         raise AssertionError("handoff/查询不应调用 handoffs.update")

@@ -192,6 +192,22 @@ class OpportunityRepositoryImpl(TenantScopedRepository):
         ).scalar_one_or_none()
         return _row_to_opp(row) if row is not None else None
 
+    async def get_for_handoff(
+        self, tenant_id: TenantId, opportunity_id: OpportunityId
+    ) -> Opportunity | None:
+        """接管写入先锁当前机会，阻止负责人转交越过授权与提交。"""
+        if tenant_id != self._tenant_id:
+            return None
+        row = (
+            await self._session.execute(
+                self._scoped()
+                .where(OpportunityRow.opportunity_id == opportunity_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        return _row_to_opp(row) if row is not None else None
+
     async def update(self, opportunity: Opportunity) -> None:
         """全量覆盖更新；终态（WON/LOST）只能经 close_*_if_state 原子推进。"""
         if opportunity.tenant_id != self._tenant_id:
@@ -391,7 +407,19 @@ class OpportunityRepositoryImpl(TenantScopedRepository):
                 assigned_at=assigned_at,
             )
         )
-        return cast(CursorResult, result).rowcount > 0
+        if cast(CursorResult, result).rowcount == 0:
+            return False
+        # 同一事务转交仍待处理的任务；已接受记录保留原接管人及审计历史。
+        await self._session.execute(
+            update(HandoffRow)
+            .where(
+                HandoffRow.tenant_id == self._tenant_id,
+                HandoffRow.opportunity_id == opportunity_id,
+                HandoffRow.state == HandoffState.REQUESTED.value,
+            )
+            .values(assigned_to=owner)
+        )
+        return True
 
 
 def _snap_to_row(snapshot: ScoreSnapshot) -> ScoreSnapshotRow:
@@ -637,6 +665,22 @@ class HandoffRepositoryImpl(TenantScopedRepository):
         ).scalar_one_or_none()
         return _row_to_handoff(row) if row is not None else None
 
+    async def get_for_accept(
+        self, tenant_id: TenantId, handoff_id: HandoffId
+    ) -> HandoffPacket | None:
+        """仅在已持机会锁时重读并锁接管行，等待转交后不复用旧快照。"""
+        if tenant_id != self._tenant_id:
+            return None
+        row = (
+            await self._session.execute(
+                self._scoped()
+                .where(HandoffRow.handoff_id == handoff_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        return _row_to_handoff(row) if row is not None else None
+
     async def update(self, packet: HandoffPacket) -> None:
         if packet.tenant_id != self._tenant_id:
             raise ValueError(
@@ -705,7 +749,7 @@ class HandoffRepositoryImpl(TenantScopedRepository):
         query = query.where(HandoffRow.state == HandoffState.REQUESTED.value)
         if scope.allowed_owners is not None:
             query = query.where(
-                HandoffRow.assigned_to.in_(sorted(map(str, scope.allowed_owners)))
+                OpportunityRow.owner.in_(sorted(map(str, scope.allowed_owners)))
             )
         if scope.allowed_countries is not None:
             query = query.where(

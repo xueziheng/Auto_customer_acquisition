@@ -475,6 +475,9 @@ class _RequestRepo:
     async def get(self, tenant_id, opportunity_id):
         return self.opportunity
 
+    async def get_for_handoff(self, tenant_id, opportunity_id):
+        return await self.get(tenant_id, opportunity_id)
+
 
 class _RequestHandoffs:
     def __init__(self) -> None:
