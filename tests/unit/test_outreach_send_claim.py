@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import importlib
 from dataclasses import FrozenInstanceError
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -382,6 +382,70 @@ async def test_claimed_attempt_records_sent_once_and_rejects_changed_provider_re
     with pytest.raises(TradeOSError):
         await harness.service.record_sent(
             harness.tenant, attempt.attempt_id, "provider_ref_2", actor=actor
+        )
+
+
+@pytest.mark.parametrize("reason", ["manual", "reply", "suppression", "hard_bounce", "identity_unavailable"])
+@pytest.mark.parametrize("final_step", [False, True])
+async def test_inflight_send_completion_preserves_enrollment_stop_without_scheduling(
+    reason: str, final_step: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """已获 claim 的发送完成是事实，不能重启已停止的序列。"""
+    models = importlib.import_module("domains.outreach.models")
+    harness, actor, attempt = await _prepared_harness()
+    if final_step:
+        await harness.service.claim_message_send(
+            harness.tenant, attempt.attempt_id, actor=actor
+        )
+        await harness.service.record_sent(
+            harness.tenant, attempt.attempt_id, "provider_ref_first", actor=actor
+        )
+        monkeypatch.setattr(harness.service, "_now", lambda: helpers_now() + timedelta(days=2))
+        attempt = await harness.service.prepare_message_attempt(
+            harness.tenant, attempt.enrollment_id, actor=actor
+        )
+    await harness.service.claim_message_send(
+        harness.tenant, attempt.attempt_id, actor=actor
+    )
+    stopped = await harness.service.stop_enrollment(
+        harness.tenant, attempt.enrollment_id, models.EnrollmentStopReason(reason),
+        actor=harness.boss if reason == "manual" else actor,
+    )
+    event_count = len(harness.store.events)
+    action_count = len(harness.store.actions)
+    monkeypatch.setattr(
+        harness.service,
+        "_now",
+        lambda: helpers_now() + timedelta(days=2 if final_step else 0, minutes=1),
+    )
+
+    sent = await harness.service.record_sent(
+        harness.tenant, attempt.attempt_id, "provider_ref_confirmed", actor=actor
+    )
+    replay = await harness.service.record_sent(
+        harness.tenant, attempt.attempt_id, "provider_ref_confirmed", actor=actor
+    )
+
+    assert sent == replay
+    assert sent.state is models.MessageAttemptState.SENT
+    assert sent.provider_ref == "provider_ref_confirmed"
+    current = await harness.service.get_enrollment(
+        harness.tenant, attempt.enrollment_id, actor=harness.boss
+    )
+    assert (current.state, current.stop_reason, current.stopped_at) == (
+        stopped.state, stopped.stop_reason, stopped.stopped_at
+    )
+    assert current.current_step == (2 if final_step else 1)
+    assert current.next_send_at is None
+    assert len(harness.store.events) == event_count + 1
+    assert len(harness.store.actions) == action_count + 1
+    with pytest.raises(TradeOSError):
+        await harness.service.prepare_message_attempt(
+            harness.tenant, attempt.enrollment_id, actor=actor
+        )
+    with pytest.raises(TradeOSError):
+        await harness.service.claim_message_send(
+            harness.tenant, attempt.attempt_id, actor=actor
         )
 
 

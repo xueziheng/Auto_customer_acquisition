@@ -2144,7 +2144,13 @@ class OutreachServiceImpl:
                     provider_ref=safe_ref,
                 )
                 enrollment.current_step = attempt.step_number
-                if attempt.step_number == len(version.boundary.steps):
+                if enrollment.state not in {
+                    EnrollmentState.ENROLLED,
+                    EnrollmentState.IN_SEQUENCE,
+                }:
+                    # 在途发送完成仍须记事实，但不能复活已停止的序列。
+                    enrollment.next_send_at = None
+                elif attempt.step_number == len(version.boundary.steps):
                     enrollment.next_send_at = None
                     enrollment.transition_to(
                         EnrollmentState.COMPLETED, at=now, reason=None

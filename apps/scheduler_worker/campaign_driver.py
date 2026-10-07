@@ -55,9 +55,9 @@ _SENDER_ACTOR_ID = "system:scheduler-campaign-send"
 _DRIVER_ACTOR_ID = "system:scheduler-campaign-driver"
 _TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 
-#: permission stage 时刻 attempt 的合法状态：reserved（尚未 claim）、
-#: sending（上次 claim 后崩溃重试）、sent（成功后的幂等重放）。
-_ATTEMPT_STATES = frozenset({"reserved", "sending", "sent"})
+#: 此处只校验绑定；暂态失败仍须重过当前事实、幂等账本与 claim。
+#: sending 可能已有外部结果，不能凭此白名单直接重发。
+_ATTEMPT_STATES = frozenset({"reserved", "failed_transient", "sending", "sent"})
 
 
 def driver_actor() -> OutreachActor:
