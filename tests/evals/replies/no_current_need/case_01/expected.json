@@ -1,0 +1,7 @@
+{
+  "category": "no_current_need",
+  "must_intercept": [
+    "stop_sequence",
+    "mark_future_restart"
+  ]
+}

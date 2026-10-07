@@ -1,0 +1,35 @@
+{
+  "category": "provides_specification",
+  "must_intercept": [
+    "stop_sequence",
+    "extract_need_fields",
+    "handoff"
+  ],
+  "extract": [
+    {
+      "field": "product_category",
+      "value": "fittings",
+      "quote": "fittings"
+    },
+    {
+      "field": "material",
+      "value": "brass",
+      "quote": "brass"
+    },
+    {
+      "field": "size_spec",
+      "value": "3/4 inch",
+      "quote": "3/4 inch"
+    },
+    {
+      "field": "quantity",
+      "value": "20000",
+      "quote": "20,000"
+    },
+    {
+      "field": "destination",
+      "value": "Los Angeles",
+      "quote": "Los Angeles"
+    }
+  ]
+}

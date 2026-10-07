@@ -1,0 +1,2399 @@
+{
+  "diff": ".superpowers/sdd/2026-09-05-web-first-completion/review-ec801a8..b2c64db.diff",
+  "entries": [
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/final-review-context.md",
+      "start_line": 480,
+      "kind": "scratch",
+      "end_line": 534
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/progress.md",
+      "start_line": 535,
+      "kind": "scratch",
+      "end_line": 977
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-10-brief.md",
+      "start_line": 978,
+      "kind": "scratch",
+      "end_line": 1012
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-10-report.md",
+      "start_line": 1013,
+      "kind": "scratch",
+      "end_line": 1188
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-10-review-context.md",
+      "start_line": 1189,
+      "kind": "scratch",
+      "end_line": 1224
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-10-review.md",
+      "start_line": 1225,
+      "kind": "scratch",
+      "end_line": 1342
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-10-spec.md",
+      "start_line": 1343,
+      "kind": "scratch",
+      "end_line": 1383
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-11-brief.md",
+      "start_line": 1384,
+      "kind": "scratch",
+      "end_line": 1429
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-11-report.md",
+      "start_line": 1430,
+      "kind": "scratch",
+      "end_line": 1558
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-11-review-context.md",
+      "start_line": 1559,
+      "kind": "scratch",
+      "end_line": 1586
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-11-review.md",
+      "start_line": 1587,
+      "kind": "scratch",
+      "end_line": 1642
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-12-brief.md",
+      "start_line": 1643,
+      "kind": "scratch",
+      "end_line": 1719
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-12-report.md",
+      "start_line": 1720,
+      "kind": "scratch",
+      "end_line": 1836
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-12-review-context.md",
+      "start_line": 1837,
+      "kind": "scratch",
+      "end_line": 1883
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-12-review.md",
+      "start_line": 1884,
+      "kind": "scratch",
+      "end_line": 1997
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-13-brief.md",
+      "start_line": 1998,
+      "kind": "scratch",
+      "end_line": 2067
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-13-report.md",
+      "start_line": 2068,
+      "kind": "scratch",
+      "end_line": 2254
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-13-review-context.md",
+      "start_line": 2255,
+      "kind": "scratch",
+      "end_line": 2284
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-13-review.md",
+      "start_line": 2285,
+      "kind": "scratch",
+      "end_line": 2388
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-3b-report.md",
+      "start_line": 2389,
+      "kind": "scratch",
+      "end_line": 2567
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-4-evidence/controlled-390.png",
+      "start_line": 2568,
+      "kind": "scratch",
+      "end_line": 2571
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-4-evidence/controlled-desktop.png",
+      "start_line": 2572,
+      "kind": "scratch",
+      "end_line": 2575
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-4-report.md",
+      "start_line": 2576,
+      "kind": "scratch",
+      "end_line": 2813
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-5a-report.md",
+      "start_line": 2814,
+      "kind": "scratch",
+      "end_line": 2994
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-5b-report.md",
+      "start_line": 2995,
+      "kind": "scratch",
+      "end_line": 3183
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-6-report.md",
+      "start_line": 3184,
+      "kind": "scratch",
+      "end_line": 3424
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-7-report.md",
+      "start_line": 3425,
+      "kind": "scratch",
+      "end_line": 3536
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-8-report.md",
+      "start_line": 3537,
+      "kind": "scratch",
+      "end_line": 3733
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-9-brief.md",
+      "start_line": 3734,
+      "kind": "scratch",
+      "end_line": 3802
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-9-report.md",
+      "start_line": 3803,
+      "kind": "scratch",
+      "end_line": 3960
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-9-review-context.md",
+      "start_line": 3961,
+      "kind": "scratch",
+      "end_line": 3994
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-9-review.md",
+      "start_line": 3995,
+      "kind": "scratch",
+      "end_line": 4077
+    },
+    {
+      "path": ".superpowers/sdd/2026-09-05-web-first-completion/task-9-spec.md",
+      "start_line": 4078,
+      "kind": "scratch",
+      "end_line": 4120
+    },
+    {
+      "path": "HANDBOOK.md",
+      "start_line": 4121,
+      "kind": "source_or_docs",
+      "end_line": 4440
+    },
+    {
+      "path": "Makefile",
+      "start_line": 4441,
+      "kind": "source_or_docs",
+      "end_line": 4460
+    },
+    {
+      "path": "README.md",
+      "start_line": 4461,
+      "kind": "source_or_docs",
+      "end_line": 4523
+    },
+    {
+      "path": "ROADMAP.md",
+      "start_line": 4524,
+      "kind": "source_or_docs",
+      "end_line": 4604
+    },
+    {
+      "path": "agent_runtime/context_builder/builder.py",
+      "start_line": 4605,
+      "kind": "source_or_docs",
+      "end_line": 4682
+    },
+    {
+      "path": "agent_runtime/context_builder/contracts.py",
+      "start_line": 4683,
+      "kind": "source_or_docs",
+      "end_line": 4951
+    },
+    {
+      "path": "agent_runtime/context_builder/projection.py",
+      "start_line": 4952,
+      "kind": "source_or_docs",
+      "end_line": 5042
+    },
+    {
+      "path": "agent_runtime/context_builder/service.py",
+      "start_line": 5043,
+      "kind": "source_or_docs",
+      "end_line": 5259
+    },
+    {
+      "path": "agent_runtime/qualification_agent/agent.py",
+      "start_line": 5260,
+      "kind": "source_or_docs",
+      "end_line": 5439
+    },
+    {
+      "path": "agent_runtime/qualification_agent/openai_port.py",
+      "start_line": 5440,
+      "kind": "source_or_docs",
+      "end_line": 5467
+    },
+    {
+      "path": "agent_runtime/qualification_agent/questions.py",
+      "start_line": 5468,
+      "kind": "source_or_docs",
+      "end_line": 5490
+    },
+    {
+      "path": "agent_runtime/skill_router/router.py",
+      "start_line": 5491,
+      "kind": "source_or_docs",
+      "end_line": 5518
+    },
+    {
+      "path": "agent_runtime/skill_router/service.py",
+      "start_line": 5519,
+      "kind": "source_or_docs",
+      "end_line": 6018
+    },
+    {
+      "path": "apps/AGENTS.md",
+      "start_line": 6019,
+      "kind": "source_or_docs",
+      "end_line": 6059
+    },
+    {
+      "path": "apps/agent_worker/context_adapter.py",
+      "start_line": 6060,
+      "kind": "source_or_docs",
+      "end_line": 6243
+    },
+    {
+      "path": "apps/agent_worker/context_providers.py",
+      "start_line": 6244,
+      "kind": "source_or_docs",
+      "end_line": 6427
+    },
+    {
+      "path": "apps/agent_worker/main.py",
+      "start_line": 6428,
+      "kind": "source_or_docs",
+      "end_line": 6457
+    },
+    {
+      "path": "apps/api/composition/demand_radar.py",
+      "start_line": 6458,
+      "kind": "source_or_docs",
+      "end_line": 6546
+    },
+    {
+      "path": "apps/api/composition/runtime.py",
+      "start_line": 6547,
+      "kind": "source_or_docs",
+      "end_line": 7227
+    },
+    {
+      "path": "apps/api/controlled.py",
+      "start_line": 7228,
+      "kind": "source_or_docs",
+      "end_line": 7404
+    },
+    {
+      "path": "apps/api/dependencies.py",
+      "start_line": 7405,
+      "kind": "source_or_docs",
+      "end_line": 7543
+    },
+    {
+      "path": "apps/api/identity.py",
+      "start_line": 7544,
+      "kind": "source_or_docs",
+      "end_line": 7604
+    },
+    {
+      "path": "apps/api/inbox_evidence.py",
+      "start_line": 7605,
+      "kind": "source_or_docs",
+      "end_line": 7676
+    },
+    {
+      "path": "apps/api/main.py",
+      "start_line": 7677,
+      "kind": "source_or_docs",
+      "end_line": 7780
+    },
+    {
+      "path": "apps/api/routers/command_center.py",
+      "start_line": 7781,
+      "kind": "source_or_docs",
+      "end_line": 7843
+    },
+    {
+      "path": "apps/api/routers/customer_discovery.py",
+      "start_line": 7844,
+      "kind": "source_or_docs",
+      "end_line": 7983
+    },
+    {
+      "path": "apps/api/routers/email_inbound.py",
+      "start_line": 7984,
+      "kind": "source_or_docs",
+      "end_line": 8138
+    },
+    {
+      "path": "apps/api/routers/health.py",
+      "start_line": 8139,
+      "kind": "source_or_docs",
+      "end_line": 8186
+    },
+    {
+      "path": "apps/api/routers/inbox.py",
+      "start_line": 8187,
+      "kind": "source_or_docs",
+      "end_line": 8376
+    },
+    {
+      "path": "apps/api/routers/runs.py",
+      "start_line": 8377,
+      "kind": "source_or_docs",
+      "end_line": 8447
+    },
+    {
+      "path": "apps/api/routers/sending_identities.py",
+      "start_line": 8448,
+      "kind": "source_or_docs",
+      "end_line": 8597
+    },
+    {
+      "path": "apps/api/routers/settings.py",
+      "start_line": 8598,
+      "kind": "source_or_docs",
+      "end_line": 8674
+    },
+    {
+      "path": "apps/api/routers/sourcing.py",
+      "start_line": 8675,
+      "kind": "source_or_docs",
+      "end_line": 8726
+    },
+    {
+      "path": "apps/api/runtime.py",
+      "start_line": 8727,
+      "kind": "source_or_docs",
+      "end_line": 8921
+    },
+    {
+      "path": "apps/api/validation_route.py",
+      "start_line": 8922,
+      "kind": "source_or_docs",
+      "end_line": 8963
+    },
+    {
+      "path": "apps/composition_support/AGENTS.md",
+      "start_line": 8964,
+      "kind": "source_or_docs",
+      "end_line": 8995
+    },
+    {
+      "path": "apps/composition_support/campaign_approval_reader.py",
+      "start_line": 8996,
+      "kind": "source_or_docs",
+      "end_line": 9065
+    },
+    {
+      "path": "apps/composition_support/delivery_material_reader.py",
+      "start_line": 9066,
+      "kind": "source_or_docs",
+      "end_line": 9127
+    },
+    {
+      "path": "apps/composition_support/email_inbound.py",
+      "start_line": 9128,
+      "kind": "source_or_docs",
+      "end_line": 9463
+    },
+    {
+      "path": "apps/composition_support/employee_readers.py",
+      "start_line": 9464,
+      "kind": "source_or_docs",
+      "end_line": 9632
+    },
+    {
+      "path": "apps/composition_support/outreach_fact_readers.py",
+      "start_line": 9633,
+      "kind": "source_or_docs",
+      "end_line": 9864
+    },
+    {
+      "path": "apps/notification_worker/AGENTS.md",
+      "start_line": 9865,
+      "kind": "source_or_docs",
+      "end_line": 9884
+    },
+    {
+      "path": "apps/notification_worker/controlled.py",
+      "start_line": 9885,
+      "kind": "source_or_docs",
+      "end_line": 9942
+    },
+    {
+      "path": "apps/notification_worker/health.py",
+      "start_line": 9943,
+      "kind": "source_or_docs",
+      "end_line": 10074
+    },
+    {
+      "path": "apps/notification_worker/runtime.py",
+      "start_line": 10075,
+      "kind": "source_or_docs",
+      "end_line": 10379
+    },
+    {
+      "path": "apps/scheduler_worker/AGENTS.md",
+      "start_line": 10380,
+      "kind": "source_or_docs",
+      "end_line": 10409
+    },
+    {
+      "path": "apps/scheduler_worker/account_discovery.py",
+      "start_line": 10410,
+      "kind": "source_or_docs",
+      "end_line": 10521
+    },
+    {
+      "path": "apps/scheduler_worker/adapters/message_content_reader.py",
+      "start_line": 10522,
+      "kind": "source_or_docs",
+      "end_line": 10689
+    },
+    {
+      "path": "apps/scheduler_worker/bootstrap.py",
+      "start_line": 10690,
+      "kind": "source_or_docs",
+      "end_line": 11222
+    },
+    {
+      "path": "apps/scheduler_worker/catalog_product_runtime.py",
+      "start_line": 11223,
+      "kind": "source_or_docs",
+      "end_line": 11294
+    },
+    {
+      "path": "apps/scheduler_worker/contact_binding.py",
+      "start_line": 11295,
+      "kind": "source_or_docs",
+      "end_line": 11322
+    },
+    {
+      "path": "apps/scheduler_worker/controlled.py",
+      "start_line": 11323,
+      "kind": "source_or_docs",
+      "end_line": 11457
+    },
+    {
+      "path": "apps/scheduler_worker/controlled_contacts.py",
+      "start_line": 11458,
+      "kind": "source_or_docs",
+      "end_line": 11639
+    },
+    {
+      "path": "apps/scheduler_worker/directive_reader.py",
+      "start_line": 11640,
+      "kind": "source_or_docs",
+      "end_line": 11709
+    },
+    {
+      "path": "apps/scheduler_worker/inbound_driver.py",
+      "start_line": 11710,
+      "kind": "source_or_docs",
+      "end_line": 11793
+    },
+    {
+      "path": "apps/scheduler_worker/main.py",
+      "start_line": 11794,
+      "kind": "source_or_docs",
+      "end_line": 12275
+    },
+    {
+      "path": "apps/scheduler_worker/reply_actions.py",
+      "start_line": 12276,
+      "kind": "source_or_docs",
+      "end_line": 12486
+    },
+    {
+      "path": "apps/scheduler_worker/reply_binding.py",
+      "start_line": 12487,
+      "kind": "source_or_docs",
+      "end_line": 12540
+    },
+    {
+      "path": "apps/scheduler_worker/reply_composition.py",
+      "start_line": 12541,
+      "kind": "source_or_docs",
+      "end_line": 12778
+    },
+    {
+      "path": "apps/scheduler_worker/research_acceptance.py",
+      "start_line": 12779,
+      "kind": "source_or_docs",
+      "end_line": 12829
+    },
+    {
+      "path": "apps/scheduler_worker/research_acceptance_dependencies.py",
+      "start_line": 12830,
+      "kind": "source_or_docs",
+      "end_line": 12993
+    },
+    {
+      "path": "apps/scheduler_worker/runtime.py",
+      "start_line": 12994,
+      "kind": "source_or_docs",
+      "end_line": 14026
+    },
+    {
+      "path": "apps/scheduler_worker/sourcing_runtime.py",
+      "start_line": 14027,
+      "kind": "source_or_docs",
+      "end_line": 14135
+    },
+    {
+      "path": "apps/web/src/App.vue",
+      "start_line": 14136,
+      "kind": "source_or_docs",
+      "end_line": 14212
+    },
+    {
+      "path": "apps/web/src/api/api.d.ts",
+      "start_line": 14213,
+      "kind": "generated_api",
+      "end_line": 15709
+    },
+    {
+      "path": "apps/web/src/api/client.ts",
+      "start_line": 15710,
+      "kind": "source_or_docs",
+      "end_line": 15763
+    },
+    {
+      "path": "apps/web/src/components/ControlledModeBar.vue",
+      "start_line": 15764,
+      "kind": "source_or_docs",
+      "end_line": 15817
+    },
+    {
+      "path": "apps/web/src/components/MessageEvidenceDownload.vue",
+      "start_line": 15818,
+      "kind": "source_or_docs",
+      "end_line": 15876
+    },
+    {
+      "path": "apps/web/src/components/NotificationBadge.vue",
+      "start_line": 15877,
+      "kind": "source_or_docs",
+      "end_line": 15981
+    },
+    {
+      "path": "apps/web/src/components/ProvenancePopover.vue",
+      "start_line": 15982,
+      "kind": "source_or_docs",
+      "end_line": 16008
+    },
+    {
+      "path": "apps/web/src/components/WebCoreObservationPanel.vue",
+      "start_line": 16009,
+      "kind": "source_or_docs",
+      "end_line": 16125
+    },
+    {
+      "path": "apps/web/src/router.ts",
+      "start_line": 16126,
+      "kind": "source_or_docs",
+      "end_line": 16155
+    },
+    {
+      "path": "apps/web/src/views/NotificationCenter.vue",
+      "start_line": 16156,
+      "kind": "source_or_docs",
+      "end_line": 16485
+    },
+    {
+      "path": "apps/web/src/views/SendingIdentityCenter.vue",
+      "start_line": 16486,
+      "kind": "source_or_docs",
+      "end_line": 17092
+    },
+    {
+      "path": "apps/web/src/views/campaigns/CampaignCenter.vue",
+      "start_line": 17093,
+      "kind": "source_or_docs",
+      "end_line": 17646
+    },
+    {
+      "path": "apps/web/src/views/command-center/CommandCenter.vue",
+      "start_line": 17647,
+      "kind": "source_or_docs",
+      "end_line": 18025
+    },
+    {
+      "path": "apps/web/src/views/costing-quotes/CostingQuotes.vue",
+      "start_line": 18026,
+      "kind": "source_or_docs",
+      "end_line": 18365
+    },
+    {
+      "path": "apps/web/src/views/costing-quotes/QuoteVersions.vue",
+      "start_line": 18366,
+      "kind": "source_or_docs",
+      "end_line": 18482
+    },
+    {
+      "path": "apps/web/src/views/crm/HandoffPacketView.vue",
+      "start_line": 18483,
+      "kind": "source_or_docs",
+      "end_line": 18682
+    },
+    {
+      "path": "apps/web/src/views/crm/HandoffQueue.vue",
+      "start_line": 18683,
+      "kind": "source_or_docs",
+      "end_line": 19144
+    },
+    {
+      "path": "apps/web/src/views/crm/OpportunityDetail.vue",
+      "start_line": 19145,
+      "kind": "source_or_docs",
+      "end_line": 19302
+    },
+    {
+      "path": "apps/web/src/views/crm/OpportunityList.vue",
+      "start_line": 19303,
+      "kind": "source_or_docs",
+      "end_line": 19373
+    },
+    {
+      "path": "apps/web/src/views/demand-radar/ValidatedNeedDetail.vue",
+      "start_line": 19374,
+      "kind": "source_or_docs",
+      "end_line": 19607
+    },
+    {
+      "path": "apps/web/src/views/inbox/SmartInbox.vue",
+      "start_line": 19608,
+      "kind": "source_or_docs",
+      "end_line": 19987
+    },
+    {
+      "path": "apps/web/src/views/runs/RunCenter.vue",
+      "start_line": 19988,
+      "kind": "source_or_docs",
+      "end_line": 20371
+    },
+    {
+      "path": "apps/web/src/views/settings/SettingsCenter.vue",
+      "start_line": 20372,
+      "kind": "source_or_docs",
+      "end_line": 21099
+    },
+    {
+      "path": "apps/web/src/views/sourcing/SourcingCaseDetail.vue",
+      "start_line": 21100,
+      "kind": "source_or_docs",
+      "end_line": 21550
+    },
+    {
+      "path": "apps/web/src/views/sourcing/SourcingRecoveryForm.vue",
+      "start_line": 21551,
+      "kind": "source_or_docs",
+      "end_line": 21724
+    },
+    {
+      "path": "apps/web/tests/command-center.test.ts",
+      "start_line": 21725,
+      "kind": "source_or_docs",
+      "end_line": 21752
+    },
+    {
+      "path": "apps/web/tests/controlled-identity.test.ts",
+      "start_line": 21753,
+      "kind": "source_or_docs",
+      "end_line": 21787
+    },
+    {
+      "path": "apps/web/tests/core-access-revocation.test.ts",
+      "start_line": 21788,
+      "kind": "source_or_docs",
+      "end_line": 21915
+    },
+    {
+      "path": "apps/web/tests/core-request-generation.test.ts",
+      "start_line": 21916,
+      "kind": "source_or_docs",
+      "end_line": 22020
+    },
+    {
+      "path": "apps/web/tests/handoff-queue.test.ts",
+      "start_line": 22021,
+      "kind": "source_or_docs",
+      "end_line": 22101
+    },
+    {
+      "path": "apps/web/tests/identity-registration.test.ts",
+      "start_line": 22102,
+      "kind": "source_or_docs",
+      "end_line": 22149
+    },
+    {
+      "path": "apps/web/tests/message-evidence.test.ts",
+      "start_line": 22150,
+      "kind": "source_or_docs",
+      "end_line": 22182
+    },
+    {
+      "path": "apps/web/tests/notification-center.test.ts",
+      "start_line": 22183,
+      "kind": "source_or_docs",
+      "end_line": 22209
+    },
+    {
+      "path": "apps/web/tests/opportunity-list.test.ts",
+      "start_line": 22210,
+      "kind": "source_or_docs",
+      "end_line": 22312
+    },
+    {
+      "path": "apps/web/tests/quotation-flow.test.ts",
+      "start_line": 22313,
+      "kind": "source_or_docs",
+      "end_line": 22539
+    },
+    {
+      "path": "apps/web/tests/run-center.test.ts",
+      "start_line": 22540,
+      "kind": "source_or_docs",
+      "end_line": 22712
+    },
+    {
+      "path": "apps/web/tests/sending-identity-center.test.ts",
+      "start_line": 22713,
+      "kind": "source_or_docs",
+      "end_line": 22779
+    },
+    {
+      "path": "apps/web/tests/settings.test.ts",
+      "start_line": 22780,
+      "kind": "source_or_docs",
+      "end_line": 22850
+    },
+    {
+      "path": "apps/web/tests/sourcing-center.test.ts",
+      "start_line": 22851,
+      "kind": "source_or_docs",
+      "end_line": 22878
+    },
+    {
+      "path": "apps/web/tests/web-core-state-recovery.test.ts",
+      "start_line": 22879,
+      "kind": "source_or_docs",
+      "end_line": 23058
+    },
+    {
+      "path": "apps/web/vite.controlled.config.ts",
+      "start_line": 23059,
+      "kind": "source_or_docs",
+      "end_line": 23087
+    },
+    {
+      "path": "artifact_store/AGENTS.md",
+      "start_line": 23088,
+      "kind": "source_or_docs",
+      "end_line": 23106
+    },
+    {
+      "path": "connectors/gmail/AGENTS.md",
+      "start_line": 23107,
+      "kind": "source_or_docs",
+      "end_line": 23155
+    },
+    {
+      "path": "connectors/gmail/inbound.py",
+      "start_line": 23156,
+      "kind": "source_or_docs",
+      "end_line": 23336
+    },
+    {
+      "path": "connectors/gmail/inbound_cursor.py",
+      "start_line": 23337,
+      "kind": "source_or_docs",
+      "end_line": 23452
+    },
+    {
+      "path": "connectors/gmail/inbound_mime.py",
+      "start_line": 23453,
+      "kind": "source_or_docs",
+      "end_line": 23929
+    },
+    {
+      "path": "connectors/gmail/inbound_transport.py",
+      "start_line": 23930,
+      "kind": "source_or_docs",
+      "end_line": 24127
+    },
+    {
+      "path": "connectors/gmail/transport.py",
+      "start_line": 24128,
+      "kind": "source_or_docs",
+      "end_line": 24232
+    },
+    {
+      "path": "connectors/object_store/deferred.py",
+      "start_line": 24233,
+      "kind": "source_or_docs",
+      "end_line": 24274
+    },
+    {
+      "path": "connectors/object_store/s3.py",
+      "start_line": 24275,
+      "kind": "source_or_docs",
+      "end_line": 24340
+    },
+    {
+      "path": "connectors/openai/client.py",
+      "start_line": 24341,
+      "kind": "source_or_docs",
+      "end_line": 24426
+    },
+    {
+      "path": "docs/acceptance/2026-09-05-web-core-completion.md",
+      "start_line": 24427,
+      "kind": "source_or_docs",
+      "end_line": 24616
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/README.md",
+      "start_line": 24617,
+      "kind": "delivery_archive",
+      "end_line": 24729
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/archive-manifest.json",
+      "start_line": 24730,
+      "kind": "delivery_archive",
+      "end_line": 25041
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/backup-restore-pre-review.json",
+      "start_line": 25042,
+      "kind": "delivery_archive",
+      "end_line": 25130
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/backup-restore.json",
+      "start_line": 25131,
+      "kind": "delivery_archive",
+      "end_line": 25221
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/catalog-full-suite-side-effects/03-policy-pending-desktop.png",
+      "start_line": 25222,
+      "kind": "delivery_archive",
+      "end_line": 25225
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/catalog-full-suite-side-effects/04-policy-approval-deep-link.png",
+      "start_line": 25226,
+      "kind": "delivery_archive",
+      "end_line": 25229
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/catalog-full-suite-side-effects/05-active-policy-proposal-desktop.png",
+      "start_line": 25230,
+      "kind": "delivery_archive",
+      "end_line": 25233
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/catalog-full-suite-side-effects/06-active-policy-proposal-390.png",
+      "start_line": 25234,
+      "kind": "delivery_archive",
+      "end_line": 25237
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/catalog-full-suite-side-effects/07-queued-cultivation-desktop.png",
+      "start_line": 25238,
+      "kind": "delivery_archive",
+      "end_line": 25241
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/catalog-full-suite-side-effects/08-stale-and-cultivation-390.png",
+      "start_line": 25242,
+      "kind": "delivery_archive",
+      "end_line": 25245
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/fix1-source-commit.json",
+      "start_line": 25246,
+      "kind": "delivery_archive",
+      "end_line": 25264
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/rulings-progress-history.md",
+      "start_line": 25265,
+      "kind": "delivery_archive",
+      "end_line": 25694
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/source-commit.json",
+      "start_line": 25695,
+      "kind": "delivery_archive",
+      "end_line": 25764
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-0-capability-history.md",
+      "start_line": 25765,
+      "kind": "delivery_archive",
+      "end_line": 25843
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-0-report.md",
+      "start_line": 25844,
+      "kind": "delivery_archive",
+      "end_line": 25918
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-0-review.md",
+      "start_line": 25919,
+      "kind": "delivery_archive",
+      "end_line": 25988
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-1-report.md",
+      "start_line": 25989,
+      "kind": "delivery_archive",
+      "end_line": 26155
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-1-review.md",
+      "start_line": 26156,
+      "kind": "delivery_archive",
+      "end_line": 26255
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-10-report.md",
+      "start_line": 26256,
+      "kind": "delivery_archive",
+      "end_line": 26431
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-10-review.md",
+      "start_line": 26432,
+      "kind": "delivery_archive",
+      "end_line": 26549
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-11-report.md",
+      "start_line": 26550,
+      "kind": "delivery_archive",
+      "end_line": 26678
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-11-review.md",
+      "start_line": 26679,
+      "kind": "delivery_archive",
+      "end_line": 26734
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-11-run-cost-inputs-390.png",
+      "start_line": 26735,
+      "kind": "delivery_archive",
+      "end_line": 26738
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-12-report.md",
+      "start_line": 26739,
+      "kind": "delivery_archive",
+      "end_line": 26855
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-12-review.md",
+      "start_line": 26856,
+      "kind": "delivery_archive",
+      "end_line": 26969
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-13-fix1-gates.json",
+      "start_line": 26970,
+      "kind": "delivery_archive",
+      "end_line": 27056
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-13-gates.json",
+      "start_line": 27057,
+      "kind": "delivery_archive",
+      "end_line": 27263
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-13-report.md",
+      "start_line": 27264,
+      "kind": "delivery_archive",
+      "end_line": 27450
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-13-review.md",
+      "start_line": 27451,
+      "kind": "delivery_archive",
+      "end_line": 27554
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-2-report.md",
+      "start_line": 27555,
+      "kind": "delivery_archive",
+      "end_line": 27641
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-2-review.md",
+      "start_line": 27642,
+      "kind": "delivery_archive",
+      "end_line": 27687
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-3a-report.md",
+      "start_line": 27688,
+      "kind": "delivery_archive",
+      "end_line": 27892
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-3a-review.md",
+      "start_line": 27893,
+      "kind": "delivery_archive",
+      "end_line": 27956
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-3b-report.md",
+      "start_line": 27957,
+      "kind": "delivery_archive",
+      "end_line": 28135
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-3b-review.md",
+      "start_line": 28136,
+      "kind": "delivery_archive",
+      "end_line": 28214
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-4-report.md",
+      "start_line": 28215,
+      "kind": "delivery_archive",
+      "end_line": 28452
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-4-review.md",
+      "start_line": 28453,
+      "kind": "delivery_archive",
+      "end_line": 28527
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-5a-report.md",
+      "start_line": 28528,
+      "kind": "delivery_archive",
+      "end_line": 28708
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-5a-review.md",
+      "start_line": 28709,
+      "kind": "delivery_archive",
+      "end_line": 28784
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-5b-report.md",
+      "start_line": 28785,
+      "kind": "delivery_archive",
+      "end_line": 28973
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-5b-review.md",
+      "start_line": 28974,
+      "kind": "delivery_archive",
+      "end_line": 29065
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-6-report.md",
+      "start_line": 29066,
+      "kind": "delivery_archive",
+      "end_line": 29306
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-6-review.md",
+      "start_line": 29307,
+      "kind": "delivery_archive",
+      "end_line": 29407
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-7-report.md",
+      "start_line": 29408,
+      "kind": "delivery_archive",
+      "end_line": 29519
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-7-review.md",
+      "start_line": 29520,
+      "kind": "delivery_archive",
+      "end_line": 29570
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-8-filled-inbox-evidence-390.png",
+      "start_line": 29571,
+      "kind": "delivery_archive",
+      "end_line": 29574
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-8-report.md",
+      "start_line": 29575,
+      "kind": "delivery_archive",
+      "end_line": 29771
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-8-review.md",
+      "start_line": 29772,
+      "kind": "delivery_archive",
+      "end_line": 29859
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-9-report.md",
+      "start_line": 29860,
+      "kind": "delivery_archive",
+      "end_line": 30017
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-9-review.md",
+      "start_line": 30018,
+      "kind": "delivery_archive",
+      "end_line": 30100
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-9-settings-unknown-390.png",
+      "start_line": 30101,
+      "kind": "delivery_archive",
+      "end_line": 30104
+    },
+    {
+      "path": "docs/acceptance/web-core-delivery/task-9-spec.md",
+      "start_line": 30105,
+      "kind": "delivery_archive",
+      "end_line": 30147
+    },
+    {
+      "path": "docs/adr/0025-current-outreach-facts-and-runtime-composition.md",
+      "start_line": 30148,
+      "kind": "source_or_docs",
+      "end_line": 30193
+    },
+    {
+      "path": "docs/adr/0026-email-inbound-archived-page-contracts.md",
+      "start_line": 30194,
+      "kind": "source_or_docs",
+      "end_line": 30257
+    },
+    {
+      "path": "docs/adr/0027-reply-composition-and-controlled-notifications.md",
+      "start_line": 30258,
+      "kind": "source_or_docs",
+      "end_line": 30294
+    },
+    {
+      "path": "docs/adr/0028-inbox-current-ownership-access.md",
+      "start_line": 30295,
+      "kind": "source_or_docs",
+      "end_line": 30313
+    },
+    {
+      "path": "docs/adr/0063-web-sending-identity-management.md",
+      "start_line": 30314,
+      "kind": "source_or_docs",
+      "end_line": 30334
+    },
+    {
+      "path": "docs/adr/0064-sourcing-reconciliation-recovery-action.md",
+      "start_line": 30335,
+      "kind": "source_or_docs",
+      "end_line": 30369
+    },
+    {
+      "path": "docs/adr/0065-late-bound-contact-runtime-ports.md",
+      "start_line": 30370,
+      "kind": "source_or_docs",
+      "end_line": 30401
+    },
+    {
+      "path": "docs/architecture/12-client-capability-boundaries.md",
+      "start_line": 30402,
+      "kind": "source_or_docs",
+      "end_line": 30444
+    },
+    {
+      "path": "docs/design/2026-09-06-web-core-observability.md",
+      "start_line": 30445,
+      "kind": "source_or_docs",
+      "end_line": 30500
+    },
+    {
+      "path": "docs/operations/web-core-capability-matrix.md",
+      "start_line": 30501,
+      "kind": "source_or_docs",
+      "end_line": 30578
+    },
+    {
+      "path": "docs/operations/web-core-local.md",
+      "start_line": 30579,
+      "kind": "source_or_docs",
+      "end_line": 30767
+    },
+    {
+      "path": "docs/operations/web-core-metrics.md",
+      "start_line": 30768,
+      "kind": "source_or_docs",
+      "end_line": 30813
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-05-web-first-completion.md",
+      "start_line": 30814,
+      "kind": "source_or_docs",
+      "end_line": 31248
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-05-context-builder-contract.md",
+      "start_line": 31249,
+      "kind": "source_or_docs",
+      "end_line": 31285
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-05-email-inbound-5a.md",
+      "start_line": 31286,
+      "kind": "source_or_docs",
+      "end_line": 31351
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-05-email-inbound-5b.md",
+      "start_line": 31352,
+      "kind": "source_or_docs",
+      "end_line": 31439
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-05-skill-router-contract.md",
+      "start_line": 31440,
+      "kind": "source_or_docs",
+      "end_line": 31487
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-05-web-core-controlled-launcher.md",
+      "start_line": 31488,
+      "kind": "source_or_docs",
+      "end_line": 31541
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-05-web-core-runtime-contract.md",
+      "start_line": 31542,
+      "kind": "source_or_docs",
+      "end_line": 31624
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-05-web-first-completion-design.md",
+      "start_line": 31625,
+      "kind": "source_or_docs",
+      "end_line": 31643
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-06-inbox-access-7.md",
+      "start_line": 31644,
+      "kind": "source_or_docs",
+      "end_line": 31666
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-06-reply-completion-6.md",
+      "start_line": 31667,
+      "kind": "source_or_docs",
+      "end_line": 31734
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-06-web-core-8.md",
+      "start_line": 31735,
+      "kind": "source_or_docs",
+      "end_line": 31771
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-06-web-core-delivery.md",
+      "start_line": 31772,
+      "kind": "source_or_docs",
+      "end_line": 31844
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-06-web-core-final-acceptance.md",
+      "start_line": 31845,
+      "kind": "source_or_docs",
+      "end_line": 31913
+    },
+    {
+      "path": "domains/conversations/AGENTS.md",
+      "start_line": 31914,
+      "kind": "source_or_docs",
+      "end_line": 31940
+    },
+    {
+      "path": "domains/conversations/inbox_access.py",
+      "start_line": 31941,
+      "kind": "source_or_docs",
+      "end_line": 32057
+    },
+    {
+      "path": "domains/conversations/repository.py",
+      "start_line": 32058,
+      "kind": "source_or_docs",
+      "end_line": 32191
+    },
+    {
+      "path": "domains/conversations/schemas.py",
+      "start_line": 32192,
+      "kind": "source_or_docs",
+      "end_line": 32284
+    },
+    {
+      "path": "domains/conversations/service.py",
+      "start_line": 32285,
+      "kind": "source_or_docs",
+      "end_line": 32446
+    },
+    {
+      "path": "domains/conversations/service_impl.py",
+      "start_line": 32447,
+      "kind": "source_or_docs",
+      "end_line": 32899
+    },
+    {
+      "path": "domains/conversations/source_access.py",
+      "start_line": 32900,
+      "kind": "source_or_docs",
+      "end_line": 32948
+    },
+    {
+      "path": "domains/demand/repository.py",
+      "start_line": 32949,
+      "kind": "source_or_docs",
+      "end_line": 32983
+    },
+    {
+      "path": "domains/demand/schemas.py",
+      "start_line": 32984,
+      "kind": "source_or_docs",
+      "end_line": 33007
+    },
+    {
+      "path": "domains/demand/service.py",
+      "start_line": 33008,
+      "kind": "source_or_docs",
+      "end_line": 33205
+    },
+    {
+      "path": "domains/demand/service_impl.py",
+      "start_line": 33206,
+      "kind": "source_or_docs",
+      "end_line": 33268
+    },
+    {
+      "path": "domains/employees/AGENTS.md",
+      "start_line": 33269,
+      "kind": "source_or_docs",
+      "end_line": 33285
+    },
+    {
+      "path": "domains/employees/permissions.py",
+      "start_line": 33286,
+      "kind": "source_or_docs",
+      "end_line": 33424
+    },
+    {
+      "path": "domains/employees/service.py",
+      "start_line": 33425,
+      "kind": "source_or_docs",
+      "end_line": 33478
+    },
+    {
+      "path": "domains/employees/service_impl.py",
+      "start_line": 33479,
+      "kind": "source_or_docs",
+      "end_line": 33620
+    },
+    {
+      "path": "domains/opportunities/AGENTS.md",
+      "start_line": 33621,
+      "kind": "source_or_docs",
+      "end_line": 33637
+    },
+    {
+      "path": "domains/opportunities/permissions.py",
+      "start_line": 33638,
+      "kind": "source_or_docs",
+      "end_line": 33759
+    },
+    {
+      "path": "domains/opportunities/schemas.py",
+      "start_line": 33760,
+      "kind": "source_or_docs",
+      "end_line": 33827
+    },
+    {
+      "path": "domains/opportunities/service.py",
+      "start_line": 33828,
+      "kind": "source_or_docs",
+      "end_line": 33884
+    },
+    {
+      "path": "domains/opportunities/service_impl.py",
+      "start_line": 33885,
+      "kind": "source_or_docs",
+      "end_line": 34200
+    },
+    {
+      "path": "domains/outreach/AGENTS.md",
+      "start_line": 34201,
+      "kind": "source_or_docs",
+      "end_line": 34219
+    },
+    {
+      "path": "domains/outreach/permissions.py",
+      "start_line": 34220,
+      "kind": "source_or_docs",
+      "end_line": 34453
+    },
+    {
+      "path": "domains/outreach/service.py",
+      "start_line": 34454,
+      "kind": "source_or_docs",
+      "end_line": 34488
+    },
+    {
+      "path": "domains/outreach/service_impl.py",
+      "start_line": 34489,
+      "kind": "source_or_docs",
+      "end_line": 35702
+    },
+    {
+      "path": "domains/prospecting/repository.py",
+      "start_line": 35703,
+      "kind": "source_or_docs",
+      "end_line": 35736
+    },
+    {
+      "path": "domains/prospecting/schemas.py",
+      "start_line": 35737,
+      "kind": "source_or_docs",
+      "end_line": 35787
+    },
+    {
+      "path": "domains/prospecting/service.py",
+      "start_line": 35788,
+      "kind": "source_or_docs",
+      "end_line": 35843
+    },
+    {
+      "path": "domains/prospecting/service_impl.py",
+      "start_line": 35844,
+      "kind": "source_or_docs",
+      "end_line": 35958
+    },
+    {
+      "path": "domains/sending_identity/permissions.py",
+      "start_line": 35959,
+      "kind": "source_or_docs",
+      "end_line": 36006
+    },
+    {
+      "path": "domains/sending_identity/repository.py",
+      "start_line": 36007,
+      "kind": "source_or_docs",
+      "end_line": 36037
+    },
+    {
+      "path": "domains/sending_identity/service.py",
+      "start_line": 36038,
+      "kind": "source_or_docs",
+      "end_line": 36095
+    },
+    {
+      "path": "domains/sending_identity/service_impl.py",
+      "start_line": 36096,
+      "kind": "source_or_docs",
+      "end_line": 36198
+    },
+    {
+      "path": "domains/sourcing/schemas.py",
+      "start_line": 36199,
+      "kind": "source_or_docs",
+      "end_line": 36226
+    },
+    {
+      "path": "infra/controlled/AGENTS.md",
+      "start_line": 36227,
+      "kind": "source_or_docs",
+      "end_line": 36237
+    },
+    {
+      "path": "infra/controlled/__init__.py",
+      "start_line": 36238,
+      "kind": "source_or_docs",
+      "end_line": 36244
+    },
+    {
+      "path": "infra/controlled/config.py",
+      "start_line": 36245,
+      "kind": "source_or_docs",
+      "end_line": 36396
+    },
+    {
+      "path": "infra/controlled/contacts.py",
+      "start_line": 36397,
+      "kind": "source_or_docs",
+      "end_line": 36535
+    },
+    {
+      "path": "infra/controlled/network.py",
+      "start_line": 36536,
+      "kind": "source_or_docs",
+      "end_line": 36576
+    },
+    {
+      "path": "infra/controlled/process_anchor.py",
+      "start_line": 36577,
+      "kind": "source_or_docs",
+      "end_line": 36644
+    },
+    {
+      "path": "infra/controlled/providers.py",
+      "start_line": 36645,
+      "kind": "source_or_docs",
+      "end_line": 36967
+    },
+    {
+      "path": "infra/controlled/reply_model.py",
+      "start_line": 36968,
+      "kind": "source_or_docs",
+      "end_line": 37053
+    },
+    {
+      "path": "infra/controlled/research.py",
+      "start_line": 37054,
+      "kind": "source_or_docs",
+      "end_line": 37235
+    },
+    {
+      "path": "infra/controlled/resources.py",
+      "start_line": 37236,
+      "kind": "source_or_docs",
+      "end_line": 37545
+    },
+    {
+      "path": "infra/db/conversations_uow.py",
+      "start_line": 37546,
+      "kind": "source_or_docs",
+      "end_line": 37604
+    },
+    {
+      "path": "infra/db/email_inbound_uow.py",
+      "start_line": 37605,
+      "kind": "source_or_docs",
+      "end_line": 37833
+    },
+    {
+      "path": "infra/db/inbox_access.py",
+      "start_line": 37834,
+      "kind": "source_or_docs",
+      "end_line": 37974
+    },
+    {
+      "path": "infra/db/repositories/conversations.py",
+      "start_line": 37975,
+      "kind": "source_or_docs",
+      "end_line": 38424
+    },
+    {
+      "path": "infra/db/repositories/email_inbound.py",
+      "start_line": 38425,
+      "kind": "source_or_docs",
+      "end_line": 38718
+    },
+    {
+      "path": "infra/db/repositories/need_hypotheses.py",
+      "start_line": 38719,
+      "kind": "source_or_docs",
+      "end_line": 38963
+    },
+    {
+      "path": "infra/db/repositories/prospecting.py",
+      "start_line": 38964,
+      "kind": "source_or_docs",
+      "end_line": 39020
+    },
+    {
+      "path": "infra/db/repositories/sending_identities.py",
+      "start_line": 39021,
+      "kind": "source_or_docs",
+      "end_line": 39058
+    },
+    {
+      "path": "infra/db/run_audit.py",
+      "start_line": 39059,
+      "kind": "source_or_docs",
+      "end_line": 39243
+    },
+    {
+      "path": "infra/db/tables.py",
+      "start_line": 39244,
+      "kind": "source_or_docs",
+      "end_line": 39383
+    },
+    {
+      "path": "infra/db/web_core_observability.py",
+      "start_line": 39384,
+      "kind": "source_or_docs",
+      "end_line": 39649
+    },
+    {
+      "path": "infra/email_inbound_artifacts.py",
+      "start_line": 39650,
+      "kind": "source_or_docs",
+      "end_line": 39722
+    },
+    {
+      "path": "migrations/versions/0059_email_inbound.py",
+      "start_line": 39723,
+      "kind": "source_or_docs",
+      "end_line": 39817
+    },
+    {
+      "path": "output/acceptance/task12/8d234c0956fb498e9f171342c3b72f51/cleanup.json",
+      "start_line": 39818,
+      "kind": "evidence",
+      "end_line": 39928
+    },
+    {
+      "path": "output/acceptance/task12/8d234c0956fb498e9f171342c3b72f51/handoff-390.png",
+      "start_line": 39929,
+      "kind": "evidence",
+      "end_line": 39932
+    },
+    {
+      "path": "output/acceptance/task12/8d234c0956fb498e9f171342c3b72f51/need-1440.png",
+      "start_line": 39933,
+      "kind": "evidence",
+      "end_line": 39936
+    },
+    {
+      "path": "output/acceptance/task12/8d234c0956fb498e9f171342c3b72f51/proof.json",
+      "start_line": 39937,
+      "kind": "evidence",
+      "end_line": 40081
+    },
+    {
+      "path": "output/acceptance/task12/8d234c0956fb498e9f171342c3b72f51/research-confirmation.json",
+      "start_line": 40082,
+      "kind": "evidence",
+      "end_line": 40089
+    },
+    {
+      "path": "output/acceptance/task12/8d234c0956fb498e9f171342c3b72f51/research-unconfigured.json",
+      "start_line": 40090,
+      "kind": "evidence",
+      "end_line": 40105
+    },
+    {
+      "path": "output/acceptance/task12/backend-failure-index.json",
+      "start_line": 40106,
+      "kind": "evidence",
+      "end_line": 41656
+    },
+    {
+      "path": "output/acceptance/task12/backend-final-linux-owner-audit.json",
+      "start_line": 41657,
+      "kind": "evidence",
+      "end_line": 41710
+    },
+    {
+      "path": "output/acceptance/task12/backend-final-safe-summary.json",
+      "start_line": 41711,
+      "kind": "evidence",
+      "end_line": 41729
+    },
+    {
+      "path": "output/acceptance/task12/backend-final.json",
+      "start_line": 41730,
+      "kind": "evidence",
+      "end_line": 41756
+    },
+    {
+      "path": "output/acceptance/task12/backend-full.json",
+      "start_line": 41757,
+      "kind": "evidence",
+      "end_line": 41780
+    },
+    {
+      "path": "output/acceptance/task12/backend-resolution-index.json",
+      "start_line": 41781,
+      "kind": "evidence",
+      "end_line": 43259
+    },
+    {
+      "path": "output/acceptance/task12/final-mac-owner-audit.json",
+      "start_line": 43260,
+      "kind": "evidence",
+      "end_line": 43300
+    },
+    {
+      "path": "output/acceptance/task12/final-source-snapshot.json",
+      "start_line": 43301,
+      "kind": "evidence",
+      "end_line": 44942
+    },
+    {
+      "path": "output/acceptance/task12/final-static-gates.json",
+      "start_line": 44943,
+      "kind": "evidence",
+      "end_line": 45000
+    },
+    {
+      "path": "output/acceptance/task12/i1-source-commit.json",
+      "start_line": 45001,
+      "kind": "evidence",
+      "end_line": 45056
+    },
+    {
+      "path": "output/acceptance/task12/i1-static-gates.json",
+      "start_line": 45057,
+      "kind": "evidence",
+      "end_line": 45083
+    },
+    {
+      "path": "output/acceptance/task12/installation-isolation.json",
+      "start_line": 45084,
+      "kind": "evidence",
+      "end_line": 45090
+    },
+    {
+      "path": "output/acceptance/task12/lint-attribution.json",
+      "start_line": 45091,
+      "kind": "evidence",
+      "end_line": 45908
+    },
+    {
+      "path": "output/acceptance/task12/node-isolated-final.json",
+      "start_line": 45909,
+      "kind": "evidence",
+      "end_line": 45937
+    },
+    {
+      "path": "output/acceptance/task12/source-snapshot.json",
+      "start_line": 45938,
+      "kind": "evidence",
+      "end_line": 45974
+    },
+    {
+      "path": "output/acceptance/task12/web-gates.json",
+      "start_line": 45975,
+      "kind": "evidence",
+      "end_line": 46042
+    },
+    {
+      "path": "output/playwright/t10-2ea6b4a4e32f429192c2d1926a2ebfc1/exact-cost-1440.png",
+      "start_line": 46043,
+      "kind": "evidence",
+      "end_line": 46046
+    },
+    {
+      "path": "output/playwright/t10-2ea6b4a4e32f429192c2d1926a2ebfc1/lifecycle.json",
+      "start_line": 46047,
+      "kind": "evidence",
+      "end_line": 47291
+    },
+    {
+      "path": "output/playwright/t10-2ea6b4a4e32f429192c2d1926a2ebfc1/quote-390.png",
+      "start_line": 47292,
+      "kind": "evidence",
+      "end_line": 47295
+    },
+    {
+      "path": "pyproject.toml",
+      "start_line": 47296,
+      "kind": "source_or_docs",
+      "end_line": 47341
+    },
+    {
+      "path": "scripts/controlled_web_supervisor.py",
+      "start_line": 47342,
+      "kind": "source_or_docs",
+      "end_line": 47892
+    },
+    {
+      "path": "scripts/run_web_core_controlled.py",
+      "start_line": 47893,
+      "kind": "source_or_docs",
+      "end_line": 47965
+    },
+    {
+      "path": "shared/AGENTS.md",
+      "start_line": 47966,
+      "kind": "source_or_docs",
+      "end_line": 47983
+    },
+    {
+      "path": "shared/email_inbound.py",
+      "start_line": 47984,
+      "kind": "source_or_docs",
+      "end_line": 48017
+    },
+    {
+      "path": "shared/schemas/email_inbound.py",
+      "start_line": 48018,
+      "kind": "source_or_docs",
+      "end_line": 48158
+    },
+    {
+      "path": "shared/schemas/runtime_capabilities.py",
+      "start_line": 48159,
+      "kind": "source_or_docs",
+      "end_line": 48197
+    },
+    {
+      "path": "tests/e2e/conftest.py",
+      "start_line": 48198,
+      "kind": "source_or_docs",
+      "end_line": 48224
+    },
+    {
+      "path": "tests/e2e/costing_quote_bridge.py",
+      "start_line": 48225,
+      "kind": "source_or_docs",
+      "end_line": 48300
+    },
+    {
+      "path": "tests/e2e/costing_quote_server.py",
+      "start_line": 48301,
+      "kind": "source_or_docs",
+      "end_line": 48352
+    },
+    {
+      "path": "tests/e2e/costing_quote_stack.py",
+      "start_line": 48353,
+      "kind": "source_or_docs",
+      "end_line": 48428
+    },
+    {
+      "path": "tests/e2e/test_costing_quote_browser.py",
+      "start_line": 48429,
+      "kind": "source_or_docs",
+      "end_line": 48553
+    },
+    {
+      "path": "tests/e2e/test_phase1_browser.py",
+      "start_line": 48554,
+      "kind": "source_or_docs",
+      "end_line": 48625
+    },
+    {
+      "path": "tests/e2e/test_slice4_manual_send.py",
+      "start_line": 48626,
+      "kind": "source_or_docs",
+      "end_line": 48719
+    },
+    {
+      "path": "tests/e2e/test_web_core_controlled.py",
+      "start_line": 48720,
+      "kind": "source_or_docs",
+      "end_line": 49315
+    },
+    {
+      "path": "tests/e2e/web_core_contacts.py",
+      "start_line": 49316,
+      "kind": "source_or_docs",
+      "end_line": 49586
+    },
+    {
+      "path": "tests/integration/costing_quote_case.py",
+      "start_line": 49587,
+      "kind": "source_or_docs",
+      "end_line": 49693
+    },
+    {
+      "path": "tests/integration/quote_evidence_linux_support.py",
+      "start_line": 49694,
+      "kind": "source_or_docs",
+      "end_line": 49723
+    },
+    {
+      "path": "tests/integration/test_catalog_policy_workflow.py",
+      "start_line": 49724,
+      "kind": "source_or_docs",
+      "end_line": 49782
+    },
+    {
+      "path": "tests/integration/test_catalog_product_migration.py",
+      "start_line": 49783,
+      "kind": "source_or_docs",
+      "end_line": 49832
+    },
+    {
+      "path": "tests/integration/test_controlled_notification_delivery.py",
+      "start_line": 49833,
+      "kind": "source_or_docs",
+      "end_line": 49999
+    },
+    {
+      "path": "tests/integration/test_conversations_correction.py",
+      "start_line": 50000,
+      "kind": "source_or_docs",
+      "end_line": 50762
+    },
+    {
+      "path": "tests/integration/test_costing_quote_closed_loop.py",
+      "start_line": 50763,
+      "kind": "source_or_docs",
+      "end_line": 50827
+    },
+    {
+      "path": "tests/integration/test_current_outreach_facts.py",
+      "start_line": 50828,
+      "kind": "source_or_docs",
+      "end_line": 51916
+    },
+    {
+      "path": "tests/integration/test_email_inbound_access.py",
+      "start_line": 51917,
+      "kind": "source_or_docs",
+      "end_line": 52527
+    },
+    {
+      "path": "tests/integration/test_email_inbound_driver.py",
+      "start_line": 52528,
+      "kind": "source_or_docs",
+      "end_line": 52741
+    },
+    {
+      "path": "tests/integration/test_email_inbound_gateway.py",
+      "start_line": 52742,
+      "kind": "source_or_docs",
+      "end_line": 53484
+    },
+    {
+      "path": "tests/integration/test_email_inbound_page.py",
+      "start_line": 53485,
+      "kind": "source_or_docs",
+      "end_line": 54716
+    },
+    {
+      "path": "tests/integration/test_gmail_inbound_http.py",
+      "start_line": 54717,
+      "kind": "source_or_docs",
+      "end_line": 54918
+    },
+    {
+      "path": "tests/integration/test_inbox_access.py",
+      "start_line": 54919,
+      "kind": "source_or_docs",
+      "end_line": 55668
+    },
+    {
+      "path": "tests/integration/test_message_content_reader.py",
+      "start_line": 55669,
+      "kind": "source_or_docs",
+      "end_line": 56354
+    },
+    {
+      "path": "tests/integration/test_migrations.py",
+      "start_line": 56355,
+      "kind": "source_or_docs",
+      "end_line": 56381
+    },
+    {
+      "path": "tests/integration/test_phase1_closed_loop.py",
+      "start_line": 56382,
+      "kind": "source_or_docs",
+      "end_line": 56592
+    },
+    {
+      "path": "tests/integration/test_reply_completion.py",
+      "start_line": 56593,
+      "kind": "source_or_docs",
+      "end_line": 57693
+    },
+    {
+      "path": "tests/integration/test_research_acceptance.py",
+      "start_line": 57694,
+      "kind": "source_or_docs",
+      "end_line": 57756
+    },
+    {
+      "path": "tests/integration/test_research_discovery.py",
+      "start_line": 57757,
+      "kind": "source_or_docs",
+      "end_line": 57882
+    },
+    {
+      "path": "tests/integration/test_scheduler_reply_trigger.py",
+      "start_line": 57883,
+      "kind": "source_or_docs",
+      "end_line": 57989
+    },
+    {
+      "path": "tests/integration/test_scheduler_worker.py",
+      "start_line": 57990,
+      "kind": "source_or_docs",
+      "end_line": 58009
+    },
+    {
+      "path": "tests/integration/test_sourcing_plan_confirmation.py",
+      "start_line": 58010,
+      "kind": "source_or_docs",
+      "end_line": 58131
+    },
+    {
+      "path": "tests/integration/test_web_core_backup_restore.py",
+      "start_line": 58132,
+      "kind": "source_or_docs",
+      "end_line": 58612
+    },
+    {
+      "path": "tests/integration/test_web_core_launcher.py",
+      "start_line": 58613,
+      "kind": "source_or_docs",
+      "end_line": 59666
+    },
+    {
+      "path": "tests/integration/test_web_core_observability.py",
+      "start_line": 59667,
+      "kind": "source_or_docs",
+      "end_line": 60061
+    },
+    {
+      "path": "tests/integration/test_web_core_runtime.py",
+      "start_line": 60062,
+      "kind": "source_or_docs",
+      "end_line": 60925
+    },
+    {
+      "path": "tests/integration/test_web_core_settings_recovery.py",
+      "start_line": 60926,
+      "kind": "source_or_docs",
+      "end_line": 61113
+    },
+    {
+      "path": "tests/research_ui_preview.py",
+      "start_line": 61114,
+      "kind": "source_or_docs",
+      "end_line": 61204
+    },
+    {
+      "path": "tests/unit/test_agent_worker.py",
+      "start_line": 61205,
+      "kind": "source_or_docs",
+      "end_line": 61422
+    },
+    {
+      "path": "tests/unit/test_api_app.py",
+      "start_line": 61423,
+      "kind": "source_or_docs",
+      "end_line": 61481
+    },
+    {
+      "path": "tests/unit/test_api_owned_clients.py",
+      "start_line": 61482,
+      "kind": "source_or_docs",
+      "end_line": 61643
+    },
+    {
+      "path": "tests/unit/test_backup_restore_cleanup.py",
+      "start_line": 61644,
+      "kind": "source_or_docs",
+      "end_line": 61833
+    },
+    {
+      "path": "tests/unit/test_composed_reply_actions.py",
+      "start_line": 61834,
+      "kind": "source_or_docs",
+      "end_line": 62155
+    },
+    {
+      "path": "tests/unit/test_contact_runtime_binding.py",
+      "start_line": 62156,
+      "kind": "source_or_docs",
+      "end_line": 62255
+    },
+    {
+      "path": "tests/unit/test_context_builder.py",
+      "start_line": 62256,
+      "kind": "source_or_docs",
+      "end_line": 63449
+    },
+    {
+      "path": "tests/unit/test_controlled_contact_ports.py",
+      "start_line": 63450,
+      "kind": "source_or_docs",
+      "end_line": 63477
+    },
+    {
+      "path": "tests/unit/test_controlled_reply_model.py",
+      "start_line": 63478,
+      "kind": "source_or_docs",
+      "end_line": 63526
+    },
+    {
+      "path": "tests/unit/test_controlled_research_ports.py",
+      "start_line": 63527,
+      "kind": "source_or_docs",
+      "end_line": 63637
+    },
+    {
+      "path": "tests/unit/test_conversation_inbox_views.py",
+      "start_line": 63638,
+      "kind": "source_or_docs",
+      "end_line": 63798
+    },
+    {
+      "path": "tests/unit/test_costing_quote_transport.py",
+      "start_line": 63799,
+      "kind": "source_or_docs",
+      "end_line": 63911
+    },
+    {
+      "path": "tests/unit/test_email_inbound.py",
+      "start_line": 63912,
+      "kind": "source_or_docs",
+      "end_line": 64411
+    },
+    {
+      "path": "tests/unit/test_email_inbound_page.py",
+      "start_line": 64412,
+      "kind": "source_or_docs",
+      "end_line": 64558
+    },
+    {
+      "path": "tests/unit/test_inbox_api.py",
+      "start_line": 64559,
+      "kind": "source_or_docs",
+      "end_line": 64694
+    },
+    {
+      "path": "tests/unit/test_outreach_delivery_feedback.py",
+      "start_line": 64695,
+      "kind": "source_or_docs",
+      "end_line": 65050
+    },
+    {
+      "path": "tests/unit/test_outreach_permissions.py",
+      "start_line": 65051,
+      "kind": "source_or_docs",
+      "end_line": 65263
+    },
+    {
+      "path": "tests/unit/test_qualification_model_port.py",
+      "start_line": 65264,
+      "kind": "source_or_docs",
+      "end_line": 65337
+    },
+    {
+      "path": "tests/unit/test_quotation_lifecycle.py",
+      "start_line": 65338,
+      "kind": "source_or_docs",
+      "end_line": 65391
+    },
+    {
+      "path": "tests/unit/test_quotation_linux_support.py",
+      "start_line": 65392,
+      "kind": "source_or_docs",
+      "end_line": 65420
+    },
+    {
+      "path": "tests/unit/test_reply_content_boundary.py",
+      "start_line": 65421,
+      "kind": "source_or_docs",
+      "end_line": 65576
+    },
+    {
+      "path": "tests/unit/test_reply_current_evidence.py",
+      "start_line": 65577,
+      "kind": "source_or_docs",
+      "end_line": 65673
+    },
+    {
+      "path": "tests/unit/test_reply_runtime_binding.py",
+      "start_line": 65674,
+      "kind": "source_or_docs",
+      "end_line": 65886
+    },
+    {
+      "path": "tests/unit/test_research_api.py",
+      "start_line": 65887,
+      "kind": "source_or_docs",
+      "end_line": 65921
+    },
+    {
+      "path": "tests/unit/test_run_audit_repository.py",
+      "start_line": 65922,
+      "kind": "source_or_docs",
+      "end_line": 65951
+    },
+    {
+      "path": "tests/unit/test_runs_router.py",
+      "start_line": 65952,
+      "kind": "source_or_docs",
+      "end_line": 65973
+    },
+    {
+      "path": "tests/unit/test_sending_identity_permissions.py",
+      "start_line": 65974,
+      "kind": "source_or_docs",
+      "end_line": 66018
+    },
+    {
+      "path": "tests/unit/test_skill_router.py",
+      "start_line": 66019,
+      "kind": "source_or_docs",
+      "end_line": 66688
+    },
+    {
+      "path": "tests/unit/test_sourcing_router.py",
+      "start_line": 66689,
+      "kind": "source_or_docs",
+      "end_line": 66757
+    },
+    {
+      "path": "tests/unit/test_web_core_private_cleanup.py",
+      "start_line": 66758,
+      "kind": "source_or_docs",
+      "end_line": 66804
+    },
+    {
+      "path": "tests/unit/test_web_identity_management.py",
+      "start_line": 66805,
+      "kind": "source_or_docs",
+      "end_line": 66932
+    },
+    {
+      "path": "tests/unit/workflows/test_sourcing_plan.py",
+      "start_line": 66933,
+      "kind": "source_or_docs",
+      "end_line": 66983
+    },
+    {
+      "path": "tool_gateway/AGENTS.md",
+      "start_line": 66984,
+      "kind": "source_or_docs",
+      "end_line": 67011
+    },
+    {
+      "path": "tool_gateway/checks/email_inbound.py",
+      "start_line": 67012,
+      "kind": "source_or_docs",
+      "end_line": 67042
+    },
+    {
+      "path": "tool_gateway/handlers/email_inbound.py",
+      "start_line": 67043,
+      "kind": "source_or_docs",
+      "end_line": 67318
+    },
+    {
+      "path": "tool_gateway/handlers/email_inbound_raw.py",
+      "start_line": 67319,
+      "kind": "source_or_docs",
+      "end_line": 67548
+    },
+    {
+      "path": "tool_gateway/handlers/email_inbound_slots.py",
+      "start_line": 67549,
+      "kind": "source_or_docs",
+      "end_line": 67620
+    },
+    {
+      "path": "tool_gateway/handlers/inbox_evidence.py",
+      "start_line": 67621,
+      "kind": "source_or_docs",
+      "end_line": 67839
+    },
+    {
+      "path": "workflows/engine/audit.py",
+      "start_line": 67840,
+      "kind": "source_or_docs",
+      "end_line": 67972
+    },
+    {
+      "path": "workflows/engine/observability.py",
+      "start_line": 67973,
+      "kind": "source_or_docs",
+      "end_line": 68088
+    },
+    {
+      "path": "workflows/reply_qualification/AGENTS.md",
+      "start_line": 68089,
+      "kind": "source_or_docs",
+      "end_line": 68128
+    },
+    {
+      "path": "workflows/reply_qualification/inbound.py",
+      "start_line": 68129,
+      "kind": "source_or_docs",
+      "end_line": 68288
+    },
+    {
+      "path": "workflows/reply_qualification/inbound_contracts.py",
+      "start_line": 68289,
+      "kind": "source_or_docs",
+      "end_line": 68421
+    },
+    {
+      "path": "workflows/reply_qualification/inbound_management.py",
+      "start_line": 68422,
+      "kind": "source_or_docs",
+      "end_line": 68578
+    },
+    {
+      "path": "workflows/reply_qualification/ports.py",
+      "start_line": 68579,
+      "kind": "source_or_docs",
+      "end_line": 68646
+    },
+    {
+      "path": "workflows/reply_qualification/questions.py",
+      "start_line": 68647,
+      "kind": "source_or_docs",
+      "end_line": 68827
+    },
+    {
+      "path": "workflows/reply_qualification/steps.py",
+      "start_line": 68828,
+      "kind": "source_or_docs",
+      "end_line": 68911
+    },
+    {
+      "path": "workflows/sourcing_case/application.py",
+      "start_line": 68912,
+      "kind": "source_or_docs",
+      "end_line": 69008
+    }
+  ]
+}

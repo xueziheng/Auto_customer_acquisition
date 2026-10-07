@@ -1,0 +1,470 @@
+"""持久化内测配置、锁和备份拒绝边界。"""
+
+import importlib.util
+import io
+import json
+import os
+import secrets
+import subprocess
+import sys
+import tarfile
+import threading
+from pathlib import Path
+
+import pytest
+
+
+def synthetic_policy(path: Path) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "handoff_policy": {
+                    "sla_seconds": 7200,
+                    "backlog_threshold": 7,
+                    "t1_seconds": 40,
+                    "t2_seconds": 90,
+                },
+                "scoring_policy": {
+                    "version": "synthetic-pilot",
+                    "currency": "USD",
+                    "value_band_boundaries": ["250.00"],
+                    "bucket_map": {str(k): "low" for k in range(1, 8)},
+                },
+            }
+        )
+    )
+    return path
+
+
+def test_profile_contract_exists():
+    assert importlib.util.find_spec("infra.pilot") is not None, "PILOT_PROFILE_MISSING"
+
+
+def test_pilot_minio_is_pinned_nonroot_and_mounts_are_exact():
+    from infra.pilot.resources import (
+        IMAGES,
+        MINIO_CERTS_TMPFS,
+        MOUNTS,
+        _mounts_match,
+    )
+
+    assert IMAGES["objects"] == (
+        "bitnamilegacy/minio@"
+        "sha256:50cec18ac4184af4671a78aedd5554942c8ae105d51a465fa82037949046da01"
+    )
+    assert MOUNTS["objects"] == "/bitnami/minio/data"
+    assert MINIO_CERTS_TMPFS == "rw,noexec,nosuid,size=65536"
+    mounts = [
+        {
+            "Type": "volume",
+            "Name": "pilot-objects",
+            "Destination": "/bitnami/minio/data",
+            "RW": True,
+        },
+    ]
+    assert _mounts_match("objects", mounts, "pilot-objects")
+    mounts.append(
+        {
+            "Type": "volume",
+            "Name": "anonymous-certs",
+            "Destination": "/certs",
+            "RW": True,
+        }
+    )
+    assert not _mounts_match("objects", mounts, "pilot-objects")
+
+
+def make_config(tmp_path):
+    from infra.pilot.config import PilotConfig
+
+    return PilotConfig.create(
+        tmp_path / "profile", synthetic_policy(tmp_path / "policy.json")
+    )
+
+
+def test_config_private_roundtrip_policy_and_secrets(tmp_path):
+    from infra.pilot.config import PilotConfig, PilotError
+
+    config = make_config(tmp_path)
+    reread = PilotConfig.read(tmp_path / "profile/config.json")
+    hidden = all(
+        s.get_secret_value() not in repr(reread) for s in reread.secrets.values()
+    )
+    assert hidden, "PRIVATE_REPR_EXPOSED"
+    assert config.tenant_id == reread.tenant_id
+    assert reread.web_port == reread.api_port
+    assert (tmp_path / "profile").stat().st_mode & 0o777 == 0o700
+    assert (tmp_path / "profile/config.json").stat().st_mode & 0o777 == 0o600
+    env = reread.runtime_environment()
+    assert json.loads(env["TRADEOS_HANDOFF_POLICY"])["sla_seconds"] == 7200
+    assert env["TRADEOS_DEV_MODE"] == "false"
+    assert "GMAIL_OAUTH_TOKEN_REF" not in env
+    with pytest.raises(PilotError, match="secret_reference_rejected"):
+        reread.resolve("UNCONFIGURED_PROVIDER")
+
+
+def test_config_roundtrips_explicit_gmail_binding_without_secret_material(tmp_path):
+    from apps.scheduler_worker.config import SchedulerWorkerConfig
+    from infra.pilot.config import PilotConfig, PilotGmailConfig
+
+    credentials = tmp_path / "gmail-oauth.json"
+    credentials.write_text("{}")
+    credentials.chmod(0o600)
+    config = make_config(tmp_path).model_copy(
+        update={
+            "gmail": PilotGmailConfig(
+                address="owner@example.com",
+                credentials_file=credentials,
+                employee_id="emp_01M3M3BBRGA87N1H1Y7W79DCAX",
+            )
+        }
+    )
+    config.write(tmp_path / "profile/config.json")
+
+    reread = PilotConfig.read(tmp_path / "profile/config.json")
+    assert reread.gmail == config.gmail
+    assert "owner@example.com" not in repr(reread)
+    assert str(credentials) not in repr(reread)
+    env = reread.runtime_environment()
+    assert env["GMAIL_OAUTH_TOKEN_REF"] == "GMAIL_OAUTH_TOKEN_REF"
+    assert "owner@example.com" not in repr(env)
+    assert str(credentials) not in repr(env)
+    assert (
+        SchedulerWorkerConfig.from_pilot_environ(env).gmail_oauth_token_ref
+        == "GMAIL_OAUTH_TOKEN_REF"
+    )
+
+
+@pytest.mark.parametrize(
+    "target,mode", [("profile", 0o755), ("profile/config.json", 0o644)]
+)
+def test_config_refuses_insecure_permissions(tmp_path, target, mode):
+    from infra.pilot.config import PilotConfig, PilotError
+
+    make_config(tmp_path)
+    (tmp_path / target).chmod(mode)
+    with pytest.raises(PilotError, match="configuration_invalid"):
+        PilotConfig.read(tmp_path / "profile/config.json")
+
+
+def test_config_refuses_symlink_hardlink_and_wrong_owner(tmp_path, monkeypatch):
+    from infra.pilot.config import PilotConfig, PilotError
+
+    make_config(tmp_path)
+    original = tmp_path / "profile/config.json"
+    moved = tmp_path / "profile/private.json"
+    original.rename(moved)
+    original.symlink_to(moved)
+    with pytest.raises(PilotError, match="configuration_invalid"):
+        PilotConfig.read(original)
+    original.unlink()
+    os.link(moved, original)
+    with pytest.raises(PilotError, match="configuration_invalid"):
+        PilotConfig.read(original)
+    moved.unlink()
+    monkeypatch.setattr(os, "getuid", lambda: original.stat().st_uid + 1)
+    with pytest.raises(PilotError, match="configuration_invalid"):
+        PilotConfig.read(original)
+
+
+def test_policy_missing_extra_and_implicit_rejected_before_profile_creation(tmp_path):
+    from infra.pilot.config import PilotConfig, PilotError
+
+    for payload in (
+        {},
+        {"handoff_policy": {}},
+        {"DATABASE_URL": secrets.token_urlsafe(32)},
+    ):
+        policy = tmp_path / "policy.json"
+        policy.write_text(json.dumps(payload))
+        with pytest.raises(PilotError, match="policy_invalid"):
+            PilotConfig.create(tmp_path / "profile", policy)
+        assert not (tmp_path / "profile").exists()
+
+
+def test_profile_lock_excludes_concurrent_operation(tmp_path):
+    from infra.pilot.config import PilotError, exclusive_profile_lock
+
+    make_config(tmp_path)
+    with (
+        exclusive_profile_lock(tmp_path / "profile"),
+        pytest.raises(PilotError, match="profile_busy"),
+        exclusive_profile_lock(tmp_path / "profile"),
+    ):
+        pytest.fail("LOCK_NOT_EXCLUSIVE")
+
+
+def test_port_reservation_reuses_stable_port_and_rejects_occupied(tmp_path):
+    from infra.pilot.config import PilotError
+    from infra.pilot.resources import reserve_port
+
+    config = make_config(tmp_path)
+    with reserve_port(config.api_port) as listener:
+        assert listener.getsockname()[1] == config.api_port
+        with pytest.raises(PilotError, match="port_unavailable"):
+            reserve_port(config.api_port)
+
+
+@pytest.mark.parametrize(
+    "name,kind",
+    [
+        ("../escape", "file"),
+        ("/outside", "file"),
+        ("data/../../escape", "file"),
+        ("data/link", "symlink"),
+        ("data/hard", "hardlink"),
+        ("data/device", "device"),
+        ("wrong/file", "file"),
+    ],
+)
+def test_archive_rejects_unsafe_members(tmp_path, name, kind):
+    from infra.pilot.backup import validate_archive
+    from infra.pilot.config import PilotError
+
+    archive = tmp_path / "object.tar"
+    with tarfile.open(archive, "w") as stream:
+        entry = tarfile.TarInfo(name)
+        if kind == "symlink":
+            entry.type, entry.linkname = tarfile.SYMTYPE, "../../escape"
+        elif kind == "hardlink":
+            entry.type, entry.linkname = tarfile.LNKTYPE, "data/target"
+        elif kind == "device":
+            entry.type = tarfile.CHRTYPE
+        stream.addfile(entry, io.BytesIO())
+    with pytest.raises(PilotError, match="backup_invalid"):
+        validate_archive(archive, "data")
+
+
+def test_process_birth_mismatch_never_treated_as_stopped():
+    from infra.pilot.config import PilotError
+    from infra.pilot.resources import ProcessIdentity
+
+    current = ProcessIdentity.current()
+    assert current.live()
+    stale = current.model_copy(update={"born": current.born - 10})
+    with pytest.raises(PilotError, match="process_identity_invalid"):
+        stale.live()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux proc start tick regression")
+def test_pilot_process_identity_survives_boot_clock_adjustment(monkeypatch):
+    import psutil
+
+    from infra.pilot.resources import ProcessIdentity
+
+    current = ProcessIdentity.current()
+    monkeypatch.setattr(psutil, "boot_time", lambda: float(current.born) + 10_000)
+    assert current.live()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS 进程出生时间回归")
+def test_process_identity_survives_macos_boot_clock_adjustment(monkeypatch):
+    import psutil._psosx as macos
+
+    from infra.pilot.resources import ProcessIdentity
+
+    current = ProcessIdentity.current()
+    original_boot = macos.boot_time()
+    monkeypatch.setattr(macos, "boot_time", lambda: original_boot - 10)
+    assert current.live()
+
+
+def test_atomic_publish_refuses_even_empty_existing_directory(tmp_path):
+    from infra.pilot.backup import _rename_new
+    from infra.pilot.config import PilotError
+
+    source, target = tmp_path / "pending", tmp_path / "existing"
+    source.mkdir()
+    target.mkdir()
+    (source / "marker").write_text("synthetic")
+    with pytest.raises(PilotError, match="backup_publish_failed"):
+        _rename_new(source, target)
+    assert list(target.iterdir()) == []
+    assert (source / "marker").exists()
+
+
+def test_cli_start_launch_failure_never_claims_ready(tmp_path, capsys, monkeypatch):
+    from infra.pilot.config import PilotError
+    from scripts import pilot_web_supervisor
+    from scripts.run_web_pilot import main
+
+    def rejected(path):
+        raise PilotError("application_start_failed")
+
+    monkeypatch.setattr(pilot_web_supervisor, "launch", rejected)
+    result = main(["start", "--profile", str(tmp_path / "not-created")])
+    assert result == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "failed",
+        "reason": "application_start_failed",
+    }
+    assert not (tmp_path / "not-created").exists()
+
+
+def test_ready_supervisor_is_reaped_without_blocking_launcher():
+    from scripts.pilot_web_supervisor import reap_in_background
+
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.buffer.read(1)"],
+        stdin=subprocess.PIPE,
+    )
+    try:
+        worker = reap_in_background(process)
+        assert isinstance(worker, threading.Thread) and worker.is_alive()
+        assert process.returncode is None
+        assert process.stdin is not None
+        process.stdin.close()
+        worker.join(timeout=5)
+        assert not worker.is_alive() and process.returncode == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+
+
+def test_cli_missing_policy_is_safe_no_profile(tmp_path, capsys):
+    from scripts.run_web_pilot import main
+
+    result = main(
+        [
+            "init",
+            "--profile",
+            str(tmp_path / "profile"),
+            "--policy-file",
+            str(tmp_path / "missing"),
+        ]
+    )
+    assert result == 2
+    assert json.loads(capsys.readouterr().out)["reason"] == "policy_invalid"
+    assert not (tmp_path / "profile").exists()
+
+
+def test_policy_float_money_and_incomplete_ranks_rejected(tmp_path):
+    from infra.pilot.config import PilotConfig, PilotError
+
+    policy = synthetic_policy(tmp_path / "policy.json")
+    payload = json.loads(policy.read_bytes())
+    payload["scoring_policy"]["value_band_boundaries"] = [250.0]
+    policy.write_text(json.dumps(payload))
+    with pytest.raises(PilotError, match="policy_invalid"):
+        PilotConfig.create(tmp_path / "profile", policy)
+    payload["scoring_policy"]["value_band_boundaries"] = ["250.00"]
+    payload["scoring_policy"]["bucket_map"].pop("7")
+    policy.write_text(json.dumps(payload))
+    with pytest.raises(PilotError, match="policy_invalid"):
+        PilotConfig.create(tmp_path / "profile", policy)
+
+
+def test_private_read_missing_file_uses_fixed_error(tmp_path):
+    from infra.pilot.config import PilotError, private_read
+
+    directory = tmp_path / "private"
+    directory.mkdir(mode=0o700)
+    with pytest.raises(PilotError, match="configuration_invalid"):
+        private_read(directory / "missing")
+
+
+def test_direct_cli_works_outside_checkout_without_pythonpath(tmp_path):
+    import subprocess
+    import sys
+
+    from infra.pilot.resources import ROOT
+
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/run_web_pilot.py"), "--help"],
+        cwd=tmp_path,
+        env={"PATH": os.defpath, "PYTHON_DOTENV_DISABLED": "1"},
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, "DIRECT_CLI_IMPORT_FAILED"
+
+
+def test_process_from_previous_boot_is_dead_even_if_numeric_pid_reused():
+    import psutil
+
+    from infra.pilot.config import PilotError
+    from infra.pilot.resources import ProcessIdentity
+
+    current = ProcessIdentity.current()
+    old = current.model_copy(update={"born": psutil.boot_time() - 1})
+    if sys.platform.startswith("linux"):
+        with pytest.raises(PilotError, match="process_identity_invalid"):
+            old.live()
+    else:
+        assert not old.live()
+
+
+def test_cli_restore_interruption_before_resource_creation_is_fixed_failure(
+    tmp_path, monkeypatch, capsys
+):
+    from scripts import run_web_pilot
+
+    def interrupted(backup, profile):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run_web_pilot, "restore_profile", interrupted)
+    try:
+        result = run_web_pilot.main(
+            [
+                "restore",
+                "--backup",
+                str(tmp_path / "backup"),
+                "--profile",
+                str(tmp_path / "new-profile"),
+            ]
+        )
+    except KeyboardInterrupt:
+        result = None
+    assert result == 2, "CLI_INTERRUPTION_ESCAPED"
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "failed",
+        "reason": "pilot_interrupted",
+    }
+    assert not (tmp_path / "new-profile").exists()
+
+
+def test_owner_reminder_policy_survives_profile_and_both_parsers(tmp_path):
+    from datetime import timedelta
+
+    from apps.api.pilot import runtime_settings
+    from apps.scheduler_worker.config import SchedulerWorkerConfig
+    from infra.pilot.config import PilotConfig
+
+    path = synthetic_policy(tmp_path / "policy.json")
+    policy = json.loads(path.read_text())
+    policy["handoff_policy"]["owner_reminder_interval_seconds"] = 7200
+    path.write_text(json.dumps(policy))
+    PilotConfig.create(tmp_path / "profile", path)
+    reread = PilotConfig.read(tmp_path / "profile/config.json")
+    env = reread.runtime_environment()
+    assert env["TRADEOS_HANDOFF_OWNER_REMINDER_INTERVAL_SECONDS"] == "7200"
+    assert runtime_settings(reread).owner_reminder_interval == timedelta(seconds=7200)
+    assert (
+        SchedulerWorkerConfig.from_pilot_environ(
+            env
+        ).handoff_owner_reminder_interval_seconds
+        == 7200
+    )
+
+
+@pytest.mark.parametrize("invalid", [True, 0, -1, 0.5, "7200", 2147483647])
+def test_owner_reminder_policy_rejects_invalid_integer(invalid):
+    from pydantic import ValidationError
+
+    from apps.api.runtime_config import _HandoffPayload
+    from infra.pilot.config import HandoffInput
+    for model in (HandoffInput, _HandoffPayload):
+        with pytest.raises(ValidationError):
+            model.model_validate({"sla_seconds":1,"backlog_threshold":1,"t1_seconds":3,"t2_seconds":7,"owner_reminder_interval_seconds":invalid})
+
+
+@pytest.mark.parametrize("invalid", [True, "0", "-1", "0.5", "2147483647"])
+def test_scheduler_owner_reminder_rejects_invalid_interval(tmp_path, invalid):
+    from apps.scheduler_worker.config import SchedulerWorkerConfig
+    from shared.errors import ValidationError
+    env = make_config(tmp_path).runtime_environment()
+    env["TRADEOS_HANDOFF_OWNER_REMINDER_INTERVAL_SECONDS"] = invalid
+    with pytest.raises(ValidationError):
+        SchedulerWorkerConfig.from_pilot_environ(env)

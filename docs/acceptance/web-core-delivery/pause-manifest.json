@@ -1,0 +1,38 @@
+{
+  "status": "paused_by_user",
+  "date": "2026-09-06",
+  "base": "ec801a87270503b92d3c70389cbcd4b92807dbb9",
+  "head": "b2c64dbf42f2a4cdbade1df16eece8500749d4d1",
+  "review_package": {
+    "path": ".superpowers/sdd/2026-09-05-web-first-completion/review-ec801a8..b2c64db.diff",
+    "sha256": "0467ae15081411fb3067aa8092736b7cc5f704e02a46fb3e212c4747d4dc5d40",
+    "bytes": 3904484,
+    "lines": 69008
+  },
+  "entries": [
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/progress.md",
+      "target": "docs/acceptance/web-core-delivery/pause-ledger.md",
+      "sha256": "c584811bdc26ee5f3d402cbb5aec86ddef10a03e239be7722740d37784e32db1",
+      "bytes": 129678
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/final-review-progress.md",
+      "target": "docs/acceptance/web-core-delivery/paused-review-progress.md",
+      "sha256": "c970a868146ed34bef51d137eb1b8d0d145feb844c7a0e1d07ba9f3d2f79ce22",
+      "bytes": 6968
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/final-review-paused.md",
+      "target": "docs/acceptance/web-core-delivery/paused-review.md",
+      "sha256": "93346b9aea483d39f5da44296cd5e3523ae32e90b3d74fe2caec701750dfc4b3",
+      "bytes": 1160
+    },
+    {
+      "source": ".superpowers/sdd/2026-09-05-web-first-completion/final-review-map.json",
+      "target": "docs/acceptance/web-core-delivery/paused-review-map.json",
+      "sha256": "b0ee23c80ab793ff95f20fcc3f0bfc371edecc920a894cbb52832a9d94760e9f",
+      "bytes": 62823
+    }
+  ]
+}

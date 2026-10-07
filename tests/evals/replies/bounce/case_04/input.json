@@ -1,0 +1,5 @@
+{
+  "message_id": "msg_evals_bounce_case_04",
+  "subject": "Mailbox full",
+  "body": "Your message could not be delivered because the recipient's mailbox is full and cannot accept new messages at this time."
+}

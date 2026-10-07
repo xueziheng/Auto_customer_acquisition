@@ -1,0 +1,35 @@
+{
+  "category": "provides_specification",
+  "must_intercept": [
+    "stop_sequence",
+    "extract_need_fields",
+    "handoff"
+  ],
+  "extract": [
+    {
+      "field": "product_category",
+      "value": "packaging boxes",
+      "quote": "packaging boxes"
+    },
+    {
+      "field": "size_spec",
+      "value": "60x40x40 cm",
+      "quote": "60x40x40 cm"
+    },
+    {
+      "field": "quantity",
+      "value": "5000",
+      "quote": "5,000 units"
+    },
+    {
+      "field": "destination",
+      "value": "Hamburg",
+      "quote": "Hamburg"
+    },
+    {
+      "field": "required_by",
+      "value": "December",
+      "quote": "by December"
+    }
+  ]
+}

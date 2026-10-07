@@ -1,0 +1,81 @@
+{
+  "base": "fe6f7dc2622391c9359866dd90fafbf3573ebdb5",
+  "unit_red": {
+    "exit": 1,
+    "passed": 0,
+    "failed": 4,
+    "pytest_seconds": "0.48"
+  },
+  "unit_final": {
+    "exit": 0,
+    "passed": 4,
+    "pytest_seconds": "0.44"
+  },
+  "history": [
+    "首次新增unit ruff PIE807提示，lambda空dict改dict后通过；不改生产代码。"
+  ],
+  "boundary": {
+    "command": [
+      ".venv/bin/python",
+      "scripts/check_boundaries.py"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 4.868,
+    "stdout": "✓ 分层与依赖方向\n✓ 金额 float\n✓ 置信度数值\n✓ 事件注册\n✓ 租户过滤\n✓ AGENTS.md 覆盖\n✓ 域结构完整\n\n结构自检通过。\n",
+    "stderr_lines": 0
+  },
+  "ruff": {
+    "command": [
+      ".venv/bin/python",
+      "-m",
+      "ruff",
+      "check",
+      "tests/integration/test_web_core_backup_restore.py",
+      "tests/unit/test_backup_restore_cleanup.py",
+      "--output-format",
+      "concise"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 0.083,
+    "stdout": "All checks passed!\n",
+    "stderr_lines": 0
+  },
+  "sensitive": {
+    "command": [
+      ".venv/bin/python",
+      "scripts/scan_sensitive.py",
+      "tests/integration/test_web_core_backup_restore.py",
+      "tests/unit/test_backup_restore_cleanup.py",
+      "docs/superpowers/specs/2026-09-06-web-core-delivery.md",
+      "docs/acceptance/web-core-delivery/README.md",
+      "docs/acceptance/web-core-delivery/backup-restore-pre-review.json"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 0.028,
+    "stdout": "",
+    "stderr_lines": 0
+  },
+  "table_format": {
+    "continuous_historical_rows": 32,
+    "expected": 32,
+    "passed": true
+  },
+  "index_links": {
+    "count": 66,
+    "missing": []
+  },
+  "normal_restore": {
+    "command": "env -u TEST_DATABASE_URL PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest tests/integration/test_web_core_backup_restore.py -q --tb=short",
+    "exit": 0,
+    "passed": 1,
+    "pytest_seconds": "9.67",
+    "evidence": "docs/acceptance/web-core-delivery/backup-restore.json",
+    "old_normal_evidence": "docs/acceptance/web-core-delivery/backup-restore-pre-review.json",
+    "meaning": "新owner正常复验1项，不与旧轮次或unit数量相加"
+  },
+  "unit_command": ".venv/bin/python -m pytest tests/unit/test_backup_restore_cleanup.py -q --tb=short",
+  "test_hashes": {
+    "tests/integration/test_web_core_backup_restore.py": "c199d9de1d8c3668d4f67d6407b21af9d2efea9fa61e4c2d447b5f8ab3c7a1d6",
+    "tests/unit/test_backup_restore_cleanup.py": "bbb41130c5fef9af384a537152d51c68858248f76cf8990642c49adb500fbdb0"
+  }
+}

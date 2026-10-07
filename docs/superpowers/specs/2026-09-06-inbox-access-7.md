@@ -1,0 +1,17 @@
+# Task7 收件箱当前负责人权限子规格
+
+范围：list/detail/correct/evidence/next_questions五动作同矩阵；Task8页面、附件持久化、恢复、发信不在本批。
+
+当前active boss的显式tenant范围可核对无归属和停用owner；manager仅自身和活跃直属；sales仅自身；其它/system/停用拒绝。tenant必须精确相等。请求actor是上界，执行时角色不一致即拒绝，当前owner/直属与请求owner集合相交，不自动提权。corrected_by必须等于actor。
+
+公共契约：Conversations自己的InboxActor、InboxScope、InboxAction、InboxEmployeeFacts、InboxAccessFactsReader；facts reader绑定每次UoW的AsyncSession。infra仅读Employee/OwnershipLock元数据，不读取其他域业务内容；conversations不import employees内部文件。列表repository在LIMIT前按当前员工及owner事实过滤；分类仍是最多200条已授权会话的有效分类投影，不宣称完整分页。
+
+纠正：先从tenant-bound Message解析Conversation.account，再按account锁OwnershipLock FOR SHARE，再按employee_id升序FOR SHARE锁actor和当前owner。归属转移的现有UPDATE与ownership锁冲突；停用/直属变更的现有员工UPDATE与employee锁冲突。锁后重读员工事实并重验，再append correction，直到UoW提交释放；原判和纠正幂等、不发事件保持。不存在/跨租户/无权限统一PermissionDenied。
+
+原件：新增message-scoped GET /inbox/messages/{message_id}/evidence，不接受artifact/query/body。使用具名新Gateway工具读取原RawArtifactStore的bounded EMAIL_RAW；原review工具权限不变。授权解析Message真实artifact ref；Gateway参数仅message ID，请求snapshot在本调用受信上下文中传入，前后用相同actor上界重新授权。metadata/hash/size/tenant必须一致；返回安全attachment、private/no-store、nosniff。已合法返回内容不可撤回。无稳定part读取契约，附件不可用。
+
+下一问：read接InboxActor snapshot，Conversations NEXT_QUESTIONS判权；Outreach REPLY_SOURCE_READ允许真实manager/sales对应精确account scope，Enrollment进一步精确ID；Demand沿原公共读不虚构actor，各跳核account和所选Message证据，所有早退与成功返回前再核Conversations当前权限。qualify/review/quotation原权限保持。
+
+验收：五动作角色/归属矩阵、旧scope/旧链接/跨租户、窗口LIMIT、真实transfer/停用多连接纠正串行化、Gateway读中transfer/原件错配、原Inbox/CRM/通知及Task6建议回归；独立schema exporter/generator与TS。owned PG/MinIO生命周期；TEST_DATABASE_URL清除、dotenv禁用；只外部端口受控，不seed终态。
+
+实施补充：READ COMMITTED下分次读principal与owner可能组合出任一真实时刻都不存在的权限。列表每个返回项、详情与Message证据最终均用既有get_inbox单SQL predicate重核当前主体/owner/直属及snapshot上界，且比对真实account。此检查定义资源读取的最后授权点；纠正仍保留同事务FOR SHARE锁，不能用单SQL替代写锁。

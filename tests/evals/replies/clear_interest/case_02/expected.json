@@ -1,0 +1,7 @@
+{
+  "category": "clear_interest",
+  "must_intercept": [
+    "stop_sequence",
+    "start_qualification"
+  ]
+}

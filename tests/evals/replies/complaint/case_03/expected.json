@@ -1,0 +1,8 @@
+{
+  "category": "complaint",
+  "must_intercept": [
+    "stop_sequence",
+    "suppress",
+    "record_complaint"
+  ]
+}

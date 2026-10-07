@@ -1,0 +1,35 @@
+{
+  "category": "provides_specification",
+  "must_intercept": [
+    "stop_sequence",
+    "extract_need_fields",
+    "handoff"
+  ],
+  "extract": [
+    {
+      "field": "product_category",
+      "value": "hinges",
+      "quote": "hinges"
+    },
+    {
+      "field": "material",
+      "value": "zinc-plated",
+      "quote": "zinc-plated"
+    },
+    {
+      "field": "size_spec",
+      "value": "4 inch",
+      "quote": "4 inch"
+    },
+    {
+      "field": "quantity",
+      "value": "10000",
+      "quote": "10,000 units"
+    },
+    {
+      "field": "destination",
+      "value": "Rotterdam",
+      "quote": "Rotterdam"
+    }
+  ]
+}

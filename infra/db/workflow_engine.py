@@ -1,0 +1,1325 @@
+"""Postgres 工作流引擎（ADR 0003 的 Phase 1 实现，对齐 runner.py Protocol）。
+
+设计要点（与 0004 schema 一致）：
+- ``register`` 内存注册流程定义：重复注册同 (type, version) 且定义相等 → 幂等
+  no-op；冲突 → ValueError；step.handler_ref 必须能在注入 handler 映射中解析；
+  transition 只允许引用已定义步骤。fail closed，不静默接受畸形定义。
+- ``start`` 用 ``INSERT ... ON CONFLICT (tenant_id, idempotency_key) DO NOTHING``
+  实现幂等；创建 run 与首步在同一事务原子提交（失败绝不只建一半）。
+  所有 start 先取得 canonical subject transaction lock；数据库迁移 0055 还会在同一
+  事务内要求 ``sourcing_case`` V2 持有 ``STARTING`` Admission，拒绝绕过准入。
+- ``poll_due`` 逐 step 独立事务 + ``FOR UPDATE SKIP LOCKED`` 领取（扫描周期重叠
+  不能取到同一批）；一步永久失败记录可观测失败态后继续本批其他步骤。handler 抛
+  ``TransientError`` 按 ``retry_backoff * 2^(attempt-1)`` 指数退避更新
+  attempt/retry_count/next_poll_at/error，超过 ``max_retries`` 转 FAILED；
+  其他异常一律永久失败且 ``last_error`` 只留异常类型名（不落消息/payload，防凭证）。
+  **commit/flush/DB 级异常也在迭代内隔离**：回滚后用新事务按 (tenant, step_id,
+  run_id) 重定位锁定，若仍可推进则标记 FAILED（固定脱敏错误），同一批其余步骤
+  不中断、坏 step 不被同批重复领取。
+- ``deliver_event`` 仅同租户、目标 run 当前步骤为 WAITING_EVENT 且事件类型匹配时
+  推进；事件指纹为 **SHA-256 digest（固定 64 位 hex，不含 payload 原文）**，
+  durable 持久化在 ``run.context`` 保留键实现幂等——重复投递同一事件是 no-op，
+  不同事件（不同 payload）才可推进；raw event 只在 handler execute 期间可见，
+  transition 后从持久化 context 移除。``initial_context``/handler patch 含保留键
+  一律 fail closed（ValidationError/永久失败），DB 中损坏的保留键值也 fail closed。
+- ``cancel`` 只取消同租户目标；重复 cancel 幂等；completed/failed 终态不得复活；
+  锁序 step→run（与 poll_due 一致，避免死锁倒置）；``last_error`` 只写固定安全
+  状态文本，不落调用方原始 reason（防凭证）。
+
+所有 SQL 都显式带 ``tenant_id`` 过滤（硬边界 8）。每次操作使用独立 session/事务，
+引擎自身不持有跨调用事务状态。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, and_, or_, select, tuple_, update
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from infra.db.tables import WorkflowRunRow, WorkflowStepRow
+from infra.db.workflow_subject_lock import acquire_workflow_subject_lock
+from shared.errors import TransientError, ValidationError
+from shared.schemas.identifiers import RunId, TenantId, new_id
+from workflows.engine.runner import (
+    ReminderInvocation,
+    StepDefinition,
+    StepHandler,
+    StepStatus,
+    WorkflowDefinition,
+    WorkflowRun,
+)
+
+# run.context 保留键：已投递事件指纹（durable 幂等，独立于业务 patch）。
+_DELIVERED_EVENTS_KEY = "__wf_delivered_events"
+# run.context 保留键：最近一次投递的事件（handler 经 run.context["event"] 读取）。
+# 只允许在 handler execute 期间临时可见；transition 后从持久化 context 移除。
+_EVENT_KEY = "event"
+# 引擎保留键集合：initial_context / handler patch 一律不得携带（fail closed）。
+_RESERVED_CONTEXT_KEYS = (_DELIVERED_EVENTS_KEY, _EVENT_KEY)
+
+# run 终态：已完成/失败/取消不得再推进、投递或取消复活。
+_TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+# 可被 poll_due 领取的 step 状态（'running' 仅作崩溃遗留兜底；本实现不写 running）。
+_POLLABLE_STEP_STATUSES = ("pending", "running")
+
+# 固定脱敏错误文本：不依赖具体异常包装类型、不含异常消息/payload（防凭证落库）。
+_COMMIT_FAILURE_ERROR = "step commit failure"
+_CORRUPTED_CONTEXT_ERROR = "corrupted workflow context"
+_SOURCING_V2_ADMISSION_CONSTRAINT = "ck_workflow_runs_sourcing_v2_admission"
+_SOURCING_V2_SUBJECT_CONSTRAINT = "uq_workflow_runs_sourcing_v2_subject"
+
+
+def _constraint_name(error: BaseException) -> str | None:
+    """从 SQLAlchemy/asyncpg 包装层读取约束名，不检查或泄漏异常原文。"""
+
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        name = getattr(current, "constraint_name", None)
+        if isinstance(name, str):
+            return name
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _valid_history_context_value(value: object) -> bool:
+    """历史查询只接受有界、可确定比较的稳定 JSON 标量或字符串列表。"""
+
+    if isinstance(value, str):
+        return bool(value) and len(value) <= 200
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value >= 0
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and len(value) <= 100
+        and all(
+            isinstance(item, str) and bool(item) and len(item) <= 200
+            for item in value
+        )
+    )
+_HANDLER_FAILED_REASON = "handler declared failure"
+_CANCEL_REASON = "cancelled by operator"
+
+# workflow_steps.data 内部调度元数据：业务 handler 不可写，迁移无需变更。
+_PLANNED_AT_KEY = "planned_at"
+_REMINDER_INDEX_KEY = "reminder_index"
+
+
+def _safe_error(exc: BaseException) -> str:
+    """脱敏错误：只留异常类型名，不落异常消息/payload（防止凭证进 last_error）。"""
+    return type(exc).__name__
+
+
+def _reserved_key_hits(context: dict[str, Any]) -> list[str]:
+    """返回 context 中命中的引擎保留键（空列表 = 干净）。"""
+    return sorted(k for k in _RESERVED_CONTEXT_KEYS if k in context)
+
+
+def _event_fingerprint(event_type: str, payload: dict[str, Any]) -> str:
+    """事件幂等指纹：对 (event_type, 规范化 payload) 做 SHA-256，返回固定 64 位 hex。
+
+    绝不保存 canonical payload 文本（防凭证/payload 原文持久化）；跨进程稳定，
+    同事件同 payload 哈希相同，不同 payload 哈希不同。
+    """
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(f"{event_type}:{canonical}".encode()).hexdigest()
+
+
+def _validated_event_fingerprints(value: object) -> list[str] | None:
+    """验证完整 SHA-256 ledger；任一格式损坏则整本账不可作为幂等证据。"""
+    if not isinstance(value, list):
+        return None
+    normalized: list[str] = []
+    for item in value:
+        if (
+            not isinstance(item, str)
+            or len(item) != 64
+            or any(char not in "0123456789abcdefABCDEF" for char in item)
+        ):
+            return None
+        normalized.append(item.lower())
+    return normalized
+
+
+class PostgresWorkflowEngine:
+    """``WorkflowEngine`` 的 Postgres 实现（runner.py Protocol）。
+
+    handler 通过构造注入（``Mapping[str, StepHandler]``，键为 ``handler_ref``）；
+    时钟 ``now`` 可注入以便调度测试确定化。构造不触数据库。
+    """
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        handlers: Mapping[str, StepHandler],
+        *,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._factory = session_factory
+        self._handlers = dict(handlers)
+        self._now = now if now is not None else lambda: datetime.now(UTC)
+        self._definitions: dict[tuple[str, int], WorkflowDefinition] = {}
+
+    # ---- register ---------------------------------------------------------
+
+    def register(self, definition: WorkflowDefinition) -> None:
+        """注册流程定义；重复/冲突版本行为确定：
+
+        - 同 (workflow_type, version) 且定义相等 → 幂等 no-op。
+        - 同 (workflow_type, version) 且定义不同 → ``ValueError``。
+        - step.handler_ref 未注入 / 空 steps / 重复 step_name / transition 引用
+          未知步骤 → ``ValueError``（fail closed）。
+        """
+        key = (definition.workflow_type, definition.version)
+        if key in self._definitions:
+            if self._definitions[key] != definition:
+                raise ValueError(
+                    f"workflow 定义冲突：{definition.workflow_type} v{definition.version} 已注册"
+                )
+            return
+        names = [s.step_name for s in definition.steps]
+        if not names:
+            raise ValueError("workflow 定义至少需要一个 step")
+        if len(set(names)) != len(names):
+            raise ValueError("workflow 定义 step_name 不得重复")
+        missing = [
+            handler_ref
+            for step in definition.steps
+            for handler_ref in (step.handler_ref, step.reminder_handler_ref)
+            if handler_ref is not None and handler_ref not in self._handlers
+        ]
+        if missing:
+            raise ValueError(f"未注册的 handler_ref：{sorted(set(missing))}")
+        # 非正退避/负重试上限会在零退避下立即重领直到耗尽，违反 no tight loop；fail closed。
+        for step in definition.steps:
+            if step.max_retries < 0:
+                raise ValueError(
+                    f"step {step.step_name} max_retries 必须 >= 0（当前 {step.max_retries}）"
+                )
+            if step.retry_backoff.total_seconds() <= 0:
+                raise ValueError(
+                    f"step {step.step_name} retry_backoff 必须 > 0（当前 {step.retry_backoff}）"
+                )
+            if step.timeout is not None and step.timeout.total_seconds() <= 0:
+                raise ValueError(
+                    f"step {step.step_name} timeout 必须 > 0（当前 {step.timeout}）"
+                )
+            if (
+                step.reminder_interval is not None
+                and step.reminder_interval.total_seconds() <= 0
+            ):
+                raise ValueError(
+                    f"step {step.step_name} reminder_interval 必须 > 0"
+                )
+            if (step.reminder_interval is None) != (
+                step.reminder_handler_ref is None
+            ):
+                raise ValueError(
+                    f"step {step.step_name} reminder 配置必须同时提供 interval/handler"
+                )
+            if step.reminder_interval is not None and (
+                step.wait_event_type is None or step.timeout is not None
+            ):
+                raise ValueError(
+                    f"step {step.step_name} reminder 仅适用于无 timeout WAITING_EVENT"
+                )
+        known = set(names)
+        for source, dests in definition.transitions.items():
+            if source not in known:
+                raise ValueError(f"transition 源步骤未定义：{source}")
+            unknown = sorted(d for d in dests if d not in known)
+            if unknown:
+                raise ValueError(f"transition 目标步骤未定义：{unknown}")
+        for step in definition.steps:
+            if step.on_timeout is not None and step.on_timeout not in known:
+                raise ValueError(
+                    f"step {step.step_name} on_timeout 目标未定义：{step.on_timeout}"
+                )
+            if (
+                step.wait_event_type is not None
+                and (step.timeout is not None or step.timeout_context_key is not None)
+                and step.on_timeout is None
+            ):
+                raise ValueError(
+                    f"WAITING_EVENT step {step.step_name} 配置 timeout 时必须配置 on_timeout"
+                )
+            if step.timeout_context_key is not None and (
+                step.wait_event_type is None or step.timeout is not None
+            ):
+                raise ValueError(
+                    f"step {step.step_name} timeout_context_key 仅适用于无静态 timeout 的 "
+                    "WAITING_EVENT"
+                )
+        self._definitions[key] = definition
+
+    def _definition_for(self, workflow_type: str) -> WorkflowDefinition:
+        """按 workflow_type 取最新已注册版本；未注册 fail closed（``ValidationError``）。"""
+        candidates = [
+            d for d in self._definitions.values() if d.workflow_type == workflow_type
+        ]
+        if not candidates:
+            raise ValidationError(f"workflow {workflow_type} 未注册")
+        return max(candidates, key=lambda d: d.version)
+
+    # ---- start ------------------------------------------------------------
+
+    async def start(
+        self,
+        tenant_id: TenantId,
+        workflow_type: str,
+        subject_ref: str,
+        initial_context: dict[str, Any],
+        idempotency_key: str,
+        *,
+        scheduled_at: datetime | None = None,
+    ) -> RunId:
+        return await self._start(tenant_id, workflow_type, subject_ref, initial_context, idempotency_key, scheduled_at=scheduled_at)
+
+    async def start_once(self, tenant_id: TenantId, run_id: RunId, workflow_type: str, subject_ref: str, context: dict[str, object]) -> RunId:
+        """受信会话意图专用：使用接纳时的 Run ID，旧 start 语义不变。"""
+        if workflow_type != "assistant" or context != {"turn_id": subject_ref} or not run_id:
+            raise ValidationError("会话运行绑定无效")
+        return await self._start(tenant_id, workflow_type, subject_ref, context, f"assistant-turn:{run_id}", requested_run_id=run_id)
+
+    async def _start(
+        self,
+        tenant_id: TenantId,
+        workflow_type: str,
+        subject_ref: str,
+        initial_context: dict[str, Any],
+        idempotency_key: str,
+        *,
+        scheduled_at: datetime | None = None,
+        requested_run_id: RunId | None = None,
+    ) -> RunId:
+        """启动流程：创建 run 与首步原子提交；同 (tenant, key) 幂等返回既有 run。"""
+        if not idempotency_key or not idempotency_key.strip():
+            raise ValidationError("idempotency_key 必填且拒绝空白")
+        hits = _reserved_key_hits(initial_context)
+        if hits:
+            raise ValidationError(f"initial_context 不得含引擎保留键：{hits}")
+        definition = self._definition_for(workflow_type)
+        first_step = definition.steps[0]
+        anchor = scheduled_at if scheduled_at is not None else self._now()
+        first_planned_at = anchor + self._entry_delay(first_step, initial_context)
+        run_id = requested_run_id or new_id("run")
+        session = self._factory()
+        try:
+            await acquire_workflow_subject_lock(
+                session,
+                tenant_id,
+                workflow_type,
+                subject_ref,
+            )
+            try:
+                result = await session.execute(
+                    insert(WorkflowRunRow)
+                    .values(
+                        run_id=run_id,
+                        tenant_id=tenant_id,
+                        workflow_type=workflow_type,
+                        workflow_version=definition.version,
+                        subject_ref=subject_ref,
+                        current_step=first_step.step_name,
+                        status=StepStatus.RUNNING.value,
+                        context=initial_context,
+                        idempotency_key=idempotency_key,
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=["tenant_id", "idempotency_key"]
+                    )
+                )
+            except IntegrityError as error:
+                await session.rollback()
+                if _constraint_name(error) in {
+                    _SOURCING_V2_ADMISSION_CONSTRAINT,
+                    _SOURCING_V2_SUBJECT_CONSTRAINT,
+                }:
+                    raise ValidationError(
+                        "Sourcing Case V2 准入状态不允许启动"
+                    ) from None
+                raise
+            if cast(CursorResult, result).rowcount > 0:
+                session.add(
+                    self._new_step_row(
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        step_name=first_step.step_name,
+                        due_at=first_planned_at,
+                        planned_at=first_planned_at,
+                        reminder_index=(
+                            1 if first_step.reminder_interval is not None else None
+                        ),
+                        # 首步本身等待事件时直接进入 waiting_event：poll_due 不领取，
+                        # 只由 deliver_event 触发（与 advance 到等待步骤语义一致）。
+                        status=(
+                            "pending"
+                            if first_step.wait_event_type is None
+                            or first_step.run_on_entry
+                            else "waiting_event"
+                        ),
+                    )
+                )
+                await session.commit()
+                return RunId(run_id)
+            # 冲突：返回既有 run（Postgres 会等待并发插入的事务落地后才判冲突）。
+            existing = (
+                await session.execute(
+                    select(
+                        WorkflowRunRow.run_id,
+                        WorkflowRunRow.workflow_type,
+                        WorkflowRunRow.workflow_version,
+                        WorkflowRunRow.subject_ref,
+                    ).where(
+                        WorkflowRunRow.tenant_id == tenant_id,
+                        WorkflowRunRow.idempotency_key == idempotency_key,
+                    )
+                )
+            ).one_or_none()
+            if (
+                existing is None
+                or (requested_run_id is not None and existing.run_id != requested_run_id)
+                or existing.workflow_type != workflow_type
+                or existing.workflow_version != definition.version
+                or existing.subject_ref != subject_ref
+            ):
+                await session.rollback()
+                raise ValidationError(
+                    "workflow 幂等键与既有 Run 绑定不一致"
+                ) from None
+            existing_run_id = existing.run_id
+            await session.rollback()
+            return RunId(existing_run_id)
+        finally:
+            await session.close()
+
+    async def get_run(self, tenant_id: TenantId, run_id: RunId) -> WorkflowRun | None:
+        """独立plain SELECT使用已提交MVCC快照，不等待handler持有的run行锁。"""
+        async with self._factory() as session:
+            row = (
+                await session.execute(
+                    select(WorkflowRunRow).where(
+                        WorkflowRunRow.tenant_id == tenant_id,
+                        WorkflowRunRow.run_id == run_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            return self._row_to_run(row) if row is not None else None
+
+    async def find_active_run(
+        self,
+        tenant_id: TenantId,
+        workflow_type: str,
+        subject_ref: str,
+    ) -> RunId | None:
+        """返回 tenant/type/subject 唯一 running run；重复 active 时失败关闭。"""
+        session = self._factory()
+        try:
+            rows = (
+                await session.execute(
+                    select(WorkflowRunRow.run_id)
+                    .where(
+                        WorkflowRunRow.tenant_id == tenant_id,
+                        WorkflowRunRow.workflow_type == workflow_type,
+                        WorkflowRunRow.subject_ref == subject_ref,
+                        WorkflowRunRow.status == StepStatus.RUNNING.value,
+                    )
+                    .limit(2)
+                )
+            ).scalars().all()
+            if len(rows) > 1:
+                raise ValidationError("active workflow run is not unique")
+            return RunId(rows[0]) if rows else None
+        finally:
+            await session.close()
+
+    async def has_delivered_event(
+        self,
+        tenant_id: TenantId,
+        workflow_type: str,
+        subject_ref: str,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        workflow_version: int | None = None,
+        required_context: Mapping[str, Any] | None = None,
+        run_id: RunId | None = None,
+    ) -> bool:
+        """查询当前 generation；完整 owning Run 过滤显式开启历史查询。"""
+        history_query = (
+            workflow_version is not None
+            or required_context is not None
+            or run_id is not None
+        )
+        if (workflow_version is None) != (required_context is None) or (
+            run_id is not None
+            and (workflow_version is None or required_context is None)
+        ):
+            raise ValidationError("workflow event history 过滤条件无效")
+        if workflow_version is not None and (
+            not isinstance(workflow_version, int)
+            or isinstance(workflow_version, bool)
+            or workflow_version < 1
+        ):
+            raise ValidationError("workflow_version 过滤条件无效")
+        if run_id is not None and (
+            not isinstance(run_id, str) or not run_id or len(run_id) > 200
+        ):
+            raise ValidationError("workflow run 过滤条件无效")
+        context_filter: dict[str, Any] | None = None
+        if required_context is not None:
+            if (
+                not isinstance(required_context, Mapping)
+                or not required_context
+                or len(required_context) > 16
+                or any(
+                    not isinstance(key, str)
+                    or not key
+                    or len(key) > 100
+                    or not _valid_history_context_value(value)
+                    for key, value in required_context.items()
+                )
+            ):
+                raise ValidationError("workflow context 过滤条件无效")
+            context_filter = dict(required_context)
+        fingerprint = _event_fingerprint(event_type, payload)
+        session = self._factory()
+        try:
+            conditions = [
+                WorkflowRunRow.tenant_id == tenant_id,
+                WorkflowRunRow.workflow_type == workflow_type,
+                WorkflowRunRow.subject_ref == subject_ref,
+            ]
+            if workflow_version is not None:
+                conditions.append(
+                    WorkflowRunRow.workflow_version == workflow_version
+                )
+            if run_id is not None:
+                conditions.append(WorkflowRunRow.run_id == run_id)
+            if context_filter is not None:
+                conditions.append(WorkflowRunRow.context.contains(context_filter))
+            rows = (
+                await session.execute(
+                    select(WorkflowRunRow.status, WorkflowRunRow.context).where(
+                        *conditions
+                    )
+                )
+            ).all()
+            if not history_query and any(
+                status not in _TERMINAL_STATUSES for status, _ in rows
+            ):
+                return False
+            for _, context in rows:
+                if not isinstance(context, dict):
+                    continue
+                delivered = _validated_event_fingerprints(
+                    context.get(_DELIVERED_EVENTS_KEY)
+                )
+                if delivered is not None and fingerprint in delivered:
+                    return True
+            return False
+        finally:
+            await session.close()
+
+    # ---- poll_due ---------------------------------------------------------
+
+    async def poll_due(self, tenant_id: TenantId, limit: int) -> int:
+        """扫描到期步骤并推进，返回领取并处理的步数（scheduler 主循环）。
+
+        逐 step 独立事务：``FOR UPDATE SKIP LOCKED`` 领取；handler 的
+        TransientError 退避/永久失败都在同事务提交，不阻塞本批其他步骤。
+        同租户可由多个只注册部分流程的 worker 共享表；本 engine 只领取自己
+        已注册的 ``(workflow_type, workflow_version)``，不得把其他流程误判失败。
+        **commit/flush/DB 级异常也在迭代内隔离**：回滚后用新事务把该 step/run
+        标记 FAILED（固定脱敏错误），本批其余步骤不中断；坏 step 记入
+        ``tried_step_ids`` 避免同批立即重复领取（无 tight loop）。
+        """
+        registered_definitions = tuple(self._definitions)
+        if limit <= 0 or not registered_definitions:
+            return 0
+        now = self._now()
+        processed = 0
+        tried_step_ids: set[str] = set()
+        timeout_steps = [
+            (definition.workflow_type, definition.version, step.step_name)
+            for definition in self._definitions.values()
+            for step in definition.steps
+            if step.wait_event_type is not None
+            and (step.timeout is not None or step.timeout_context_key is not None)
+        ]
+        reminder_steps = [
+            (definition.workflow_type, definition.version, step.step_name)
+            for definition in self._definitions.values()
+            for step in definition.steps
+            if step.wait_event_type is not None
+            and step.reminder_interval is not None
+        ]
+        scheduled_wait_steps = timeout_steps + reminder_steps
+        for _ in range(limit):
+            session = self._factory()
+            step_row: WorkflowStepRow | None = None
+            claimed_timeout = False
+            try:
+                step_row = (
+                    await session.execute(
+                        select(WorkflowStepRow)
+                        .join(
+                            WorkflowRunRow,
+                            and_(
+                                WorkflowRunRow.tenant_id
+                                == WorkflowStepRow.tenant_id,
+                                WorkflowRunRow.run_id == WorkflowStepRow.run_id,
+                            ),
+                        )
+                        .where(
+                            WorkflowStepRow.tenant_id == tenant_id,
+                            WorkflowRunRow.tenant_id == tenant_id,
+                            tuple_(
+                                WorkflowRunRow.workflow_type,
+                                WorkflowRunRow.workflow_version,
+                            ).in_(registered_definitions),
+                            WorkflowRunRow.status == StepStatus.RUNNING.value,
+                            WorkflowRunRow.current_step
+                            == WorkflowStepRow.step_name,
+                            or_(
+                                WorkflowStepRow.status.in_(_POLLABLE_STEP_STATUSES),
+                                and_(
+                                    WorkflowStepRow.status
+                                    == StepStatus.WAITING_EVENT.value,
+                                    tuple_(
+                                        WorkflowRunRow.workflow_type,
+                                        WorkflowRunRow.workflow_version,
+                                        WorkflowStepRow.step_name,
+                                    ).in_(scheduled_wait_steps),
+                                ),
+                            ),
+                            WorkflowStepRow.due_at <= now,
+                            WorkflowStepRow.step_id.not_in(tried_step_ids),
+                        )
+                        .order_by(
+                            WorkflowStepRow.due_at.asc(),
+                            WorkflowStepRow.step_id.asc(),
+                        )
+                        .limit(1)
+                        .with_for_update(of=WorkflowStepRow, skip_locked=True)
+                    )
+                ).scalars().first()
+                if step_row is None:
+                    await session.rollback()
+                    break
+                # commit/flush 前先取出原始主键：rollback 会使 ORM 实例过期，except
+                # 路径再访问 step_row.run_id 会触发延迟刷新（MissingGreenlet），掩盖
+                # 真正的 DB 异常。
+                step_run_id = step_row.run_id
+                step_id = step_row.step_id
+                tried_step_ids.add(step_id)
+                run_row = (
+                    await session.execute(
+                        select(WorkflowRunRow)
+                        .where(
+                            WorkflowRunRow.tenant_id == tenant_id,
+                            WorkflowRunRow.run_id == step_row.run_id,
+                        )
+                        # step 行锁负责领取；Run 的 NO KEY UPDATE 串行化状态推进。
+                        # Catalog handler 先取兼容的 KEY SHARE，再由专用 advisory 协调。
+                        .with_for_update(key_share=True)
+                    )
+                ).scalars().first()
+                if run_row is None:
+                    # 与复合 FK 不一致的孤儿步骤（正常不应出现）：标记失败避免紧循环。
+                    step_row.status = "failed"
+                    step_row.error = "run row missing"
+                    step_row.updated_at = now
+                    await session.commit()
+                    processed += 1
+                    continue
+                claimed_timeout = (
+                    step_row.status == StepStatus.WAITING_EVENT.value
+                    and (
+                        run_row.workflow_type,
+                        run_row.workflow_version,
+                        step_row.step_name,
+                    )
+                    in timeout_steps
+                )
+                await self._process_step(session, step_row, run_row, now)
+                await session.commit()
+                processed += 1
+            except Exception:  # noqa: BLE001  commit/flush/DB 级异常：迭代内隔离
+                await session.rollback()
+                if step_row is not None:
+                    await self._mark_step_commit_failed(
+                        tenant_id,
+                        step_run_id,
+                        step_id,
+                        now,
+                        allow_waiting_event=claimed_timeout,
+                    )
+                    processed += 1
+            finally:
+                await session.close()
+        return processed
+
+    async def _mark_step_commit_failed(
+        self,
+        tenant_id: TenantId,
+        run_id: str,
+        step_id: str,
+        now: datetime,
+        *,
+        allow_waiting_event: bool = False,
+    ) -> None:
+        """commit/flush 失败后，在新事务按 (tenant, step_id, run_id) 重新定位并锁定。
+
+        若 step 仍为可推进状态且 run 非终态，则标记 step/run FAILED（固定脱敏错误，
+        不含异常类型/消息）；终态/cancelled 不得被复活。即使失败标记本身出错也不
+        抛出——本批其余步骤必须继续（该 step 已由调用方记入 tried 集合避免重领）。
+        锁序 step→run，与 poll_due/cancel 一致，避免死锁倒置。
+        """
+        session = self._factory()
+        try:
+            step_row = (
+                await session.execute(
+                    select(WorkflowStepRow)
+                    .where(
+                        WorkflowStepRow.tenant_id == tenant_id,
+                        WorkflowStepRow.run_id == run_id,
+                        WorkflowStepRow.step_id == step_id,
+                    )
+                    .with_for_update()
+                )
+            ).scalars().first()
+            allowed_statuses = _POLLABLE_STEP_STATUSES + (
+                (StepStatus.WAITING_EVENT.value,) if allow_waiting_event else ()
+            )
+            if step_row is None or step_row.status not in allowed_statuses:
+                await session.rollback()
+                return
+            run_row = (
+                await session.execute(
+                    select(WorkflowRunRow)
+                    .where(
+                        WorkflowRunRow.tenant_id == tenant_id,
+                        WorkflowRunRow.run_id == run_id,
+                    )
+                    .with_for_update()
+                )
+            ).scalars().first()
+            if run_row is None or run_row.status in _TERMINAL_STATUSES:
+                await session.rollback()
+                return
+            self._fail_run(session, step_row, run_row, now, _COMMIT_FAILURE_ERROR)
+            await session.commit()
+        except Exception:  # noqa: BLE001  失败标记本身失败：不得中断本批
+            await session.rollback()
+        finally:
+            await session.close()
+
+    async def _process_step(
+        self,
+        session: AsyncSession,
+        step_row: WorkflowStepRow,
+        run_row: WorkflowRunRow,
+        now: datetime,
+    ) -> None:
+        """领取后处理单个步骤：解析定义/handler → 执行 → 应用转换或退避/失败。"""
+        definition = self._definitions.get((run_row.workflow_type, run_row.workflow_version))
+        if definition is None:
+            self._fail_run(session, step_row, run_row, now, "workflow definition not registered")
+            return
+        step_def: StepDefinition | None = None
+        for step in definition.steps:
+            if step.step_name == step_row.step_name:
+                step_def = step
+                break
+        if step_def is None:
+            self._fail_run(
+                session, step_row, run_row, now,
+                f"step {step_row.step_name} not in definition",
+            )
+            return
+        if step_row.status == StepStatus.WAITING_EVENT.value:
+            if step_def.reminder_interval is not None:
+                await self._process_reminder(
+                    session, step_def, step_row, run_row, now
+                )
+            else:
+                self._apply_timeout(
+                    session, definition, step_def, step_row, run_row, now
+                )
+            return
+        handler = self._handlers.get(step_def.handler_ref)
+        if handler is None:
+            self._fail_run(
+                session, step_row, run_row, now,
+                f"handler {step_def.handler_ref} not registered",
+            )
+            return
+        run = self._row_to_run(run_row)
+        try:
+            action, next_step, patch = await handler.execute(run)
+        except TransientError as exc:
+            self._schedule_retry(session, step_def, step_row, run_row, now, exc)
+            return
+        # handler 抛任意非 TransientError 异常都必须进入可观测永久失败态（不得
+        # 伪装成可重试）；这正是 brief「永久错误必须可观测」的语义要求。
+        except Exception as exc:  # noqa: BLE001
+            self._fail_run(session, step_row, run_row, now, _safe_error(exc))
+            return
+        try:
+            self._apply_transition(
+                session, definition, step_def, step_row, run_row,
+                action, next_step, patch, now,
+            )
+        except ValueError as exc:
+            self._fail_run(session, step_row, run_row, now, _safe_error(exc))
+
+    async def _process_reminder(
+        self,
+        session: AsyncSession,
+        step_def: StepDefinition,
+        step_row: WorkflowStepRow,
+        run_row: WorkflowRunRow,
+        now: datetime,
+    ) -> None:
+        """执行同一 WAITING_EVENT row 的一次 durable reminder。"""
+        interval = step_def.reminder_interval
+        handler = self._handlers.get(step_def.reminder_handler_ref or "")
+        if handler is None or interval is None:
+            self._fail_run(session, step_row, run_row, now, "reminder handler missing")
+            return
+        try:
+            planned_at = self._planned_at(step_row)
+            reminder_index = self._reminder_index(step_row)
+        except (TypeError, ValueError):
+            self._fail_run(session, step_row, run_row, now, _CORRUPTED_CONTEXT_ERROR)
+            return
+        run = self._row_to_run(
+            run_row,
+            reminder=ReminderInvocation(reminder_index, planned_at),
+        )
+        try:
+            action, next_step, patch = await handler.execute(run)
+        except TransientError as exc:
+            self._schedule_retry(
+                session,
+                step_def,
+                step_row,
+                run_row,
+                now,
+                exc,
+                waiting_event=True,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._fail_run(session, step_row, run_row, now, _safe_error(exc))
+            return
+        if action != "wait" or next_step is not None:
+            self._fail_run(session, step_row, run_row, now, "invalid reminder action")
+            return
+        if _reserved_key_hits(patch):
+            self._fail_run(session, step_row, run_row, now, "invalid reminder patch")
+            return
+        next_planned_at = planned_at + interval
+        step_row.status = StepStatus.WAITING_EVENT.value
+        step_row.data = self._step_data(next_planned_at, reminder_index + 1)
+        step_row.due_at = next_planned_at
+        step_row.attempt = 0
+        step_row.error = None
+        step_row.updated_at = now
+        run_row.context = self._merged_context(run_row.context, patch)
+        run_row.next_poll_at = None
+
+    def _apply_transition(
+        self,
+        session: AsyncSession,
+        definition: WorkflowDefinition,
+        step_def: StepDefinition,
+        step_row: WorkflowStepRow,
+        run_row: WorkflowRunRow,
+        action: str,
+        next_step: str | None,
+        patch: dict[str, Any],
+        now: datetime,
+    ) -> None:
+        """先校验后变更：非法 transition/action 在触碰任何行前抛 ``ValueError``。
+
+        patch 确定性浅合并进 run.context（后写覆盖先写）。advance 创建的下一
+        step 带 durable 幂等键 ``{tenant}:wfstep:{run_id}:{step_name}``。
+        """
+        if action not in ("advance", "wait", "complete", "fail"):
+            raise ValueError(f"未知 handler action：{action!r}")
+        if action == "advance":
+            allowed = definition.transitions.get(run_row.current_step, ())
+            if next_step not in allowed:
+                raise ValueError(
+                    f"transition {run_row.current_step}→{next_step!r} 不在注册定义中"
+                )
+        elif action in ("wait", "complete"):
+            # wait/complete 的第二个字段语义上必须为 None；携带 next_step 属非法转换。
+            if next_step is not None:
+                raise ValueError(f"{action} action 不得携带 next_step：{next_step!r}")
+        hits = _reserved_key_hits(patch)
+        if hits:
+            raise ValueError(f"handler patch 不得含引擎保留键：{hits}")
+        merged = self._merged_context(run_row.context, patch)
+        step_row.updated_at = now
+        if action == "advance":
+            next_name = cast(str, next_step)
+            next_def = self._step_definition(definition, next_name)
+            next_anchor = (
+                self._planned_at(step_row)
+                if next_def.inherit_planned_anchor
+                else now
+            )
+            next_planned_at = next_anchor + self._entry_delay(next_def, merged)
+            step_row.status = "completed"
+            run_row.current_step = next_name
+            run_row.status = StepStatus.RUNNING.value
+            run_row.next_poll_at = None
+            run_row.context = merged
+            session.add(
+                self._new_step_row(
+                    tenant_id=run_row.tenant_id,
+                    run_id=run_row.run_id,
+                    step_name=next_name,
+                    due_at=next_planned_at,
+                    planned_at=next_planned_at,
+                    reminder_index=(
+                        1 if next_def.reminder_interval is not None else None
+                    ),
+                    # 等待事件的下一步默认直接进入 waiting_event（只由
+                    # deliver_event 触发）；run_on_entry 步骤以 pending 进入，
+                    # 先跑一次入口检查，返回 wait 才转入 waiting_event。
+                    status=(
+                        "pending"
+                        if next_def.wait_event_type is None
+                        or next_def.run_on_entry
+                        else "waiting_event"
+                    ),
+                )
+            )
+        elif action == "wait":
+            step_row.status = (
+                "waiting_event" if step_def.wait_event_type else "waiting_human"
+            )
+            if step_def.wait_event_type:
+                # 进入等待即排定超时截止（动态上下文或静态 timeout），
+                # 到期由 poll_due 领取做 on_timeout；事件可提前唤醒。
+                step_row.due_at = now + self._wait_delay(step_def, merged)
+            run_row.next_poll_at = None
+            run_row.context = merged
+        elif action == "complete":
+            step_row.status = "completed"
+            run_row.status = StepStatus.COMPLETED.value
+            run_row.next_poll_at = None
+            run_row.context = merged
+        else:  # action == "fail"
+            # handler 声明的 fail reason 不得原样写入 error 字段（可能含凭证）：
+            # 只写固定安全状态文本，不落原始 reason / 异常消息 / payload。
+            step_row.status = "failed"
+            run_row.status = StepStatus.FAILED.value
+            run_row.next_poll_at = None
+            step_row.error = _HANDLER_FAILED_REASON
+            run_row.last_error = f"step {step_row.step_name} failed: {_HANDLER_FAILED_REASON}"
+            run_row.context = merged
+
+    def _apply_timeout(
+        self,
+        session: AsyncSession,
+        definition: WorkflowDefinition,
+        step_def: StepDefinition,
+        step_row: WorkflowStepRow,
+        run_row: WorkflowRunRow,
+        now: datetime,
+    ) -> None:
+        """将到期 WAITING_EVENT 原子推进至显式 on_timeout 目标。"""
+        target = step_def.on_timeout
+        if target is None or target not in definition.transitions.get(step_def.step_name, ()):
+            self._fail_run(session, step_row, run_row, now, "timeout transition missing")
+            return
+        target_def = self._step_definition(definition, target)
+        target_anchor = (
+            self._planned_at(step_row)
+            if target_def.inherit_planned_anchor
+            else now
+        )
+        target_planned_at = target_anchor + self._entry_delay(
+            target_def, run_row.context
+        )
+        step_row.status = StepStatus.TIMED_OUT.value
+        step_row.updated_at = now
+        run_row.current_step = target
+        run_row.status = StepStatus.RUNNING.value
+        run_row.next_poll_at = None
+        session.add(
+            self._new_step_row(
+                tenant_id=run_row.tenant_id,
+                run_id=run_row.run_id,
+                step_name=target,
+                due_at=target_planned_at,
+                planned_at=target_planned_at,
+                reminder_index=(
+                    1 if target_def.reminder_interval is not None else None
+                ),
+                status=(
+                    StepStatus.PENDING.value
+                    if target_def.wait_event_type is None
+                    or target_def.run_on_entry
+                    else StepStatus.WAITING_EVENT.value
+                ),
+            )
+        )
+
+    def _schedule_retry(
+        self,
+        session: AsyncSession,
+        step_def: StepDefinition,
+        step_row: WorkflowStepRow,
+        run_row: WorkflowRunRow,
+        now: datetime,
+        exc: TransientError,
+        *,
+        waiting_event: bool = False,
+    ) -> None:
+        """TransientError：指数退避重排 next_poll_at；超过 max_retries 转 FAILED。"""
+        step_row.attempt += 1
+        run_row.retry_count += 1
+        step_row.error = _safe_error(exc)
+        run_row.last_error = _safe_error(exc)
+        step_row.updated_at = now
+        if step_row.attempt > step_def.max_retries:
+            step_row.status = "failed"
+            run_row.status = StepStatus.FAILED.value
+            run_row.next_poll_at = None
+            run_row.last_error = (
+                f"step {step_row.step_name} failed after exhausting "
+                f"{step_def.max_retries} retries"
+            )
+        else:
+            backoff = step_def.retry_backoff * (2 ** (step_row.attempt - 1))
+            next_at = now + backoff
+            step_row.status = (
+                StepStatus.WAITING_EVENT.value if waiting_event else "pending"
+            )
+            step_row.due_at = next_at
+            run_row.next_poll_at = next_at
+
+    def _fail_run(
+        self,
+        session: AsyncSession,
+        step_row: WorkflowStepRow,
+        run_row: WorkflowRunRow,
+        now: datetime,
+        reason: str,
+    ) -> None:
+        """永久失败：step 与 run 转 FAILED；last_error 用脱敏 reason，不越权改 current_step。"""
+        step_row.status = "failed"
+        step_row.error = reason
+        step_row.updated_at = now
+        run_row.status = StepStatus.FAILED.value
+        run_row.next_poll_at = None
+        run_row.last_error = f"step {step_row.step_name} failed: {reason}"
+
+    # ---- deliver_event ----------------------------------------------------
+
+    async def deliver_event(
+        self,
+        tenant_id: TenantId,
+        run_id: RunId,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        """向 WAITING_EVENT 的流程投递事件；重复投递同一事件幂等 no-op。
+
+        仅同租户、目标 run 当前步骤 WAITING_EVENT 且事件类型匹配时推进；事件
+        指纹持久化进 run.context 实现 durable 幂等。错误租户/未知 run 一律
+        no-op（不越权读取或修改）。handler 抛 TransientError → 回滚并传播，
+        由调用方（outbox）稍后重投同一事件；永久错误 → 标记 FAILED 后正常返回。
+        """
+        now = self._now()
+        session = self._factory()
+        try:
+            waiting_steps = (
+                await session.execute(
+                    select(WorkflowStepRow)
+                    .where(
+                        WorkflowStepRow.tenant_id == tenant_id,
+                        WorkflowStepRow.run_id == run_id,
+                        WorkflowStepRow.status == StepStatus.WAITING_EVENT.value,
+                    )
+                    .with_for_update()
+                )
+            ).scalars().all()
+            if not waiting_steps:
+                return False
+            run_row = (
+                await session.execute(
+                    select(WorkflowRunRow)
+                    .where(
+                        WorkflowRunRow.tenant_id == tenant_id,
+                        WorkflowRunRow.run_id == run_id,
+                    )
+                    # 与 poll 一致：Run 的 NO KEY UPDATE 串行化状态推进；Catalog
+                    # handler 通过兼容 KEY SHARE + 专用 advisory 使用独立事务。
+                    .with_for_update(key_share=True)
+                )
+            ).scalars().first()
+            if run_row is None or run_row.status in _TERMINAL_STATUSES:
+                return False
+            step_row = next(
+                (row for row in waiting_steps if row.step_name == run_row.current_step),
+                None,
+            )
+            if step_row is None:
+                return False
+            definition = self._definitions.get((run_row.workflow_type, run_row.workflow_version))
+            if definition is None:
+                self._fail_run(session, step_row, run_row, now, "workflow definition not registered")
+                await session.commit()
+                return False
+            step_def = self._step_definition(definition, step_row.step_name)
+            if step_def.wait_event_type != event_type:
+                return False
+            ctx: dict[str, Any] = dict(run_row.context or {})
+            # ``event`` 是瞬态键（handler 执行期可见，transition 后不持久化）；
+            # 清除历史实现可能遗留的脏数据，避免其进入本投递的持久化 context。
+            ctx.pop(_EVENT_KEY, None)
+            delivered: object = ctx.get(_DELIVERED_EVENTS_KEY)
+            if delivered is None:
+                delivered = []
+                ctx[_DELIVERED_EVENTS_KEY] = delivered
+            validated_delivered = _validated_event_fingerprints(delivered)
+            if validated_delivered is None:
+                # DB 中遗留/损坏的保留键值：fail closed（固定脱敏错误），不得
+                # AttributeError/追加到错误类型后卡住投递。
+                self._fail_run(session, step_row, run_row, now, _CORRUPTED_CONTEXT_ERROR)
+                await session.commit()
+                return False
+            delivered_ledger = list(validated_delivered)
+            ctx[_DELIVERED_EVENTS_KEY] = delivered_ledger
+            fingerprint = _event_fingerprint(event_type, payload)
+            if fingerprint in validated_delivered:
+                return True
+            ctx[_EVENT_KEY] = {"event_type": event_type, "payload": payload}
+            run = self._row_to_run(run_row, context=ctx)
+            handler = self._handlers.get(step_def.handler_ref)
+            if handler is None:
+                self._fail_run(
+                    session, step_row, run_row, now,
+                    f"handler {step_def.handler_ref} not registered",
+                )
+                await session.commit()
+                return False
+            try:
+                action, next_step, patch = await handler.execute(run)
+                # raw event 只在 handler 执行期可见；transition 后从持久化 context 移除。
+                ctx.pop(_EVENT_KEY, None)
+                run_row.context = ctx
+                self._apply_transition(
+                    session, definition, step_def, step_row, run_row,
+                    action, next_step, patch, now,
+                )
+                persisted_context = dict(run_row.context or {})
+                persisted_context[_DELIVERED_EVENTS_KEY] = [
+                    *delivered_ledger,
+                    fingerprint,
+                ]
+                run_row.context = persisted_context
+            except TransientError:
+                # 可重试投递：回滚、不落指纹，调用方稍后重投同一事件。
+                await session.rollback()
+                raise
+            # 同 poll_due：非 TransientError 异常转可观测永久失败。
+            except Exception as exc:  # noqa: BLE001
+                self._fail_run(session, step_row, run_row, now, _safe_error(exc))
+                await session.commit()
+                return False
+            await session.commit()
+            return True
+        finally:
+            await session.close()
+
+    # ---- cancel -----------------------------------------------------------
+
+    async def cancel(
+        self, tenant_id: TenantId, run_id: RunId, reason: str
+    ) -> None:
+        """取消同租户目标 run：置 cancelled 并取消未终态步骤；重复 cancel 幂等；
+        completed/failed 终态不被复活；未知 run no-op。
+
+        锁序 step→run（与 poll_due 的 step→run 一致，避免死锁倒置）：先锁定并
+        取消未终态步骤，再锁定 run 检查终态——若 run 已终态/未知则整体回滚，不
+        复活、不部分修改。``last_error`` 只写固定安全状态文本，不落调用方原始
+        ``reason``（可能含凭证）；``reason`` 参数保留仅为满足 Protocol 签名。
+        """
+        now = self._now()
+        session = self._factory()
+        try:
+            await session.execute(
+                update(WorkflowStepRow)
+                .where(
+                    WorkflowStepRow.tenant_id == tenant_id,
+                    WorkflowStepRow.run_id == run_id,
+                    WorkflowStepRow.status.not_in(("completed", "failed", "cancelled")),
+                )
+                .values(status="cancelled", updated_at=now)
+            )
+            run_row = (
+                await session.execute(
+                    select(WorkflowRunRow)
+                    .where(
+                        WorkflowRunRow.tenant_id == tenant_id,
+                        WorkflowRunRow.run_id == run_id,
+                    )
+                    .with_for_update()
+                )
+            ).scalars().first()
+            if run_row is None or run_row.status in _TERMINAL_STATUSES:
+                # 未知 run 或终态 run：整体回滚（不复活、不部分修改步骤）。
+                await session.rollback()
+                return
+            run_row.status = StepStatus.CANCELLED.value
+            run_row.next_poll_at = None
+            run_row.last_error = _CANCEL_REASON
+            await session.commit()
+        finally:
+            await session.close()
+
+    # ---- helpers ----------------------------------------------------------
+
+    @staticmethod
+    def _step_definition(definition: WorkflowDefinition, step_name: str) -> StepDefinition:
+        for step in definition.steps:
+            if step.step_name == step_name:
+                return step
+        raise ValueError(f"定义 {definition.workflow_type} 中无步骤 {step_name}")
+
+    @staticmethod
+    def _merged_context(
+        current: dict[str, Any], patch: dict[str, Any]
+    ) -> dict[str, Any]:
+        merged = dict(current)
+        if patch:
+            merged.update(patch)
+        return merged
+
+    def _new_step_row(
+        self,
+        *,
+        tenant_id: str,
+        run_id: str,
+        step_name: str,
+        due_at: datetime,
+        planned_at: datetime,
+        reminder_index: int | None = None,
+        status: str = "pending",
+    ) -> WorkflowStepRow:
+        """新建 step 行：durable 幂等键按步骤实例唯一（step_name 可被循环复用）。"""
+        return WorkflowStepRow(
+            step_id=new_id("wfs"),
+            run_id=run_id,
+            tenant_id=tenant_id,
+            step_name=step_name,
+            status=status,
+            data=self._step_data(planned_at, reminder_index),
+            attempt=0,
+            error=None,
+            due_at=due_at,
+            idempotency_key=(
+                f"{tenant_id}:wfstep:{run_id}:{step_name}:"
+                f"{planned_at.isoformat()}"
+            ),
+        )
+
+    def _row_to_run(
+        self,
+        row: WorkflowRunRow,
+        *,
+        context: dict[str, Any] | None = None,
+        reminder: ReminderInvocation | None = None,
+    ) -> WorkflowRun:
+        return WorkflowRun(
+            run_id=RunId(row.run_id),
+            tenant_id=TenantId(row.tenant_id),
+            workflow_type=row.workflow_type,
+            workflow_version=row.workflow_version,
+            subject_ref=row.subject_ref,
+            current_step=row.current_step,
+            status=StepStatus(row.status),
+            created_at=row.created_at,
+            next_poll_at=row.next_poll_at,
+            retry_count=row.retry_count,
+            context=context if context is not None else dict(row.context or {}),
+            last_error=row.last_error,
+            reminder=reminder,
+        )
+
+    @staticmethod
+    def _entry_delay(
+        step: StepDefinition, context: dict[str, Any] | None
+    ) -> timedelta:
+        """进入步骤时的首次到期延迟。
+
+        普通步骤与 run_on_entry 等待步骤立即执行（0）；其余等待步骤按
+        静态/动态超时排定首次到期。
+        """
+        if step.wait_event_type is None:
+            return timedelta(0)
+        if step.run_on_entry:
+            return timedelta(0)
+        return PostgresWorkflowEngine._wait_delay(step, context)
+
+    @staticmethod
+    def _wait_delay(
+        step: StepDefinition, context: dict[str, Any] | None
+    ) -> timedelta:
+        """等待步骤的截止延迟：动态上下文超时优先，其次静态 timeout/reminder。"""
+        if step.wait_event_type is None:
+            return timedelta(0)
+        if step.timeout_context_key is not None:
+            value = (context or {}).get(step.timeout_context_key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(
+                    f"step {step.step_name} 动态超时上下文无效"
+                )
+            return timedelta(seconds=value)
+        return step.timeout or step.reminder_interval or timedelta(0)
+
+    @staticmethod
+    def _step_data(
+        planned_at: datetime, reminder_index: int | None = None
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {_PLANNED_AT_KEY: planned_at.isoformat()}
+        if reminder_index is not None:
+            data[_REMINDER_INDEX_KEY] = reminder_index
+        return data
+
+    @staticmethod
+    def _planned_at(step_row: WorkflowStepRow) -> datetime:
+        data = step_row.data or {}
+        raw = data.get(_PLANNED_AT_KEY)
+        if raw is None:
+            return step_row.due_at
+        if not isinstance(raw, str):
+            raise TypeError("planned_at invalid")
+        planned_at = datetime.fromisoformat(raw)
+        if planned_at.utcoffset() is None:
+            raise ValueError("planned_at invalid")
+        return planned_at
+
+    @staticmethod
+    def _reminder_index(step_row: WorkflowStepRow) -> int:
+        value = (step_row.data or {}).get(_REMINDER_INDEX_KEY, 1)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError("reminder_index invalid")
+        return value

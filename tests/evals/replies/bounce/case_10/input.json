@@ -1,0 +1,5 @@
+{
+  "message_id": "msg_evals_bounce_case_10",
+  "subject": "Host not found",
+  "body": "Delivery to the following recipients failed: user@example.test (host not found)."
+}

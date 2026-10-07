@@ -1,0 +1,5 @@
+{
+  "message_id": "msg_evals_bounce_case_03",
+  "subject": "SMTP user unknown",
+  "body": "550 5.1.1 The email account that you tried to reach does not exist. Please try double-checking the recipient's email address."
+}

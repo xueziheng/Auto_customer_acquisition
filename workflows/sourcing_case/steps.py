@@ -1,0 +1,1399 @@
+"""Sourcing Case V2 的内部梯子、产品准备与显式等待步骤。"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import unicodedata
+from collections.abc import Awaitable
+from typing import Any
+
+from agent_runtime.sourcing_agent import SourcingPageCandidateDraft
+from domains.opportunities.permissions import Actor as OpportunityActor
+from domains.opportunities.schemas import OpportunityView
+from domains.opportunities.service import OpportunityService
+from domains.products.service import (
+    ProductActor,
+    ProductMatchResult,
+    ProductService,
+    ProductSpecComparison,
+    ProductSpecFact,
+    ProductSpecMatchLevel,
+    ProductSpecRequirement,
+    QualifiedProductMatch,
+)
+from domains.sourcing.schemas import (
+    PublicPageAttempt,
+    PublicPageAttemptClaim,
+    PublicPageAttemptOutcome,
+    PublicPageAttemptStatus,
+    SourcingHandoffSnapshot,
+    VerifyPublicCandidateDraftsCommand,
+    VerifyPublicCandidateDraftsResult,
+)
+from domains.sourcing.service import (
+    LadderCheck,
+    LadderOutcome,
+    MatchLadderRung,
+    SourcingActor,
+    SourcingNeedSnapshot,
+    SourcingService,
+    SpecComparison,
+    SpecMatchLevel,
+)
+from domains.suppliers.service import SupplierActor, SupplierService
+from shared.errors import ValidationError, detached_dependency_error
+from shared.schemas.identifiers import (
+    EmployeeId,
+    OpportunityId,
+    ProductId,
+    RunId,
+    SourcingCaseId,
+    SourcingPlanId,
+    SourcingReviewId,
+    ValidatedNeedId,
+)
+from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
+from tool_gateway.free_search_contracts import (
+    FreeSearchError,
+    FreeSearchStopReason,
+    SearchQuotaRepository,
+)
+from workflows.engine.runner import WorkflowRun
+from workflows.sourcing_case.ports import (
+    AuthorizedPublicSourcingPlanReader,
+    PersistedSearchReceiptPort,
+    PublicCandidateDraftWriter,
+    PublicCandidateExtractor,
+    PublicPageReader,
+    PublicSourcingSearcher,
+    SourcingNeedReader,
+)
+
+_PRODUCT_CONCLUSIONS = {
+    1: ("no_qualified_catalog_exact", "qualified_catalog_exact"),
+    2: ("no_qualified_catalog_modifiable", "qualified_catalog_modifiable"),
+    3: ("no_qualified_candidate_product", "qualified_candidate_product"),
+}
+
+
+def _raise_dependency_error(
+    error: Exception,
+    *,
+    transient_message: str,
+    permanent_message: str,
+) -> None:
+    """在 ``except`` 外按可重试性抛固定错误，避免保留下层异常链或 context。"""
+
+    raise detached_dependency_error(
+        error,
+        transient_message=transient_message,
+        permanent_message=permanent_message,
+    ) from None
+
+
+async def _await_dependency(
+    awaitable: Awaitable[Any],
+    *,
+    transient_message: str,
+    permanent_message: str,
+    passthrough: tuple[type[Exception], ...] = (),
+) -> Any:
+    """将依赖异常转换成与原异常对象完全脱离的固定安全错误。"""
+
+    captured: Exception | None = None
+    try:
+        return await awaitable
+    except passthrough:
+        raise
+    except Exception as error:  # noqa: BLE001 - Workflow 边界只接收常规依赖错误
+        captured = error
+    if captured is not None:
+        _raise_dependency_error(
+            captured,
+            transient_message=transient_message,
+            permanent_message=permanent_message,
+        )
+    raise AssertionError("依赖错误分类必须终止执行")
+
+
+def _text(value: object, message: str, *, maximum: int = 200) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > maximum
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValidationError(message)
+    return value
+
+
+def _normalize(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
+
+
+def _base(run: WorkflowRun) -> tuple[SourcingCaseId, ValidatedNeedId, str]:
+    case_id = SourcingCaseId(_text(run.context.get("case_id"), "寻源流程缺少 Case ID"))
+    if run.subject_ref != str(case_id):
+        raise ValidationError("寻源流程 subject 与 Case 不一致")
+    need_id = ValidatedNeedId(_text(run.context.get("need_id"), "寻源流程缺少 Need ID"))
+    snapshot_hash = _text(
+        run.context.get("need_snapshot_hash"),
+        "寻源流程缺少需求快照哈希",
+        maximum=64,
+    )
+    if len(snapshot_hash) != 64 or any(
+        ch not in "0123456789abcdef" for ch in snapshot_hash
+    ):
+        raise ValidationError("寻源流程需求快照哈希无效")
+    return case_id, need_id, snapshot_hash
+
+
+async def _trusted_need(
+    run: WorkflowRun, reader: SourcingNeedReader
+) -> SourcingNeedSnapshot:
+    _case_id, need_id, snapshot_hash = _base(run)
+    snapshot = await _await_dependency(
+        reader.read(run.tenant_id, need_id),
+        transient_message="可信寻源需求快照暂不可用",
+        permanent_message="可信寻源需求快照读取失败",
+    )
+    if (
+        not isinstance(snapshot, SourcingNeedSnapshot)
+        or snapshot.need_id != need_id
+        or snapshot.snapshot_hash != snapshot_hash
+    ):
+        raise ValidationError("可信寻源需求快照与 Workflow 不一致")
+    return snapshot
+
+
+def _category_and_keywords(
+    snapshot: SourcingNeedSnapshot,
+) -> tuple[str, list[str]]:
+    if not isinstance(snapshot.product_category.value, str):
+        raise ValidationError("可信寻源需求品类必须是文本")
+    category = _normalize(snapshot.product_category.value)
+    if not category:
+        raise ValidationError("可信寻源需求品类不能为空")
+    keywords = sorted(
+        {
+            normalized
+            for fact in (
+                snapshot.application,
+                snapshot.material,
+                snapshot.size_spec,
+            )
+            if fact is not None and isinstance(fact.value, str)
+            if (normalized := _normalize(fact.value))
+        }
+    )
+    return category, keywords
+
+
+def _required_specs(
+    snapshot: SourcingNeedSnapshot,
+) -> tuple[ProductSpecRequirement, ...]:
+    facts = (
+        ("product_category", snapshot.product_category),
+        ("application", snapshot.application),
+        ("material", snapshot.material),
+        ("size_spec", snapshot.size_spec),
+        ("model", snapshot.model),
+    )
+    requirements: list[ProductSpecRequirement] = []
+    for name, fact in facts:
+        if fact is None:
+            continue
+        if not isinstance(fact.value, str):
+            raise ValidationError("可信寻源产品规格必须是文本")
+        value = _normalize(fact.value)
+        if not value:
+            raise ValidationError("可信寻源产品规格不能为空")
+        requirements.append(ProductSpecRequirement(name, value))
+    quantity = snapshot.quantity.value
+    if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
+        raise ValidationError("可信寻源需求数量必须是正整数")
+    requirements.append(ProductSpecRequirement("moq", str(quantity)))
+    if snapshot.unit is not None:
+        if not isinstance(snapshot.unit.value, str):
+            raise ValidationError("可信寻源计价单位必须是文本")
+        unit = _normalize(snapshot.unit.value)
+        if not unit:
+            raise ValidationError("可信寻源计价单位不能为空")
+        requirements.append(ProductSpecRequirement("unit", unit))
+    return tuple(requirements)
+
+
+def _stable_check_id(
+    case_id: SourcingCaseId,
+    rung: int,
+    outcome: LadderOutcome,
+    match_object_id: str | None,
+) -> str:
+    payload = json.dumps(
+        [str(case_id), rung, outcome.value, match_object_id],
+        separators=(",", ":"),
+    ).encode()
+    return f"slc_{hashlib.sha256(payload).hexdigest()[:26]}"
+
+
+def _ladder_check(
+    *,
+    run: WorkflowRun,
+    snapshot: SourcingNeedSnapshot,
+    actor: SourcingActor,
+    rung: int,
+    outcome: LadderOutcome,
+    conclusion: str,
+    input_snapshot: dict[str, object],
+    match_object_type: str | None = None,
+    match_object_id: str | None = None,
+    evidence_refs: tuple[str, ...] = (),
+    spec_comparisons: tuple[SpecComparison, ...] = (),
+) -> LadderCheck:
+    case_id, _need_id, _hash = _base(run)
+    return LadderCheck(
+        check_id=_stable_check_id(case_id, rung, outcome, match_object_id),
+        tenant_id=run.tenant_id,
+        case_id=case_id,
+        sequence_number=rung,
+        rung=MatchLadderRung(rung),
+        outcome=outcome,
+        input_snapshot=input_snapshot,
+        input_snapshot_hash=snapshot.snapshot_hash,
+        conclusion=conclusion,
+        match_object_type=match_object_type,
+        match_object_id=match_object_id,
+        spec_comparisons=spec_comparisons,
+        evidence_refs=evidence_refs,
+        checked_by=EmployeeId(actor.actor_id),
+        checked_at=run.created_at,
+    )
+
+
+class InternalMatchLadderStep:
+    """一次读取内部产品/供应商服务，并严格按梯级 1–5 记录事实。"""
+
+    def __init__(
+        self,
+        *,
+        need_reader: SourcingNeedReader,
+        products: ProductService,
+        suppliers: SupplierService,
+        sourcing: SourcingService,
+        product_actor: ProductActor,
+        supplier_actor: SupplierActor,
+        sourcing_actor: SourcingActor,
+    ) -> None:
+        self._need_reader = need_reader
+        self._products = products
+        self._suppliers = suppliers
+        self._sourcing = sourcing
+        self._product_actor = product_actor
+        self._supplier_actor = supplier_actor
+        self._sourcing_actor = sourcing_actor
+
+    async def _record(self, run: WorkflowRun, check: LadderCheck) -> None:
+        await _await_dependency(
+            self._sourcing.record_ladder_check(
+                run.tenant_id,
+                SourcingCaseId(run.subject_ref),
+                check,
+                actor=self._sourcing_actor,
+            ),
+            transient_message="寻源内部匹配记录暂不可用",
+            permanent_message="寻源内部匹配记录失败",
+        )
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        snapshot = await _trusted_need(run, self._need_reader)
+        category, keywords = _category_and_keywords(snapshot)
+        requirements = _required_specs(snapshot)
+        required_by_name: dict[str, str] = {}
+        for requirement in requirements:
+            spec_name = _normalize(requirement.spec_name)
+            required = _normalize(requirement.required)
+            if not spec_name or not required or spec_name in required_by_name:
+                raise ValidationError("可信寻源需求规格必须规范化后唯一且非空")
+            required_by_name[spec_name] = required
+        required_names = tuple(sorted(required_by_name))
+        product_result = await _await_dependency(
+            self._products.search_for_matching(
+                run.tenant_id,
+                category,
+                keywords,
+                requirements,
+                actor=self._product_actor,
+            ),
+            transient_message="寻源内部产品匹配暂不可用",
+            permanent_message="寻源内部产品匹配失败",
+        )
+        if not isinstance(product_result, ProductMatchResult):
+            raise ValidationError("寻源内部产品匹配结果无效")
+
+        buckets: dict[int, list[QualifiedProductMatch]] = {1: [], 2: [], 3: []}
+        for match in sorted(
+            product_result.qualified_matches,
+            key=lambda item: str(item.product.product_id),
+        ):
+            if not isinstance(match, QualifiedProductMatch):
+                raise ValidationError("内部产品匹配缺少逐项规格比较")
+            product = match.product
+            if product.tenant_id != run.tenant_id:
+                raise ValidationError("内部产品匹配结果租户无效")
+            product_facts: dict[str, ProductSpecFact] = {}
+            for raw_name, fact in sorted(product.match_specs.items()):
+                fact_name = _normalize(raw_name)
+                if (
+                    not fact_name
+                    or fact_name in product_facts
+                    or not isinstance(fact, ProductSpecFact)
+                    or not isinstance(fact.value, str)
+                    or not _normalize(fact.value)
+                    or fact.evidence_ref is None
+                    or not str(fact.evidence_ref).strip()
+                ):
+                    raise ValidationError("内部产品匹配规格证明不完整")
+                product_facts[fact_name] = fact
+            comparison_names: list[str] = []
+            for comparison in match.spec_comparisons:
+                if (
+                    not isinstance(comparison, ProductSpecComparison)
+                    or not isinstance(comparison.spec_name, str)
+                    or not isinstance(comparison.required, str)
+                    or not isinstance(comparison.offered, str)
+                    or comparison.level is not ProductSpecMatchLevel.EXACT
+                    or comparison.evidence_ref is None
+                    or not str(comparison.evidence_ref).strip()
+                ):
+                    raise ValidationError("内部产品匹配规格证明不完整")
+                spec_name = _normalize(comparison.spec_name)
+                matched_fact = product_facts.get(spec_name)
+                if (
+                    not spec_name
+                    or not _normalize(comparison.offered)
+                    or _normalize(comparison.required)
+                    != required_by_name.get(spec_name)
+                    or matched_fact is None
+                    or _normalize(comparison.offered) != _normalize(matched_fact.value)
+                    or str(comparison.evidence_ref) != str(matched_fact.evidence_ref)
+                ):
+                    raise ValidationError("内部产品匹配规格证明不完整")
+                comparison_names.append(spec_name)
+            if tuple(comparison_names) != required_names or len(
+                set(comparison_names)
+            ) != len(comparison_names):
+                raise ValidationError("内部产品匹配规格证明不完整")
+            pool = getattr(product.pool, "value", None)
+            if pool == "formal":
+                buckets[2 if product.customizable else 1].append(match)
+            elif pool == "candidate":
+                buckets[3].append(match)
+
+        finding_rows = sorted(
+            (
+                {
+                    "product_id": str(item.product_id),
+                    "code": item.code,
+                    "missing_fields": list(item.missing_fields),
+                }
+                for item in product_result.findings
+            ),
+            key=lambda item: str(item["product_id"]),
+        )
+        for rung in (1, 2, 3):
+            matches = buckets[rung]
+            product_ids = [str(item.product.product_id) for item in matches]
+            input_snapshot: dict[str, object] = {
+                "need_id": str(snapshot.need_id),
+                "category": category,
+                "qualified_product_ids": product_ids,
+                "excluded_product_findings": finding_rows,
+            }
+            if matches:
+                input_snapshot["product_spec_evidence"] = {
+                    str(match.product.product_id): {
+                        _normalize(comparison.spec_name): str(comparison.evidence_ref)
+                        for comparison in match.spec_comparisons
+                    }
+                    for match in matches
+                }
+                evidence_refs = tuple(
+                    sorted(
+                        {
+                            str(item.internal_cost_source_ref)
+                            for match in matches
+                            for item in (match.product,)
+                            if item.internal_cost_source_ref is not None
+                        }
+                        | {
+                            str(comparison.evidence_ref)
+                            for match in matches
+                            for comparison in match.spec_comparisons
+                            if comparison.evidence_ref is not None
+                        }
+                    )
+                )
+                comparisons = tuple(
+                    SpecComparison(
+                        spec_name=item.spec_name,
+                        required=item.required,
+                        offered=item.offered,
+                        level=SpecMatchLevel.EXACT,
+                        product_id=match.product.product_id,
+                        evidence_ref=item.evidence_ref,
+                    )
+                    for match in matches
+                    for item in match.spec_comparisons
+                )
+                await self._record(
+                    run,
+                    _ladder_check(
+                        run=run,
+                        snapshot=snapshot,
+                        actor=self._sourcing_actor,
+                        rung=rung,
+                        outcome=LadderOutcome.QUALIFIED_SUPPLY_FOUND,
+                        conclusion=_PRODUCT_CONCLUSIONS[rung][1],
+                        input_snapshot=input_snapshot,
+                        match_object_type="product",
+                        match_object_id=product_ids[0],
+                        evidence_refs=evidence_refs,
+                        spec_comparisons=comparisons,
+                    ),
+                )
+                return (
+                    "advance",
+                    "prepare_candidates",
+                    {
+                        "internal_product_ids": product_ids,
+                        "supplier_candidate_ids": [],
+                    },
+                )
+            await self._record(
+                run,
+                _ladder_check(
+                    run=run,
+                    snapshot=snapshot,
+                    actor=self._sourcing_actor,
+                    rung=rung,
+                    outcome=LadderOutcome.NO_QUALIFIED_SUPPLY,
+                    conclusion=_PRODUCT_CONCLUSIONS[rung][0],
+                    input_snapshot=input_snapshot,
+                ),
+            )
+
+        tags = sorted({category, *keywords})
+        suppliers = await _await_dependency(
+            self._suppliers.search_by_capability(
+                run.tenant_id, tags, actor=self._supplier_actor
+            ),
+            transient_message="寻源内部供应商能力匹配暂不可用",
+            permanent_message="寻源内部供应商能力匹配失败",
+        )
+        ordered_suppliers = sorted(suppliers, key=lambda item: str(item.supplier_id))
+        if any(item.tenant_id != run.tenant_id for item in ordered_suppliers):
+            raise ValidationError("内部供应商能力匹配结果租户无效")
+        supplier_ids = [str(item.supplier_id) for item in ordered_suppliers]
+        for rung, conclusion in (
+            (4, "supplier_similar_lead_not_qualified"),
+            (5, "supplier_custom_lead_not_qualified"),
+        ):
+            await self._record(
+                run,
+                _ladder_check(
+                    run=run,
+                    snapshot=snapshot,
+                    actor=self._sourcing_actor,
+                    rung=rung,
+                    outcome=LadderOutcome.NO_QUALIFIED_SUPPLY,
+                    conclusion=conclusion,
+                    input_snapshot={
+                        "need_id": str(snapshot.need_id),
+                        "category": category,
+                        "supplier_lead_ids": supplier_ids,
+                    },
+                    match_object_type=("supplier_capability" if supplier_ids else None),
+                    match_object_id=(supplier_ids[0] if supplier_ids else None),
+                ),
+            )
+        return (
+            "advance",
+            "await_public_plan",
+            {"internal_product_ids": [], "supplier_candidate_ids": []},
+        )
+
+
+class PrepareCandidatesStep:
+    """把内部匹配产品登记为 canonical Option，并最终发布 Ready。"""
+
+    def __init__(
+        self, *, sourcing: SourcingService, sourcing_actor: SourcingActor
+    ) -> None:
+        self._sourcing = sourcing
+        self._sourcing_actor = sourcing_actor
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        case_id, _need_id, _hash = _base(run)
+        raw_ids = run.context.get("internal_product_ids")
+        candidate_ids = run.context.get("supplier_candidate_ids")
+        candidate_case_version = run.context.get("candidate_case_version")
+        candidate_set_hash = run.context.get("candidate_set_hash")
+        if raw_ids == [] and isinstance(candidate_ids, list) and candidate_ids:
+            if (
+                candidate_ids != sorted(set(candidate_ids))
+                or any(
+                    not isinstance(item, str) or not item.strip() or len(item) > 200
+                    for item in candidate_ids
+                )
+                or isinstance(candidate_case_version, bool)
+                or not isinstance(candidate_case_version, int)
+                or candidate_case_version < 1
+                or not isinstance(candidate_set_hash, str)
+                or len(candidate_set_hash) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in candidate_set_hash
+                )
+            ):
+                raise ValidationError("供应商候选准备 generation 无效")
+            return (
+                "advance",
+                "await_product_cards",
+                {
+                    "option_ids": [],
+                    "supplier_candidate_ids": candidate_ids,
+                    "candidate_case_version": candidate_case_version,
+                    "candidate_set_hash": candidate_set_hash,
+                },
+            )
+        if (
+            not isinstance(raw_ids, list)
+            or not raw_ids
+            or raw_ids != sorted(set(raw_ids))
+            or any(not isinstance(item, str) or not item.strip() for item in raw_ids)
+            or candidate_ids != []
+        ):
+            raise ValidationError("内部候选准备上下文无效")
+        option_ids = []
+        for product_id in raw_ids:
+            option_ids.append(
+                await _await_dependency(
+                    self._sourcing.register_existing_product_option(
+                        run.tenant_id,
+                        case_id,
+                        ProductId(product_id),
+                        actor=self._sourcing_actor,
+                    ),
+                    transient_message="寻源内部产品准备暂不可用",
+                    permanent_message="寻源内部产品准备失败",
+                )
+            )
+        await _await_dependency(
+            self._sourcing.mark_candidates_ready(
+                run.tenant_id,
+                case_id,
+                tuple(option_ids),
+                (),
+                actor=self._sourcing_actor,
+            ),
+            transient_message="寻源内部产品准备暂不可用",
+            permanent_message="寻源内部产品准备失败",
+        )
+        return (
+            "advance",
+            "await_product_cards",
+            {
+                "option_ids": [str(item) for item in option_ids],
+                "supplier_candidate_ids": [],
+            },
+        )
+
+
+class AwaitProductCardsStep:
+    """内部路径直进审核；公开候选只接受精确产品卡 generation。"""
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        case_id, _need_id, _hash = _base(run)
+        candidate_ids = run.context.get("supplier_candidate_ids")
+        internal_ids = run.context.get("internal_product_ids")
+        option_ids = run.context.get("option_ids")
+        if (
+            candidate_ids == []
+            and isinstance(internal_ids, list)
+            and internal_ids
+            and isinstance(option_ids, list)
+            and option_ids
+        ):
+            return ("advance", "await_review", {})
+        if not isinstance(candidate_ids, list) or any(
+            not isinstance(item, str) or not item.strip() for item in candidate_ids
+        ):
+            raise ValidationError("候选产品卡等待上下文无效")
+        if candidate_ids != sorted(set(candidate_ids)):
+            raise ValidationError("候选产品卡等待集合无效")
+        event = run.context.get("event")
+        if event is None:
+            return ("wait", None, {})
+        if (
+            not isinstance(event, dict)
+            or event.get("event_type") != "SourcingProductCardsPrepared"
+            or not isinstance(event.get("payload"), dict)
+        ):
+            raise ValidationError("候选产品卡唤醒事件无效")
+        payload = event["payload"]
+        expected_keys = {
+            "case_id",
+            "candidate_ids",
+            "product_ids",
+            "option_ids",
+            "case_version",
+            "candidate_set_hash",
+        }
+        if set(payload) != expected_keys:
+            raise ValidationError("候选产品卡唤醒 payload 无效")
+        product_ids = payload.get("product_ids")
+        prepared_option_ids = payload.get("option_ids")
+        expected_version = run.context.get("candidate_case_version")
+        expected_hash = run.context.get("candidate_set_hash")
+        if (
+            payload.get("case_id") != str(case_id)
+            or payload.get("candidate_ids") != candidate_ids
+            or payload.get("case_version") != expected_version
+            or payload.get("candidate_set_hash") != expected_hash
+        ):
+            raise ValidationError("候选产品卡唤醒 generation 不一致")
+        if (
+            not isinstance(expected_version, int)
+            or isinstance(expected_version, bool)
+            or expected_version < 1
+            or not isinstance(expected_hash, str)
+            or len(expected_hash) != 64
+            or any(character not in "0123456789abcdef" for character in expected_hash)
+            or not isinstance(product_ids, list)
+            or not isinstance(prepared_option_ids, list)
+            or len(product_ids) != len(candidate_ids)
+            or len(prepared_option_ids) != len(candidate_ids)
+            or any(
+                not isinstance(item, str) or not item.strip() for item in product_ids
+            )
+            or any(
+                not isinstance(item, str) or not item.strip()
+                for item in prepared_option_ids
+            )
+            or len(set(product_ids)) != len(product_ids)
+            or len(set(prepared_option_ids)) != len(prepared_option_ids)
+        ):
+            raise ValidationError("候选产品卡唤醒稳定 ID 无效")
+        return (
+            "advance",
+            "await_review",
+            {"product_ids": product_ids, "option_ids": prepared_option_ids},
+        )
+
+
+def sourcing_search_request_key(plan_hash: str, query_index: int) -> str:
+    """绑定已授权计划与查询位置的免费额度操作键。"""
+
+    if (
+        not isinstance(plan_hash, str)
+        or len(plan_hash) != 64
+        or any(character not in "0123456789abcdef" for character in plan_hash)
+        or isinstance(query_index, bool)
+        or not isinstance(query_index, int)
+        or query_index < 0
+    ):
+        raise ValidationError("公开寻源查询操作键绑定无效")
+    payload = (
+        b"tradeos:sourcing-search:v1\0"
+        + plan_hash.encode("ascii")
+        + b"\0"
+        + str(query_index).encode("ascii")
+    )
+    return hashlib.sha256(payload).hexdigest()
+
+
+_TOOL_STOP_REASONS = {
+    ToolErrorCategory.PAGE_ACCESS_FORBIDDEN: "page_access_forbidden",
+    ToolErrorCategory.LOGIN_OR_CAPTCHA: "login_or_captcha",
+    ToolErrorCategory.UNSAFE_REDIRECT: "unsafe_redirect",
+    ToolErrorCategory.RATE_LIMITED: "provider_rate_limited",
+    ToolErrorCategory.PROVIDER_TRANSIENT: "provider_timeout",
+    ToolErrorCategory.RECONCILIATION_REQUIRED: "reconciliation_required",
+}
+
+_FREE_STOP_REASONS = {
+    FreeSearchStopReason.QUOTA_EXHAUSTED: "quota_exhausted",
+    FreeSearchStopReason.USAGE_UNKNOWN: "quota_status_unknown",
+    FreeSearchStopReason.PAID_ENABLED: "paid_usage_enabled",
+    FreeSearchStopReason.REQUEST_UNCERTAIN: "reconciliation_required",
+    FreeSearchStopReason.UNSUPPORTED: "quota_status_unknown",
+}
+
+
+class PublicSearchStep:
+    """已授权计划下的有界公开寻源；只生成未核验草稿。"""
+
+    def __init__(
+        self,
+        *,
+        need_reader: SourcingNeedReader,
+        plan_reader: AuthorizedPublicSourcingPlanReader,
+        quota: SearchQuotaRepository,
+        searcher: PublicSourcingSearcher,
+        page_reader: PublicPageReader,
+        receipts: PersistedSearchReceiptPort,
+        extractor: PublicCandidateExtractor,
+        drafts: PublicCandidateDraftWriter,
+    ) -> None:
+        self._need_reader = need_reader
+        self._plan_reader = plan_reader
+        self._quota = quota
+        self._searcher = searcher
+        self._page_reader = page_reader
+        self._receipts = receipts
+        self._extractor = extractor
+        self._drafts = drafts
+
+    @staticmethod
+    def _wait(
+        reason: str, *, searches: int, pages: int
+    ) -> tuple[str, None, dict[str, Any]]:
+        return (
+            "wait",
+            None,
+            {
+                "sourcing_stop_reason": reason,
+                "sourcing_searches_used": searches,
+                "sourcing_pages_used": pages,
+            },
+        )
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        case_id, _need_id, _snapshot_hash = _base(run)
+        plan_id = SourcingPlanId(
+            _text(run.context.get("sourcing_plan_id"), "寻源计划 ID 无效", maximum=40)
+        )
+        plan_hash = _text(
+            run.context.get("sourcing_plan_hash"), "寻源计划哈希无效", maximum=64
+        )
+        need = await _trusted_need(run, self._need_reader)
+        plan = await _await_dependency(
+            self._plan_reader.load_authorized(
+                tenant_id=run.tenant_id,
+                case_id=case_id,
+                run_id=run.run_id,
+                plan_id=plan_id,
+                plan_hash=plan_hash,
+            ),
+            transient_message="已授权公开寻源计划暂不可用",
+            permanent_message="已授权公开寻源计划读取失败",
+        )
+        if (
+            plan.tenant_id != run.tenant_id
+            or plan.case_id != case_id
+            or plan.plan_id != plan_id
+            or plan.plan_hash != plan_hash
+            or plan.authorized_plan_hash != plan_hash
+            or plan.status.value != "running"
+            or plan.provider != "tavily"
+            or plan.search_depth != "basic"
+        ):
+            raise ValidationError("已授权公开寻源计划绑定无效")
+
+        page_attempts = await _await_dependency(
+            self._receipts.restore_page_attempts(
+                tenant_id=run.tenant_id,
+                case_id=case_id,
+                run_id=run.run_id,
+                plan_id=plan_id,
+                plan_hash=plan_hash,
+            ),
+            transient_message="公开寻源页面预算暂不可用",
+            permanent_message="公开寻源页面预算读取失败",
+        )
+        if not isinstance(page_attempts, tuple) or any(
+            not isinstance(attempt, PublicPageAttempt)
+            or attempt.tenant_id != run.tenant_id
+            or attempt.case_id != case_id
+            or attempt.run_id != run.run_id
+            or attempt.plan_id != plan_id
+            or attempt.plan_hash != plan_hash
+            or attempt.query_index >= len(plan.queries)
+            for attempt in page_attempts
+        ):
+            raise ValidationError("公开寻源页面预算状态无效")
+        if len(page_attempts) > plan.max_pages_read:
+            raise ValidationError("公开寻源页面预算状态无效")
+        counted_queries = {attempt.query_index for attempt in page_attempts}
+        searches_used = len(counted_queries)
+        claimed_attempt = next(
+            (
+                attempt
+                for attempt in page_attempts
+                if attempt.status is PublicPageAttemptStatus.CLAIMED
+            ),
+            None,
+        )
+        if claimed_attempt is not None:
+            return self._wait(
+                "reconciliation_required",
+                searches=searches_used,
+                pages=len(page_attempts),
+            )
+
+        pages_used = 0
+        draft_ids: list[str] = []
+        verifiable_count = 0
+        rejected_page_reason: str | None = None
+        completed_slots: dict[tuple[int, int], PublicPageAttempt] = {}
+
+        def aggregate_completed_slot(attempt: PublicPageAttempt) -> None:
+            nonlocal pages_used, rejected_page_reason, verifiable_count
+            key = (attempt.query_index, attempt.result_index)
+            if key in completed_slots:
+                return
+            if (
+                attempt.status is not PublicPageAttemptStatus.COMPLETED
+                or attempt.outcome is None
+            ):
+                raise ValidationError("公开寻源页面槽状态无效")
+            completed_slots[key] = attempt
+            pages_used += 1
+            if attempt.outcome is PublicPageAttemptOutcome.DRAFT_SAVED:
+                if attempt.draft_id is None:
+                    raise ValidationError("公开寻源页面槽状态无效")
+                draft_ids.append(attempt.draft_id)
+                if attempt.has_supplier_identity is True:
+                    verifiable_count += 1
+                return
+            rejected_page_reason = attempt.outcome.value
+
+        for attempt in page_attempts:
+            aggregate_completed_slot(attempt)
+        result_count = pages_used
+        try:
+            for query_index, query in enumerate(plan.queries):
+                if searches_used >= plan.max_search_queries:
+                    break
+                request_key = sourcing_search_request_key(plan_hash, query_index)
+                batch = await _await_dependency(
+                    self._receipts.restore(
+                        tenant_id=run.tenant_id,
+                        run_id=run.run_id,
+                        plan_hash=plan_hash,
+                        query_index=query_index,
+                    ),
+                    transient_message="公开寻源安全回执暂不可用",
+                    permanent_message="公开寻源安全回执读取失败",
+                )
+                try:
+                    if batch is None:
+                        if pages_used >= plan.max_pages_read:
+                            break
+                        reservation = await _await_dependency(
+                            self._quota.get(run.run_id, request_key),
+                            transient_message="公开寻源额度状态暂不可用",
+                            permanent_message="公开寻源额度状态读取失败",
+                        )
+                        if reservation is not None:
+                            searches_used += 1
+                            return self._wait(
+                                "reconciliation_required",
+                                searches=searches_used,
+                                pages=pages_used,
+                            )
+                        searches_used += 1
+                        free_error: FreeSearchError | None = None
+                        tool_error: ToolGatewayError | None = None
+                        try:
+                            batch = await _await_dependency(
+                                self._searcher.search(
+                                    run.tenant_id,
+                                    run.run_id,
+                                    query.query_text,
+                                    query.target_country,
+                                    plan.product_category,
+                                    min(20, plan.max_pages_read - pages_used),
+                                    quota_request_key=request_key,
+                                ),
+                                transient_message="公开寻源搜索暂不可用",
+                                permanent_message="公开寻源搜索失败",
+                                passthrough=(FreeSearchError, ToolGatewayError),
+                            )
+                        except FreeSearchError as error:
+                            free_error = error
+                        except ToolGatewayError as error:
+                            tool_error = error
+                        if free_error is not None:
+                            if (
+                                free_error.reason
+                                is FreeSearchStopReason.REQUEST_UNCERTAIN
+                            ):
+                                await _await_dependency(
+                                    self._receipts.record_uncertain(
+                                        tenant_id=run.tenant_id,
+                                        case_id=case_id,
+                                        run_id=run.run_id,
+                                        plan_id=plan_id,
+                                        plan_hash=plan_hash,
+                                        query_index=query_index,
+                                        request_key=request_key,
+                                        query_hash=hashlib.sha256(
+                                            query.query_text.encode()
+                                        ).hexdigest(),
+                                    ),
+                                    transient_message="公开寻源不确定回执暂不可用",
+                                    permanent_message="公开寻源不确定回执保存失败",
+                                )
+                            return self._wait(
+                                _FREE_STOP_REASONS[free_error.reason],
+                                searches=searches_used,
+                                pages=pages_used,
+                            )
+                        if tool_error is not None:
+                            if tool_error.category is ToolErrorCategory.VALIDATION:
+                                raise ValidationError("公开寻源搜索请求无效")
+                            return self._wait(
+                                _TOOL_STOP_REASONS.get(
+                                    tool_error.category, "provider_timeout"
+                                ),
+                                searches=searches_used,
+                                pages=pages_used,
+                            )
+                        if batch is None:
+                            raise ValidationError("公开寻源搜索结果无效")
+                        await _await_dependency(
+                            self._receipts.commit_locator_receipt(
+                                tenant_id=run.tenant_id,
+                                case_id=case_id,
+                                run_id=run.run_id,
+                                plan_id=plan_id,
+                                plan_hash=plan_hash,
+                                query_index=query_index,
+                                request_key=request_key,
+                                query_hash=hashlib.sha256(
+                                    query.query_text.encode()
+                                ).hexdigest(),
+                                batch=batch,
+                            ),
+                            transient_message="公开寻源安全回执暂不可用",
+                            permanent_message="公开寻源安全回执保存失败",
+                        )
+                    else:
+                        if query_index not in counted_queries:
+                            searches_used += 1
+                    counted_queries.add(query_index)
+                    result_count += len(batch.results)
+                    for result_index in range(len(batch.results)):
+                        if (query_index, result_index) in completed_slots:
+                            continue
+                        if pages_used >= plan.max_pages_read:
+                            break
+                        try:
+                            claim = await _await_dependency(
+                                self._receipts.claim_page_attempt(
+                                    tenant_id=run.tenant_id,
+                                    case_id=case_id,
+                                    run_id=run.run_id,
+                                    plan_id=plan_id,
+                                    plan_hash=plan_hash,
+                                    query_index=query_index,
+                                    result_index=result_index,
+                                ),
+                                transient_message="公开寻源页面预算暂不可用",
+                                permanent_message="公开寻源页面预算保存失败",
+                            )
+                            if claim is None:
+                                current = await _await_dependency(
+                                    self._receipts.restore_page_attempts(
+                                        tenant_id=run.tenant_id,
+                                        case_id=case_id,
+                                        run_id=run.run_id,
+                                        plan_id=plan_id,
+                                        plan_hash=plan_hash,
+                                    ),
+                                    transient_message="公开寻源页面预算暂不可用",
+                                    permanent_message="公开寻源页面预算读取失败",
+                                )
+                                return self._wait(
+                                    "reconciliation_required",
+                                    searches=searches_used,
+                                    pages=len(current),
+                                )
+                            if not isinstance(claim, PublicPageAttemptClaim):
+                                raise ValidationError("公开寻源页面槽状态无效")
+                            if (
+                                claim.slot.tenant_id,
+                                claim.slot.case_id,
+                                claim.slot.run_id,
+                                claim.slot.plan_id,
+                                claim.slot.plan_hash,
+                                claim.slot.query_index,
+                                claim.slot.result_index,
+                            ) != (
+                                run.tenant_id,
+                                case_id,
+                                run.run_id,
+                                plan_id,
+                                plan_hash,
+                                query_index,
+                                result_index,
+                            ):
+                                raise ValidationError("公开寻源页面槽绑定无效")
+                            if not claim.claimed_new:
+                                if claim.slot.status is PublicPageAttemptStatus.CLAIMED:
+                                    return self._wait(
+                                        "reconciliation_required",
+                                        searches=searches_used,
+                                        pages=pages_used,
+                                    )
+                                aggregate_completed_slot(claim.slot)
+                                continue
+                            pages_used += 1
+                            page = await _await_dependency(
+                                self._page_reader.read_page(
+                                    run.tenant_id, run.run_id, batch, result_index
+                                ),
+                                transient_message="公开寻源页面暂不可用",
+                                permanent_message="公开寻源页面读取失败",
+                                passthrough=(ToolGatewayError,),
+                            )
+                            draft = await _await_dependency(
+                                self._extractor.extract(need, page),
+                                transient_message="公开寻源页面抽取暂不可用",
+                                permanent_message="公开寻源页面抽取失败",
+                            )
+                            if not isinstance(draft, SourcingPageCandidateDraft):
+                                raise ValidationError("公开寻源抽取草稿无效")
+                            draft_id = await _await_dependency(
+                                self._drafts.save(
+                                    tenant_id=run.tenant_id,
+                                    case_id=case_id,
+                                    run_id=run.run_id,
+                                    plan_id=plan_id,
+                                    plan_hash=plan_hash,
+                                    query_index=query_index,
+                                    result_index=result_index,
+                                    draft=draft,
+                                ),
+                                transient_message="公开寻源安全草稿暂不可用",
+                                permanent_message="公开寻源安全草稿保存失败",
+                            )
+                            completed = await _await_dependency(
+                                self._receipts.complete_page_attempt(
+                                    tenant_id=run.tenant_id,
+                                    case_id=case_id,
+                                    run_id=run.run_id,
+                                    plan_id=plan_id,
+                                    plan_hash=plan_hash,
+                                    query_index=query_index,
+                                    result_index=result_index,
+                                    outcome=PublicPageAttemptOutcome.DRAFT_SAVED,
+                                    draft_id=draft_id,
+                                ),
+                                transient_message="公开寻源页面结果暂不可用",
+                                permanent_message="公开寻源页面结果保存失败",
+                            )
+                            if not isinstance(completed, PublicPageAttempt):
+                                raise ValidationError("公开寻源页面结果状态无效")
+                            completed_slots[(query_index, result_index)] = completed
+                            draft_ids.append(draft_id)
+                            if draft.supplier_name is not None:
+                                verifiable_count += 1
+                        except ToolGatewayError as error:
+                            rejected_page_reason = _TOOL_STOP_REASONS.get(
+                                error.category, "page_access_forbidden"
+                            )
+                            completed = await _await_dependency(
+                                self._receipts.complete_page_attempt(
+                                    tenant_id=run.tenant_id,
+                                    case_id=case_id,
+                                    run_id=run.run_id,
+                                    plan_id=plan_id,
+                                    plan_hash=plan_hash,
+                                    query_index=query_index,
+                                    result_index=result_index,
+                                    outcome=PublicPageAttemptOutcome(
+                                        rejected_page_reason
+                                    ),
+                                    draft_id=None,
+                                ),
+                                transient_message="公开寻源页面结果暂不可用",
+                                permanent_message="公开寻源页面结果保存失败",
+                            )
+                            if not isinstance(completed, PublicPageAttempt):
+                                raise ValidationError("公开寻源页面结果状态无效")
+                            completed_slots[(query_index, result_index)] = completed
+                            continue
+                finally:
+                    if batch is not None:
+                        try:
+                            self._searcher.release(batch)
+                        except (Exception, asyncio.CancelledError):  # noqa: BLE001,S110 - cleanup不得覆盖主结果。
+                            pass
+        finally:
+            try:
+                self._searcher.discard_all()
+            except (Exception, asyncio.CancelledError):  # noqa: BLE001,S110 - cleanup不得覆盖主结果。
+                pass
+
+        if result_count == 0:
+            return self._wait(
+                "no_search_results", searches=searches_used, pages=pages_used
+            )
+        if not draft_ids and rejected_page_reason is not None:
+            return self._wait(
+                rejected_page_reason, searches=searches_used, pages=pages_used
+            )
+        if verifiable_count == 0:
+            return self._wait(
+                "no_verifiable_supplier", searches=searches_used, pages=pages_used
+            )
+        return (
+            "advance",
+            "verify_candidates",
+            {
+                "sourcing_searches_used": searches_used,
+                "sourcing_pages_used": pages_used,
+                "supplier_candidate_draft_ids": draft_ids,
+            },
+        )
+
+
+class FixedWaitStep:
+    """后续 Task 的显式无副作用占位，不伪造任何完成事实。"""
+
+    def __init__(self, status: str) -> None:
+        self._status = _text(status, "寻源等待状态无效")
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        _base(run)
+        return ("wait", None, {"sourcing_wait_status": self._status})
+
+
+class HandoffCostingStep:
+    """先精确读取同 Need Opportunity，再让 sourcing 原子交接并发事实事件。"""
+
+    def __init__(
+        self,
+        *,
+        opportunities: OpportunityService,
+        sourcing: SourcingService,
+        opportunity_actor: OpportunityActor,
+        sourcing_actor: SourcingActor,
+    ) -> None:
+        self._opportunities = opportunities
+        self._sourcing = sourcing
+        self._opportunity_actor = opportunity_actor
+        self._sourcing_actor = sourcing_actor
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        case_id, need_id, _snapshot_hash = _base(run)
+        opportunity = await _await_dependency(
+            self._opportunities.get_by_need(
+                run.tenant_id, need_id, actor=self._opportunity_actor
+            ),
+            transient_message="寻源成本交接 Opportunity 暂不可用",
+            permanent_message="寻源成本交接 Opportunity 读取失败",
+        )
+        if opportunity is None:
+            await _await_dependency(
+                self._sourcing.record_waiting_stop(
+                    run.tenant_id,
+                    case_id,
+                    "opportunity_required",
+                    actor=self._sourcing_actor,
+                ),
+                transient_message="寻源成本交接停止原因暂不可用",
+                permanent_message="寻源成本交接停止原因保存失败",
+            )
+            return ("wait", None, {"sourcing_stop_reason": "opportunity_required"})
+        if (
+            not isinstance(opportunity, OpportunityView)
+            or opportunity.need_id != str(need_id)
+            or not isinstance(opportunity.opportunity_id, str)
+            or not opportunity.opportunity_id.strip()
+        ):
+            raise ValidationError("寻源成本交接 Opportunity 绑定无效")
+        snapshot = await _await_dependency(
+            self._sourcing.hand_to_costing(
+                run.tenant_id,
+                case_id,
+                OpportunityId(opportunity.opportunity_id),
+                expected_need_id=need_id,
+                actor=self._sourcing_actor,
+            ),
+            transient_message="寻源成本交接暂不可用",
+            permanent_message="寻源成本交接失败",
+        )
+        if (
+            not isinstance(snapshot, SourcingHandoffSnapshot)
+            or snapshot.case_id != case_id
+            or snapshot.need_id != need_id
+            or snapshot.opportunity_id != OpportunityId(opportunity.opportunity_id)
+        ):
+            raise ValidationError("寻源成本交接结果绑定无效")
+        return (
+            "complete",
+            None,
+            {
+                "sourcing_stop_reason": None,
+                "opportunity_id": str(snapshot.opportunity_id),
+                "review_id": str(snapshot.review_id),
+            },
+        )
+
+
+class VerifyCandidatesStep:
+    """把 PublicSearch 的精确草稿 generation 一次交给寻源域核验。"""
+
+    def __init__(self, *, sourcing: SourcingService, actor: SourcingActor) -> None:
+        self._sourcing = sourcing
+        self._actor = actor
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        case_id, _need_id, _snapshot_hash = _base(run)
+        plan_id = SourcingPlanId(
+            _text(
+                run.context.get("sourcing_plan_id"), "候选核验缺少计划 ID", maximum=40
+            )
+        )
+        plan_hash = _text(
+            run.context.get("sourcing_plan_hash"),
+            "候选核验缺少计划哈希",
+            maximum=64,
+        )
+        if len(plan_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in plan_hash
+        ):
+            raise ValidationError("候选核验计划哈希无效")
+        raw_draft_ids = run.context.get("supplier_candidate_draft_ids")
+        if not isinstance(raw_draft_ids, list) or not raw_draft_ids:
+            raise ValidationError("候选核验缺少有序草稿集合")
+        draft_ids = tuple(
+            _text(value, "候选核验草稿 ID 无效", maximum=40) for value in raw_draft_ids
+        )
+        if len(set(draft_ids)) != len(draft_ids):
+            raise ValidationError("候选核验草稿 ID 不得重复")
+        result = await _await_dependency(
+            self._sourcing.verify_public_candidate_drafts(
+                run.tenant_id,
+                case_id,
+                VerifyPublicCandidateDraftsCommand(
+                    run_id=RunId(str(run.run_id)),
+                    plan_id=plan_id,
+                    plan_hash=plan_hash,
+                    draft_ids=draft_ids,
+                ),
+                actor=self._actor,
+            ),
+            transient_message="公开候选草稿核验暂不可用",
+            permanent_message="公开候选草稿核验失败",
+        )
+        if not isinstance(result, VerifyPublicCandidateDraftsResult):
+            raise ValidationError("公开候选草稿核验结果无效")
+        event = result.verified_event
+        if event is None:
+            return (
+                "wait",
+                None,
+                {
+                    "sourcing_stop_reason": "no_qualified_candidate",
+                    "calibration_draft_ids": list(result.calibration_draft_ids),
+                    "converted_supplier_candidate_ids": list(
+                        map(str, result.converted_candidate_ids)
+                    ),
+                    "rejected_supplier_candidate_ids": list(
+                        map(str, result.rejected_candidate_ids)
+                    ),
+                    "qualified_supplier_candidate_count": 0,
+                },
+            )
+        if event.tenant_id != run.tenant_id or event.case_id != case_id:
+            raise ValidationError("公开候选封存事件与 Workflow 不一致")
+        return (
+            "advance",
+            "prepare_candidates",
+            {
+                "internal_product_ids": [],
+                "supplier_candidate_ids": list(
+                    map(str, result.qualified_candidate_ids)
+                ),
+                "candidate_case_version": event.case_version,
+                "candidate_set_hash": event.candidate_set_hash,
+            },
+        )
+
+
+class AwaitPublicPlanStep:
+    """入口只等待；收到精确授权事件后携带安全计划绑定推进公开搜索。"""
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        _base(run)
+        event = run.context.get("event")
+        if event is None:
+            return ("wait", None, {"sourcing_wait_status": "approval_required"})
+        if not isinstance(event, dict) or set(event) != {"event_type", "payload"}:
+            raise ValidationError("公开寻源计划授权事件无效")
+        if event.get("event_type") != "SourcingPlanConfirmed":
+            raise ValidationError("公开寻源计划授权事件类型无效")
+        payload = event.get("payload")
+        if not isinstance(payload, dict) or set(payload) != {"plan_id", "plan_hash"}:
+            raise ValidationError("公开寻源计划授权载荷无效")
+        plan_id = _text(payload.get("plan_id"), "公开寻源计划 ID 无效", maximum=40)
+        plan_hash = _text(payload.get("plan_hash"), "公开寻源计划哈希无效", maximum=64)
+        if len(plan_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in plan_hash
+        ):
+            raise ValidationError("公开寻源计划哈希无效")
+        return (
+            "advance",
+            "public_search",
+            {
+                "sourcing_plan_id": str(SourcingPlanId(plan_id)),
+                "sourcing_plan_hash": plan_hash,
+            },
+        )
+
+
+class AwaitReviewStep:
+    """入口等待人工确认；只接受精确 review 事件后交给成本交接步骤。"""
+
+    async def execute(self, run: WorkflowRun) -> tuple[str, str | None, dict[str, Any]]:
+        _base(run)
+        event = run.context.get("event")
+        if event is None:
+            return ("wait", None, {"sourcing_wait_status": "review_required"})
+        if not isinstance(event, dict) or set(event) != {"event_type", "payload"}:
+            raise ValidationError("寻源审核事件无效")
+        if event.get("event_type") != "SourcingReviewSubmitted":
+            raise ValidationError("寻源审核事件类型无效")
+        payload = event.get("payload")
+        if not isinstance(payload, dict) or set(payload) != {"review_id", "request_id"}:
+            raise ValidationError("寻源审核事件载荷无效")
+        SourcingReviewId(
+            _text(payload.get("review_id"), "寻源审核 ID 无效", maximum=40)
+        )
+        _text(payload.get("request_id"), "寻源审核请求 ID 无效", maximum=200)
+        return (
+            "advance",
+            "handoff_costing",
+            {"sourcing_stop_reason": "opportunity_required"},
+        )
+
+
+__all__ = (
+    "AwaitProductCardsStep",
+    "AwaitPublicPlanStep",
+    "AwaitReviewStep",
+    "FixedWaitStep",
+    "HandoffCostingStep",
+    "InternalMatchLadderStep",
+    "PrepareCandidatesStep",
+    "PublicSearchStep",
+    "VerifyCandidatesStep",
+    "sourcing_search_request_key",
+)

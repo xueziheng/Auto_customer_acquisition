@@ -1,0 +1,49 @@
+{
+  "source": "controlled_synthetic_fixture",
+  "page": "Supplier: Example Hardware Factory.\nProduct: Stainless outdoor hinge.\nMaterial 304 stainless steel.\nSize 4 inch.\nModel HX-4.\nMOQ 100 pieces.\nPrice USD 2.50 per piece for minimum quantity 100.",
+  "model_output": {
+    "supplier_name": {
+      "literal": "Example Hardware Factory",
+      "source_quote": "Supplier: Example Hardware Factory."
+    },
+    "product_title": {
+      "literal": "Stainless outdoor hinge",
+      "source_quote": "Product: Stainless outdoor hinge."
+    },
+    "specs": [
+      {
+        "spec_name": "product_type",
+        "literal": "Stainless outdoor hinge",
+        "source_quote": "Product: Stainless outdoor hinge."
+      },
+      {
+        "spec_name": "material",
+        "literal": "304 stainless steel",
+        "source_quote": "Material 304 stainless steel."
+      },
+      {
+        "spec_name": "size",
+        "literal": "4 inch",
+        "source_quote": "Size 4 inch."
+      },
+      {
+        "spec_name": "model",
+        "literal": "HX-4",
+        "source_quote": "Model HX-4."
+      }
+    ],
+    "moq": {
+      "literal": "100",
+      "source_quote": "MOQ 100 pieces."
+    },
+    "price_tiers": [
+      {
+        "minimum_quantity_literal": "100",
+        "price_literal": "USD 2.50",
+        "unit_literal": "piece",
+        "currency_literal": "USD",
+        "source_quote": "Price USD 2.50 per piece for minimum quantity 100."
+      }
+    ]
+  }
+}

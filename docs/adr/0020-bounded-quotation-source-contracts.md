@@ -1,0 +1,61 @@
+# ADR 0020：报价来源的有界原件、用途与受限取证契约
+
+日期：2026-08-28。状态：T8A首审四项问题已修复并重新验证，待定向复审；不表示实际API/worker接线或真实资料验收。
+
+## 决策
+
+新增 `shared.schemas.evidence_read` 与 `shared.evidence_read` 中立契约，将raw metadata、
+受限完整bytes、当前用途授权、固定profile正文和版本化定位分开。原文、选区及完整数量事实
+不参与普通DTO序列化或repr。资源ID为canonical前缀ULID；员工沿既有 `fact_identity` 的
+严格非空、40字符、无首尾空白/控制字符规则兼容历史身份，不以格式代替当前真实权限。
+
+Raw Store的bounded端口与旧get并存：metadata短事务先结束，调用上限与Store上限取交集，
+再按实际metadata大小限制transport，最多多读一个哨兵。长度/hash任何不一致拒绝；没有新
+transport不回退旧get。infra只映射真实raw原件，不将generated或取得时间当业务证据。
+
+用途为强制discriminated scope。pricing只允许本人上传PDF和成本域操作权限，不叠加CRM范围，
+也不授予读他人附件/收件箱或政策写入权限；need_unit精确绑定Need及read/confirm，须真实
+Need权限交集、账户和入站消息关系。原件IO前后均重新查当前身份及资料绑定，IO不持业务锁。
+
+`$`仅用于pricing的原件hash核验，不需解析器；片段使用pdf-text-v1或rfc822-plain-v1，
+坐标是Python Unicode code point，raw/text/excerpt分别SHA-256。只统一换行，不trim、不做
+Unicode规范化、OCR、HTML剥离、金额/单位推断或换算。来源核验本身不证明供应商实报或客户语义。
+
+两种profile固定Linux CPython 3.12.14及pypdf 6.16.2。构造不启动子进程；受信startup显式运行
+私有CPU/AS/wall/IPC真实探针后，仅当前实例启用。运行在固定模块的一次性受限worker，使用
+有限长度IPC、清洁环境、CPU/AS/wall/并发与队列上限。缺配置、依赖、探针或版本匹配均关闭。
+这不是通用代码沙箱；升级需新profile或明确兼容证明及ADR，不能悄悄改变旧定位。
+
+独立 `quotation.evidence.read` LOW/FREE插件只过tenant/permission，并用HMAC绑定请求全部
+字段和授权原件。qev槽只在同task成功审计后一次领取；失败只保留固定code，不能将原文
+写入ledger/日志或重放。不修改Gateway核心，不将凭证交给上层。
+
+既有ToolCallResult不投影失败stage：EXECUTING提交失败若返回PROVIDER_TRANSIENT且无qev细码，
+只能沿固定fallback映射source_unavailable，不能声称已识别为外部来源故障；invoke异常或明确
+RECONCILIATION_REQUIRED仍为gateway_unavailable。接受此诊断精度损失，不读历史ledger猜stage，
+不扩展旧Protocol或改核心管线。所有非SUCCEEDED均不领取成功payload，finally清槽。
+
+所有资源值必填正整数排bool，无生产默认。本任务仅受控原件/真实PG/Gateway/Linux下层链；
+真实API/worker装配、NeedUnitAuthorizer、HTTP和真实商业资料核验由后续T8B另行完成。
+
+## 后果与验证
+
+旧Raw/Generated幂等、写入补偿、T3A单位确认/历史receipt均保持。历史单位只重验metadata
+与当前访问权，数量变化不恢复失效单位。单位验证仅为整数与逐字单位相邻的必要词法条件，
+语义确认仍属员工责任。所有来源错误为固定中文不可重试code；临时类在Gateway仍正确分类。
+词法边界取canonical locator的原文code point位置，不能把较大数字或较长单位裁成合法token；
+别处有同文字不能代替选中位置。新确认加强此必要关系，不重写旧receipt或加入语义解释。
+
+关闭需覆盖probe排队、尚未登记进程的launch及parse全生命周期。stdout先显式关闭读管道，
+仅按当时已缓存长度有限排空并等待EOF，进程与全部管道完成回收后才返回；清理阶段首次或
+重复取消也必须重新传播。固定CPython的私有StreamReader管道/缓存由内部typed桥接使用，
+不得以GC作为关闭保证；将来升级runtime需重新验证该管道和取消契约，不只是改版本常量。
+
+验收分别记录有界Store/S3、真实Linux资源、真实PG/Gateway受控原件链；不互相替代。镜像固定
+官方index digest和arm64目标，构建白名单输入；纯解析网络none，全链仅专用internal测试PG网络。
+
+已执行真实Linux CPython3.12.14/pypdf6.16.2资源探针与同worker的CPU/AS/wall/IPC、取消、
+并发/排队和合法资料恢复验证；真实PG/Gateway/受控PDF确认及RFC822单位receipt历史链通过。
+修复后同链及network-none资源测试镜像为`sha256:2b0b00d817e767647f6d629902f5d391c13598cc481b75a5fabbaf7b2c229a33`，
+官方基础index为`sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579`。
+依赖中未锁上限项不保证未来重建逐包相同；固定产物与实际版本记录须随验收保存。

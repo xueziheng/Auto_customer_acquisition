@@ -1,0 +1,35 @@
+{
+  "category": "provides_specification",
+  "must_intercept": [
+    "stop_sequence",
+    "extract_need_fields",
+    "handoff"
+  ],
+  "extract": [
+    {
+      "field": "product_category",
+      "value": "washers",
+      "quote": "washers"
+    },
+    {
+      "field": "quantity",
+      "value": "100000",
+      "quote": "100,000 washers"
+    },
+    {
+      "field": "material",
+      "value": "zinc coated",
+      "quote": "zinc coated"
+    },
+    {
+      "field": "size_spec",
+      "value": "M10",
+      "quote": "M10"
+    },
+    {
+      "field": "packaging",
+      "value": "bulk bags",
+      "quote": "bulk bags"
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: npm ci
+      - name: Generate API types
+        working-directory: apps/web
+        run: npm run gen:api && git diff --exit-code -- src/api/api.d.ts
+      - name: Web type check
+        working-directory: apps/web
+        run: npm run typecheck
+      - name: Web lint
+        working-directory: apps/web
+        run: npm run lint
+      - name: Web tests
+        working-directory: apps/web
+        run: npm run test
+      - name: Web build
+        working-directory: apps/web
+        run: npm run build
+      - name: Lint
+        run: ruff check .
+      - name: Type check
+        run: mypy domains shared tool_gateway connectors apps workflows notification_gateway infra
+      - name: Boundary check
+        run: python3 scripts/check_boundaries.py
+      - name: Sensitive scan
+        run: python3 scripts/scan_sensitive.py
+      - name: Tests
+        run: pytest -q -m "not e2e"
+      - name: Browser E2E
+        env:
+          TRADEOS_REQUIRE_E2E: "1"
+        run: pytest tests/e2e -q -W error

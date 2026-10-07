@@ -1,0 +1,6 @@
+{
+  "category": "bounce",
+  "must_intercept": [
+    "route_bounce"
+  ]
+}

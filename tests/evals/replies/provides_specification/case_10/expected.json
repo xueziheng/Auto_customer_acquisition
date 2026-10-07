@@ -1,0 +1,40 @@
+{
+  "category": "provides_specification",
+  "must_intercept": [
+    "stop_sequence",
+    "extract_need_fields",
+    "handoff"
+  ],
+  "extract": [
+    {
+      "field": "product_category",
+      "value": "aluminum profiles",
+      "quote": "aluminum profiles"
+    },
+    {
+      "field": "material",
+      "value": "aluminum",
+      "quote": "aluminum"
+    },
+    {
+      "field": "size_spec",
+      "value": "2 meters",
+      "quote": "2 meters"
+    },
+    {
+      "field": "quantity",
+      "value": "40000",
+      "quote": "40,000 meters"
+    },
+    {
+      "field": "destination",
+      "value": "Sydney",
+      "quote": "Sydney"
+    },
+    {
+      "field": "required_by",
+      "value": "March",
+      "quote": "by March"
+    }
+  ]
+}

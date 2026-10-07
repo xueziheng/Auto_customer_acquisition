@@ -1,0 +1,46 @@
+# === 运行时与本地状态 ===
+runtime/
+.worktrees/
+*.log
+
+# === 密钥与环境变量（任何情况下不得提交）===
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+token.json
+
+# === Python ===
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# === Node / 前端 ===
+node_modules
+.vite/
+apps/web/dist/
+
+# === Rust / Tauri（Phase 3）===
+target/
+
+# === 数据库与对象存储本地卷 ===
+infra/volumes/
+
+# === macOS ===
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# === 编辑器 ===
+.idea/
+*.swp

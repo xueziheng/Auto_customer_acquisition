@@ -1,0 +1,8 @@
+{
+  "category": "unsubscribe",
+  "must_intercept": [
+    "stop_sequence",
+    "suppress"
+  ],
+  "suppress_scope": "contact"
+}

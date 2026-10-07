@@ -1,0 +1,30 @@
+{
+  "category": "provides_specification",
+  "must_intercept": [
+    "stop_sequence",
+    "extract_need_fields",
+    "handoff"
+  ],
+  "extract": [
+    {
+      "field": "product_category",
+      "value": "rubber gaskets",
+      "quote": "rubber gaskets"
+    },
+    {
+      "field": "quantity",
+      "value": "8000",
+      "quote": "8,000 pieces"
+    },
+    {
+      "field": "material",
+      "value": "rubber",
+      "quote": "rubber"
+    },
+    {
+      "field": "size_spec",
+      "value": "5 mm thick, 120 mm diameter",
+      "quote": "5 mm thick"
+    }
+  ]
+}

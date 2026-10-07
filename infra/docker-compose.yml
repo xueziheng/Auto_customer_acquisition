@@ -1,0 +1,39 @@
+# TradeOS 本地开发依赖（Phase 1：不含 Temporal，见 ADR 0003）
+#
+# 用法：docker compose -f infra/docker-compose.yml up -d
+# 数据卷在 infra/volumes/（已 gitignore）
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: tradeos
+      POSTGRES_PASSWORD: tradeos_local   # 仅本地；生产走密钥服务
+      POSTGRES_DB: tradeos
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./volumes/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tradeos"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./volumes/redis:/data
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: tradeos
+      MINIO_ROOT_PASSWORD: tradeos_local   # 仅本地
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./volumes/minio:/data

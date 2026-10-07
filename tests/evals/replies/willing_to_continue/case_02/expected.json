@@ -1,0 +1,7 @@
+{
+  "category": "willing_to_continue",
+  "must_intercept": [
+    "stop_sequence",
+    "start_qualification"
+  ]
+}

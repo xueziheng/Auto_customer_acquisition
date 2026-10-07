@@ -1,0 +1,5 @@
+{
+  "message_id": "msg_evals_bounce_case_06",
+  "subject": "Mailbox unavailable",
+  "body": "SMTP error: the recipient server returned mailbox unavailable while processing your message."
+}

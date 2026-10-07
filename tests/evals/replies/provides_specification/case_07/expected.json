@@ -1,0 +1,30 @@
+{
+  "category": "provides_specification",
+  "must_intercept": [
+    "stop_sequence",
+    "extract_need_fields",
+    "handoff"
+  ],
+  "extract": [
+    {
+      "field": "product_category",
+      "value": "door handles",
+      "quote": "door handles"
+    },
+    {
+      "field": "quantity",
+      "value": "3000",
+      "quote": "3,000 door handles"
+    },
+    {
+      "field": "material",
+      "value": "aluminum",
+      "quote": "aluminum"
+    },
+    {
+      "field": "application",
+      "value": "new line",
+      "quote": "for our new line"
+    }
+  ]
+}

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>通知中心（演示）— TradeOS</title>
+<style>
+  :root{
+    --canvas:#F5F7F7; --surface:#FFFFFF; --text-primary:#172323; --text-secondary:#526363;
+    --border:#CBD7D5; --fact:#0F766E; --fact-soft:#E7F5F2; --inference:#9A6700; --inference-soft:#FFF5D6;
+    --action:#155EEF; --danger:#B42318; --danger-soft:#FEF0EC; --warning:#B54708; --warning-soft:#FFF4E5;
+    --focus:#7C3AED; --topbar:#0E4A46; --topbar-text:#E7F5F2; --gutter:24px; --maxw:1360px;
+    --space1:4px; --space2:8px; --space3:12px; --space4:16px; --space5:24px; --space6:32px;
+    --radius:8px; --radius-sm:4px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{height:100%; overflow:hidden;}
+  body{font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif; background:var(--canvas); color:var(--text-primary); font-size:14px; line-height:1.5;}
+  button{font:inherit; cursor:pointer; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--surface); padding:6px 12px; color:var(--text-primary);}
+  button:focus-visible, a:focus-visible{outline:3px solid var(--focus); outline-offset:2px;}
+  button:disabled{opacity:.55; cursor:not-allowed;}
+  .topbar{background:var(--topbar); color:var(--topbar-text); display:flex; align-items:center; gap:var(--space5); padding:0 var(--gutter); height:56px; width:100%;}
+  .brand{font-weight:700; letter-spacing:.02em;}
+  nav{display:flex; gap:var(--space4);}
+  nav a{color:var(--topbar-text); text-decoration:none; padding:6px 10px; border-radius:var(--radius-sm); opacity:.85;}
+  nav a.active{opacity:1; background:rgba(255,255,255,.14); font-weight:600;}
+  .spacer{flex:1;}
+  .badge{display:inline-flex; align-items:center; gap:6px; color:var(--topbar-text); text-decoration:none; padding:6px 10px; border-radius:var(--radius-sm); background:rgba(255,255,255,.14);}
+  .badge-num{background:var(--danger); color:#fff; font-weight:700; border-radius:999px; min-width:20px; text-align:center; padding:0 6px; font-size:12px;}
+  .shell{max-width:var(--maxw); margin:0 auto; padding:var(--space4) var(--gutter) var(--space5); display:flex; flex-direction:column; gap:var(--space4); height:calc(100vh - 56px);}
+  .page-head{display:flex; align-items:baseline; gap:var(--space4);}
+  .page-head h1{font-size:20px;}
+  .meta{color:var(--text-secondary); font-size:12px;}
+  .inbox{display:flex; gap:var(--space4); flex:1; min-height:0;}
+  .ledger{width:380px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); display:flex; flex-direction:column; min-height:0;}
+  .ledger-head{padding:var(--space3) var(--space4); border-bottom:1px solid var(--border); font-weight:600; display:flex; justify-content:space-between; align-items:center;}
+  .ledger-list{overflow-y:auto; flex:1; min-height:0;}
+  .row{padding:var(--space3) var(--space4); border-bottom:1px solid var(--border); cursor:pointer;}
+  .row.selected{background:var(--fact-soft); border-left:4px solid var(--fact);}
+  .row.unread .title{font-weight:700; border-left:3px solid var(--action); padding-left:8px;}
+  .row.read .title{font-weight:400; border-left:3px solid transparent; padding-left:8px;}
+  .row .title{display:flex; gap:var(--space2); align-items:center; flex-wrap:wrap;}
+  .row .sub{color:var(--text-secondary); font-size:12px; margin-top:2px;}
+  .read-state{font-size:11px; border-radius:999px; padding:0 6px; border:1px solid;}
+  .read-state.unread-tag{color:var(--action); border-color:var(--action); background:var(--fact-soft);}
+  .read-state.read-tag{color:var(--text-secondary); border-color:var(--border);}
+  .prio{display:inline-flex; align-items:center; gap:4px; font-size:11px; border-radius:999px; padding:0 6px; border:1px solid;}
+  .prio.urgent{color:var(--danger); border-color:var(--danger); background:var(--danger-soft);}
+  .prio.normal{color:var(--fact); border-color:var(--fact); background:var(--fact-soft);}
+  .prio.low{color:var(--text-secondary); border-color:var(--border);}
+  .detail{flex:1; min-width:0; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); display:flex; flex-direction:column; min-height:0; position:relative;}
+  .detail-scroll{overflow-y:auto; padding:var(--space4) var(--space5); display:flex; flex-direction:column; gap:var(--space4);}
+  .kv{display:grid; grid-template-columns:110px 1fr; gap:var(--space2) var(--space4); font-size:13px;}
+  .kv dt{color:var(--text-secondary);}
+  .kv dd{margin:0; word-break:break-word;}
+  .demo-tag{display:inline-block; background:var(--inference-soft); color:var(--inference); border:1px dashed var(--inference); border-radius:999px; font-size:11px; padding:0 6px; margin-left:6px;}
+  .actions{display:flex; gap:var(--space3); margin-top:var(--space4);}
+  .btn-primary{background:var(--action); color:#fff; border-color:var(--action);}
+  .safe-banner{border:1px solid var(--warning); background:var(--warning-soft); color:var(--warning); border-radius:var(--radius); padding:var(--space3) var(--space4); display:flex; gap:var(--space3); align-items:flex-start; font-size:13px;}
+  @media (max-width:1240px){ :root{--gutter:20px;} .inbox .ledger{width:340px;} }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">TradeOS 内部运营台</span>
+    <nav aria-label="主导航">
+      <a href="#">CRM</a>
+      <a href="#">触达工作台</a>
+      <a href="#">发件身份</a>
+      <a href="#" class="active" aria-current="page">通知</a>
+    </nav>
+    <span class="spacer"></span>
+    <a class="badge" href="#" aria-label="通知，3 条未读">
+      <span>通知</span><span class="badge-num">3</span><span>未读</span>
+    </a>
+  </header>
+  <div class="shell">
+    <div class="page-head">
+      <h1>通知中心</h1>
+      <span class="meta">仅显示本人通知 · 所有记录为演示数据</span>
+    </div>
+    <section class="inbox" aria-label="通知列表">
+      <div class="ledger">
+        <div class="ledger-head"><span>通知</span><span>3 未读</span></div>
+        <div class="ledger-list" role="list">
+          <div class="row unread selected" role="listitem" tabindex="0" aria-current="true">
+            <div class="title">
+              <span class="prio urgent">● 紧急</span>
+              <span>人工接管提醒<span class="demo-tag">演示数据</span></span>
+            </div>
+            <div class="sub">2026-08-15 09:00 · <span class="read-state unread-tag">未读</span></div>
+          </div>
+          <div class="row unread" role="listitem" tabindex="0">
+            <div class="title">
+              <span class="prio normal">● 普通</span>
+              <span>发件身份已熔断<span class="demo-tag">演示数据</span></span>
+            </div>
+            <div class="sub">2026-08-15 08:40 · <span class="read-state unread-tag">未读</span></div>
+          </div>
+          <div class="row unread" role="listitem" tabindex="0">
+            <div class="title">
+              <span class="prio normal">● 普通</span>
+              <span>承诺处理已到期<span class="demo-tag">演示数据</span></span>
+            </div>
+            <div class="sub">2026-08-15 08:10 · <span class="read-state unread-tag">未读</span></div>
+          </div>
+          <div class="row read" role="listitem" tabindex="0">
+            <div class="title">
+              <span class="prio low">● 低</span>
+              <span>信誉观察预警<span class="demo-tag">演示数据</span></span>
+            </div>
+            <div class="sub">2026-08-14 17:30 · <span class="read-state read-tag">已读</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="detail" aria-label="通知详情">
+        <div class="detail-scroll">
+          <div class="page-head">
+            <h2>人工接管提醒<span class="prio urgent">● 紧急</span><span class="demo-tag">演示数据</span></h2>
+          </div>
+          <dl class="kv">
+            <dt>类型</dt><dd>人工接管升级（handoff_escalation）· 原因代码 t1</dd>
+            <dt>发生时间</dt><dd>2026-08-15 09:00 UTC</dd>
+            <dt>已读</dt><dd><span class="read-state unread-tag">未读</span></dd>
+          </dl>
+          <div class="actions">
+            <a class="btn-primary" href="/crm/handoffs/handoff-1" style="text-decoration:none; display:inline-block;">前往处理</a>
+            <button>标记为已读</button>
+          </div>
+          <div class="safe-banner" role="status">
+            <span aria-hidden="true">ℹ</span>
+            <div>演示：「前往处理」仅打开系统内已验证的处理页面。</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</body>
+</html>

@@ -1,0 +1,5 @@
+{
+  "message_id": "msg_evals_bounce_case_02",
+  "subject": "User unknown",
+  "body": "Mail delivery failed: The account you tried to reach does not exist."
+}

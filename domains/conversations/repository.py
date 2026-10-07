@@ -1,0 +1,187 @@
+"""会话域存储接口。（浅域）
+
+**内部实现，其他域不得导入。**
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Protocol, Self, runtime_checkable
+
+from domains.conversations.inbox_access import InboxAccessFactsReader, InboxActor
+from domains.conversations.models import (
+    ClassificationCorrection,
+    Conversation,
+    Message,
+    MessageClassification,
+    ReplyWorkAction,
+    ReplyWorkRecord,
+    ReplyWorkStatus,
+)
+from shared.events.bus import EventBus
+from shared.schemas.identifiers import (
+    ConversationId,
+    MessageId,
+    ProspectAccountId,
+    TenantId,
+)
+
+
+@runtime_checkable
+class ConversationRepository(Protocol):
+    async def add(self, conversation: Conversation) -> None: ...
+
+    async def update(self, conversation: Conversation) -> None: ...
+
+    async def advance_last_inbound_at(
+        self,
+        tenant_id: TenantId,
+        conversation_id: ConversationId,
+        sent_at: datetime,
+    ) -> None:
+        """单调推进 last_inbound_at = max(既有, sent_at)。
+
+        实现必须是单条原子 UPDATE（GREATEST/COALESCE），不得整实体
+        read-compare + merge——并发不同 sent_at 下旧值后提交会回退。
+        """
+        ...
+
+    async def get(
+        self, tenant_id: TenantId, conversation_id: ConversationId
+    ) -> Conversation | None: ...
+
+    async def find_by_account_channel(
+        self, tenant_id: TenantId, account_id: ProspectAccountId, channel: str
+    ) -> Conversation | None: ...
+
+    async def get_inbox(
+        self, tenant_id: TenantId, conversation_id: ConversationId, *, actor: InboxActor
+    ) -> Conversation | None:
+        """当前员工与归属SQL过滤的Inbox专用读取；内部工作流get不对HTTP暴露。"""
+        ...
+
+    async def list_recent(
+        self, tenant_id: TenantId, *, actor: InboxActor, limit: int
+    ) -> list[Conversation]:
+        """按最近活动倒序列出本租户会话。"""
+        ...
+
+
+@runtime_checkable
+class ClassificationRepository(Protocol):
+    """分类留痕存储。每 (tenant, message) 至多一条（跨版本重评由服务层显式拒绝）。"""
+
+    async def add(self, classification: MessageClassification) -> None: ...
+
+    async def get(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+    ) -> MessageClassification | None:
+        """该 message 的分类记录（每 message 至多一条）。"""
+        ...
+
+    async def add_correction(self, correction: ClassificationCorrection) -> bool:
+        """append 一条纠正记录；返回 True=新插入，False=DB 幂等冲突（同键已存在）。
+
+        PostgreSQL ``INSERT ... ON CONFLICT DO NOTHING``，唯一键为
+        (tenant, message, corrected_by, corrected_category)；不做 list-then-insert
+        （TOCTOU 消除）。"""
+        ...
+
+    async def list_corrections(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+    ) -> list[ClassificationCorrection]:
+        """该 message 的全部纠正记录，按 ``corrected_at ASC, correction_id ASC``。"""
+        ...
+
+
+@runtime_checkable
+class ReplyWorkRepository(Protocol):
+    """回复产生的 metadata-only owner work queue。"""
+
+    async def add_if_absent(self, record: ReplyWorkRecord) -> None: ...
+
+    async def get_by_message_action(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+        action: ReplyWorkAction,
+    ) -> ReplyWorkRecord | None: ...
+
+    async def list_by_status(
+        self,
+        tenant_id: TenantId,
+        status: ReplyWorkStatus,
+        *,
+        limit: int,
+    ) -> list[ReplyWorkRecord]: ...
+
+
+@runtime_checkable
+class ConversationsUnitOfWork(Protocol):
+    """conversations 域事务边界（域级接口；实现为 SqlAlchemyConversationsUnitOfWork）。
+
+    服务层只依赖本 Protocol——仓储、消息锁与事件总线都在事务内串行化。
+    """
+
+    inbox_facts: InboxAccessFactsReader
+    classifications: ClassificationRepository
+    conversations: ConversationRepository
+    messages: MessageRepository
+    reply_work: ReplyWorkRepository
+    bus: EventBus
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None: ...
+
+    async def lock_message(
+        self, tenant_id: TenantId, message_id: MessageId
+    ) -> None: ...
+
+    async def has_published_reply(
+        self, tenant_id: TenantId, message_id: MessageId
+    ) -> bool: ...
+
+
+class MessageRepository(Protocol):
+    async def add(self, message: Message) -> None: ...
+
+    async def get(
+        self, tenant_id: TenantId, message_id: MessageId
+    ) -> Message | None: ...
+
+    async def update(self, message: Message) -> None: ...
+
+    async def find_by_external_id(
+        self, tenant_id: TenantId, external_message_id: str
+    ) -> Message | None:
+        """按邮件 Message-ID 头查重（入站幂等）。"""
+        ...
+
+    async def list_for_conversation(
+        self, tenant_id: TenantId, conversation_id: ConversationId
+    ) -> list[Message]: ...
+
+    async def account_reply_summary(
+        self,
+        tenant_id: TenantId,
+        account_id: ProspectAccountId,
+    ) -> tuple[bool, datetime | None]:
+        """返回未分类存在性及有效真人回复最大时间；单 SQL 快照，无消息原文。"""
+        ...
+
+    async def has_inbound_since(
+        self, tenant_id: TenantId, conversation_id: ConversationId, since: str
+    ) -> bool:
+        """某时刻后有无入站消息。outreach 的 ``prepare_send``
+        用它关闭 stop_on_reply 竞态——发送前现查，不信缓存。"""
+        ...
