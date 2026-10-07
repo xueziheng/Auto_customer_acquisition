@@ -95,18 +95,29 @@ it("生产根节点恢复前不挂业务，身份变化重建页面，失效卸�
   const { auth, dto } = await setup();
   vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(null, { status: 401 })).mockImplementation(() => Promise.resolve(Response.json(dto))));
   const { default: App } = await import("../App.vue");
-  const { configureAuthenticatedIdentity, clearAuthenticatedIdentity } = await import("./client");
+  const { configureAuthenticatedIdentity, clearAuthenticatedIdentity, createApiClient } = await import("./client");
+  const notificationRequests: Request[] = [];
+  const notifications = createApiClient({ fetch: async request => {
+    notificationRequests.push(request);
+    return Response.json([]);
+  } });
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/:pathMatch(.*)*", component: { setup() { pages++; return () => h("p", "合成业务页面"); } } }] });
   await router.push("/commands");
   const host = document.createElement("div"); document.body.append(host);
-  const app = createApp(App); app.use(router); app.mount(host);
+  const app = createApp(App); app.use(router); app.provide("tradeos-api-client", notifications); app.mount(host);
   expect(host.textContent).not.toContain("合成业务页面");
   const flush = async () => { for (let i = 0; i < 5; i++) { await nextTick(); await new Promise(resolve => setTimeout(resolve, 0)); } };
   await flush(); expect(host.textContent).toContain("登录内部运营台");
+  expect(notificationRequests).toHaveLength(0);
   await auth.login("synthetic", crypto.randomUUID()); await flush();
   expect(pages).toBe(1);
+  expect(host.querySelector('[aria-label="通知，0 条未读"]')).not.toBeNull();
   configureAuthenticatedIdentity("tn_other", "emp_other"); await flush();
   expect(pages).toBe(2);
+  expect(host.querySelector('[aria-label="通知，0 条未读"]')).not.toBeNull();
+  expect(notificationRequests.map(request => [request.method, new URL(request.url).pathname])).toEqual([
+    ["GET", "/api/notifications"], ["GET", "/api/notifications"],
+  ]);
   clearAuthenticatedIdentity(); await flush();
   expect(host.textContent).not.toContain("合成业务页面");
   app.unmount(); host.remove();
