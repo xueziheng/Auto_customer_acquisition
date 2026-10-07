@@ -112,7 +112,7 @@ onMounted(() => void loadAccounts());
   <div class="shell discovery-shell">
     <div class="page-head compact-head">
       <div>
-        <p class="eyebrow">第 1 步</p>
+        <p class="eyebrow">客户发现</p>
         <h1>自动找客户</h1>
       </div>
       <span class="meta">系统自动核验公开企业资料与可用邮箱</span>
@@ -120,7 +120,7 @@ onMounted(() => void loadAccounts());
 
     <section class="automation-note" aria-label="自动找客户说明">
       <strong>无需手动操作</strong>
-      <span>在“自动发邮件”设置目标市场、产品和发件邮箱后，系统会持续寻找并核验客户；只有验证通过的邮箱才会进入发送任务。</span>
+      <span>在“客户 → 开发任务”设置目标市场、产品和发件邮箱；活动经审批启动后才会寻找并核验客户，只有验证通过的邮箱才可进入发送任务。</span>
     </section>
 
     <section

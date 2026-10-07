@@ -487,7 +487,7 @@ onMounted(() => {
     aria-label="TradeOS 人工接管证据账本"
   >
     <header class="simple-head">
-      <div><p class="eyebrow">第 3 步</p><h1>人工接管</h1></div>
+      <div><p class="eyebrow">工作台</p><h1>人工接管</h1></div>
       <p>只有客户明确询价、要样品或提供采购规格后，才会出现在这里。</p>
     </header>
 

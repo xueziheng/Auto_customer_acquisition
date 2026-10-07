@@ -494,7 +494,7 @@ describe("SettingsCenter", () => {
     expect(postKeys[3]).not.toBe(postKeys[2]);
     expect(postBodies[3]).toMatchObject({ minimum_deal_amount: "10000.0011" });
     expect(root.querySelector<HTMLAnchorElement>('a[href="/approvals"]')).not.toBeNull();
-    expect(root.querySelector<HTMLAnchorElement>('a[href="/runs/run_candidate"]')).not.toBeNull();
+    expect(root.querySelector<HTMLAnchorElement>('a[href="/runs?run=run_candidate"]')).not.toBeNull();
   });
 
   it("shows the boss-only permission boundary without leaking backend detail", async () => {

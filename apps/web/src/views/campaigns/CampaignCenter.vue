@@ -114,9 +114,9 @@ function syncFormCollections(): void {
 function newCampaign(): void {
   editingCampaignId.value = null;
   form.name = "";
-  marketsText.value = "Kenya";
+  marketsText.value = "";
   entityTypesText.value = "importer, distributor, fleet_operator";
-  categoriesText.value = "solar electric three-wheeler";
+  categoriesText.value = "";
   triggersText.value = "quantity_provided, materials_requested, sample_requested, quote_requested, specification_file_received, payment_or_contract_terms";
   form.sender_identity_ids = [];
   form.daily_new_contact_limit = 3;
@@ -338,7 +338,7 @@ onMounted(() => {
     <div class="page-head campaign-head">
       <div>
         <p class="eyebrow">
-          第 2 步
+          客户开发
         </p><h1>自动发邮件</h1>
       </div>
       <button
@@ -351,7 +351,7 @@ onMounted(() => {
     </div>
 
     <div class="principle">
-      <strong>首轮仅发第一封。</strong><span>目标肯尼亚进口商、经销商和车队；真实搜索与邮箱验证就绪后才可发送，明确购买意向转人工。</span>
+      <strong>首轮仅发第一封。</strong><span>按本企业设置的产品与目标市场寻找客户；真实搜索与邮箱验证就绪后才可发送，明确购买意向转人工。</span>
     </div>
     <p
       v-if="!identitiesLoading && !identityError && !hasUsableSender"
@@ -391,7 +391,7 @@ onMounted(() => {
       aria-label="活动边界编辑器"
     >
       <header>
-        <div><h2>{{ editingCampaignId ? "修改活动边界" : "创建肯尼亚试验活动" }}</h2><p>只保存首封邮件边界；活动启动不代表外部搜索和发信已经就绪。</p></div><button
+        <div><h2>{{ editingCampaignId ? "修改活动边界" : "创建客户开发任务" }}</h2><p>只保存首封邮件边界；活动启动不代表外部搜索和发信已经就绪。</p></div><button
           type="button"
           @click="editorOpen = false"
         >
@@ -401,11 +401,11 @@ onMounted(() => {
       <form @submit.prevent="saveBoundary">
         <label>目标市场<input
           v-model="marketsText"
-          placeholder="例如：Kenya"
+          placeholder="填写本次开发的目标市场"
         ></label>
         <label>产品<input
           v-model="categoriesText"
-          placeholder="例如：solar electric three-wheeler"
+          placeholder="填写本企业要开发的产品类别"
         ></label>
         <fieldset class="sender-picker">
           <legend>发件邮箱</legend><label

@@ -255,15 +255,17 @@ describe("NotificationCenter", () => {
     expect(afterStale.textContent).not.toContain("未读");
   });
 
-  it("marks a notification read without rendering the removed global badge", async () => {
+  it("marks a notification read and refreshes the global unread badge", async () => {
+    let marked = false;
     const { fetch } = makeNotificationFetch({
-      read: () => jsonResponse({ ...unread, read_at: "2026-08-15T09:30:00Z" }),
+      list: () => jsonResponse([marked ? { ...unread, read_at: "2026-08-15T09:30:00Z" } : unread, read, low]),
+      read: () => { marked = true; return jsonResponse({ ...unread, read_at: "2026-08-15T09:30:00Z" }); },
     });
     const { root } = await mountInbox(fetch);
     await eventually(() => {
       expect(root.textContent).toContain("未读");
     });
-    expect(root.querySelector('[aria-label^="通知，"]')).toBeNull();
+    expect(root.querySelector('[aria-label="通知，2 条未读"]')).not.toBeNull();
     [...root.querySelectorAll("li")].find((r) =>
       r.textContent?.includes("ntf-demo-one"),
     )!.click();
@@ -273,6 +275,7 @@ describe("NotificationCenter", () => {
     clickMarkRead(root);
     await eventually(() => {
       expect(root.textContent).toMatch(/\b1 未读/);
+      expect(root.querySelector('[aria-label="通知，1 条未读"]')).not.toBeNull();
     });
     const rowOne = [...root.querySelectorAll("li")].find((r) =>
       r.textContent?.includes("ntf-demo-one"),

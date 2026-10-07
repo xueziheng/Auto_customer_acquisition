@@ -296,6 +296,7 @@ function readFetch(
   return vi.fn<typeof globalThis.fetch>(async (input) => {
     const request = asRequest(input);
     const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/notifications") return jsonResponse([]);
     if (request.method === "GET" && url.pathname === "/crm/handoffs") return jsonResponse(queue);
     const handoffMatch = url.pathname.match(/^\/crm\/handoffs\/([^/]+)$/);
     if (request.method === "GET" && handoffMatch) {
@@ -357,9 +358,10 @@ describe("handoff queue", () => {
     expect(root.textContent).toContain(firstOpportunity.account_id);
 
     const requests = fetch.mock.calls.map(([input]) => asRequest(input));
-    expect(new URL(requests[0]!.url).pathname).toBe("/crm/handoffs");
-    expect(new URL(requests[0]!.url).searchParams.get("limit")).toBe("50");
+    const queueRequest = requests.find(request => new URL(request.url).pathname === "/crm/handoffs")!;
+    expect(new URL(queueRequest.url).searchParams.get("limit")).toBe("50");
     expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/notifications",
       "/crm/handoffs",
       "/crm/handoffs/handoff-demo-one",
       "/crm/opportunities/opportunity-demo-one",

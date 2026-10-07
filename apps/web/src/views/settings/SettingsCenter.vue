@@ -1,7 +1,7 @@
 <script setup lang="ts">
-/* global URLSearchParams */
 import { codeLabel } from "../../components/displayLabels";
 import { computed, inject, onMounted, reactive, ref, type CSSProperties } from "vue";
+import { RouterLink, useRoute } from "vue-router";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
@@ -81,10 +81,9 @@ const selectedCountry = ref<string | null>(null);
 const countryHistoryQuery = ref("");
 let countryHistoryGeneration = 0;
 
-// 日常运营只保留“找客户 → 发邮件 → 明确意向转人工”。
-// 完整的政策维护界面仅在开发环境保留，生产内测页不再要求老板操作这些底层流程。
-const showPolicyAdministration = (import.meta.env.DEV && !import.meta.env.PROD)
-  || new URLSearchParams(globalThis.location.search).get("advanced") === "1";
+const route = useRoute();
+const showPolicyAdministration = computed(() => (import.meta.env.DEV && !import.meta.env.PROD)
+  || route.query.advanced === "1");
 
 const settingsShellLayout: CSSProperties = {
   overflowX: "hidden",
@@ -732,15 +731,11 @@ onMounted(() => void refreshSettings());
     >
       <div>
         <p class="phase-eyebrow">
-          自动获客
+          本企业
         </p>
-        <RouterLink to="/crm/sending-identities">
-          查看唯一发件邮箱
-        </RouterLink>
-        <h1>简单模式</h1>
+        <h1>企业设置</h1>
       </div>
       <div class="head-actions">
-        <span class="status manual-status">自动运行</span>
         <button
           v-if="showPolicyAdministration"
           type="button"
@@ -753,31 +748,34 @@ onMounted(() => void refreshSettings());
     </div>
 
     <section
-      class="settings-card simple-automation-card"
+      class="settings-card settings-entry-card"
       :style="settingsFlowItemLayout"
-      aria-label="自动获客主流程"
+      aria-label="企业设置入口"
     >
       <header>
         <div>
-          <p class="card-kicker">
-            当前目标
-          </p>
-          <h2>非洲 · 肯尼亚 · 太阳能三轮车</h2>
+          <h2>管理企业工作空间</h2>
+          <p>查看团队、邮箱和任务记录。各项配置状态以对应页面为准。</p>
         </div>
-        <span>{{ activeCountryPolicies.length ? "安全规则已就绪" : "后台准备中" }}</span>
       </header>
-      <ol class="simple-automation-flow">
-        <li><strong>1</strong><span>自动寻找目标客户</span></li>
-        <li><strong>2</strong><span>自动发送开发邮件</span></li>
-        <li><strong>3</strong><span>明确购买意向转人工</span></li>
-      </ol>
-      <p>系统自动执行限额、回复即停、退订和重复发送检查；日常无需操作政策版本或审批历史。</p>
-      <RouterLink
-        class="btn-primary simple-automation-action"
-        to="/campaigns"
-      >
-        进入自动获客
-      </RouterLink>
+      <div class="settings-entry-grid">
+        <RouterLink to="/team">
+          <strong>团队与归属</strong>
+          <span>查看员工及当前业务分配。</span>
+        </RouterLink>
+        <RouterLink to="/crm/sending-identities">
+          <strong>发件邮箱</strong>
+          <span>登记邮箱，检查认证、预热与入站状态。</span>
+        </RouterLink>
+        <RouterLink to="/runs">
+          <strong>运行记录</strong>
+          <span>查看任务进展、结果与处理记录。</span>
+        </RouterLink>
+        <RouterLink :to="{ path: '/settings', query: { advanced: '1' } }">
+          <strong>高级设置</strong>
+          <span>查看模型连接、业务规则和国家政策。</span>
+        </RouterLink>
+      </div>
     </section>
 
     <template v-if="showPolicyAdministration">
@@ -1019,7 +1017,14 @@ onMounted(() => void refreshSettings());
             <strong>候选版本已创建</strong>
             <span :data-candidate-id="accepted.playbook_version_id">候选 {{ accepted.playbook_version_id }}</span>
             <span :data-run-id="accepted.run_id">运行记录 {{ accepted.run_id }}</span>
-            <div><a href="/approvals">前往审批中心</a><a :href="`/runs/${accepted.run_id}`">查看运行记录</a></div>
+            <div>
+              <RouterLink to="/approvals">
+                前往审批中心
+              </RouterLink>
+              <RouterLink :to="{ path: '/runs', query: { run: accepted.run_id } }">
+                查看运行记录
+              </RouterLink>
+            </div>
           </div>
           <button
             class="btn-primary submit-button"
@@ -1603,12 +1608,13 @@ onMounted(() => void refreshSettings());
 .settings-card > header { display: flex; justify-content: space-between; gap: var(--space3); align-items: flex-end; padding-bottom: var(--space3); border-bottom: 1px solid var(--border); }
 .settings-card h2 { font-size: 18px; }
 .settings-card > header > span { color: var(--text-secondary); font-size: 11px; }
-.simple-automation-card { display: grid; gap: var(--space4); }
-.simple-automation-flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space3); list-style: none; }
-.simple-automation-flow li { display: flex; align-items: center; gap: var(--space2); min-height: 64px; padding: var(--space3); border-radius: var(--radius); background: var(--fact-soft); }
-.simple-automation-flow strong { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: 50%; background: var(--fact); color: white; }
-.simple-automation-card > p { color: var(--text-secondary); }
-.simple-automation-action { justify-self: start; text-decoration: none; }
+.settings-entry-card { display: grid; gap: var(--space4); }
+.settings-entry-card header p { margin-top: var(--space2); color: var(--text-secondary); }
+.settings-entry-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space3); }
+.settings-entry-grid a { display: grid; gap: var(--space2); padding: var(--space4); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); text-decoration: none; }
+.settings-entry-grid a:hover { border-color: var(--action); background: var(--canvas); }
+.settings-entry-grid strong { color: var(--action); }
+.settings-entry-grid span { color: var(--text-secondary); }
 .active-card h3 { margin-top: var(--space4); font-size: 16px; }
 .fact-list { display: grid; gap: var(--space2); margin-top: var(--space3); }
 .fact-list div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: var(--space2); }
@@ -1680,7 +1686,7 @@ select { width: 100%; border: 1px solid var(--border); border-radius: var(--radi
 .history-base-missing { color: var(--warning); font-weight: 700; }
 @media (max-width: 900px) { .settings-grid { grid-template-columns: 1fr; } }
 @media (max-width: 900px) { .country-policy-grid { grid-template-columns: 1fr; } }
-@media (max-width: 700px) { .simple-automation-flow { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .settings-entry-grid { grid-template-columns: 1fr; } }
 @media (max-width: 700px) {
   .field-row, .version-list, .boolean-grid, .country-history-list, .coverage-grid, .source-row, .history-query { grid-template-columns: 1fr; }
   .settings-card { padding: var(--space3); }

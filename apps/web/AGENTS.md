@@ -1,34 +1,56 @@
-# apps/web/ —— Web 前端（Phase 1 浅骨架）
+# apps/web/ —— TradeOS Web 前端
 
 ## 技术
 
-Vue 3 + TypeScript + Vite + Ant Design Vue。**类型从 API schema 生成**（openapi-typescript），不手写重复定义——手写的类型会和后端漂移。
+Vue 3 + TypeScript + Vite，使用 Vue Router 和统一 API 客户端。工程依赖保留 Ant Design Vue，当前页面主要由自有 Vue 组件和样式构成；没有 Pinia 或 `stores/` 目录。**类型从 API schema 生成**（openapi-typescript），不手写重复定义——手写的类型会和后端漂移。
 
-## 页面与目录（16 页对应 16 个 view 目录）
+## 页面、登录与子组件
+
+当前 `router.ts` 注册 26 条路由记录：根路径重定向到 `/crm/handoffs`，其余 25 条记录复用 23 个页面组件。接管队列与接管详情共用 `HandoffQueue`，成本报价与报价版本共用 `CostingQuotes`；不要按文件夹数量推断页面数量。
+
+`App.vue` 管理全局会话恢复、登录、退出与导航。`LoginPanel` 是未登录状态，不是独立 `/login` 路由。页面中的机会详情、接管证据包、Agent 对话、产品策略与报价表单属于子组件，不等于新的顶层页面。
+
+导航按以下五个日常入口组织，分组内页面直接显示在二级栏，不使用“更多”折叠菜单。分组和文案统一维护在 `navigation.ts`，由 `WorkspaceNavigation.vue` 渲染；路由与完整页面映射见 [README.md](README.md)：
+
+| 主入口 | 页面归属 |
+|---|---|
+| 工作台 | 待跟进、审批、承诺、通知、助手、员工工作上传 |
+| 产品资料 | 当前产品与供应视图、目录候选产品管理 |
+| 客户 | 客户发现、开发任务、贸易机会、需求证据、寻源、成本报价 |
+| 消息 | 智能收件箱、本人邮箱 |
+| 企业设置 | 企业配置、团队、发件身份、运行记录、手工发送故障恢复 |
+
+`/approvals` 在生产和开发构建中均是实际审批页面，不能再重定向到开发任务。`/billing` 保留“未开通”兼容路由，不作为日常导航入口。导航分组不会授予权限，也不会改变 API 对当前企业和员工的授权范围。
 
 ```text
 src/
+├── App.vue                  全局登录状态、会话恢复与导航
+├── router.ts                路由记录与页面组件绑定
+├── navigation.ts            主导航与二级页面分组
 ├── views/
-│   ├── command-center/      自然语言指挥（老板确认提案的三栏对照）
+│   ├── command-center/      助手会话、指挥提案与确认
 │   ├── demand-radar/        信号/假设/簇（推断必须视觉区分于事实）
 │   ├── customer-discovery/
-│   ├── campaigns/           含发件身份状态卡（预热进度、熔断状态）
+│   ├── campaigns/           开发任务、活动边界与发送进度
 │   ├── inbox/
 │   ├── crm/                 机会看板 + 接管队列（按等待时长排）
 │   ├── products/            按角色渲染对应视图（数据已由后端裁剪）
-│   ├── sourcing/            Phase 1 人工寻源操作台
+│   ├── sourcing/            寻源案例、计划、审核与恢复
 │   ├── costing-quotes/
 │   ├── team/
-│   ├── work-uploads/        拖拽上传 + 提取结果对照确认
+│   ├── work-uploads/        工作文件上传与提取结果确认
 │   ├── commitments/
 │   ├── approvals/           一屏决定（审批包全文）
-│   ├── runs/                Run 全景与证据链
+│   ├── runs/                Run 记录与证据概览
 │   ├── settings/
-│   └── billing/             Phase 3 占位路由，显示"未开通"
+│   ├── billing/             保留兼容路由，显示“未开通”
+│   ├── NotificationCenter.vue
+│   ├── SendingIdentityCenter.vue
+│   └── OutreachWorkbench.vue  手工发送故障恢复工具
 ├── components/              跨页面组件（ProvenancePopover 最重要：
 │                            任何关键数字旁的"这从哪来"展开）
-├── api/                     生成的客户端与类型
-└── stores/                  Pinia
+├── api/                     手写客户端与认证；api.d.ts 是生成类型
+└── composables/             可复用的会话状态与交互逻辑
 ```
 
 ## 两条纪律
@@ -36,9 +58,15 @@ src/
 1. **前端不做权限判断的最终裁决**——它只按后端给的数据渲染。`can_current_user_decide` 这类判断后端算好传来。
 2. **推断与事实的视觉区分是产品要求**：假设卡片必须有明显的「推断」标识与证据展开，不能和已验证需求长一样。
 
-## Phase 1 范围
+## 当前功能边界
 
-目录骨架 + 路由表。组件实现随 API 就绪逐页补。
+现有前端包含业务页面和 API 接线，已超出目录骨架；页面存在并不代表相应外部服务已经配置或业务流程已经运营验收。
+
+- 产品页当前展示内部供应卡与目录候选产品管理；企业产品上传、规格建档、确认发布的完整流程尚未实现，不能把“产品资料”导航名称当成该流程已经完成。
+- 团队页当前展示员工与业务分配；企业自助开户、员工账号邀请与创建界面尚未实现。
+- 员工工作上传与提取确认不等于企业产品建档。不得通过改名混淆两者的数据归属或写入语义。
+- 保留现有租户隔离、当前员工可见范围、来源证据与人工审批边界；导航调整不能扩大业务操作权限。
+- 历史无引用的 `ManualOperations.vue` 已移除。删除其他页面前必须同时核对路由、父组件、通知深链和测试调用，不能只凭顶栏没有入口判断为废弃代码。
 
 ## Sourcing V2 页面
 

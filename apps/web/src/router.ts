@@ -5,7 +5,7 @@ const router = createRouter({
   routes: [
     {
       path: "/",
-      redirect: "/campaigns",
+      redirect: "/crm/handoffs",
     },
     {
       path: "/commands",
@@ -45,9 +45,7 @@ const router = createRouter({
     {
       path: "/approvals",
       name: "approval-center",
-      ...(import.meta.env.PROD
-        ? { redirect: "/campaigns" }
-        : { component: () => import("./views/approvals/ApprovalCenter.vue") }),
+      component: () => import("./views/approvals/ApprovalCenter.vue"),
     },
     {
       path: "/crm/opportunities",

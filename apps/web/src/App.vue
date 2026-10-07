@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
 import { apiClient, controlledWebConfig } from "./api/client";
-import { RouterLink, RouterView } from "vue-router";
+import { RouterView } from "vue-router";
 import ControlledModeBar from "./components/ControlledModeBar.vue";
 import LoginPanel from "./components/LoginPanel.vue";
+import NotificationBadge from "./components/NotificationBadge.vue";
+import WorkspaceNavigation from "./components/WorkspaceNavigation.vue";
 import { currentAuthenticationMutation, listenForSessionInvalidation, logout, restoreSession, subscribeAuthenticationMutation, supportsAuthenticationMutations } from "./api/authentication";
 
 const isControlled = controlledWebConfig() !== null;
@@ -84,22 +86,10 @@ const appName: string = "TradeOS";
     <LoginPanel v-if="authenticationSupported && authMutation !== 'logout' && !loading && !snapshot.identity && !isControlled && !isIsolatedDevelopment" />
     <template v-if="!authMutation && !loading && (isIsolatedDevelopment || (authenticationSupported && (snapshot.identity || isControlled)))">
       <header class="topbar">
-        <span class="brand">TradeOS 自动获客</span>
-        <nav aria-label="自动获客流程">
-          <RouterLink to="/prospects/accounts">
-            <span aria-hidden="true">1</span>
-            自动找客户
-          </RouterLink>
-          <RouterLink to="/campaigns">
-            <span aria-hidden="true">2</span>
-            自动发邮件
-          </RouterLink>
-          <RouterLink to="/crm/handoffs">
-            <span aria-hidden="true">3</span>
-            人工接管
-          </RouterLink>
-        </nav>
+        <span class="brand">TradeOS</span>
+        <WorkspaceNavigation level="primary" />
         <span class="spacer" />
+        <NotificationBadge :key="identityGeneration" />
         <button
           v-if="snapshot.identity?.mode === 'authenticated'"
           class="logout-button"
@@ -109,6 +99,7 @@ const appName: string = "TradeOS";
           {{ exiting ? '正在退出…' : '退出' }}
         </button>
       </header>
+      <WorkspaceNavigation level="secondary" />
       <ControlledModeBar />
       <RouterView :key="isIsolatedDevelopment && !isControlled ? 0 : identityGeneration" />
     </template>
@@ -157,7 +148,7 @@ body,
 }
 .session-status { padding: 24px; }
 main[aria-label="TradeOS"] { display:flex; flex-direction:column; height:100%; }
-main[aria-label="TradeOS"] > .shell { flex:1; min-height:0; width:100%; height:auto; }
+main[aria-label="TradeOS"] > .shell, main[aria-label="TradeOS"] > .board-shell { flex:1; min-height:0; width:100%; height:auto; }
 main[aria-label="TradeOS"] > .topbar { flex-shrink:0; }
 body {
   font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
@@ -208,38 +199,6 @@ button:disabled {
   letter-spacing: 0.02em;
   white-space: nowrap;
   flex-shrink: 0;
-}
-nav {
-  display: flex;
-  gap: var(--space2);
-  overflow-x: auto;
-  white-space: nowrap;
-  min-width: 0;
-}
-nav a {
-  color: var(--topbar-text);
-  text-decoration: none;
-  padding: 7px 12px;
-  border-radius: var(--radius-sm);
-  opacity: 0.85;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-nav a > span {
-  width: 20px;
-  height: 20px;
-  display: inline-grid;
-  place-items: center;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.14);
-  font-size: 11px;
-  font-weight: 700;
-}
-nav a.router-link-active {
-  opacity: 1;
-  background: rgba(255, 255, 255, 0.14);
-  font-weight: 600;
 }
 .logout-button {
   flex-shrink: 0;
@@ -323,23 +282,6 @@ nav a.router-link-active {
   color: var(--text-secondary);
   background: var(--canvas);
 }
-.section-tabs {
-  display: flex;
-  gap: var(--space2);
-  overflow-x: auto;
-}
-.section-tabs a {
-  color: var(--text-secondary);
-  text-decoration: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  padding: 6px 12px;
-}
-.section-tabs a.router-link-active {
-  color: var(--action);
-  border-color: var(--action);
-}
 .center-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -363,9 +305,6 @@ nav a.router-link-active {
   padding-left: 20px;
   display: grid;
   gap: var(--space2);
-}
-.boundary-card {
-  border-left: 4px solid var(--danger);
 }
 .muted-card {
   background: var(--canvas);

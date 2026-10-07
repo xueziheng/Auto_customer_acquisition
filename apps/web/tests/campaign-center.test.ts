@@ -98,15 +98,13 @@ describe("CampaignCenter", () => {
     await router.replace("/campaigns");
 
     await eventually(() => expect(root.textContent).toContain(campaign.name));
-    const workflowLinks = [...root.querySelectorAll<HTMLElement>('nav[aria-label="自动获客流程"] a')];
+    const workflowLinks = [...root.querySelectorAll<HTMLElement>('nav[aria-label="主导航"] a')];
     expect(workflowLinks.map((item) => item.textContent?.replace(/\s+/g, "").replace(/^\d/, ""))).toEqual([
-      "自动找客户",
-      "自动发邮件",
-      "人工接管",
+      "工作台", "产品资料", "客户", "消息", "企业设置",
     ]);
     expect(root.textContent).not.toContain("指挥中心");
     expect(root.textContent).not.toContain("更多");
-    expect(root.textContent).not.toContain("通知");
+    expect(root.querySelector('a[href="/notifications"]')).not.toBeNull();
     expect(root.textContent).toContain("已暂停");
     expect(root.textContent).not.toContain("审批 apr_exact_campaign_v3");
     expect(root.textContent).toContain("首轮仅发第一封");
@@ -148,8 +146,8 @@ describe("CampaignCenter", () => {
     expect(root.textContent).toContain("目标市场");
     expect(root.textContent).toContain("产品");
     expect(root.textContent).toContain("发件邮箱");
-    expect((root.querySelector('input[placeholder="例如：Kenya"]') as HTMLInputElement).value).toBe("Kenya");
-    expect((root.querySelector('input[placeholder="例如：solar electric three-wheeler"]') as HTMLInputElement).value).toBe("solar electric three-wheeler");
+    expect((root.querySelector('input[placeholder="填写本次开发的目标市场"]') as HTMLInputElement).value).toBe("");
+    expect((root.querySelector('input[placeholder="填写本企业要开发的产品类别"]') as HTMLInputElement).value).toBe("");
     expect(root.textContent).not.toContain("每日新联系人上限");
     expect(root.textContent).not.toContain("增加步骤");
     expect(root.textContent).not.toContain("手工发送（故障恢复）");

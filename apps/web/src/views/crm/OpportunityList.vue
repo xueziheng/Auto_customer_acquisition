@@ -302,41 +302,6 @@ onMounted(() => void loadList());
     class="board-shell"
     aria-label="TradeOS 机会证据账本"
   >
-    <header class="topbar">
-      <div class="brand">
-        <span
-          class="brand-mark"
-          aria-hidden="true"
-        >TO</span><span>TradeOS</span>
-      </div>
-      <nav
-        class="topnav"
-        aria-label="客户管理页面"
-      >
-        <button
-          type="button"
-          aria-current="page"
-        >
-          机会看板
-        </button>
-        <button
-          type="button"
-          disabled
-        >
-          人工接管队列
-        </button>
-        <button
-          type="button"
-          disabled
-        >
-          失败原因分析
-        </button>
-      </nav>
-      <div class="identity">
-        <strong>演示工作区</strong> · 当前员工
-      </div>
-    </header>
-
     <div class="workspace">
       <section
         class="list-pane"
@@ -554,7 +519,7 @@ onMounted(() => void loadList());
 
 .board-shell {
   display: grid;
-  grid-template-rows: 68px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   flex: 1;
   min-height: 0;
   height: auto;
@@ -599,63 +564,6 @@ h1 {
   margin-bottom: 4px;
   font-size: 22px;
   line-height: 1.25;
-}
-
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 22px;
-  padding: 0 22px;
-  color: #edf7f5;
-  border-bottom: 1px solid #0f302e;
-  background: #173b39;
-}
-
-.brand {
-  display: flex;
-  min-width: 172px;
-  align-items: center;
-  gap: 10px;
-  font-size: 17px;
-  font-weight: 780;
-}
-
-.brand-mark {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border: 1px solid #75a9a2;
-  border-radius: 9px;
-  background: #23524f;
-  font-size: 13px;
-}
-
-.topnav {
-  display: flex;
-  gap: 5px;
-}
-
-.topnav button {
-  color: #d9ebe8;
-  border-color: transparent;
-  background: transparent;
-}
-
-.topnav button[aria-current="page"] {
-  color: #fff;
-  border-color: #4d807a;
-  background: #2a5d59;
-}
-
-.identity {
-  margin-left: auto;
-  color: #b8d4cf;
-  font-size: 12px;
-}
-
-.identity strong {
-  color: #fff;
 }
 
 .workspace {
@@ -895,20 +803,6 @@ h1 {
 }
 
 @media (max-width: 1240px) {
-  .topbar {
-    gap: 10px;
-    padding: 0 14px;
-  }
-
-  .brand {
-    min-width: 142px;
-    font-size: 15px;
-  }
-
-  .topnav button {
-    padding: 0 8px;
-  }
-
   .workspace {
     grid-template-columns: 318px minmax(0, 1fr);
     gap: 10px;
@@ -926,7 +820,6 @@ h1 {
 
 @media (max-width: 700px) {
   .board-shell { display: flex; flex-direction: column; overflow-y: auto; }
-  .board-shell > .topbar { display: none; }
   .workspace { display: flex; flex-direction: column; flex-shrink: 0; overflow: visible; }
   .list-pane, .detail-pane { flex-shrink: 0; overflow: visible; }
   .opportunity-list { max-height: 320px; }

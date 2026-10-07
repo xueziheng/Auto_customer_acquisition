@@ -227,6 +227,7 @@ it("I2 生产App在退出挂起且身份先失效时隐藏登录与业务入口"
   const app = createApp(App); app.use(router); app.mount(host);
   const flush = async () => { await nextTick(); await new Promise(resolve => setTimeout(resolve, 0)); };
   await flush(); expect(host.textContent).toContain("合成业务页面");
+  expect(host.textContent).toContain("合成通知");
   const pending = auth.logout(); await flush();
   clearAuthenticatedIdentity(); await flush();
   expect(host.textContent).toContain("正在完成退出");

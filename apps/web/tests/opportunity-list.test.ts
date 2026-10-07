@@ -176,6 +176,7 @@ function makeReadFetch(
   return vi.fn<typeof fetch>(async (input) => {
     const request = asRequest(input);
     const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/notifications") return jsonResponse([]);
     if (request.method === "GET" && url.pathname === "/crm/opportunities") {
       return jsonResponse(records);
     }
@@ -262,10 +263,11 @@ describe("opportunity board", () => {
     expect(root.textContent).toContain("9007199254740993.1200 USD");
 
     await eventually(() => {
-      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch).toHaveBeenCalledTimes(3);
     });
     const requests = fetch.mock.calls.map(([request]) => asRequest(request));
     expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/notifications",
       "/crm/opportunities",
       "/crm/opportunities/opportunity-demo-one",
     ]);

@@ -154,9 +154,13 @@ async function decide(decision: "approve" | "reject"): Promise<void> {
 }
 
 watch(() => route.query.approval_id, () => {
-  const approvalId = queryApprovalId();
-  if (approvalId) void loadDetail(approvalId);
-  else void loadApprovals();
+  selected.value = null;
+  selectedId.value = "";
+  rejectionReason.value = "";
+  detailLoading.value = false;
+  deciding.value = false;
+  // 深链使旧列表请求失效；由新请求接管 loading，并重新读取精确审批。
+  void loadApprovals();
 }, { flush: "sync" });
 onMounted(() => void loadApprovals());
 </script>
@@ -372,5 +376,15 @@ textarea { resize: vertical; border: 1px solid var(--border); border-radius: var
 .cannot-decide { display: grid; color: var(--warning); background: var(--warning-soft); padding: var(--space3); }
 .cannot-decide span { font-size: 12px; }
 .empty { display: grid; place-items: center; min-height: 120px; color: var(--text-secondary); }
-@media (max-width: 900px) { .approval-layout, .outcomes { grid-template-columns: 1fr; } .approval-list { max-height: 300px; overflow: auto; } .decision-panel > div:first-child { grid-template-columns: 1fr; } }
+@media (max-width: 900px) {
+  .approval-shell > * { flex-shrink: 0; }
+  .approval-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    min-height: 0;
+    align-content: start;
+  }
+  .approval-list { max-height: 300px; overflow: auto; }
+  .outcomes, .decision-panel > div:first-child { grid-template-columns: 1fr; }
+}
 </style>

@@ -97,7 +97,13 @@ it('刷新后legacy canonical仅按后端resume续交付同事实与稳定header
 it('Campaign 暂停响应未知后刷新不把旧active当成功，必须核对精确目标状态',async()=>{
  vi.stubGlobal('prompt',vi.fn(()=> '核对'));let paused=false;let posts=0;
  try {
-  const {root}=await mount(CampaignCenter,async input=>{const r=input as Request,p=new URL(r.url).pathname;if(r.method==='POST'){posts++;return json({},503);}return p==='/crm/campaigns'?json([{...campaign,state:paused?'paused':'active'}]):json([]);});
+  const {root}=await mount(CampaignCenter,async input=>{
+   const r=input as Request,p=new URL(r.url).pathname;
+   if(r.method==='POST'){posts++;return json({},503);}
+   if(p==='/health/capabilities')return json(['research','contacts','campaign','reply'].map(name=>({name,status:'enabled'})));
+   if(p==='/crm/sending-identities')return json([{...identity,usable_for_cold_outreach:true,can_send_today:true}]);
+   return p==='/crm/campaigns'?json([{...campaign,state:paused?'paused':'active'}]):json([]);
+  });
   button(root.querySelector('.detail-actions')!,'暂停').click();await flush();expect(root.textContent).toContain('结果待核对');button(root,'核对状态').click();await flush();expect(button(root.querySelector('.detail-actions')!,'暂停').disabled).toBe(true);expect(posts).toBe(1);
   paused=true;button(root,'核对状态').click();await flush();expect(button(root,'启动自动安全发送').disabled).toBe(false);expect(root.textContent).toContain('3 / 10');expect(root.textContent).toContain('在途');
  } finally {vi.unstubAllGlobals();}
