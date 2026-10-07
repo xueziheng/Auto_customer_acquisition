@@ -300,6 +300,53 @@ async def test_supervisor_preserves_cancellation_after_bounded_cleanup(controlle
         assert probe.connect_ex(("127.0.0.1", evidence["port"])) != 0
 
 
+async def test_process_tree_waits_for_exit_without_reaping_asyncio_children():
+    """只等待已观察身份；退出码由asyncio自己的child watcher回收。"""
+    child = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(20)", start_new_session=True,
+    )
+    tree = lifecycle.ProcessTree(child.pid)
+    deadline = time.monotonic() + 2
+    try:
+        await tree.refresh(deadline)
+        assert child.pid in tree.live
+        child.terminate()
+        assert await tree.wait_reaped(deadline)
+        assert await child.wait() == -signal.SIGTERM
+        assert not tree.live and not tree.unreaped
+    finally:
+        if child.returncode is None:
+            child.kill()
+        await asyncio.wait_for(child.wait(), 2)
+
+
+async def test_process_tree_does_not_treat_zombie_as_live_or_verified():
+    """真实已退出未wait的子进程仍占PID；不能靠kill(0)证明运行或清理成功。"""
+    child = await asyncio.to_thread(
+        subprocess.Popen,
+        [sys.executable, "-c", "import time; time.sleep(20)"], start_new_session=True,
+    )
+    tree = lifecycle.ProcessTree(child.pid)
+    try:
+        await tree.refresh(time.monotonic() + 2)
+        assert child.pid in tree.live
+        child.kill()
+        deadline = time.monotonic() + 2
+        while child.pid not in tree.unreaped:
+            await tree.refresh(deadline)
+            assert time.monotonic() < deadline
+            await asyncio.sleep(.01)
+        assert child.pid not in tree.live
+        assert not await tree.wait_reaped(time.monotonic() + .2)
+        assert child.pid in tree.unreaped
+        child.wait(timeout=1)
+        assert await tree.wait_reaped(time.monotonic() + 2)
+        assert not tree.live and not tree.unreaped
+    finally:
+        child.kill()
+        child.wait(timeout=1)
+
+
 @pytest.mark.parametrize("scenario", ["chromium_normal", "chromium_forced"])
 async def test_watchdog_tracks_actual_chromium_groups_and_keeps_unrelated_process(
     controlled_lifecycle, monkeypatch, scenario,
@@ -400,6 +447,76 @@ async def test_t10_readiness_uses_remaining_budget():
     finally:
         listener.close()
         await listener.wait_closed()
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_host_requires_explicit_isolated_child_marker(monkeypatch, platform):
+    from tests.integration import test_costing_quote_closed_loop as closed_loop
+
+    monkeypatch.setattr(closed_loop.sys, "platform", platform)
+    monkeypatch.delenv("TRADEOS_T10_ISOLATED_CHILD", raising=False)
+    assert not closed_loop.runs_in_isolated_child()
+    monkeypatch.setenv("TRADEOS_T10_ISOLATED_CHILD", "not-a-child")
+    assert not closed_loop.runs_in_isolated_child()
+    monkeypatch.setenv("TRADEOS_T10_ISOLATED_CHILD", "1")
+    assert closed_loop.runs_in_isolated_child()
+
+
+def test_fixed_linux_entry_marks_child_without_inheriting_environment(monkeypatch):
+    from types import SimpleNamespace
+
+    from tests.e2e import costing_quote_server as server
+
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs["env"]))
+        return SimpleNamespace(returncode=0, stdout=b"")
+
+    monkeypatch.setattr(server.subprocess, "run", run)
+    monkeypatch.setenv("PRIVATE_FIXTURE_VALUE", "must-not-be-inherited")
+    assert server.integration("controlled-connection") == 0
+    command, environment = calls[0]
+    assert command[1:4] == [
+        "-m", "pytest", "tests/integration/test_costing_quote_closed_loop.py",
+    ]
+    assert environment["TRADEOS_T10_ISOLATED_CHILD"] == "1"
+    assert set(environment) == {
+        "PATH", "TEST_DATABASE_URL", "TRADEOS_T10_ISOLATED_CHILD", "PYTHON_DOTENV_DISABLED",
+    }
+
+
+def test_costing_image_uses_verified_dependency_artifact(monkeypatch):
+    from tests.e2e import costing_quote_stack as stack
+
+    calls = []
+    monkeypatch.setattr(stack, "audited_dependency_image_id", lambda: "audited-artifact")
+
+    def build(image, **kwargs):
+        calls.append((image, kwargs))
+        return "source-artifact"
+
+    monkeypatch.setattr(stack, "build_parser_image", build)
+    assert stack.current_image.__wrapped__() == "source-artifact"
+    assert calls == [("audited-artifact", {
+        "chain": True, "quotation": True, "costing_quote": True,
+    })]
+
+
+def test_parser_diagnostic_output_accepts_only_fixed_enumerations():
+    from tests.e2e.costing_quote_stack import safe_output
+
+    lines = [
+        "t10_parser_status=unavailable;failure=resource",
+        "t10_parser_probe=cpu;exit=-24;reason=short",
+        "t10_parser_probe=ipc;exit=unknown;reason=unknown",
+    ]
+    forbidden = [
+        "t10_parser_status=unavailable;failure=private-fixture-value",
+        "t10_parser_probe=private-fixture-value;exit=70;reason=short",
+        "t10_parser_probe=cpu;exit=70;reason=private-fixture-value",
+    ]
+    assert safe_output(("\n".join([*lines, *forbidden])).encode()) == "\n".join(lines)
 
 
 @pytest.mark.parametrize("mode", ["integration", "browser", "visual"])

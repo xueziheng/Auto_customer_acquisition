@@ -93,17 +93,18 @@ class ProcessTree:
         self.pid = pid
         self.observed = {}
         self.live = {}
+        self.unreaped = {}
 
     async def refresh(self, deadline):
-        code, output = await _capture(["/bin/ps", "-axo", "pid=,ppid=,pgid=,lstart="], min(deadline, time.monotonic() + 2))
+        code, output = await _capture(["/bin/ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart="], min(deadline, time.monotonic() + 2))
         if code:
             raise RuntimeError("process_inspect_failed")
         rows = {}
         for line in output.splitlines():
-            fields = line.split(maxsplit=3)
-            if len(fields) == 4 and all(value.isdigit() for value in fields[:3]):
+            fields = line.split(maxsplit=4)
+            if len(fields) == 5 and all(value.isdigit() for value in fields[:3]):
                 pid, ppid, pgid = map(int, fields[:3])
-                rows[pid] = {"pid": pid, "ppid": ppid, "pgid": pgid, "birth": fields[3]}
+                rows[pid] = {"pid": pid, "ppid": ppid, "pgid": pgid, "state": fields[3], "birth": fields[4]}
         owned = {pid for pid, row in rows.items() if pid in self.observed
                  and row["birth"] == self.observed[pid]["birth"]}
         if not self.observed and self.pid in rows:
@@ -113,12 +114,30 @@ class ProcessTree:
             additions = {pid for pid, row in rows.items() if row["ppid"] in owned} - owned
             changed = bool(additions)
             owned.update(additions)
-        self.live = {pid: rows[pid] for pid in owned}
-        self.observed.update(self.live)
+        present = {pid: rows[pid] for pid in owned}
+        self.live = {pid: row for pid, row in present.items() if not row["state"].startswith("Z")}
+        self.unreaped = {pid: row for pid, row in present.items() if row["state"].startswith("Z")}
+        self.observed.update(present)
+
+    async def wait_reaped(self, deadline):
+        """等已观察子孙退出且PID回收；不抢asyncio或其他父进程的waitpid。"""
+        while time.monotonic() < deadline - .05:
+            await self.refresh(deadline)
+            if not self.live and not self.unreaped:
+                return True
+            await asyncio.sleep(min(.02, max(0, deadline - time.monotonic() - .05)))
+        return False
 
     async def kill(self, deadline):
         await self.refresh(deadline)
-        for pid in reversed(tuple(self.live)):
+        def depth(pid):
+            parents = set()
+            while pid in self.live and pid not in parents:
+                parents.add(pid)
+                pid = self.live[pid]["ppid"]
+            return len(parents)
+
+        for pid in sorted(self.live, key=depth, reverse=True):
             try:
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -220,7 +239,7 @@ async def run_supervised(mode):
     artifacts.mkdir(parents=True, exist_ok=False)
     lines, observed = [], ()
     process = tree = reader = waiter = None
-    cleanup_verified = cooperative_exit = False
+    cleanup_verified = cooperative_exit = processes_reaped = False
     code, primary, reason = 2, None, ""
     stop = asyncio.Event()
     previous = {}
@@ -280,7 +299,9 @@ async def run_supervised(mode):
                     process.kill()
                 await asyncio.wait_for(asyncio.shield(waiter), max(.01, deadline - time.monotonic()))
                 await asyncio.wait_for(reader, max(.01, deadline - time.monotonic()))
-                await tree.refresh(deadline)
+                # 给子孙退出/原父进程或init回收留预算，其余一半留给本次Docker资源。
+                reap_deadline = time.monotonic() + max(0, deadline - time.monotonic()) / 2
+                processes_reaped = await tree.wait_reaped(reap_deadline)
                 observed = tuple(tree.observed.values())
                 cooperative_exit = (
                     process.pid in tree.observed
@@ -301,7 +322,8 @@ async def run_supervised(mode):
         try:
             docker_cleared = await _cleanup_owned(owner, deadline)
             ports_closed = _ports_closed(artifacts, deadline)
-            known_cleanup = bool(process is not None and tree is not None and not tree.live
+            known_cleanup = bool(processes_reaped and process is not None and tree is not None
+                                 and not tree.live and not tree.unreaped
                                  and docker_cleared and ports_closed)
             cleanup_verified = cooperative_exit and known_cleanup
             if cleanup_verified:
