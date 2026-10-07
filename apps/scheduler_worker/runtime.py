@@ -133,6 +133,7 @@ from infra.db.provider_readiness_uow import SqlAlchemyProviderReadinessUnitOfWor
 from infra.db.quote_evidence_context import SqlAlchemyQuoteEvidenceContextReader
 from infra.db.repositories.notification_jobs import PostgresNotificationJobStore
 from infra.db.repositories.opportunities import assert_handoff_reminder_compatibility
+from infra.db.runtime_scope import verify_runtime_database_scope
 from infra.db.schema import assert_database_schema_current
 from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
 from infra.db.session import create_engine_from
@@ -1141,6 +1142,7 @@ class SchedulerRuntimeFactory:
         try:
             factory = async_sessionmaker(bind=engine, expire_on_commit=False)
             await assert_database_schema_current(engine)
+            await verify_runtime_database_scope(engine, str(config.tenant_id))
             await assert_handoff_reminder_compatibility(
                 factory,
                 config.tenant_id,
@@ -2259,6 +2261,7 @@ async def configured_scheduler_runtime(
     """验证 schema/DB 后注册完整集合，并在所有退出路径释放引擎。"""
     try:
         await assert_database_schema_current(engine)
+        await verify_runtime_database_scope(engine, str(config.tenant_id))
         await assert_handoff_reminder_compatibility(
             async_sessionmaker(engine, expire_on_commit=False),
             config.tenant_id,

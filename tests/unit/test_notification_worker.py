@@ -672,6 +672,7 @@ async def test_runtime_context_closes_health_and_disposes_engine_on_cancel(
 
     monkeypatch.setattr(module, "create_engine_from", lambda _url: Engine())
     monkeypatch.setattr(module, "assert_database_schema_current", lambda _engine: _async_none())
+    monkeypatch.setattr(module, "verify_runtime_database_scope", _verified_synthetic_database_scope)
     monkeypatch.setattr(module, "NotificationHealthServer", Server)
     gmail_closed = _patch_email_composition(monkeypatch, module)
 
@@ -740,6 +741,7 @@ async def test_runtime_context_rethrows_health_startup_failure_before_yield(
 
     monkeypatch.setattr(module, "create_engine_from", lambda _url: Engine())
     monkeypatch.setattr(module, "assert_database_schema_current", lambda _engine: _async_none())
+    monkeypatch.setattr(module, "verify_runtime_database_scope", _verified_synthetic_database_scope)
     monkeypatch.setattr(module, "NotificationHealthServer", Server)
     gmail_closed = _patch_email_composition(monkeypatch, module)
     entered: list[bool] = []
@@ -805,6 +807,7 @@ async def test_runtime_pre_listening_cancel_finishes_both_health_tasks_and_dispo
 
     monkeypatch.setattr(module, "create_engine_from", lambda _url: Engine())
     monkeypatch.setattr(module, "assert_database_schema_current", lambda _engine: _async_none())
+    monkeypatch.setattr(module, "verify_runtime_database_scope", _verified_synthetic_database_scope)
     monkeypatch.setattr(module, "NotificationHealthServer", Server)
     gmail_closed = _patch_email_composition(monkeypatch, module)
 
@@ -832,6 +835,10 @@ async def test_runtime_pre_listening_cancel_finishes_both_health_tasks_and_dispo
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+
+
+async def _verified_synthetic_database_scope(_engine, _tenant_id) -> None:
+    """生命周期测试显式替换已验证数据库；拒绝路径由独立入口测试覆盖。"""
 
 
 async def _async_none() -> None:

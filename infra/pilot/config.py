@@ -25,6 +25,7 @@ from sqlalchemy.engine import URL
 
 from domains.opportunities.models import HandoffPolicy
 from domains.opportunities.scoring import ScoringPolicy
+from infra.db.tenant_security import tenant_database_role
 from shared.schemas.identifiers import new_id
 from shared.schemas.money import CurrencyCode, Money, WireDecimal
 
@@ -226,9 +227,20 @@ class PilotConfig(StrictModel):
     policy: PilotPolicy
     storage: dict[Literal["database", "objects"], StorageIdentity]
     gmail: PilotGmailConfig | None = None
+    database_username: str = "pilot"
+    database_runtime_password: SecretStr | None = Field(default=None, repr=False)
 
     @model_validator(mode="after")
     def validate_bindings(self) -> PilotConfig:
+        if self.database_username == "pilot":
+            if self.database_runtime_password is not None:
+                raise ValueError("configuration_invalid")
+        elif (
+            self.database_username != tenant_database_role(self.tenant_id)
+            or self.database_runtime_password is None
+            or not 32 <= len(self.database_runtime_password.get_secret_value()) <= 128
+        ):
+            raise ValueError("configuration_invalid")
         if set(self.secrets) != {
             "PILOT_DATABASE_PASSWORD",
             "PILOT_OBJECT_ACCESS",
@@ -254,11 +266,25 @@ class PilotConfig(StrictModel):
 
     @property
     def database_url(self) -> SecretStr:
+        """业务只取本企业运行凭证；存储生命周期凭证不进入 DATABASE_URL。"""
+        password = (
+            self.database_runtime_password.get_secret_value()
+            if self.database_runtime_password is not None
+            else self.resolve("PILOT_DATABASE_PASSWORD")
+        )
+        return self._database_url(self.database_username, password)
+
+    @property
+    def migration_database_url(self) -> SecretStr:
+        """仅供显式迁移的可信管理入口使用，不导出到业务进程环境。"""
+        return self._database_url("pilot", self.resolve("PILOT_DATABASE_PASSWORD"))
+
+    def _database_url(self, username: str, password: str) -> SecretStr:
         return SecretStr(
             URL.create(
                 "postgresql+asyncpg",
-                "pilot",
-                self.resolve("PILOT_DATABASE_PASSWORD"),
+                username,
+                password,
                 "127.0.0.1",
                 self.database_port,
                 "pilot",
@@ -316,6 +342,10 @@ class PilotConfig(StrictModel):
         payload["secrets"] = {
             key: value.get_secret_value() for key, value in self.secrets.items()
         }
+        payload["database_runtime_password"] = (
+            self.database_runtime_password.get_secret_value()
+            if self.database_runtime_password is not None else None
+        )
         private_write(path, json.dumps(payload).encode())
 
     @classmethod

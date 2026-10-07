@@ -25,6 +25,7 @@ from domains.employees.permissions import (
 )
 from infra.authentication.service import PostgresAuthentication
 from infra.db.mailbox import SqlMailboxRepository
+from infra.db.runtime_scope import verify_runtime_database_scope
 from infra.db.schema import assert_database_schema_current
 from infra.db.session import create_engine_from
 from shared.schemas.identifiers import TenantId
@@ -70,6 +71,7 @@ def create_mailbox_app(config: MailboxConfig, web_build: Path) -> FastAPI:
             try:
                 try:
                     await assert_database_schema_current(engine)
+                    await verify_runtime_database_scope(engine, str(config.tenant_id))
                 except Exception:  # noqa: BLE001 schema/驱动错误不得携带私有连接参数
                     raise RuntimeStartupError() from None
                 yield

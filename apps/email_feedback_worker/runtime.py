@@ -53,6 +53,7 @@ from infra.db.email_feedback_uow import (
     SqlAlchemyFeedbackPageUnitOfWork,
 )
 from infra.db.repositories.email_feedback import FeedbackCursorRepositoryImpl
+from infra.db.runtime_scope import verify_runtime_database_scope
 from infra.db.schema import assert_database_schema_current
 from infra.db.session import create_engine_from
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
@@ -346,6 +347,7 @@ class EmailFeedbackRuntimeFactory:
             factory = async_sessionmaker(bind=engine, expire_on_commit=False)
             if config.enabled:
                 await assert_database_schema_current(engine)
+                await verify_runtime_database_scope(engine, str(config.tenant_id))
                 health.mark_ready("schema")
                 async with engine.connect() as connection:
                     await connection.execute(text("SELECT 1"))

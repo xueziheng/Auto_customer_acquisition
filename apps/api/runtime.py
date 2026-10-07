@@ -19,6 +19,7 @@ from connectors.gmail.client import SecretResolver
 from connectors.gmail.transport import GmailHttpTransport
 from connectors.object_store.config import S3ObjectStoreSettings
 from infra.db.repositories.opportunities import assert_handoff_reminder_compatibility
+from infra.db.runtime_scope import verify_runtime_database_scope
 from infra.db.schema import (
     DatabaseSchemaError,
 )
@@ -31,6 +32,7 @@ from shared.authentication import AuthenticationService
 from shared.schemas.identifiers import TenantId
 from shared.schemas.runtime_capabilities import RuntimeCapability
 
+from .authentication import AuthenticationCookieSettings
 from .composition.assistant import AssistantApiComposition
 from .composition.runtime import ManualSendComposition, build_phase1_dependencies
 from .dependencies import ConfiguredApiDependencies
@@ -116,6 +118,7 @@ def create_runtime_app_from_settings(
     inbound_mailbox: InboundMailbox | None = None,
     authentication: AuthenticationService | None = None,
     authentication_origin: str | None = None,
+    authentication_cookie: AuthenticationCookieSettings | None = None,
     assistant_factory: Callable[[async_sessionmaker[AsyncSession], ConfiguredApiDependencies], AssistantApiComposition] | None = None,
 ) -> FastAPI:
     """按显式配置与端口装配；借用注入模型，自有资源只在 lifespan 关闭。
@@ -151,6 +154,7 @@ def create_runtime_app_from_settings(
         primary: BaseException | None = None
         try:
             await assert_database_schema_current(engine)
+            await verify_runtime_database_scope(engine, str(settings.tenant_id))
             await assert_handoff_reminder_compatibility(
                 factory,
                 TenantId(settings.tenant_id),
@@ -215,6 +219,7 @@ def create_runtime_app_from_settings(
         readiness_probe=probe,
         authentication=authentication,
         authentication_origin=authentication_origin,
+        authentication_cookie=authentication_cookie,
     )
     app.state.runtime_engine = engine
     app.state.readiness_probe = probe

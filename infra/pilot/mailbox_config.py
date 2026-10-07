@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator, model_validator
 from sqlalchemy.engine import URL
 
+from infra.db.tenant_security import tenant_database_role
 from infra.pilot.config import (
     PilotError,
     StrictModel,
@@ -66,12 +67,23 @@ class MailboxConfig(StrictModel):
     api_port: int = Field(strict=True, ge=1024, le=65535)
     db_port: int = Field(strict=True, ge=1024, le=65535)
     db_password: SecretStr = Field(repr=False)
+    database_username: str = "mailbox"
+    database_runtime_password: SecretStr | None = Field(default=None, repr=False)
     fingerprint_key: SecretStr = Field(repr=False)
     bindings: tuple[MailboxBinding, ...] = ()
     storage: MailboxStorageIdentity | None = None
 
     @model_validator(mode="after")
     def safe_bindings(self) -> MailboxConfig:
+        if self.database_username == "mailbox":
+            if self.database_runtime_password is not None:
+                raise ValueError("configuration_invalid")
+        elif (
+            self.database_username != tenant_database_role(self.tenant_id)
+            or self.database_runtime_password is None
+            or not 32 <= len(self.database_runtime_password.get_secret_value()) <= 128
+        ):
+            raise ValueError("configuration_invalid")
         if (
             self.api_port == self.db_port
             or len(self.db_password.get_secret_value()) < 32
@@ -90,11 +102,25 @@ class MailboxConfig(StrictModel):
 
     @property
     def database_url(self) -> SecretStr:
+        """业务连接只取本企业运行身份；旧配置仅能用于显式初始化。"""
+        password = (
+            self.database_runtime_password.get_secret_value()
+            if self.database_runtime_password is not None
+            else self.db_password.get_secret_value()
+        )
+        return self._database_url(self.database_username, password)
+
+    @property
+    def migration_database_url(self) -> SecretStr:
+        """管理连接仅用于显式初始化和迁移，不交给邮箱业务运行。"""
+        return self._database_url("mailbox", self.db_password.get_secret_value())
+
+    def _database_url(self, username: str, password: str) -> SecretStr:
         return SecretStr(
             URL.create(
                 "postgresql+asyncpg",
-                "mailbox",
-                self.db_password.get_secret_value(),
+                username,
+                password,
                 "127.0.0.1",
                 self.db_port,
                 "mailbox",
@@ -144,10 +170,16 @@ class MailboxConfig(StrictModel):
     def write(self, path: Path) -> None:
         """调用者须持操作锁；不可公开序列化技术凭证。"""
         payload = self.model_dump(
-            mode="json", exclude={"db_password", "fingerprint_key"}
+            mode="json",
+            exclude={"db_password", "fingerprint_key", "database_runtime_password"},
         )
         payload.update(
             db_password=self.db_password.get_secret_value(),
+            database_runtime_password=(
+                self.database_runtime_password.get_secret_value()
+                if self.database_runtime_password is not None
+                else None
+            ),
             fingerprint_key=self.fingerprint_key.get_secret_value(),
         )
         private_write(path, json.dumps(payload).encode())

@@ -21,6 +21,7 @@ from connectors.gmail.mailbox_transport import GmailMailboxHttpProvider, authori
 from domains.conversations.mailbox import MailboxActor
 from infra.db.advisory_lock import PostgresAdvisoryLock, derive_advisory_lock_key
 from infra.db.mailbox import SqlMailboxRepository
+from infra.db.runtime_scope import verify_runtime_database_scope
 from infra.db.schema import assert_database_schema_current
 from infra.db.session import create_engine_from
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
@@ -198,6 +199,7 @@ async def run(args: argparse.Namespace) -> int:
     lock = None
     try:
         await assert_database_schema_current(engine)
+        await verify_runtime_database_scope(engine, str(config.tenant_id))
         mailbox_id = await repository.register(actor, config.email)
         lock = PostgresAdvisoryLock(
             engine, derive_advisory_lock_key(actor.tenant_id, "mailbox:" + mailbox_id)

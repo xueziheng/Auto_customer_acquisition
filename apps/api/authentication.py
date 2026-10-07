@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from http.cookies import CookieError, SimpleCookie
 
@@ -25,6 +26,23 @@ SESSION_COOKIE_PREFIX = "tradeos_session_"
 CSRF_HEADER = "X-CSRF-Token"
 REQUEST_HEADER = "X-TradeOS-Request"
 COOKIE_PATH = "/api"
+
+
+@dataclass(frozen=True)
+class AuthenticationCookieSettings:
+    """受信装配的会话命名空间；请求不能覆盖名称或扩大路径。"""
+
+    name: str
+    path: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.name, str)
+            or re.fullmatch(r"tradeos_session_[A-Za-z0-9_-]{1,80}", self.name) is None
+            or not isinstance(self.path, str)
+            or re.fullmatch(r"/api(?:/[a-z0-9][a-z0-9-]{0,62})*", self.path) is None
+        ):
+            raise ValueError("authentication_cookie_configuration_invalid")
 
 
 class LoginRequest(BaseModel):
@@ -112,12 +130,13 @@ class SessionAuthenticationMiddleware:
         authentication: AuthenticationService,
         origin: str,
         anonymous_route_matcher: AnonymousRouteMatcher,
+        cookie: AuthenticationCookieSettings | None = None,
     ) -> None:
         self._app = app
         self._settings = settings
         self._authentication = authentication
         self._origin = origin
-        self._cookie_name = session_cookie_name(origin)
+        self._cookie_name = (cookie or AuthenticationCookieSettings(session_cookie_name(origin), COOKIE_PATH)).name
         self._matcher = anonymous_route_matcher
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:

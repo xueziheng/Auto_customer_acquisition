@@ -76,8 +76,8 @@ class TenantScopedRepository:
 
     - 构造时绑定 tenant_id
     - 提供的 query 入口自动 WHERE tenant_id = :tenant
-    - 提供 unsafe_cross_tenant_query() 供平台运维专用路径，
-      调用它必须写审计——把后门做成显式且留痕的，比没有后门更现实
+    - 禁止无租户过滤的运维后门；平台查看也须绑定一个明确企业并审计
+    - 多企业运行再由低权限数据库角色及 RLS 强制限制行范围，见 ADR 0081
     """
 ```
 

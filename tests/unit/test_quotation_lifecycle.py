@@ -149,6 +149,8 @@ async def test_actual_api_lifespan_closes_quotation_before_database_even_before_
     async def reminder_compatibility(*args):
         pass
     monkeypatch.setattr(runtime, "assert_handoff_reminder_compatibility", reminder_compatibility)
+    # 本测试只隔离报价资源生命周期，不以假引擎绕过产品的数据库门禁。
+    monkeypatch.setattr(runtime, "verify_runtime_database_scope", reminder_compatibility)
     monkeypatch.setattr(
         runtime,
         "create_app",

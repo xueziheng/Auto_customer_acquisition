@@ -32,6 +32,8 @@ from shared.schemas.runtime_capabilities import CapabilityName, RuntimeCapabilit
 from workflows.email_feedback.unsubscribe import UnsubscribeService
 
 from .authentication import (
+    COOKIE_PATH,
+    AuthenticationCookieSettings,
     LoginRequest,
     SessionAuthenticationMiddleware,
     session_cookie_name,
@@ -136,6 +138,7 @@ def create_app(
     unsubscribe_service: UnsubscribeService | None = None,
     authentication: AuthenticationService | None = None,
     authentication_origin: str | None = None,
+    authentication_cookie: AuthenticationCookieSettings | None = None,
 ) -> FastAPI:
     """构造互相隔离的 API app。
 
@@ -150,6 +153,17 @@ def create_app(
     validate_authentication_configuration(
         resolved_settings, authentication, authentication_origin
     )
+    if authentication_cookie is not None and (
+        authentication is None
+        or not isinstance(authentication_cookie, AuthenticationCookieSettings)
+    ):
+        raise ValueError("authentication_cookie_configuration_invalid")
+    resolved_cookie = (
+        authentication_cookie
+        or AuthenticationCookieSettings(session_cookie_name(authentication_origin), COOKIE_PATH)
+        if authentication_origin is not None
+        else None
+    )
     resolved_dependencies = dependencies or UnconfiguredApiDependencies()
     resolved_unsubscribe_service = unsubscribe_service
     if resolved_unsubscribe_service is None and isinstance(
@@ -162,11 +176,9 @@ def create_app(
     app.state.dependencies = resolved_dependencies
     app.state.unsubscribe_service = resolved_unsubscribe_service
     app.state.authentication = authentication
-    app.state.authentication_cookie_name = (
-        session_cookie_name(authentication_origin)
-        if authentication_origin is not None
-        else None
-    )
+    app.state.authentication_origin = authentication_origin
+    app.state.authentication_cookie = resolved_cookie
+    app.state.authentication_cookie_name = resolved_cookie.name if resolved_cookie else None
     install_error_handlers(app, resolved_settings)
     install_authentication_errors(app)
     app.include_router(authentication_router)
@@ -177,6 +189,7 @@ def create_app(
             settings=resolved_settings,
             authentication=authentication,
             origin=authentication_origin,
+            cookie=resolved_cookie,
             anonymous_route_matcher=is_anonymous_unsubscribe_route,
         )
     else:

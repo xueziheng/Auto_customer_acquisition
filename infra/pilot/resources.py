@@ -542,7 +542,7 @@ class PilotProfile:
                     "PATH": os.defpath,
                     "PYTHONPATH": str(ROOT),
                     "PYTHON_DOTENV_DISABLED": "1",
-                    "DATABASE_URL": self.config.database_url.get_secret_value(),
+                    "DATABASE_URL": self.config.migration_database_url.get_secret_value(),
                 },
             )
             try:

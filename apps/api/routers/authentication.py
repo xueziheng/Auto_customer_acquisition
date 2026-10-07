@@ -14,7 +14,6 @@ from shared.authentication import (
 )
 
 from ..authentication import (
-    COOKIE_PATH,
     LoginRequest,
     SessionResponse,
     header_values,
@@ -105,7 +104,7 @@ async def login(request: Request, response: Response) -> SessionResponse | Respo
         issued.token.get_secret_value(),
         httponly=True,
         samesite="strict",
-        path=COOKIE_PATH,
+        path=request.app.state.authentication_cookie.path,
         expires=issued.expires_at,
     )
     return result
@@ -132,7 +131,7 @@ async def logout(request: Request) -> Response:
     response = Response(status_code=204, headers={"Cache-Control": "no-store"})
     response.delete_cookie(
         request.app.state.authentication_cookie_name,
-        path=COOKIE_PATH,
+        path=request.app.state.authentication_cookie.path,
         httponly=True,
         samesite="strict",
     )

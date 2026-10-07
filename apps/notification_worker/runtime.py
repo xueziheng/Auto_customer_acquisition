@@ -46,6 +46,7 @@ from infra.db.repositories.in_app_notifications import (
 )
 from infra.db.repositories.notification_jobs import PostgresNotificationJobStore
 from infra.db.repositories.notifications import PostgresNotificationDedupStore
+from infra.db.runtime_scope import verify_runtime_database_scope
 from infra.db.schema import assert_database_schema_current
 from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
 from infra.db.session import create_engine_from
@@ -305,6 +306,7 @@ async def notification_worker_runtime(
             raise ValidationError("事务通知邮件未配置")
         health.mark_ready("config")
         await assert_database_schema_current(engine)
+        await verify_runtime_database_scope(engine, str(config.tenant_id))
         health.mark_ready("schema")
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))

@@ -250,6 +250,10 @@ async def test_mailbox_runtime_checks_schema_and_disposes_even_on_failure(
 
     monkeypatch.setattr(mailbox, "create_engine_from", lambda _: Engine())
     monkeypatch.setattr(mailbox, "assert_database_schema_current", schema)
+    async def verified_synthetic_database_scope(_engine, _tenant_id):
+        """本例只验证邮箱资源生命周期，隔离拒绝另有入口测试覆盖。"""
+
+    monkeypatch.setattr(mailbox, "verify_runtime_database_scope", verified_synthetic_database_scope)
     (tmp_path / "index.html").write_text("<html>mailbox</html>")
     config = SimpleNamespace(
         tenant_id="tenant-mailbox",

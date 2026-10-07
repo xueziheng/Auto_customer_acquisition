@@ -222,7 +222,9 @@ class MailboxDatabase:
                 container.stop(timeout=30)
 
     async def wait_ready(self) -> None:
-        engine = create_engine_from(self.config.database_url.get_secret_value())
+        engine = create_engine_from(
+            self.config.migration_database_url.get_secret_value()
+        )
         try:
             for _ in range(30):
                 try:
@@ -245,7 +247,9 @@ class MailboxDatabase:
             if container.status != "running":
                 container.start()
             await self.wait_ready()
-            engine = create_engine_from(self.config.database_url.get_secret_value())
+            engine = create_engine_from(
+                self.config.migration_database_url.get_secret_value()
+            )
             try:
                 async with engine.connect() as connection:
                     locked = await connection.scalar(
@@ -261,7 +265,7 @@ class MailboxDatabase:
                         cwd=ROOT,
                         env={
                             **child_environment(),
-                            "DATABASE_URL": self.config.database_url.get_secret_value(),
+                            "DATABASE_URL": self.config.migration_database_url.get_secret_value(),
                         },
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
@@ -282,6 +286,10 @@ class MailboxDatabase:
                     await connection.execute(text("SELECT pg_advisory_unlock(74403)"))
             finally:
                 await engine.dispose()
+            from scripts.configure_enterprise_database import configure
+
+            await configure(self.path.parent, self.config, config_path=self.path)
+            self.config = MailboxConfig.read(self.path)
 
 
 def supervisor_identity(path: Path, config: MailboxConfig) -> ProcessIdentity | None:
