@@ -118,6 +118,13 @@ def _create_standalone_factory(
     instance_id: str,
 ) -> SchedulerRuntimeFactory:
     inbound = _reply_ports(profile, settings, reply_inbound)
+    send_transport: GmailHttpTransport | None = None
+    reply_employee: EmployeeId | None = None
+    if inbound is not None:
+        if not isinstance(inbound.provider, GmailHttpTransport) or profile.gmail is None:
+            raise ValueError("回复入站端口与部署绑定不一致")
+        send_transport = inbound.provider
+        reply_employee = EmployeeId(profile.gmail.employee_id)
     env = profile.runtime_environment()
     tenant = TenantId(profile.tenant_id)
     fingerprints = HmacFingerprintProvider(
@@ -218,7 +225,7 @@ def _create_standalone_factory(
             if research_ports is not None
             else None,
             campaign_enabled=inbound is not None,
-            gmail_transport=inbound.provider if inbound is not None else None,
+            gmail_transport=send_transport,
             secret_resolver=inbound.secret_resolver if inbound is not None else None,
             reply_factory=(
                 lambda core, outreach, resources: bind_reply(
@@ -226,7 +233,7 @@ def _create_standalone_factory(
                     outreach,
                     resources,
                     tenant_id=tenant,
-                    employee_id=EmployeeId(profile.gmail.employee_id),
+                    employee_id=reply_employee,
                     settings=settings,
                     resolver=model_resolver,
                     fingerprints=fingerprints,
@@ -234,7 +241,7 @@ def _create_standalone_factory(
                     provider_factory=provider_factory,
                 )
             )
-            if inbound is not None
+            if reply_employee is not None
             else None,
         ),
         resolver_factory=UnconfiguredDnsResolver,

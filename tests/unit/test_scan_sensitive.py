@@ -344,6 +344,8 @@ def test_self_scan_clean() -> None:
     "await setup_auth(engine)", "account.secret", "supplied_value",
     "(\n    read_password() if action in {'create', 'reset'} else None\n)",
     "getpass.getpass('请输入密码：')",
+    "self.resolve('PILOT_DATABASE_PASSWORD')",
+    "(account.secret if ready else self.resolve('PILOT_DATABASE_PASSWORD'))",
 ])
 def test_python_runtime_password_expressions_are_not_credentials(expression):
     with tempfile.TemporaryDirectory(dir=_REPO_ROOT) as td:

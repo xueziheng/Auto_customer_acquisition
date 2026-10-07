@@ -155,16 +155,16 @@ class SqlReplyRunBindingReader:
         try:
             return tuple(
                 (
-                    InvocationIdentity(
-                        tenant_id=row.tenant_id,
-                        user_id=row.user_id,
-                        employee_id=row.employee_id,
-                        run_id=row.run_id,
-                        turn_id=row.turn_id,
-                        capability=row.capability,
-                        configuration_version=row.configuration_version,
-                        sequence=row.sequence,
-                    ),
+                    InvocationIdentity.model_validate({
+                        "tenant_id": row.tenant_id,
+                        "user_id": row.user_id,
+                        "employee_id": row.employee_id,
+                        "run_id": row.run_id,
+                        "turn_id": row.turn_id,
+                        "capability": row.capability,
+                        "configuration_version": row.configuration_version,
+                        "sequence": row.sequence,
+                    }),
                     row.model,
                 )
                 for row in rows

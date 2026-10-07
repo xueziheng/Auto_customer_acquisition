@@ -77,7 +77,7 @@ def test_private_roundtrip_and_binding_preserve_separate_runtime_identity(tmp_pa
 def test_runtime_configuration_rejects_wrong_role_or_password(tmp_path, case):
     bootstrap = MailboxConfig.create(tmp_path / "mailbox/config.json")
     role = tenant_database_role(bootstrap.tenant_id)
-    password = SecretStr("synthetic-" + "x" * 40)
+    password = SecretStr("placeholder" + "xxx" * 14)
     if case == "admin_password":
         role = "mailbox"
     elif case == "foreign":
@@ -87,9 +87,9 @@ def test_runtime_configuration_rejects_wrong_role_or_password(tmp_path, case):
     elif case == "missing":
         password = None
     elif case == "short":
-        password = SecretStr("short")
+        password = SecretStr("xxx")
     elif case == "long":
-        password = SecretStr("x" * 129)
+        password = SecretStr("xxx" * 43)
     with pytest.raises(ValidationError):
         MailboxConfig.model_validate(
             {

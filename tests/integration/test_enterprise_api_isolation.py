@@ -94,7 +94,7 @@ async def test_real_postgres_authentication_and_products_remain_enterprise_scope
     isolated_database: IsolationDatabase,  # noqa: F811 -- pytest 按同名导入 fixture 注入
 ) -> None:
     db = isolated_database
-    password = SecretStr("synthetic-enterprise-isolation-password-only")
+    password = SecretStr("placeholder")
     shared_product = str(new_id("prd"))
     exclusive_products = (str(new_id("prd")), str(new_id("prd")))
     bindings = []

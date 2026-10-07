@@ -4,10 +4,10 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, NoReturn
 
 from pydantic import SecretStr
-from sqlalchemy import text
+from sqlalchemy import Table, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from shared.errors import TenantIsolationViolation
@@ -88,7 +88,7 @@ WHERE n.nspname = 'public' ORDER BY c.relname, p.polname
 """)
 
 
-def _reject(message: str = "数据库企业隔离配置不完整") -> None:
+def _reject(message: str = "数据库企业隔离配置不完整") -> NoReturn:
     raise TenantIsolationViolation(message)
 
 
@@ -110,7 +110,7 @@ def _tenant_table_names() -> set[str]:
     from infra.db.tables import Base
 
     if any(
-        model.__table__.metadata is not Base.metadata
+        not isinstance(model.__table__, Table) or model.__table__.metadata is not Base.metadata
         for model in (MailboxAccountRow, MailboxMessageRow)
     ):
         _reject()
@@ -119,14 +119,14 @@ def _tenant_table_names() -> set[str]:
 
 async def _check_tables(connection: AsyncConnection) -> list[Mapping[str, Any]]:
     expected = _tenant_table_names()
-    rows = (await connection.execute(_TABLES_QUERY)).mappings().all()
+    rows = [dict(row) for row in (await connection.execute(_TABLES_QUERY)).mappings()]
     if {row["relname"] for row in rows} != expected:
         _reject()
     if any(not all(row[key] for key in (
         "attnotnull", "relrowsecurity", "relforcerowsecurity",
     )) for row in rows):
         _reject()
-    policies = (await connection.execute(_POLICIES_QUERY)).mappings().all()
+    policies = [dict(row) for row in (await connection.execute(_POLICIES_QUERY)).mappings()]
     predicate = _expression_tokens(_PREDICATE)
     by_table: dict[str, list[Mapping[str, Any]]] = {}
     for policy in policies:
@@ -136,13 +136,13 @@ async def _check_tables(connection: AsyncConnection) -> list[Mapping[str, Any]]:
         entries = by_table.get(table, [])
         if len(entries) != 2 or {p["polname"] for p in entries} != set(_POLICY_NAMES):
             _reject()
-        for policy in entries:
+        for entry in entries:
             if (
-                policy["polcmd"] != "*"
-                or policy["polpermissive"] != _POLICY_NAMES[policy["polname"]]
-                or not policy["public_policy"]
-                or _expression_tokens(policy["using_expression"] or "") != predicate
-                or _expression_tokens(policy["check_expression"] or "") != predicate
+                entry["polcmd"] != "*"
+                or entry["polpermissive"] != _POLICY_NAMES[entry["polname"]]
+                or not entry["public_policy"]
+                or _expression_tokens(entry["using_expression"] or "") != predicate
+                or _expression_tokens(entry["check_expression"] or "") != predicate
             ):
                 _reject()
     return list(rows)
@@ -187,7 +187,7 @@ async def assert_tenant_database_isolation(engine: AsyncEngine, tenant_id: str) 
             row = (await connection.execute(_ROLE_QUERY, {"role": role})).mappings().one_or_none()
             if row is None:
                 _reject()
-            _check_role(row, role, runtime=True)
+            _check_role(dict(row), role, runtime=True)
             tables = await _check_tables(connection)
             await _check_table_privileges(connection, role, tables)
             version = (await connection.execute(text("""
@@ -238,7 +238,7 @@ async def provision_tenant_role(
         if row is not None:
             if create_only:
                 _reject("数据库企业运行角色已存在")
-            _check_role(row, role, runtime=False)
+            _check_role(dict(row), role, runtime=False)
         await connection.execute(text(_ROLE_FUNCTION))
         await connection.execute(text(
             "SELECT pg_temp.tradeos_configure_tenant_role(:role, :password, :exists)"

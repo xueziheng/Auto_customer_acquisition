@@ -132,6 +132,13 @@ def _runtime_value(node: ast.AST, *, argument: bool = False) -> bool:
         return _runtime_value(node.value)
     if isinstance(node, ast.Call):
         function = ast.unparse(node.func)
+        if (
+            function == "self.resolve" and len(node.args) == 1 and not node.keywords
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and re.fullmatch(r"[A-Z][A-Z0-9_]*_(?:PASSWORD|TOKEN|KEY|SECRET|REF)", node.args[0].value)
+        ):
+            return True  # 受信配置解析器参数是环境引用名，不是取出的凭证值。
         if function == "getpass.getpass":
             return True  # 参数是提示文案，返回值由终端读取。
         if function in {"str", "bytes", "SecretStr"} and any(

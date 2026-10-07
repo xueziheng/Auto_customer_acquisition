@@ -1517,6 +1517,7 @@ class SchedulerRuntimeFactory:
                 now=self._now,
                 id_factory=new_id,
             )
+            auth_step: StepHandler
             if self._unconfigured_dns_step is not None:
                 auth_step = FailedAuthenticationStep(sending, self._unconfigured_dns_step)
             else:

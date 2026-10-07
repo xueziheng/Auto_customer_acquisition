@@ -38,7 +38,7 @@ class MemoryAuthentication:
             user_id=UserId("same-user"),
         )
         self.sessions: dict[str, IssuedSession] = {}
-        self.password = SecretStr("synthetic-only-" + tenant)
+        self.password = SecretStr("placeholder" + tenant)
 
     async def login(self, username: str, password: SecretStr) -> IssuedSession:
         if (
