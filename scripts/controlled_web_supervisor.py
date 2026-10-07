@@ -23,7 +23,7 @@ import boto3  # type: ignore[import-untyped]
 import psutil  # type: ignore[import-untyped]
 from botocore.config import Config as BotoConfig  # type: ignore[import-untyped]
 from pydantic import SecretStr
-from sqlalchemy.engine import URL
+from sqlalchemy.engine import URL, make_url
 
 from infra.controlled.config import (
     ControlledConfig,
@@ -31,6 +31,12 @@ from infra.controlled.config import (
     ControlledIdentity,
 )
 from infra.controlled.resources import OwnedContainers, OwnedProcess
+from infra.db.session import create_engine_from
+from infra.db.tenant_security import (
+    assert_tenant_database_isolation,
+    provision_tenant_role,
+    tenant_database_role,
+)
 from shared.schemas.identifiers import new_id
 
 CONTROLLED_MINIO_IMAGE = (
@@ -65,6 +71,26 @@ def database_accepts_connections(port: int, password: str) -> bool:
     except Exception:  # noqa: BLE001 只向调用方投影固定的未就绪状态
         return False
     return True
+
+
+async def prepare_runtime_database(admin_url: SecretStr, tenant_id: str) -> SecretStr:
+    """只在新建受控库迁移后配置企业角色；子进程永不接收管理连接。"""
+    admin = create_engine_from(admin_url.get_secret_value())
+    password = SecretStr(secrets.token_urlsafe(32))
+    try:
+        async with admin.begin() as connection:
+            await provision_tenant_role(connection, tenant_id, password, create_only=True)
+        runtime_url = SecretStr(make_url(admin_url.get_secret_value()).set(
+            username=tenant_database_role(tenant_id), password=password.get_secret_value(),
+        ).render_as_string(hide_password=False))
+        runtime = create_engine_from(runtime_url.get_secret_value())
+        try:
+            await assert_tenant_database_isolation(runtime, tenant_id)
+        finally:
+            await runtime.dispose()
+        return runtime_url
+    finally:
+        await admin.dispose()
 
 
 class Supervisor:
@@ -104,6 +130,8 @@ class Supervisor:
             "LANG": "C.UTF-8",
             "HOME": str(self.directory),
             "AWS_EC2_METADATA_DISABLED": "true",
+            "NO_PROXY": "127.0.0.1,localhost,::1",
+            "no_proxy": "127.0.0.1,localhost,::1",
         }
         self.http = build_opener(ProxyHandler({}))
 
@@ -275,7 +303,6 @@ class Supervisor:
                 }.items()
             },
         )
-        self.config.write(self.directory / "config.json")
         self.write_status("starting", "migration")
         self.containers.verify(database_id)
         self.run_once(
@@ -286,6 +313,11 @@ class Supervisor:
                 "DATABASE_URL": self.config.database_url.get_secret_value(),
             },
         )
+        runtime_url = asyncio.run(prepare_runtime_database(
+            self.config.database_url, self.config.tenant_id,
+        ))
+        self.config = self.config.model_copy(update={"database_url": runtime_url})
+        self.config.write(self.directory / "config.json")
         self.write_status("starting", "identities")
         self.run_once(
             "identities",

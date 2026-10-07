@@ -31,8 +31,9 @@ from apps.api.pilot_accounts import AccountCommand, run_account_command
 from infra.db.session import create_engine_from
 from infra.db.tables import EmployeeRow, TerritoryAssignmentRow
 from infra.pilot.backup import backup_profile, restore_profile
-from infra.pilot.config import PilotConfig
+from infra.pilot.config import PilotConfig, exclusive_profile_lock
 from infra.pilot.resources import OWNER_LABEL, PilotProfile
+from scripts.configure_enterprise_database import configure
 from scripts.run_web_pilot import start_profile
 from shared.schemas.identifiers import TenantId, new_id
 from tests.unit.test_pilot_profile import synthetic_policy
@@ -291,7 +292,7 @@ async def object_marker(profile: PilotProfile, key: str) -> str:
 
 async def sign_in(page: Page, credentials: Credentials) -> None:
     await expect(page.get_by_role("button", name="登录", exact=True)).to_be_visible()
-    await page.get_by_label("账号", exact=True).fill(credentials.username)
+    await page.get_by_label("邮箱或用户名", exact=True).fill(credentials.username)
     await page.get_by_label("密码", exact=True).fill(
         credentials.password.get_secret_value()
     )
@@ -303,7 +304,7 @@ async def sign_in(page: Page, credentials: Credentials) -> None:
 
 async def rejected_sign_in(page: Page, credentials: Credentials) -> None:
     await expect(page.get_by_role("button", name="登录", exact=True)).to_be_visible()
-    await page.get_by_label("账号", exact=True).fill(credentials.username)
+    await page.get_by_label("邮箱或用户名", exact=True).fill(credentials.username)
     await page.get_by_label("密码", exact=True).fill(
         credentials.password.get_secret_value()
     )
@@ -422,6 +423,9 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
         remember(source, owned)
         await asyncio.to_thread(source.migrate)
         source.reload()
+        with exclusive_profile_lock(source.path):
+            await configure(source.path, source.config)
+            source.reload()
 
         boss = await create_credentials(
             source,
@@ -577,7 +581,7 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             await expect(page.get_by_role("button", name="登录", exact=True)).to_be_visible()
             await expect(page.get_by_text(sales.name, exact=True)).to_have_count(0)
             await expect(
-                page.get_by_text("TradeOS 内部运营台", exact=True)
+                page.get_by_role("navigation", name="主导航", exact=True)
             ).to_have_count(0)
             require(
                 await safe_session(second)
@@ -600,14 +604,14 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             await expect(page.get_by_role("button", name="退出", exact=True)).to_be_visible()
             await expect(second.get_by_role("button", name="退出", exact=True)).to_be_visible()
             await expect(
-                page.get_by_text("TradeOS 内部运营台", exact=True)
+                page.get_by_role("navigation", name="主导航", exact=True)
             ).to_be_visible()
             shared_session = await session_token(context, source_origin)
             await second.get_by_role("button", name="退出", exact=True).click()
             await expect(second.get_by_role("button", name="登录", exact=True)).to_be_visible()
             await expect(page.get_by_role("button", name="登录", exact=True)).to_be_visible()
             await expect(
-                page.get_by_text("TradeOS 内部运营台", exact=True)
+                page.get_by_role("navigation", name="主导航", exact=True)
             ).to_have_count(0)
             await assert_cookie_cleared_and_token_revoked(
                 playwright,
@@ -664,7 +668,7 @@ async def test_built_web_pilot_persists_auth_and_restores_to_new_owner(
             second.on("request", record_login)
             await page.get_by_role("button", name="退出", exact=True).click()
             await asyncio.wait_for(server_response_ready.wait(), timeout=10)
-            await second.get_by_label("账号", exact=True).fill(sales.username)
+            await second.get_by_label("邮箱或用户名", exact=True).fill(sales.username)
             await second.get_by_label("密码", exact=True).fill(
                 sales.password.get_secret_value()
             )

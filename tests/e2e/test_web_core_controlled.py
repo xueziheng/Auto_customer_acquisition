@@ -319,6 +319,22 @@ async def test_original_launcher_browser_research_and_independent_reply_chain(
                 (directory / "research-confirmation.json").write_text(
                     json.dumps(confirmation, ensure_ascii=False)
                 )
+                research_run = await eventually(
+                    lambda: client.get("/runs/" + confirmation["run_id"]),
+                    lambda r: r.status_code == 200
+                    and r.json()["summary"]["status"] in {"completed", "failed"},
+                )
+                detail = research_run.json()
+                (directory / "research-run.json").write_text(
+                    json.dumps(detail, ensure_ascii=False, indent=2)
+                )
+                assert detail["summary"]["status"] == "completed", (
+                    detail["summary"]["current_step"],
+                    detail["summary"]["last_error"],
+                    [(call["tool_id"], call["status"], call["error_category"])
+                     for call in detail["tool_calls"]],
+                    research_calls.list_calls(),
+                )
                 hypotheses = await eventually(
                     lambda: client.get("/demand/hypotheses"),
                     lambda r: r.status_code == 200 and len(r.json()) >= 3,
