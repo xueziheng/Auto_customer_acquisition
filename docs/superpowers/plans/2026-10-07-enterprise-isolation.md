@@ -65,4 +65,4 @@ Files: infra/pilot/config.py; API/scheduler/notification 实际 engine 装配；
 - [x] 配置支持固定企业 runtime 数据库角色，启动时验证角色/表策略；迁移账户与业务运行账户分离。
 - [x] 使用合成企业和受限真实运行角色跑 API/资料/数据库隔离，现有业务读写和管理员认证回归。
 - [x] 跑结构自检、相关单测和真实 PG 检查，再独立安全审查；发布前明确尚未接入的网页知识与平台账号功能。
-- [ ] 显式迁移及切换新 release；验证网页、会话、worker 和 RLS 状态，保留旧 source release 但不创建业务数据备份。
+- [x] 显式迁移及切换新 release；验证网页、会话、worker 和 RLS 状态，保留旧 source release 但不创建业务数据备份。
