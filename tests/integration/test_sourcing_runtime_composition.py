@@ -83,6 +83,10 @@ from shared.schemas.identifiers import (
     new_id,
 )
 from tests.public_page_url_fixtures import HOSTILE_PUBLIC_PAGE_URLS
+from tests.runtime_database_fixtures import RuntimeDatabaseFactory
+from tests.runtime_database_fixtures import (
+    runtime_database_url as runtime_database_url,  # noqa: PLC0414 - pytest fixture
+)
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.free_search import FreeSearchGatewaySearcher
 from tool_gateway.handlers.web_read_page import ToolGatewayWebPageReader
@@ -815,6 +819,7 @@ async def test_composition_uses_real_services_and_registers_complete_events(
 
 @pytest.mark.asyncio
 async def test_scheduler_runtime_factory_skips_sourcing_construction_only_when_absent_or_exactly_disabled(
+    runtime_database_url: RuntimeDatabaseFactory,
     db_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -840,7 +845,7 @@ async def test_scheduler_runtime_factory_skips_sourcing_construction_only_when_a
     monkeypatch.setattr(runtime_module, "build_sourcing_research_chain", forbidden)
     monkeypatch.setattr(runtime_module, "build_sourcing_case_composition", forbidden)
     absent = runtime_module.SchedulerRuntimeFactory(
-        _factory_environ(db_url, tenant, hunter_enabled=False),
+        _factory_environ(await runtime_database_url(str(tenant)), tenant, hunter_enabled=False),
         dependencies,
         resolver_factory=_FactoryResolver,
         health_server_factory=_FactoryHealthServer,
@@ -848,7 +853,7 @@ async def test_scheduler_runtime_factory_skips_sourcing_construction_only_when_a
     async with absent() as runtime:
         assert "sourcing_case.v2.check_ladder" not in runtime.workflow._handlers
 
-    disabled_environ = _factory_environ(db_url, tenant, hunter_enabled=False)
+    disabled_environ = _factory_environ(await runtime_database_url(str(tenant)), tenant, hunter_enabled=False)
     disabled_environ["TRADEOS_SOURCING_SETTINGS_JSON"] = '{"enabled": false}'
     disabled = runtime_module.SchedulerRuntimeFactory(
         disabled_environ,
@@ -1306,6 +1311,7 @@ async def test_manual_unknown_bind_recovers_after_restart_with_durable_actor(
 
 @pytest.mark.asyncio
 async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_sourcing_events(
+    runtime_database_url: RuntimeDatabaseFactory,
     db_url: str,
     integration_engine: AsyncEngine,
     monkeypatch: pytest.MonkeyPatch,
@@ -1472,7 +1478,7 @@ async def test_scheduler_runtime_factory_enabled_root_binds_typed_model_and_all_
             model_port=model,
         ),
     )
-    environ = _factory_environ(db_url, tenant, hunter_enabled=False)
+    environ = _factory_environ(await runtime_database_url(str(tenant)), tenant, hunter_enabled=False)
     environ["TRADEOS_SOURCING_SETTINGS_JSON"] = json.dumps(
         {
             "enabled": True,

@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -80,6 +80,7 @@ from domains.sending_identity.service_impl import SendingIdentityServiceImpl
 from infra.db.outbox import PostgresEventBus
 from infra.db.sending_identity_uow import SqlAlchemySendingIdentityUnitOfWork
 from infra.db.session import create_engine_from
+from infra.pilot.resources import PILOT_MINIO_IMAGE
 from shared.events.catalog import InboundMessageStored
 from shared.schemas.identifiers import (
     ApprovalId,
@@ -101,6 +102,10 @@ from tests.outreach_fakes import (
     FakeReplies,
     FakeSenders,
     Trace,
+)
+from tests.runtime_database_fixtures import RuntimeDatabaseFactory
+from tests.runtime_database_fixtures import (
+    runtime_database_url as runtime_database_url,  # noqa: PLC0414 - pytest fixture
 )
 from tool_gateway.handlers.email_send import DeliveryMaterial
 
@@ -129,8 +134,6 @@ _SECRET_MARKERS = (
     _SECRET_GMAIL,
     _SECRET_UNSUBSCRIBE,
 )
-
-_MINIO_IMAGE = "minio/minio:RELEASE.2025-04-22T22-12-26Z"
 
 #: InboundMessageStored 事件契约键（最小披露，禁止多余字段）
 _INBOUND_EVENT_KEYS = {
@@ -275,7 +278,7 @@ def minio_runtime() -> Iterator[_MinioRuntime]:
 
     import boto3
     from botocore.config import Config
-    from botocore.exceptions import BotoCoreError
+    from botocore.exceptions import BotoCoreError, ClientError
 
     from connectors.object_store.s3 import S3ObjectStoreSettings
 
@@ -283,49 +286,57 @@ def minio_runtime() -> Iterator[_MinioRuntime]:
     secret = f"secret{stdlib_secrets.token_urlsafe(24)}"
     bucket = f"artifacts-{stdlib_secrets.token_hex(8)}"
     container = (
-        DockerContainer(_MINIO_IMAGE)
+        DockerContainer(PILOT_MINIO_IMAGE)
         .with_env("MINIO_ROOT_USER", access)
         .with_env("MINIO_ROOT_PASSWORD", secret)
-        .with_command("server /data --address :9000")
+        .with_command("server /bitnami/minio/data --address :9000 --console-address 127.0.0.1:9001")
         .with_exposed_ports(9000)
     )
-    container.start()
-    endpoint = f"http://127.0.0.1:{container.get_exposed_port(9000)}"
-    client = boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=access,
-        aws_secret_access_key=secret,
-        region_name="us-east-1",
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
-    )
-    deadline = time.monotonic() + 30
-    while True:
-        try:
-            client.create_bucket(Bucket=bucket)
-            break
-        except BotoCoreError:
-            if time.monotonic() >= deadline:
-                container.stop()
-                pytest.fail("MinIO 未在限定时间内就绪")
-            time.sleep(0.2)
-    settings = S3ObjectStoreSettings(
-        True,
-        endpoint,
-        bucket,
-        "TEST_MINIO_ACCESS",
-        "TEST_MINIO_SECRET",
-        "us-east-1",
-        1024 * 1024,
-        1024 * 1024,
-    )
+    client = None
     try:
+        container.start()
+        endpoint = f"http://127.0.0.1:{container.get_exposed_port(9000)}"
+        client = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=access,
+            aws_secret_access_key=secret,
+            region_name="us-east-1",
+            config=Config(
+                signature_version="s3v4", s3={"addressing_style": "path"},
+                proxies={}, connect_timeout=2, read_timeout=2,
+                retries={"max_attempts": 0},
+            ),
+        )
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                client.create_bucket(Bucket=bucket)
+                break
+            except (BotoCoreError, ClientError):
+                if time.monotonic() >= deadline:
+                    pytest.fail("MinIO 未在限定时间内就绪")
+                time.sleep(0.2)
+        settings = S3ObjectStoreSettings(
+            True,
+            endpoint,
+            bucket,
+            "TEST_MINIO_ACCESS",
+            "TEST_MINIO_SECRET",
+            "us-east-1",
+            1024 * 1024,
+            1024 * 1024,
+        )
         yield _MinioRuntime(
             settings,
             _MinioSecrets({"TEST_MINIO_ACCESS": access, "TEST_MINIO_SECRET": secret}),
         )
     finally:
-        container.stop()
+        try:
+            if client is not None:
+                client.close()
+        finally:
+            container.stop()
 
 
 @pytest_asyncio.fixture
@@ -337,12 +348,27 @@ async def scheduler_reply_db(db_url: str) -> AsyncIterator[AsyncEngine]:
         await engine.dispose()
 
 
-def _dsn(engine: AsyncEngine) -> str:
-    url = engine.url
-    return (
-        f"{url.drivername}://{url.username}:{url.password}"
-        f"@{url.host}:{url.port}/{url.database}"
-    )
+RuntimeEngineFactory = Callable[[str], Awaitable[tuple[AsyncEngine, str]]]
+
+
+@pytest_asyncio.fixture
+async def scheduler_reply_runtime(
+    runtime_database_url: RuntimeDatabaseFactory,
+) -> AsyncIterator[RuntimeEngineFactory]:
+    """每个注入业务依赖也绑定真实企业角色，连接池先于角色回收。"""
+    engines: list[AsyncEngine] = []
+
+    async def provision(tenant: str) -> tuple[AsyncEngine, str]:
+        database_url = await runtime_database_url(tenant)
+        engine = create_engine_from(database_url)
+        engines.append(engine)
+        return engine, database_url
+
+    try:
+        yield provision
+    finally:
+        for engine in reversed(engines):
+            await engine.dispose()
 
 
 def _environ(db_url: str, tenant: TenantId) -> dict[str, str]:
@@ -724,6 +750,7 @@ async def _poll(runtime: object, tenant: TenantId, clock: MutableClock) -> None:
 async def _seed_reply_scenario(
     scheduler_reply_db: AsyncEngine,
     minio_runtime: _MinioRuntime,
+    scheduler_reply_runtime: RuntimeEngineFactory,
     *,
     second_enrollment: bool = False,
 ) -> tuple[dict[str, object], _Transport, Any]:
@@ -770,11 +797,15 @@ async def _seed_reply_scenario(
     campaign_comp = _composition(
         transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders
     )
-    reply_comp = _reply_composition(factory, tenant, outreach, _raw_stores(scheduler_reply_db, minio_runtime), clock)
+    runtime_engine, database_url = await scheduler_reply_runtime(str(tenant))
+    factory = async_sessionmaker(runtime_engine, expire_on_commit=False)
+    outreach = _test_service(factory, tenant, campaign_id, approval_id, sender, contacts, replies, senders, clock)
+    store = _raw_stores(runtime_engine, minio_runtime)
+    reply_comp = _reply_composition(factory, tenant, outreach, store, clock)
     runtime_factory = importlib.import_module(
         "apps.scheduler_worker.runtime"
     ).SchedulerRuntimeFactory(
-        _environ(_dsn(scheduler_reply_db), tenant),
+        _environ(database_url, tenant),
         _dependencies(campaign_comp, reply_comp),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
@@ -787,7 +818,7 @@ async def _seed_reply_scenario(
         "enrollment": enrollment,
         "runtime_factory": runtime_factory,
         "conversations": _conversations_service(factory, tenant, clock),
-        "store": _raw_stores(scheduler_reply_db, minio_runtime),
+        "store": store,
     }, transport, reply_comp
 
 
@@ -809,11 +840,12 @@ async def _attempt_ids(
 
 async def test_inbound_stored_starts_reply_run_and_applies_actions(
     scheduler_reply_db: AsyncEngine, minio_runtime: _MinioRuntime,
+    scheduler_reply_runtime: RuntimeEngineFactory,
 ) -> None:
     """成功链：真实 ingest→outbox→handler→workflow→reader→guard→model(fake)→
     分类→停序列+抑制；context/事件键集精确；无正文/凭证 marker。"""
     env, transport, reply_comp = await _seed_reply_scenario(
-        scheduler_reply_db, minio_runtime
+        scheduler_reply_db, minio_runtime, scheduler_reply_runtime
     )
     del reply_comp
     factory: async_sessionmaker[AsyncSession] = env["factory"]
@@ -943,10 +975,11 @@ async def test_inbound_stored_starts_reply_run_and_applies_actions(
 
 async def test_inbound_stored_without_outbound_correlation_fails_closed(
     scheduler_reply_db: AsyncEngine, minio_runtime: _MinioRuntime,
+    scheduler_reply_runtime: RuntimeEngineFactory,
 ) -> None:
     """无出站关联：不起 reply run、不停序列、不抑制。"""
     env, _transport, reply_comp = await _seed_reply_scenario(
-        scheduler_reply_db, minio_runtime
+        scheduler_reply_db, minio_runtime, scheduler_reply_runtime
     )
     del reply_comp, _transport
     factory = env["factory"]
@@ -996,10 +1029,11 @@ async def test_inbound_stored_without_outbound_correlation_fails_closed(
 
 async def test_inbound_stored_unknown_outbound_fails_closed(
     scheduler_reply_db: AsyncEngine, minio_runtime: _MinioRuntime,
+    scheduler_reply_runtime: RuntimeEngineFactory,
 ) -> None:
     """未知出站关联（attempt 无匹配）：不起 run、零副作用。"""
     env, _transport, reply_comp = await _seed_reply_scenario(
-        scheduler_reply_db, minio_runtime
+        scheduler_reply_db, minio_runtime, scheduler_reply_runtime
     )
     del reply_comp, _transport
     factory = env["factory"]
@@ -1052,10 +1086,11 @@ async def test_inbound_stored_unknown_outbound_fails_closed(
 
 async def test_inbound_stored_missing_or_forged_message_fails_closed(
     scheduler_reply_db: AsyncEngine, minio_runtime: _MinioRuntime,
+    scheduler_reply_runtime: RuntimeEngineFactory,
 ) -> None:
     """五类伪造/缺失/跨租户消息事件：全部 0 run / 0 副作用。"""
     env, _transport, reply_comp = await _seed_reply_scenario(
-        scheduler_reply_db, minio_runtime, second_enrollment=True
+        scheduler_reply_db, minio_runtime, scheduler_reply_runtime, second_enrollment=True
     )
     del reply_comp
     factory = env["factory"]
@@ -1179,10 +1214,12 @@ async def test_inbound_stored_missing_or_forged_message_fails_closed(
         #    本 tenant 无该行 → fail-closed
         other_tenant = TenantId(new_id("tn"))
         other_account = ProspectAccountId(new_id("acc"))
+        other_engine, _other_database_url = await scheduler_reply_runtime(str(other_tenant))
+        other_factory = async_sessionmaker(other_engine, expire_on_commit=False)
         artifact_ref_other = await _store_email(
-            store, other_tenant, _rfc822("Re: other", "body")
+            _raw_stores(other_engine, minio_runtime), other_tenant, _rfc822("Re: other", "body")
         )
-        conversations_other = _conversations_service(factory, other_tenant, clock)
+        conversations_other = _conversations_service(other_factory, other_tenant, clock)
         other_message_id = await conversations_other.ingest_inbound(
             other_tenant, None, other_account,
             artifact_ref_other, "<other-tenant@example.test>", NOW,
@@ -1200,10 +1237,11 @@ async def test_inbound_stored_missing_or_forged_message_fails_closed(
 
 async def test_reply_trigger_consumer_redelivery_is_idempotent(
     scheduler_reply_db: AsyncEngine, minio_runtime: _MinioRuntime,
+    scheduler_reply_runtime: RuntimeEngineFactory,
 ) -> None:
     """同一事件重复投递（outbox 两行）→ 恰一条 run/一次分类/一条抑制/一条 ReplyReceived。"""
     env, _transport, reply_comp = await _seed_reply_scenario(
-        scheduler_reply_db, minio_runtime
+        scheduler_reply_db, minio_runtime, scheduler_reply_runtime
     )
     del reply_comp, _transport
     factory = env["factory"]
@@ -1284,10 +1322,11 @@ async def test_reply_trigger_consumer_redelivery_is_idempotent(
 
 async def test_reply_trigger_does_not_retrigger_on_reply_received(
     scheduler_reply_db: AsyncEngine, minio_runtime: _MinioRuntime,
+    scheduler_reply_runtime: RuntimeEngineFactory,
 ) -> None:
     """ReplyReceived 是分类落库后的结果事件：不回触新 reply run，无二次分类/抑制。"""
     env, _transport, reply_comp = await _seed_reply_scenario(
-        scheduler_reply_db, minio_runtime
+        scheduler_reply_db, minio_runtime, scheduler_reply_runtime
     )
     del reply_comp, _transport
     factory = env["factory"]

@@ -597,11 +597,15 @@ async def test_manual_send_is_atomic_idempotent_and_never_persists_raw_material(
             )
             transport.release_send.set()
             raced = await race_request
+            sends_after_race = transport.send_calls
+            reservations_after_race = await _reservation_count(factory, tenant)
             repeated_race = await client.post(
                 f"/crm/message-attempts/{race_attempt.attempt_id}/send",
                 headers=headers,
                 json={"subject": subject, "body": body},
             )
+            assert transport.send_calls == sends_after_race
+            assert await _reservation_count(factory, tenant) == reservations_after_race
 
         fail_sent_commit = True
 
@@ -752,10 +756,11 @@ async def test_manual_send_is_atomic_idempotent_and_never_persists_raw_material(
         assert any(response.status_code == 200 for response in responses)
         # 发送已经在途时新增抑制不能撤回已发生的发送；成功事实必须落账。
         assert raced.status_code == 200
-        assert repeated_race.status_code == 403
+        # 抑制后的SENT重放只读取canonical结果，不能重新发信或预留额度。
+        assert raced.json()["duplicate"] is False
+        assert repeated_race.status_code == 200
         assert repeated_race.json() == {
-            "code": "suppressed",
-            "message": "当前事实不允许发送",
+            **raced.json(), "status": "duplicate", "duplicate": True
         }
         assert commit_failed.status_code == 409
         assert commit_failed.json() == {

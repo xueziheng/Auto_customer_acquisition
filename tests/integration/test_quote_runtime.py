@@ -586,9 +586,39 @@ async def test_actual_worker_singleton_activation_and_cleanup(
     assert parsers[0]._closed
 
 
+@pytest.fixture
+def unavailable_worker_parser(monkeypatch):
+    """锁与到期扫描不依赖解析能力；Linux四探针由独立解析验收覆盖。"""
+
+    async def probe(parser):
+        report = parser.capability()
+        assert report.status == "unavailable"
+        return report
+
+    monkeypatch.setattr(LinuxEvidenceTextParser, "probe", probe)
+
+
+async def _wait_for_worker_phase(task, entered):
+    """阶段未到达时先传播worker真实失败，避免把早退藏成等待超时。"""
+    import asyncio
+
+    waiter = asyncio.create_task(entered.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {task, waiter}, timeout=5, return_when=asyncio.FIRST_COMPLETED
+        )
+        if task in done:
+            result = await task
+            pytest.fail(f"worker在目标阶段之前退出：{result.status.value}")
+        assert waiter in done, "worker未在限定时间到达目标阶段"
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+
+
 @pytest.mark.parametrize("lose_lock", [False, True])
 async def test_actual_worker_only_lock_owner_scans_expiry_and_stops_on_loss(
-    unit_engine, quote_runtime_database_url, monkeypatch, lose_lock
+    unit_engine, quote_runtime_database_url, monkeypatch, unavailable_worker_parser, lose_lock
 ):
     import asyncio
 
@@ -641,25 +671,32 @@ async def test_actual_worker_only_lock_owner_scans_expiry_and_stops_on_loss(
             )
         )
         try:
-            await asyncio.wait_for(entered.wait(), timeout=5)
+            await _wait_for_worker_phase(task, entered)
+            assert owner.activation.quotation_lifecycle._started
+            assert owner.activation.quotation_lifecycle._parser.capability().status == "unavailable"
             rejected = await run_scheduler_worker(
                 contender, install_signal_handlers=False
             )
             assert rejected.status is WorkerStartStatus.NOT_STARTED
             assert not contender.activation.quotation_lifecycle._started
+            release.set()
+            result = await asyncio.wait_for(task, timeout=5)
+            assert calls == ["owner"]
+            assert result.cycles_completed == 1
+            assert result.status is (
+                WorkerStartStatus.LOCK_LOST if lose_lock else WorkerStartStatus.STARTED
+            )
         finally:
             release.set()
-        result = await asyncio.wait_for(task, timeout=5)
-        assert calls == ["owner"]
-        assert result.cycles_completed == 1
-        assert result.status is (
-            WorkerStartStatus.LOCK_LOST if lose_lock else WorkerStartStatus.STARTED
-        )
+            if not task.done():
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
 
 
 @pytest.mark.parametrize("phase", ["activation", "campaign"])
 async def test_actual_worker_loss_during_phase_never_enters_expiry(
-    unit_engine, quote_runtime_database_url, monkeypatch, phase
+    unit_engine, quote_runtime_database_url, monkeypatch, unavailable_worker_parser, phase
 ):
     import asyncio
     from dataclasses import replace
@@ -729,7 +766,9 @@ async def test_actual_worker_loss_during_phase_never_enters_expiry(
             )
         )
         try:
-            await asyncio.wait_for(entered.wait(), 5)
+            await _wait_for_worker_phase(task, entered)
+            assert original.activation.quotation_lifecycle._started
+            assert original.activation.quotation_lifecycle._parser.capability().status == "unavailable"
             pid, _ = await _lock_holder(unit_engine, runtime.config.lock_key)
             async with unit_engine.begin() as killer:
                 assert await killer.scalar(

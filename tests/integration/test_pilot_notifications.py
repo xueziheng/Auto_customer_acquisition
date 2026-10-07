@@ -1,12 +1,16 @@
 """本地站内模式不放宽生产默认邮件约束。"""
 
 import httpx
+from pydantic import SecretStr
 
 from apps.notification_worker.health import (
     NotificationHealthState,
     create_notification_health_app,
 )
 from apps.notification_worker.runtime import NotificationRuntimeMode
+from tests.runtime_database_fixtures import (
+    runtime_database_url as runtime_database_url,  # noqa: PLC0414 - pytest fixture
+)
 
 
 async def test_local_mode_ready_never_claims_email_delivery():
@@ -28,7 +32,7 @@ async def test_local_mode_ready_never_claims_email_delivery():
 
 
 async def test_local_real_persistent_delivery_and_production_still_rejects(
-    owned_infrastructure,
+    runtime_database_url,
 ):
     import asyncio
     from datetime import UTC, datetime
@@ -58,12 +62,12 @@ async def test_local_real_persistent_delivery_and_production_still_rejects(
         new_id,
     )
 
-    config = owned_infrastructure.config
     tenant = TenantId(new_id("tn"))
+    database_url = await runtime_database_url(str(tenant))
     with reserve_port(0) as listener:
         port = listener.getsockname()[1]
     settings = NotificationWorkerConfig(
-        config.database_url, tenant, 1, 10, port, "pilot-test-notification"
+        SecretStr(database_url), tenant, 1, 10, port, "pilot-test-notification"
     )
 
     def forbidden_transport(*args):
@@ -99,7 +103,7 @@ async def test_local_real_persistent_delivery_and_production_still_rejects(
             runtime, stop_event=asyncio.Event(), wait=wait
         )
         assert result.jobs_completed == 1
-    engine = create_engine_from(config.database_url.get_secret_value())
+    engine = create_engine_from(database_url)
     try:
         async with async_sessionmaker(engine)() as session:
             assert (
@@ -113,10 +117,3 @@ async def test_local_real_persistent_delivery_and_production_still_rejects(
             )
     finally:
         await engine.dispose()
-
-
-from tests.integration.test_email_inbound_gateway import (
-    owned_infrastructure as _owned_infrastructure,
-)
-
-owned_infrastructure = _owned_infrastructure

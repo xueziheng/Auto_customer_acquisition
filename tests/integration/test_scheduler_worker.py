@@ -25,6 +25,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from shared.errors import TradeOSError, TransientError, ValidationError
 from shared.events.catalog import OpportunityWon
 from shared.schemas.identifiers import EmployeeId, OpportunityId, TenantId
+from tests.runtime_database_fixtures import RuntimeDatabaseFactory
+from tests.runtime_database_fixtures import (
+    runtime_database_url as runtime_database_url,  # noqa: PLC0414 - pytest fixture
+)
 from workflows.engine.runner import StepDefinition, WorkflowDefinition, WorkflowRun
 
 
@@ -1823,6 +1827,7 @@ async def _hunter_readiness_events(
 
 
 async def test_hunter_disabled_builds_without_contact_tools_or_activation(
+    runtime_database_url: RuntimeDatabaseFactory,
     db_url: str,
 ) -> None:
     runtime_module = importlib.import_module("apps.scheduler_worker.runtime")
@@ -1835,7 +1840,7 @@ async def test_hunter_disabled_builds_without_contact_tools_or_activation(
         return _NoIoHunterTransport()
 
     factory = runtime_module.SchedulerRuntimeFactory(
-        _factory_environ(db_url, tenant, hunter_enabled=False),
+        _factory_environ(await runtime_database_url(str(tenant)), tenant, hunter_enabled=False),
         _factory_dependencies(runtime_module, with_hunter=False),
         resolver_factory=_FactoryResolver,
         health_server_factory=_FactoryHealthServer,
@@ -1851,6 +1856,7 @@ async def test_hunter_disabled_builds_without_contact_tools_or_activation(
 
 
 async def test_research_scheduler_starts_without_campaign_or_contact_composition(
+    runtime_database_url: RuntimeDatabaseFactory,
     db_url: str,
 ) -> None:
     from dataclasses import replace
@@ -1897,7 +1903,7 @@ async def test_research_scheduler_starts_without_campaign_or_contact_composition
         demand_discovery=discovery,
     )
     factory = runtime_module.SchedulerRuntimeFactory(
-        _factory_environ(db_url, tenant, hunter_enabled=False),
+        _factory_environ(await runtime_database_url(str(tenant)), tenant, hunter_enabled=False),
         dependencies,
         resolver_factory=_FactoryResolver,
         health_server_factory=_FactoryHealthServer,
@@ -1911,6 +1917,7 @@ async def test_research_scheduler_starts_without_campaign_or_contact_composition
 
 
 async def test_hunter_enabled_without_matching_configuration_fails_before_secrets(
+    runtime_database_url: RuntimeDatabaseFactory,
     db_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1928,7 +1935,7 @@ async def test_hunter_enabled_without_matching_configuration_fails_before_secret
         return _NoIoHunterTransport()
 
     factory = runtime_module.SchedulerRuntimeFactory(
-        _factory_environ(db_url, tenant, hunter_enabled=True),
+        _factory_environ(await runtime_database_url(str(tenant)), tenant, hunter_enabled=True),
         _factory_dependencies(runtime_module, with_hunter=False),
         resolver_factory=_FactoryResolver,
         health_server_factory=_FactoryHealthServer,
@@ -1943,6 +1950,7 @@ async def test_hunter_enabled_without_matching_configuration_fails_before_secret
 
 
 async def test_hunter_configured_pending_builds_fail_closed_adapters(
+    runtime_database_url: RuntimeDatabaseFactory,
     db_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1964,7 +1972,7 @@ async def test_hunter_configured_pending_builds_fail_closed_adapters(
 
     monkeypatch.setattr(runtime_module, "build_hunter_contact_tools", capturing_builder)
     factory = runtime_module.SchedulerRuntimeFactory(
-        _factory_environ(db_url, tenant, hunter_enabled=True),
+        _factory_environ(await runtime_database_url(str(tenant)), tenant, hunter_enabled=True),
         _factory_dependencies(runtime_module, with_hunter=True),
         resolver_factory=_FactoryResolver,
         health_server_factory=_FactoryHealthServer,
@@ -1993,6 +2001,7 @@ async def test_hunter_configured_pending_builds_fail_closed_adapters(
 
 
 async def test_hunter_passed_without_account_discovery_fails_closed(
+    runtime_database_url: RuntimeDatabaseFactory,
     db_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2004,7 +2013,7 @@ async def test_hunter_passed_without_account_discovery_fails_closed(
         runtime_module, "EnvironmentSecretResolver", lambda environ: secrets
     )
     factory = runtime_module.SchedulerRuntimeFactory(
-        _factory_environ(db_url, tenant, hunter_enabled=True),
+        _factory_environ(await runtime_database_url(str(tenant)), tenant, hunter_enabled=True),
         _factory_dependencies(runtime_module, with_hunter=False),
         resolver_factory=_FactoryResolver,
         health_server_factory=_FactoryHealthServer,
@@ -2019,6 +2028,7 @@ async def test_hunter_passed_without_account_discovery_fails_closed(
 
 @pytest.mark.parametrize("initial_state", ["passed", "ready"])
 async def test_hunter_validated_configuration_builds_exact_tools_and_activation(
+    runtime_database_url: RuntimeDatabaseFactory,
     db_url: str,
     monkeypatch: pytest.MonkeyPatch,
     initial_state: str,
@@ -2042,7 +2052,7 @@ async def test_hunter_validated_configuration_builds_exact_tools_and_activation(
 
     monkeypatch.setattr(runtime_module, "build_hunter_contact_tools", capturing_builder)
     factory = runtime_module.SchedulerRuntimeFactory(
-        _factory_environ(db_url, tenant, hunter_enabled=True),
+        _factory_environ(await runtime_database_url(str(tenant)), tenant, hunter_enabled=True),
         _factory_dependencies(runtime_module, with_hunter=True),
         resolver_factory=_FactoryResolver,
         health_server_factory=_FactoryHealthServer,
@@ -2080,6 +2090,7 @@ async def test_hunter_validated_configuration_builds_exact_tools_and_activation(
 
 
 async def test_production_factory_builds_complete_runtime_and_cleans_resources(
+    runtime_database_url: RuntimeDatabaseFactory,
     db_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2136,10 +2147,12 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
         disposed += 1
         await original_dispose(engine)
 
+    tenant = TenantId("tn_01K2C5R6J7ABCDEFGHJKMNPQRS")
+    database_url = await runtime_database_url(str(tenant))
     monkeypatch.setattr(AsyncEngine, "dispose", tracked_dispose)
     environ = {
-        "DATABASE_URL": db_url,
-        "TRADEOS_TENANT_ID": "tn_01K2C5R6J7ABCDEFGHJKMNPQRS",
+        "DATABASE_URL": database_url,
+        "TRADEOS_TENANT_ID": str(tenant),
         "TRADEOS_SCHEDULER_INTERVAL_SECONDS": "5",
         "TRADEOS_SCHEDULER_BATCH_LIMIT": "20",
         "TRADEOS_SCHEDULER_LOCK_KEY": "3110001",

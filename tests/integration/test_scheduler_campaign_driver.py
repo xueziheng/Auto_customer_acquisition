@@ -91,6 +91,10 @@ from tests.outreach_fakes import (
     FakeSenders,
     Trace,
 )
+from tests.runtime_database_fixtures import RuntimeDatabaseFactory
+from tests.runtime_database_fixtures import (
+    runtime_database_url as runtime_database_url,  # noqa: PLC0414 - pytest fixture
+)
 from tool_gateway.handlers.email_send import DeliveryMaterial
 
 _models = importlib.import_module("domains.outreach.models")
@@ -202,15 +206,6 @@ async def campaign_scheduler_db(db_url: str) -> AsyncIterator[AsyncEngine]:
         yield engine
     finally:
         await engine.dispose()
-
-
-def _dsn(engine: AsyncEngine) -> str:
-    """完整 DSN（含测试容器口令）；源码避免 ``password=`` 形态触发敏感扫描。"""
-    url = engine.url
-    return (
-        f"{url.drivername}://{url.username}:{url.password}"
-        f"@{url.host}:{url.port}/{url.database}"
-    )
 
 
 def _environ(db_url: str, tenant: TenantId) -> dict[str, str]:
@@ -465,6 +460,7 @@ async def _publish(
 
 
 async def test_driver_starts_single_run_per_enrollment_and_advances_by_wait_days(
+    runtime_database_url: RuntimeDatabaseFactory,
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
     factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
@@ -492,7 +488,7 @@ async def test_driver_starts_single_run_per_enrollment_and_advances_by_wait_days
     enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-1")
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
-        _environ(_dsn(campaign_scheduler_db), tenant),
+        _environ(await runtime_database_url(str(tenant)), tenant),
         _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
@@ -546,6 +542,7 @@ async def test_driver_starts_single_run_per_enrollment_and_advances_by_wait_days
 
 
 async def test_pause_cancels_runs_and_activation_resumes_with_new_run(
+    runtime_database_url: RuntimeDatabaseFactory,
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
     factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
@@ -573,7 +570,7 @@ async def test_pause_cancels_runs_and_activation_resumes_with_new_run(
     enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-pause")
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
-        _environ(_dsn(campaign_scheduler_db), tenant),
+        _environ(await runtime_database_url(str(tenant)), tenant),
         _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
@@ -629,6 +626,7 @@ async def test_pause_cancels_runs_and_activation_resumes_with_new_run(
 
 
 async def test_cancel_campaign_cancels_inflight_runs(
+    runtime_database_url: RuntimeDatabaseFactory,
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
     factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
@@ -656,7 +654,7 @@ async def test_cancel_campaign_cancels_inflight_runs(
     enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-cancel")
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
-        _environ(_dsn(campaign_scheduler_db), tenant),
+        _environ(await runtime_database_url(str(tenant)), tenant),
         _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
@@ -690,6 +688,7 @@ async def test_cancel_campaign_cancels_inflight_runs(
 
 
 async def test_classification_event_from_real_producer_stops_and_wakes(
+    runtime_database_url: RuntimeDatabaseFactory,
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
     """真实生产者（conversations record_classification）→ outbox drain →
@@ -725,7 +724,7 @@ async def test_classification_event_from_real_producer_stops_and_wakes(
     enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-producer")
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
-        _environ(_dsn(campaign_scheduler_db), tenant),
+        _environ(await runtime_database_url(str(tenant)), tenant),
         _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
@@ -818,6 +817,7 @@ async def test_classification_event_from_real_producer_stops_and_wakes(
 
 
 async def test_classification_without_outbound_correlation_is_fail_closed(
+    runtime_database_url: RuntimeDatabaseFactory,
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
     """明确无出站关联（outbound_message_id=None）→ 消费者 fail-closed：
@@ -848,7 +848,7 @@ async def test_classification_without_outbound_correlation_is_fail_closed(
     enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-nocorr")
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
-        _environ(_dsn(campaign_scheduler_db), tenant),
+        _environ(await runtime_database_url(str(tenant)), tenant),
         _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
@@ -888,6 +888,7 @@ async def test_classification_without_outbound_correlation_is_fail_closed(
 
 
 async def test_concurrent_scans_start_exactly_one_run_per_enrollment(
+    runtime_database_url: RuntimeDatabaseFactory,
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
     factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
@@ -915,7 +916,7 @@ async def test_concurrent_scans_start_exactly_one_run_per_enrollment(
     await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-conc")
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
-        _environ(_dsn(campaign_scheduler_db), tenant),
+        _environ(await runtime_database_url(str(tenant)), tenant),
         _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
@@ -942,6 +943,7 @@ async def test_concurrent_scans_start_exactly_one_run_per_enrollment(
         assert len(run_rows) == 1
 
 async def test_reply_event_wiring_stops_enrollment_and_completes_run(
+    runtime_database_url: RuntimeDatabaseFactory,
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
     factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
@@ -969,7 +971,7 @@ async def test_reply_event_wiring_stops_enrollment_and_completes_run(
     enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-reply")
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
-        _environ(_dsn(campaign_scheduler_db), tenant),
+        _environ(await runtime_database_url(str(tenant)), tenant),
         _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
@@ -1024,6 +1026,7 @@ async def test_reply_event_wiring_stops_enrollment_and_completes_run(
 
 
 async def test_identity_activated_event_wiring_wakes_waiting_run(
+    runtime_database_url: RuntimeDatabaseFactory,
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
     factory = async_sessionmaker(campaign_scheduler_db, expire_on_commit=False)
@@ -1055,7 +1058,7 @@ async def test_identity_activated_event_wiring_wakes_waiting_run(
     )
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
-        _environ(_dsn(campaign_scheduler_db), tenant),
+        _environ(await runtime_database_url(str(tenant)), tenant),
         _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
@@ -1090,6 +1093,7 @@ async def test_identity_activated_event_wiring_wakes_waiting_run(
 
 
 async def test_reply_stops_only_the_correlated_enrollment(
+    runtime_database_url: RuntimeDatabaseFactory,
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
     """同租户两个 enrollment：分类事件只停 outbound_message_id 关联的那条，
@@ -1121,7 +1125,7 @@ async def test_reply_stops_only_the_correlated_enrollment(
         enrolled.append(await _enroll(service, tenant, campaign_id, contact, account, f"sched-enroll-two-{index}"))
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
-        _environ(_dsn(campaign_scheduler_db), tenant),
+        _environ(await runtime_database_url(str(tenant)), tenant),
         _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
@@ -1166,6 +1170,7 @@ async def test_reply_stops_only_the_correlated_enrollment(
 
 
 async def test_cross_tenant_outbound_id_never_misfires_current_tenant(
+    runtime_database_url: RuntimeDatabaseFactory,
     campaign_scheduler_db: AsyncEngine,
 ) -> None:
     """outbound_message_id 属于另一租户：当前租户 handler 查询必须
@@ -1196,7 +1201,7 @@ async def test_cross_tenant_outbound_id_never_misfires_current_tenant(
     enrollment = await _enroll(service, tenant, campaign_id, contact, account, "sched-enroll-xtenant")
     transport = _Transport()
     runtime_factory = SchedulerRuntimeFactory(
-        _environ(_dsn(campaign_scheduler_db), tenant),
+        _environ(await runtime_database_url(str(tenant)), tenant),
         _dependencies(_composition(transport, tenant, campaign_id, approval_id, sender, contacts, replies, senders)),
         resolver_factory=_Resolver,
         health_server_factory=_HealthServer,
