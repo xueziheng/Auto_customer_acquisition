@@ -22,6 +22,7 @@ import pytest
 
 # ruff: noqa: F811 - 复用owned数据库fixture
 import pytest_asyncio
+from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -37,6 +38,9 @@ from shared.schemas.identifiers import (
 )
 from tests.integration.test_email_inbound_gateway import (
     owned_infrastructure,  # noqa: F401
+)
+from tests.runtime_database_fixtures import (
+    runtime_database_url as runtime_database_url,  # noqa: PLC0414 - 真实企业运行角色
 )
 
 NOW = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
@@ -61,10 +65,15 @@ class MutableClock:
         return self.value
 
 
+@pytest.fixture
+def correction_tenant() -> TenantId:
+    return TenantId(new_id("tn"))
+
+
 @pytest_asyncio.fixture
-async def correction_db(owned_infrastructure) -> AsyncIterator[AsyncEngine]:
+async def correction_db(runtime_database_url, correction_tenant) -> AsyncIterator[AsyncEngine]:
     engine = importlib.import_module("infra.db.session").create_engine_from(
-        owned_infrastructure.config.database_url.get_secret_value()
+        await runtime_database_url(str(correction_tenant))
     )
     try:
         yield engine
@@ -81,12 +90,13 @@ def _uow_factory(factory: async_sessionmaker[AsyncSession], tenant: TenantId):
 
 async def test_correction_model_valid_construction_preserves_fields(
     correction_db: AsyncEngine,
+    correction_tenant: TenantId,
 ) -> None:
     """模型合法构造字段保真（行为测试，不只查符号存在）。"""
     model = _correction_model()
     if model is None:
         raise AssertionError("RED：ClassificationCorrection 模型尚未创建")
-    tenant = TenantId(new_id("tn"))
+    tenant = correction_tenant
     message_id = MessageId(new_id("msg"))
     correction = model(
         correction_id="ccr_01KZXT00000000000000000001",
@@ -106,6 +116,7 @@ async def test_correction_model_valid_construction_preserves_fields(
 
 async def test_correction_model_rejects_invalid_inputs(
     correction_db: AsyncEngine,
+    correction_tenant: TenantId,
 ) -> None:
     """每个非法输入 ValidationError（硬边界 8：tenant/message 非空 str；
     长度 fail-closed 与 DB 列上限对齐：correction_id/tenant_id ≤ 32、
@@ -113,7 +124,7 @@ async def test_correction_model_rejects_invalid_inputs(
     model = _correction_model()
     if model is None:
         raise AssertionError("RED：ClassificationCorrection 模型尚未创建")
-    tenant = TenantId(new_id("tn"))
+    tenant = correction_tenant
     message_id = MessageId(new_id("msg"))
 
     def build(**overrides: object) -> object:
@@ -209,6 +220,7 @@ async def _list_through_repo(
 
 async def test_correction_repository_insert_and_list(
     correction_db: AsyncEngine,
+    correction_tenant: TenantId,
 ) -> None:
     """确定性排序与幂等（真实 PostgreSQL；顺序不依赖插入顺序）。
 
@@ -220,7 +232,7 @@ async def test_correction_repository_insert_and_list(
       add 返回 False 且行数不变
     """
     factory = async_sessionmaker(correction_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = correction_tenant
     message_id = MessageId(new_id("msg"))
     model = _correction_model()
     if model is None:
@@ -286,11 +298,12 @@ async def test_correction_repository_insert_and_list(
 
 async def test_correction_repository_cross_tenant_fails_closed(
     correction_db: AsyncEngine,
+    correction_tenant: TenantId,
 ) -> None:
     """仓储参数租户不匹配：add/list 均 TenantIsolationViolation。"""
     factory = async_sessionmaker(correction_db, expire_on_commit=False)
     tenant_a = TenantId(new_id("tn"))
-    tenant_b = TenantId(new_id("tn"))
+    tenant_b = correction_tenant
     message_id = MessageId(new_id("msg"))
     model = _correction_model()
     if model is None:
@@ -348,8 +361,14 @@ async def _inbox_fixture(service, factory, tenant, config):
             )
         )
     assert boss_index >= 2
+    database_url = factory.kw["bind"].url
     await initialize_identities(
-        config.model_copy(update={"tenant_id": tenant, "identities": tuple(identities)})
+        config.model_copy(update={
+            "tenant_id": tenant,
+            "identities": tuple(identities),
+            "database_url": SecretStr(database_url.render_as_string(False)),
+            "database_port": database_url.port or 5432,
+        })
     )
     return await service.ingest_inbound(
         tenant,
@@ -443,6 +462,7 @@ async def _correction_rows(
 
 async def test_correct_classification_persists_and_preserves_original_classification(
     correction_db: AsyncEngine,
+    correction_tenant: TenantId,
     owned_infrastructure,
 ) -> None:
     """happy path：先落分类（REQUESTS_MATERIALS/model-v1），纠正到
@@ -450,7 +470,7 @@ async def test_correct_classification_persists_and_preserves_original_classifica
     长度<=32、corrected_at=时钟值）；原分类行 category/classified_by/
     classified_at 完全不变；成功纠正不发布任何 outbox 事件。"""
     factory = async_sessionmaker(correction_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = correction_tenant
     message_id = MessageId(new_id("msg"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
@@ -502,11 +522,12 @@ async def test_correct_classification_persists_and_preserves_original_classifica
 
 async def test_correct_classification_unclassified_message_fails_closed(
     correction_db: AsyncEngine,
+    correction_tenant: TenantId,
     owned_infrastructure,
 ) -> None:
     """未分类消息：ValidationError 精确摘要“消息尚未分类”，零纠正、零事件。"""
     factory = async_sessionmaker(correction_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = correction_tenant
     message_id = MessageId(new_id("msg"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
@@ -534,12 +555,13 @@ async def test_correct_classification_unclassified_message_fails_closed(
 
 async def test_correct_classification_sequential_idempotency(
     correction_db: AsyncEngine,
+    correction_tenant: TenantId,
     owned_infrastructure,
 ) -> None:
     """顺序重复幂等：同 (by, category) 两次均正常返回 None 且恰一条；
     同 by 不同 category、同 category 不同 by（固定时钟）各自保留一行。"""
     factory = async_sessionmaker(correction_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = correction_tenant
     message_id = MessageId(new_id("msg"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
@@ -600,13 +622,14 @@ async def test_correct_classification_sequential_idempotency(
 
 async def test_correct_classification_input_fail_closed(
     correction_db: AsyncEngine,
+    correction_tenant: TenantId,
     owned_infrastructure,
 ) -> None:
     """输入 fail-closed：空值/空白/超长/非枚举/时钟非法 → 固定摘要
     ValidationError（不回显输入）；错误发生在任何外部副作用之前：零纠正、
     outbox 不变。"""
     factory = async_sessionmaker(correction_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = correction_tenant
     message_id = MessageId(new_id("msg"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
@@ -691,49 +714,60 @@ async def test_correct_classification_input_fail_closed(
 
 async def test_correct_classification_cross_tenant_invisible(
     correction_db: AsyncEngine,
+    correction_tenant: TenantId,
     owned_infrastructure,
+    runtime_database_url,
 ) -> None:
     """服务级租户不可见：A 有原分类；B-bound 服务以相同 message 纠正 →
     PermissionDenied（与无权/不存在一致；TenantIsolationViolation 仅用于仓储
     参数越界测试）；A/B 均零纠正，A 原分类不变。"""
     factory = async_sessionmaker(correction_db, expire_on_commit=False)
-    tenant_a = TenantId(new_id("tn"))
+    tenant_a = correction_tenant
     tenant_b = TenantId(new_id("tn"))
     message_id = MessageId(new_id("msg"))
     clock = MutableClock(NOW)
     service_a = _service(factory, tenant_a, clock)
-    service_b = _service(factory, tenant_b, clock)
-    message_id = await _inbox_fixture(
-        service_a, factory, tenant_a, owned_infrastructure.config
+    engine_b = importlib.import_module("infra.db.session").create_engine_from(
+        await runtime_database_url(str(tenant_b))
     )
-    await _inbox_fixture(service_b, factory, tenant_b, owned_infrastructure.config)
-
-    await service_a.record_classification(
-        tenant_a,
-        message_id,
-        ReplyCategory.REQUESTS_MATERIALS,
-        classified_by="model-v1",
-    )
-
-    with pytest.raises(PermissionDenied) as exc_info:
-        await service_b.correct_classification(
-            tenant_b,
-            message_id,
-            ReplyCategory.UNSUBSCRIBE,
-            corrected_by=_employee_id(tenant_b),
-            actor=_actor(tenant_b),
+    try:
+        factory_b = async_sessionmaker(engine_b, expire_on_commit=False)
+        service_b = _service(factory_b, tenant_b, clock)
+        message_id = await _inbox_fixture(
+            service_a, factory, tenant_a, owned_infrastructure.config
         )
-    assert str(exc_info.value) == "收件箱访问拒绝"
+        await _inbox_fixture(service_b, factory_b, tenant_b, owned_infrastructure.config)
 
-    assert await _correction_rows(factory, tenant_a) == []
-    assert await _correction_rows(factory, tenant_b) == []
-    original = await _classification_rows(factory, tenant_a)
-    assert len(original) == 1
-    assert original[0].category == "requests_materials"
+        await service_a.record_classification(
+            tenant_a,
+            message_id,
+            ReplyCategory.REQUESTS_MATERIALS,
+            classified_by="model-v1",
+        )
+
+        with pytest.raises(PermissionDenied) as exc_info:
+            await service_b.correct_classification(
+                tenant_b,
+                message_id,
+                ReplyCategory.UNSUBSCRIBE,
+                corrected_by=_employee_id(tenant_b),
+                actor=_actor(tenant_b),
+            )
+        assert str(exc_info.value) == "收件箱访问拒绝"
+
+        assert await _correction_rows(factory, tenant_a) == []
+        assert await _correction_rows(factory_b, tenant_b) == []
+        original = await _classification_rows(factory, tenant_a)
+        assert len(original) == 1
+        assert original[0].category == "requests_materials"
+
+    finally:
+        await engine_b.dispose()
 
 
 async def test_correct_classification_no_event_no_leak(
     correction_db: AsyncEngine,
+    correction_tenant: TenantId,
     owned_infrastructure,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -741,7 +775,7 @@ async def test_correct_classification_no_event_no_leak(
     ValidationError，异常文本/日志/outbox 均不含 marker、marker 不落库；
     合法纠正同样零事件、零日志。"""
     factory = async_sessionmaker(correction_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = correction_tenant
     message_id = MessageId(new_id("msg"))
     clock = MutableClock(NOW)
     service = _service(factory, tenant, clock)
@@ -802,6 +836,7 @@ async def test_correct_classification_no_event_no_leak(
 
 async def test_correction_concurrent_same_key_exactly_one_row(
     correction_db: AsyncEngine,
+    correction_tenant: TenantId,
     owned_infrastructure,
 ) -> None:
     """同幂等键并发：恰一行。
@@ -813,7 +848,7 @@ async def test_correction_concurrent_same_key_exactly_one_row(
     新 session 回读恰一行且 key 正确；outbox 等于并发前 baseline（无事件）。
     """
     factory = async_sessionmaker(correction_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = correction_tenant
     message_id = MessageId(new_id("msg"))
     clock = MutableClock(NOW)
     service_a = _service(factory, tenant, clock)
@@ -863,6 +898,7 @@ async def test_correction_concurrent_same_key_exactly_one_row(
 
 async def test_correction_concurrent_different_keys_two_rows_same_clock(
     correction_db: AsyncEngine,
+    correction_tenant: TenantId,
     owned_infrastructure,
 ) -> None:
     """不同幂等键并发（同固定时钟）：恰两行。
@@ -873,7 +909,7 @@ async def test_correction_concurrent_different_keys_two_rows_same_clock(
     outbox 等于 baseline（无事件）。
     """
     factory = async_sessionmaker(correction_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = correction_tenant
     message_id = MessageId(new_id("msg"))
     clock = MutableClock(NOW)
     service_a = _service(factory, tenant, clock)

@@ -740,7 +740,9 @@ async def counts(runtime):
         )
 
 
-async def test_second_receipt_failure_rolls_back_messages_events_cursor(page_runtime):
+async def test_second_receipt_failure_rolls_back_messages_events_cursor(
+    page_runtime, integration_engine
+):
     from sqlalchemy.exc import DBAPIError
 
     from tests.unit.test_email_inbound import mime
@@ -759,7 +761,7 @@ async def test_second_receipt_failure_rolls_back_messages_events_cursor(page_run
             first.route.tenant_id, "primary", before.cursor, 20
         )
         poison = sorted(i.provider_ref_digest for i in page.items)[1]
-        async with runtime["factory"].begin() as session:
+        async with integration_engine.begin() as session:
             await session.execute(
                 text(
                     "CREATE FUNCTION inbound_test_reject() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.provider_ref_digest = '"
@@ -786,7 +788,7 @@ async def test_second_receipt_failure_rolls_back_messages_events_cursor(page_run
                     )
                 )[1] == raw
         finally:
-            async with runtime["factory"].begin() as session:
+            async with integration_engine.begin() as session:
                 await session.execute(
                     text("DROP TRIGGER inbound_test_reject ON email_inbound_receipts")
                 )
@@ -1182,7 +1184,7 @@ async def test_buffered_domain_audit_failure_rolls_back_entire_page(
 
 
 async def test_actual_other_tenant_sent_is_review_and_wrong_tenant_page_rejected(
-    page_runtime, tmp_path
+    page_runtime, tmp_path, db_url
 ):
     from tests.unit.test_email_inbound import mime
     from workflows.reply_qualification.inbound_contracts import InboundPageError
@@ -1190,53 +1192,67 @@ async def test_actual_other_tenant_sent_is_review_and_wrong_tenant_page_rejected
     runtime = page_runtime
     await prepare_sent(runtime)
     foreign_tenant = TenantId(new_id("tn"))
-    env = runtime["config"].runtime_environment()
-    env["TRADEOS_TENANT_ID"] = foreign_tenant
-    provider = ControlledGmailTransport(
-        tmp_path / "foreign.sqlite", tenant_id=foreign_tenant
-    )
-    deps = build_phase1_dependencies(
-        Phase1RuntimeSettings.from_environ(env),
-        runtime["factory"],
-        now=lambda: NOW,
-        secret_resolver=runtime["config"],
-        gmail_transport=provider,
-    )
-    try:
-        sid = await deps.sending_identities.register(
-            foreign_tenant,
-            IdentityRegisterRequest(
-                "foreign@tradeos-controlled.test",
-                "tradeos-controlled.test",
-                DomainRole.COLD_OUTREACH,
-            ),
-            actor=runtime["boss"],
+    async with runtime_database_scope(db_url) as provision:
+        foreign_url = await provision(str(foreign_tenant))
+        config = runtime["config"].model_copy(update={
+            "tenant_id": foreign_tenant,
+            "database_url": SecretStr(foreign_url),
+            "database_port": make_url(foreign_url).port or 5432,
+        })
+        engine = create_engine_from(foreign_url)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        provider = ControlledGmailTransport(
+            tmp_path / "foreign.sqlite", tenant_id=foreign_tenant
         )
-        other = {
-            **runtime,
-            "route": runtime["route"].model_copy(
-                update={"tenant_id": foreign_tenant, "configured_identity_id": sid}
-            ),
-            "provider": provider,
-            "deps": deps,
-        }
-        async for initial, anchor in archived_page(
-            other,
-            [mime(message_id="<cross-tenant@example.test>", reply=runtime["outbound"])],
-        ):
-            processor = processor_for(other)
-            with pytest.raises(InboundPageError, match="page_integrity"):
-                await processor.process(
-                    initial, anchor.model_copy(update={"route": runtime["route"]})
-                )
-            assert await other["repository"].read_cursor() == initial
-            await processor.process(initial, anchor)
-            current = await other["repository"].read_cursor()
-            page = await other["reader"].fetch(
-                foreign_tenant, "primary", current.cursor, 20
+        deps = build_phase1_dependencies(
+            Phase1RuntimeSettings.from_environ(config.runtime_environment()),
+            factory,
+            now=lambda: NOW,
+            secret_resolver=config,
+            gmail_transport=provider,
+        )
+        boss = Actor(new_id("emp"), SendingIdentityScope(level=ScopeLevel.TENANT), "boss")
+        try:
+            sid = await deps.sending_identities.register(
+                foreign_tenant,
+                IdentityRegisterRequest(
+                    "foreign@tradeos-controlled.test",
+                    "tradeos-controlled.test",
+                    DomainRole.COLD_OUTREACH,
+                ),
+                actor=boss,
             )
-            await processor.process(current, page)
-            assert await counts(other) == (0, 0, 1, 1)
-    finally:
-        if deps.model_lifecycle:
-            await deps.model_lifecycle.aclose()
+            other = {
+                "factory": factory,
+                "db_url": foreign_url,
+                "config": config,
+                "boss": boss,
+                "route": runtime["route"].model_copy(
+                    update={"tenant_id": foreign_tenant, "configured_identity_id": sid}
+                ),
+                "provider": provider,
+                "deps": deps,
+            }
+            async for initial, anchor in archived_page(
+                other,
+                [mime(message_id="<cross-tenant@example.test>", reply=runtime["outbound"])],
+            ):
+                processor = processor_for(other)
+                with pytest.raises(InboundPageError, match="page_integrity"):
+                    await processor.process(
+                        initial, anchor.model_copy(update={"route": runtime["route"]})
+                    )
+                assert await other["repository"].read_cursor() == initial
+                await processor.process(initial, anchor)
+                current = await other["repository"].read_cursor()
+                page = await other["reader"].fetch(
+                    foreign_tenant, "primary", current.cursor, 20
+                )
+                await processor.process(current, page)
+                assert await counts(other) == (0, 0, 1, 1)
+        finally:
+            try:
+                if deps.model_lifecycle:
+                    await deps.model_lifecycle.aclose()
+            finally:
+                await engine.dispose()

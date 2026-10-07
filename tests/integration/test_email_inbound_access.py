@@ -88,7 +88,7 @@ async def composition(runtime, clock=None):
     )
 
 
-async def test_active_boss_binding_status_review_and_raw(page_runtime):
+async def test_active_boss_binding_status_review_and_raw(page_runtime, monkeypatch):
     from shared.errors import PermissionDenied
     from shared.schemas.identifiers import (
         EmployeeId,
@@ -136,12 +136,25 @@ async def test_active_boss_binding_status_review_and_raw(page_runtime):
             and reviews[0].reason == "unknown_outbound"
         )
         assert await c.raw.read(tenant, boss, reviews[0].review_id) == raw
-        for bad_tenant, bad_employee in (
-            (tenant, sales),
-            (TenantId(new_id("tn")), boss),
-        ):
-            with pytest.raises(ToolGatewayError):
-                await c.raw.read(bad_tenant, bad_employee, reviews[0].review_id)
+        from sqlalchemy.exc import DBAPIError
+
+        from connectors.object_store.bounded import S3BoundedObjectBlobTransport
+
+        object_reads = []
+
+        async def forbidden_object_read(*_args, **_kwargs):
+            object_reads.append(1)
+            pytest.fail("未授权读取不得访问对象存储")
+
+        monkeypatch.setattr(
+            S3BoundedObjectBlobTransport, "get_bounded", forbidden_object_read
+        )
+        with pytest.raises(ToolGatewayError):
+            await c.raw.read(tenant, sales, reviews[0].review_id)
+        # 错企业在真实 RLS 审计写入时即拒绝，不能放宽运行角色来制造应用层拒绝。
+        with pytest.raises(DBAPIError) as denied:
+            await c.raw.read(TenantId(new_id("tn")), boss, reviews[0].review_id)
+        assert getattr(denied.value.orig, "sqlstate", None) == "42501"
         from sqlalchemy import text
 
         async with runtime["factory"].begin() as session:
@@ -155,6 +168,7 @@ async def test_active_boss_binding_status_review_and_raw(page_runtime):
             await c.management.reviews(tenant, boss, limit=10, after=None)
         with pytest.raises(ToolGatewayError):
             await c.raw.read(tenant, boss, reviews[0].review_id)
+        assert object_reads == []
     finally:
         await c.aclose()
 

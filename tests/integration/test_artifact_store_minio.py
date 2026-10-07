@@ -14,7 +14,7 @@ import boto3
 import pytest
 import pytest_asyncio
 from botocore.config import Config
-from botocore.exceptions import BotoCoreError
+from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from testcontainers.core.container import DockerContainer
@@ -28,9 +28,9 @@ from artifact_store.errors import (
 from artifact_store.store import GeneratedArtifactKind, RawArtifactKind
 from connectors.object_store.config import S3ObjectStoreSettings
 from infra.db.tables import GeneratedArtifactRow, RawArtifactRow
+from infra.pilot.resources import PILOT_MINIO_IMAGE
 from shared.schemas.identifiers import IdempotencyKey, RunId, TenantId, new_id
 
-_MINIO_IMAGE = "minio/minio:RELEASE.2025-04-22T22-12-26Z"
 _GENERATED_MIME = "application/vnd.tradeos.email-draft+json"
 
 
@@ -55,50 +55,74 @@ def minio_runtime() -> Iterator[_MinioRuntime]:
     secret = f"secret{secrets.token_urlsafe(24)}"
     bucket = f"artifacts-{secrets.token_hex(8)}"
     container = (
-        DockerContainer(_MINIO_IMAGE)
+        DockerContainer(PILOT_MINIO_IMAGE)
         .with_env("MINIO_ROOT_USER", access)
         .with_env("MINIO_ROOT_PASSWORD", secret)
-        .with_command("server /data --address :9000")
+        .with_command(
+            "server /bitnami/minio/data --address :9000 --console-address 127.0.0.1:9001"
+        )
         .with_exposed_ports(9000)
     )
-    container.start()
-    endpoint = f"http://127.0.0.1:{container.get_exposed_port(9000)}"
-    client = boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=access,
-        aws_secret_access_key=secret,
-        region_name="us-east-1",
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
-    )
-    deadline = time.monotonic() + 30
-    while True:
-        try:
-            client.create_bucket(Bucket=bucket)
-            break
-        except BotoCoreError:
-            if time.monotonic() >= deadline:
-                container.stop()
-                pytest.fail("MinIO 未在限定时间内就绪")
-            time.sleep(0.2)
-    settings = S3ObjectStoreSettings(
-        True,
-        endpoint,
-        bucket,
-        "TEST_MINIO_ACCESS",
-        "TEST_MINIO_SECRET",
-        "us-east-1",
-        1024 * 1024,
-        1024 * 1024,
-    )
+    client = None
+    primary: BaseException | None = None
     try:
+        container.start()
+        endpoint = f"http://127.0.0.1:{container.get_exposed_port(9000)}"
+        client = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=access,
+            aws_secret_access_key=secret,
+            region_name="us-east-1",
+            config=Config(
+                signature_version="s3v4", s3={"addressing_style": "path"},
+                proxies={}, connect_timeout=2, read_timeout=2,
+                retries={"max_attempts": 0},
+            ),
+        )
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                client.create_bucket(Bucket=bucket)
+                break
+            except (BotoCoreError, ClientError):
+                if time.monotonic() >= deadline:
+                    pytest.fail("MinIO 未在限定时间内就绪")
+                time.sleep(0.2)
+        settings = S3ObjectStoreSettings(
+            True,
+            endpoint,
+            bucket,
+            "TEST_MINIO_ACCESS",
+            "TEST_MINIO_SECRET",
+            "us-east-1",
+            1024 * 1024,
+            1024 * 1024,
+        )
         yield _MinioRuntime(
             settings,
             _Secrets({"TEST_MINIO_ACCESS": access, "TEST_MINIO_SECRET": secret}),
             client,
         )
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        container.stop()
+        cleanup_errors = []
+        closers = [] if client is None else [("MinIO 客户端关闭失败", client.close)]
+        # Testcontainers.stop 仅移除本实例已取得的容器 ID；未创建时只关闭客户端。
+        closers.append(("MinIO 测试容器清理失败", container.stop))
+        for reason, close in closers:
+            try:
+                close()
+            except Exception:  # noqa: BLE001 - 保留主失败，清理错误只记录固定类别
+                cleanup_errors.append(reason)
+        if cleanup_errors:
+            summary = "；".join(cleanup_errors)
+            if primary is not None:
+                primary.add_note(summary)
+            else:
+                raise RuntimeError(summary) from None
 
 
 @pytest_asyncio.fixture

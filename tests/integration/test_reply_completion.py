@@ -1126,12 +1126,14 @@ async def test_raw_secret_is_rejected_before_model_at_real_inbound_entry(page_ru
     ],
 )
 async def test_current_reply_authority_guards_raw_model_and_new_classification(
-    page_runtime, monkeypatch, window
+    page_runtime, monkeypatch, window, db_url, integration_engine
 ):
     import asyncio
 
     from connectors.object_store.bounded import S3BoundedObjectBlobTransport
+    from infra.db.session import create_engine_from
     from shared.schemas.identifiers import new_id
+    from tests.runtime_database_fixtures import runtime_database_scope
 
     runtime = page_runtime
     await prepare_sent(runtime, reply_source=True)
@@ -1147,11 +1149,29 @@ async def test_current_reply_authority_guards_raw_model_and_new_classification(
     original_read = S3BoundedObjectBlobTransport.get_bounded
 
     async def revoke(kind="inactive"):
+        if kind == "foreign_employee":
+            # A 删除本企业员工，B 用自己的真实登录角色创建同 ID 员工；不跨租户更新。
+            async with runtime["factory"].begin() as session:
+                employee = dict((await session.execute(text(
+                    "DELETE FROM employees WHERE tenant_id=:t AND employee_id=:e "
+                    "RETURNING employee_id, name, role, is_active, created_at"
+                ), {"t": tenant, "e": boss})).mappings().one())
+            foreign_tenant = new_id("tn")
+            async with runtime_database_scope(db_url) as provision:
+                foreign_engine = create_engine_from(await provision(foreign_tenant))
+                try:
+                    async with foreign_engine.begin() as connection:
+                        await connection.execute(text(
+                            "INSERT INTO employees "
+                            "(tenant_id, employee_id, user_id, name, role, is_active, created_at) "
+                            "VALUES (:tenant, :employee_id, :user, :name, :role, :is_active, :created_at)"
+                        ), {**employee, "tenant": foreign_tenant, "user": new_id("usr")})
+                finally:
+                    await foreign_engine.dispose()
+            return
         async with runtime["factory"]() as session:
             if kind == "missing":
                 query = "DELETE FROM employees WHERE tenant_id=:t AND employee_id=:e"
-            elif kind == "foreign_employee":
-                query = "UPDATE employees SET tenant_id=:other WHERE tenant_id=:t AND employee_id=:e"
             elif kind == "sales":
                 query = "UPDATE employees SET role='sales' WHERE tenant_id=:t AND employee_id=:e"
             else:
@@ -1258,8 +1278,8 @@ async def test_current_reply_authority_guards_raw_model_and_new_classification(
                     await session.commit()
             if window.startswith("audit_"):
                 outcome = window.removeprefix("audit_")
-                async with runtime["factory"]() as session:
-                    # 本 owner 隔离 PG 中的真实审计写故障；仅精确 tenant/tool/status。
+                async with integration_engine.connect() as session:
+                    # 管理连接只安装本例故障触发器，业务读写继续使用受限角色。
                     await session.execute(
                         text(
                             f"CREATE FUNCTION {audit_trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.tenant_id = '{tenant}' AND NEW.tool_id = 'inbox.message.evidence.read' AND NEW.status = '{outcome}' THEN RAISE EXCEPTION 'controlled_audit_failure'; END IF; RETURN NEW; END $$"
@@ -1337,7 +1357,7 @@ async def test_current_reply_authority_guards_raw_model_and_new_classification(
         if locker is not None:
             await locker.close()
         if window.startswith("audit_"):
-            async with runtime["factory"]() as session:
+            async with integration_engine.connect() as session:
                 await session.execute(
                     text(f"DROP TRIGGER IF EXISTS {audit_trigger} ON tool_calls")
                 )

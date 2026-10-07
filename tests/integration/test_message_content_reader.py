@@ -18,6 +18,7 @@ TDD RED：apps/scheduler_worker/adapters 尚不存在，导入即失败。
 from __future__ import annotations
 
 import importlib
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -44,6 +45,9 @@ BODY_MARKER = "please stop contacting us CUSTOMER-EXPRESSION-77"
 from tests.integration.test_email_inbound_gateway import (
     owned_infrastructure,  # noqa: F401
 )
+from tests.runtime_database_fixtures import (
+    runtime_database_url as runtime_database_url,  # noqa: PLC0414 - 真实企业运行角色
+)
 
 
 @dataclass(frozen=True)
@@ -62,10 +66,15 @@ def minio_runtime(owned_infrastructure):  # noqa: F811
     )
 
 
+@pytest.fixture
+def reader_tenant() -> TenantId:
+    return TenantId(new_id("tn"))
+
+
 @pytest_asyncio.fixture
-async def artifact_db(owned_infrastructure):  # noqa: F811
+async def artifact_db(runtime_database_url, reader_tenant) -> AsyncIterator[AsyncEngine]:
     engine = importlib.import_module("infra.db.session").create_engine_from(
-        owned_infrastructure.config.database_url.get_secret_value()
+        await runtime_database_url(str(reader_tenant))
     )
     try:
         yield engine
@@ -184,10 +193,11 @@ def _rfc822(subject: str | None, body: str, *, extra_headers: str = "") -> bytes
 
 async def test_reader_loads_subject_and_body_from_email_artifact(
     artifact_db: AsyncEngine,
+    reader_tenant: TenantId,
     minio_runtime: _MinioRuntime,
 ) -> None:
     factory = async_sessionmaker(artifact_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = reader_tenant
     account = ProspectAccountId(new_id("acc"))
     store = _stores(artifact_db, minio_runtime)
     ref = await _store_email(
@@ -207,10 +217,11 @@ async def test_reader_loads_subject_and_body_from_email_artifact(
 
 async def test_reader_multipart_text_plain_and_attachment_excluded(
     artifact_db: AsyncEngine,
+    reader_tenant: TenantId,
     minio_runtime: _MinioRuntime,
 ) -> None:
     factory = async_sessionmaker(artifact_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = reader_tenant
     account = ProspectAccountId(new_id("acc"))
     store = _stores(artifact_db, minio_runtime)
     raw = (
@@ -246,10 +257,11 @@ async def test_reader_multipart_text_plain_and_attachment_excluded(
 
 async def test_reader_missing_message_returns_none(
     artifact_db: AsyncEngine,
+    reader_tenant: TenantId,
     minio_runtime: _MinioRuntime,
 ) -> None:
     factory = async_sessionmaker(artifact_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = reader_tenant
     store = _stores(artifact_db, minio_runtime)
     reader = _reader(factory, tenant, store)
     assert await reader.load(tenant, MessageId(new_id("msg"))) is None
@@ -257,10 +269,11 @@ async def test_reader_missing_message_returns_none(
 
 async def test_reader_missing_artifact_fails_closed(
     artifact_db: AsyncEngine,
+    reader_tenant: TenantId,
     minio_runtime: _MinioRuntime,
 ) -> None:
     factory = async_sessionmaker(artifact_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = reader_tenant
     account = ProspectAccountId(new_id("acc"))
     store = _stores(artifact_db, minio_runtime)
     service = _conversations_service(factory, tenant)
@@ -278,10 +291,11 @@ async def test_reader_missing_artifact_fails_closed(
 
 async def test_reader_rejects_non_email_artifact(
     artifact_db: AsyncEngine,
+    reader_tenant: TenantId,
     minio_runtime: _MinioRuntime,
 ) -> None:
     factory = async_sessionmaker(artifact_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = reader_tenant
     account = ProspectAccountId(new_id("acc"))
     store = _stores(artifact_db, minio_runtime)
     from artifact_store.store import RawArtifactKind
@@ -304,10 +318,11 @@ async def test_reader_rejects_non_email_artifact(
 
 async def test_reader_rejects_outbound_direction(
     artifact_db: AsyncEngine,
+    reader_tenant: TenantId,
     minio_runtime: _MinioRuntime,
 ) -> None:
     factory = async_sessionmaker(artifact_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = reader_tenant
     account = ProspectAccountId(new_id("acc"))
     store = _stores(artifact_db, minio_runtime)
     ref = await _store_email(store, tenant, _rfc822("out", "body"))
@@ -326,10 +341,11 @@ async def test_reader_rejects_outbound_direction(
 
 async def test_reader_html_only_uses_original_inbound_parser(
     artifact_db: AsyncEngine,
+    reader_tenant: TenantId,
     minio_runtime: _MinioRuntime,
 ) -> None:
     factory = async_sessionmaker(artifact_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = reader_tenant
     account = ProspectAccountId(new_id("acc"))
     store = _stores(artifact_db, minio_runtime)
     raw = (
@@ -351,10 +367,11 @@ async def test_reader_html_only_uses_original_inbound_parser(
 
 async def test_reader_rejects_subject_and_body_over_budget(
     artifact_db: AsyncEngine,
+    reader_tenant: TenantId,
     minio_runtime: _MinioRuntime,
 ) -> None:
     factory = async_sessionmaker(artifact_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = reader_tenant
     account = ProspectAccountId(new_id("acc"))
     store = _stores(artifact_db, minio_runtime)
     long_subject = "S" * 500
@@ -376,10 +393,11 @@ async def test_reader_rejects_subject_and_body_over_budget(
 
 async def test_reader_raw_bytes_over_limit_fails_closed(
     artifact_db: AsyncEngine,
+    reader_tenant: TenantId,
     minio_runtime: _MinioRuntime,
 ) -> None:
     factory = async_sessionmaker(artifact_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = reader_tenant
     account = ProspectAccountId(new_id("acc"))
     store = _stores(artifact_db, minio_runtime)
     ref = await _store_email(store, tenant, _rfc822("big", "B" * 5000))
@@ -397,10 +415,11 @@ async def test_reader_raw_bytes_over_limit_fails_closed(
 
 async def test_reader_quoted_printable_and_utf8_subject(
     artifact_db: AsyncEngine,
+    reader_tenant: TenantId,
     minio_runtime: _MinioRuntime,
 ) -> None:
     factory = async_sessionmaker(artifact_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = reader_tenant
     account = ProspectAccountId(new_id("acc"))
     store = _stores(artifact_db, minio_runtime)
     raw = (
@@ -425,10 +444,12 @@ async def test_reader_quoted_printable_and_utf8_subject(
 
 async def test_reader_cross_tenant_isolation(
     artifact_db: AsyncEngine,
+    reader_tenant: TenantId,
     minio_runtime: _MinioRuntime,
+    runtime_database_url,
 ) -> None:
     factory = async_sessionmaker(artifact_db, expire_on_commit=False)
-    tenant_a = TenantId(new_id("tn"))
+    tenant_a = reader_tenant
     tenant_b = TenantId(new_id("tn"))
     account = ProspectAccountId(new_id("acc"))
     store = _stores(artifact_db, minio_runtime)
@@ -441,17 +462,25 @@ async def test_reader_cross_tenant_isolation(
         ref,
         "<iso@example.test>",
     )
-    reader_b = _reader(factory, tenant_b, store)
-    assert await reader_b.load(tenant_b, message_id) is None
+    engine_b = importlib.import_module("infra.db.session").create_engine_from(
+        await runtime_database_url(str(tenant_b))
+    )
+    try:
+        factory_b = async_sessionmaker(engine_b, expire_on_commit=False)
+        reader_b = _reader(factory_b, tenant_b, _stores(engine_b, minio_runtime))
+        assert await reader_b.load(tenant_b, message_id) is None
+    finally:
+        await engine_b.dispose()
 
 
 async def test_reader_content_never_persisted_or_logged(
     artifact_db: AsyncEngine,
+    reader_tenant: TenantId,
     minio_runtime: _MinioRuntime,
     caplog: Any,
 ) -> None:
     factory = async_sessionmaker(artifact_db, expire_on_commit=False)
-    tenant = TenantId(new_id("tn"))
+    tenant = reader_tenant
     account = ProspectAccountId(new_id("acc"))
     store = _stores(artifact_db, minio_runtime)
     ref = await _store_email(
@@ -492,6 +521,7 @@ async def test_reader_content_never_persisted_or_logged(
 
 async def test_reader_through_classify_step_over_budget_prevents_model_and_classification(
     artifact_db: AsyncEngine,
+    reader_tenant: TenantId,
     minio_runtime: _MinioRuntime,
 ) -> None:
     """条件 7：真实 reader → ClassifyStep → QualificationAgent(fake port)。
@@ -504,7 +534,7 @@ async def test_reader_through_classify_step_over_budget_prevents_model_and_class
     from workflows.engine.runner import RunId, StepStatus, WorkflowRun
     from workflows.reply_qualification.steps import ClassifyStep
 
-    tenant = TenantId(new_id("tn"))
+    tenant = reader_tenant
     account = ProspectAccountId(new_id("acc"))
     factory = async_sessionmaker(artifact_db, expire_on_commit=False)
     store = _stores(artifact_db, minio_runtime)

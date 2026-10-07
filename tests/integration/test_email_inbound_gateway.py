@@ -544,7 +544,16 @@ async def test_raw_commit_unknown_preserves_bytes_and_dedup_retry(runtime, monke
         assert stored_ids == [rows[0].artifact_id]
     calls = await runtime["provider"].list_calls()
     assert await fetch(runtime, anchor.next_cursor) == page
-    assert await runtime["provider"].list_calls() == calls
+    replay_calls = await runtime["provider"].list_calls()
+    # 此读取工具未启用幂等缓存；重取 MIME 只允许只读 Provider 动作。
+    assert replay_calls[:len(calls)] == calls
+    assert [call.operation for call in replay_calls[len(calls):]] == [
+        "inbound_list", "inbound_get",
+    ]
+    async with runtime["factory"]() as session:
+        assert list((await session.scalars(
+            select(RawArtifactRow.artifact_id).where(RawArtifactRow.tenant_id == tenant)
+        )).all()) == stored_ids
     assert runtime["slot"].is_empty
 
 
