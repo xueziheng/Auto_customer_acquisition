@@ -325,21 +325,25 @@ def contains_forbidden_commitment(text: str) -> list[ForbiddenAutoCommitment]:
     模块级纯函数：``guardrails`` 和 ``tool_gateway`` 都要用，
     不该被迫依赖服务实例。
 
-    实现要求：
-    - 规则优先（价格模式、"guarantee"、"exclusive"、交期承诺句式等），
-      可辅以模型判断，但**模型判定"没有承诺"不能推翻规则判定"有"**
-      ——漏放一条承诺的代价远大于误拦一条
+    实现边界：
+    - 确定性规则只覆盖已知价格、保证、独家和交期句式；未命中不证明
+      自然语言不含承诺，也不能替代逐次人工审批。
+    - 允许正文 LF/CRLF、水平制表及首尾空白，拒绝孤立 CR 与其他控制
+      字符；长度按原文限制，仅在检查视图中折叠空白，不改写客户原文。
     - 返回全部命中项，不要首个命中就返回：起草者需要一次看到
       所有要改的地方
     """
     if (
         not isinstance(text, str)
         or not 1 <= len(text) <= 100_000
-        or text != text.strip()
-        or any(ord(character) < 32 or ord(character) == 127 for character in text)
+        or not text.strip()
+        or any(
+            unicodedata.category(character) == "Cc" and character not in "\n\t"
+            for character in text.replace("\r\n", "\n")
+        )
     ):
         raise ValidationError("承诺检查文本无效")
-    normalized = unicodedata.normalize("NFKC", text).casefold()
+    normalized = " ".join(unicodedata.normalize("NFKC", text).casefold().split())
     matched: set[ForbiddenAutoCommitment] = set()
     for category, patterns in _COMMITMENT_PATTERNS.items():
         if any(pattern.search(normalized) is not None for pattern in patterns):
@@ -355,6 +359,11 @@ def _patterns(*values: str) -> tuple[re.Pattern[str], ...]:
 
 _NUMBER = r"(?:\d{1,3}(?:[,.]\d{3})+|\d+(?:[.,]\d+)?)"
 _CURRENCY = r"(?:usd|eur|gbp|cny|rmb|jpy|cad|aud|\$|€|£|¥|人民币)"
+_WEEKDAY = r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+_DELIVERY_TIME = (
+    rf"(?:today|tomorrow|tonight|(?:this|next)\s+(?:week|month|{_WEEKDAY})"
+    rf"|{_WEEKDAY}|\d{{4}}-\d{{1,2}}-\d{{1,2}})"
+)
 
 _COMMITMENT_PATTERNS: dict[
     ForbiddenAutoCommitment,
@@ -362,7 +371,7 @@ _COMMITMENT_PATTERNS: dict[
 ] = {
     ForbiddenAutoCommitment.FIRST_CONCRETE_PRICE: _patterns(
         rf"(?:{_CURRENCY}\s*{_NUMBER}|{_NUMBER}\s*(?:usd|eur|gbp|cny|rmb|元|美元|欧元))",
-        rf"\b(?:price|total|cost)\s+(?:is|will be|=|:)\s*{_CURRENCY}?\s*{_NUMBER}",
+        rf"\b(?:price|total|cost)(?:\s*[:=]|\s+(?:is|will\s+be))\s*{_CURRENCY}?\s*{_NUMBER}",
         rf"(?:价格|总价|单价|金额)(?:为|是|:|：)?\s*{_CURRENCY}?\s*{_NUMBER}",
     ),
     ForbiddenAutoCommitment.FORMAL_QUOTATION: _patterns(
@@ -381,7 +390,10 @@ _COMMITMENT_PATTERNS: dict[
     ),
     ForbiddenAutoCommitment.DELIVERY_DATE_COMMITMENT: _patterns(
         rf"\b(?:delivery|lead\s+time|ship(?:ment|ping)?)\b.{{0,30}}(?:within|by|in)\s+{_NUMBER}\s+(?:days?|weeks?|months?)\b",
+        rf"\b(?:deliver(?:y)?|lead\s+time|ship(?:ment|ping)?|dispatch)\s+"
+        rf"(?:(?:is|will\s+be|scheduled\s+for)\s+)?(?:(?:by|on)\s+)?{_DELIVERY_TIME}\b",
         rf"(?:交货期|交期|发货)(?:为|是|:|：|在)?\s*{_NUMBER}\s*(?:天|周|个月|月)(?:内)?",
+        r"(?:今天|明天|后天|本周|下周).{0,12}(?:发货|交货|送达)",
         r"(?:签署|签订).{0,12}(?:合同).{0,12}(?:发货|交货)",
     ),
     ForbiddenAutoCommitment.CERTIFICATION_COMMITMENT: _patterns(

@@ -13,6 +13,7 @@ remediation 给出提交审批的路径——这是少数可补救的拒绝。
 from __future__ import annotations
 
 from domains.quotations.service import contains_forbidden_commitment
+from shared.errors import ValidationError
 from tool_gateway.pipeline import CheckRejection, ToolCallContext, ToolInvocationState
 
 
@@ -31,13 +32,27 @@ class ApprovalCheck:
             )
         subject = ctx.params.get("subject")
         body = ctx.params.get("body")
-        if not isinstance(subject, str) or not isinstance(body, str):
+        if (
+            not isinstance(subject, str)
+            or not isinstance(body, str)
+            or "\r" in subject
+            or "\n" in subject
+        ):
             return CheckRejection(
                 self.name,
                 "approval:material_invalid",
                 "客户可见内容无效",
             )
-        if contains_forbidden_commitment(subject) or contains_forbidden_commitment(body):
+        try:
+            subject_commitments = contains_forbidden_commitment(subject)
+            body_commitments = contains_forbidden_commitment(body)
+        except ValidationError:
+            return CheckRejection(
+                self.name,
+                "approval:material_invalid",
+                "客户可见内容无效",
+            )
+        if subject_commitments or body_commitments:
             return CheckRejection(
                 self.name,
                 "approval:commercial_commitment",

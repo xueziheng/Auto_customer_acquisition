@@ -18,10 +18,20 @@ def _commitments() -> object:
     ("text", "expected_name"),
     [
         ("Our price is USD 12.50 per unit.", "FIRST_CONCRETE_PRICE"),
+        ("Price: 12.50 per unit.", "FIRST_CONCRETE_PRICE"),
+        ("Unit price=12.50.", "FIRST_CONCRETE_PRICE"),
+        ("Price：１２．５０ per unit.", "FIRST_CONCRETE_PRICE"),
         ("正式报价：每件人民币 88 元。", "FORMAL_QUOTATION"),
         ("给您 8％ 折扣。", "DISCOUNT"),
         ("We have 500 units in stock.", "STOCK_COMMITMENT"),
         ("Delivery within 14 days is guaranteed.", "DELIVERY_DATE_COMMITMENT"),
+        ("We can ship tomorrow.", "DELIVERY_DATE_COMMITMENT"),
+        ("We will deliver today.", "DELIVERY_DATE_COMMITMENT"),
+        ("Shipment next week.", "DELIVERY_DATE_COMMITMENT"),
+        ("We can dispatch next Monday.", "DELIVERY_DATE_COMMITMENT"),
+        ("Delivery by Friday.", "DELIVERY_DATE_COMMITMENT"),
+        ("We will ship on 2026-10-12.", "DELIVERY_DATE_COMMITMENT"),
+        ("明天发货。", "DELIVERY_DATE_COMMITMENT"),
         ("This product is CE certified.", "CERTIFICATION_COMMITMENT"),
         ("PAYMENT TERMS: Net 30.", "PAYMENT_TERMS"),
         ("签署正式合同后发货。", "CONTRACT_TERMS"),
@@ -48,6 +58,9 @@ def test_forbidden_commitment_variants_return_typed_category(
         "We can discuss commercial terms after reviewing your requirements.",
         "Please tell us the expected quantity and destination.",
         "Our team can arrange a call next week to understand the project.",
+        "Could you share the delivery destination tomorrow?",
+        " Could you share the specification? ",
+        "\n\tCould you share the specification?\r\n",
     ],
 )
 def test_safe_discovery_copy_has_no_commitment(text: str) -> None:
@@ -85,9 +98,11 @@ def test_ambiguous_commercial_numbers_fail_closed(text: str) -> None:
     assert commitment.FIRST_CONCRETE_PRICE in contains_forbidden_commitment(text)
 
 
-@pytest.mark.parametrize("text", [None, 1, b"text", "", " text ", "bad\x00text", "bad\x7ftext"])
+@pytest.mark.parametrize(
+    "text", [None, 1, b"text", "", " \t\r\n ", "bad\x00text", "bad\x7ftext"]
+)
 def test_guard_rejects_malformed_runtime_input(text: object) -> None:
-    """边界 silent strip 或裸 TypeError 会让调用方无法安全分类。"""
+    """纯空白或非法输入不能当作不含承诺的安全文本。"""
     with pytest.raises(ValidationError):
         contains_forbidden_commitment(text)  # type: ignore[arg-type]
 
@@ -96,3 +111,25 @@ def test_guard_rejects_unbounded_content() -> None:
     """无界正文检查会让单次 API 请求放大 CPU/内存消耗。"""
     with pytest.raises(ValidationError):
         contains_forbidden_commitment("x" * 100_001)
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_guard_accepts_paragraphs_and_checks_wrapped_commitments(newline: str) -> None:
+    """合法换行既不能拒绝普通开发信，也不能让承诺跨行后漏检。"""
+    assert contains_forbidden_commitment(
+        f"Hello,{newline}{newline}Could you share your current sourcing needs?"
+    ) == []
+    commitment = _commitments()
+    assert commitment.DELIVERY_DATE_COMMITMENT in contains_forbidden_commitment(
+        f"We can ship{newline}tomorrow."
+    )
+    assert commitment.FIRST_CONCRETE_PRICE in contains_forbidden_commitment(
+        f"We can commit{newline}250 for this order."
+    )
+
+
+@pytest.mark.parametrize("control", ["\r", "\x00", "\x0b", "\x1b", "\x7f", "\x85"])
+def test_guard_still_rejects_unsafe_controls(control: str) -> None:
+    """放行正文换行不能同时放行孤立CR、终端控制或C1控制字符。"""
+    with pytest.raises(ValidationError):
+        contains_forbidden_commitment(f"Hello,{control}Could you share your needs?")
