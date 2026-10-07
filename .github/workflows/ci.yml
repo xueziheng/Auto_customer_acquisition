@@ -8,9 +8,9 @@ permissions:
   contents: read
 
 jobs:
-  ci:
+  checks:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -56,6 +56,42 @@ jobs:
         run: python3 scripts/check_boundaries.py
       - name: Sensitive scan
         run: python3 scripts/scan_sensitive.py
+      - name: Unit tests
+        run: pytest -q -m "not e2e" --ignore=tests/integration --ignore=tests/e2e --durations=15
+
+  integration:
+    needs: checks
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: npm ci
+      - name: Web build
+        working-directory: apps/web
+        run: npm run build
       - name: Prepare audited Linux test dependencies
         run: |
           docker pull pgvector/pgvector:pg16
@@ -74,11 +110,96 @@ jobs:
           bootstrap_dependency_image()
           print(audited_dependency_image_id())
           PY
-      - name: Tests
-        run: pytest -q -m "not e2e"
+      - name: Integration tests
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+          shard = int(os.environ["SHARD"])
+          assert 0 <= shard < 4
+          files = sorted(str(path) for path in Path("tests/integration").rglob("test_*.py"))
+          selected = files[shard::4]
+          assert selected
+          print(f"integration_shard={shard};files={len(selected)}", flush=True)
+          raise SystemExit(subprocess.call([
+              sys.executable, "-m", "pytest", "-q", "-m", "not e2e",
+              "--durations=15", *selected,
+          ]))
+          PY
+
+  acceptance:
+    needs: checks
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: npm ci
+      - name: Web build
+        working-directory: apps/web
+        run: npm run build
+      - name: Prepare audited Linux test dependencies
+        run: |
+          docker pull pgvector/pgvector:pg16
+          python - <<'PY'
+          import docker
+          from infra.pilot.resources import PILOT_MINIO_IMAGE
+          from tests.integration.quote_evidence_linux_support import (
+              PYTHON_IMAGE, bootstrap_dependency_image, audited_dependency_image_id,
+          )
+          client = docker.from_env()
+          try:
+              client.images.pull(PILOT_MINIO_IMAGE)
+              client.images.pull(PYTHON_IMAGE, platform="linux/arm64")
+          finally:
+              client.close()
+          bootstrap_dependency_image()
+          print(audited_dependency_image_id())
+          PY
       - name: Enterprise isolation acceptance
         run: python -m tests.run_tenant_isolation
       - name: Browser E2E
         env:
           TRADEOS_REQUIRE_E2E: "1"
-        run: pytest tests/e2e -q -W error
+        run: pytest tests/e2e -q -W error --durations=15
+
+  ci:
+    if: ${{ always() }}
+    needs: [checks, integration, acceptance]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - name: Require every test group to pass
+        env:
+          REQUIRED_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          results = json.loads(os.environ["REQUIRED_RESULTS"])
+          if any(job["result"] != "success" for job in results.values()):
+              raise SystemExit("必需检查尚未全部通过")
+          print("全部必需检查通过")
+          PY
