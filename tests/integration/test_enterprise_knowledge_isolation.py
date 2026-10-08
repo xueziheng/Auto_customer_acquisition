@@ -43,7 +43,7 @@ async def test_real_roles_share_within_company_and_reject_other_company(
     service = EnterpriseKnowledgeServiceImpl(lambda t: SqlAlchemyKnowledgeUnitOfWork(factory, t))
     try:
         async with db.apps[0].begin() as conn:
-            await conn.execute(text("INSERT INTO raw_artifacts (tenant_id,artifact_id,kind,content_hash,size_bytes,mime_type,uploaded_by,created_at,object_key) VALUES (:tenant,:artifact,'text',:hash,20,'text/markdown',NULL,now(),:key)"), {"tenant": tenant, "artifact": source.artifact_id, "hash": source.sha256, "key": "raw/" + tenant + "/" + source.artifact_id})
+            await conn.execute(text("INSERT INTO raw_artifacts (tenant_id,artifact_id,kind,content_hash,size_bytes,mime_type,uploaded_by,uploaded_at,object_key) VALUES (:tenant,:artifact,'text',:hash,20,'text/markdown',NULL,now(),:key)"), {"tenant": tenant, "artifact": source.artifact_id, "hash": source.sha256, "key": "raw/" + tenant + "/" + source.artifact_id})
         first, duplicate = await asyncio.gather(
             service.register_upload(tenant, actor, source, idempotency_key="same-upload"),
             service.register_upload(tenant, actor, source, idempotency_key="same-upload"),
