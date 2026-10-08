@@ -29,6 +29,20 @@ jobs:
           test -x /usr/bin/bwrap
           test -x /usr/bin/pdftoppm
           test -d /proc
+      - name: Permit bwrap namespaces on the ephemeral CI runner
+        run: |
+          # Ubuntu 24.04 的 restrictuserns 会禁止未授权 bwrap 配置隔离网络的 loopback。
+          # 只允许固定 bwrap 可执行文件建立自己的沙箱，不关闭全局 AppArmor/userns 限制。
+          sudo apt-get install -y --no-install-recommends apparmor
+          sudo tee /etc/apparmor.d/tradeos-ci-bwrap > /dev/null <<'APPARMOR'
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          profile tradeos-ci-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          APPARMOR
+          sudo apparmor_parser -r /etc/apparmor.d/tradeos-ci-bwrap
       - name: Verify enterprise knowledge sandbox startup
         run: |
           python - <<'PY'
