@@ -89,9 +89,13 @@ def create_standalone_app(
     if platform_settings is not None:
         if platform_settings.control_tenant_id == profile.tenant_id:
             raise ValueError("平台和企业租户必须独立")
+        # 存储重启可重新映射端口；控制租户仍必须使用自己的独立数据库身份。
+        current_platform = platform_settings.model_copy(
+            update={"database_port": profile.database_port},
+        )
         platform = create_platform_app(
-            control_tenant=TenantId(platform_settings.control_tenant_id),
-            engine=create_engine_from(platform_settings.database_url.get_secret_value()),
+            control_tenant=TenantId(current_platform.control_tenant_id),
+            engine=create_engine_from(current_platform.database_url.get_secret_value()),
             origin=f"http://127.0.0.1:{profile.api_port}",
             readers=(EnterpriseReaderBinding(
                 tenant_id=TenantId(profile.tenant_id), engine=business.state.runtime_engine,
