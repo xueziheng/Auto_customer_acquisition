@@ -26,10 +26,32 @@ _FILES = (
 )
 _MODULES = frozenset(path.removesuffix(".py").replace("/", ".") for path in _FILES)
 _TEST_NAME = re.compile(r"test_[A-Za-z0-9_]+")
+_ERROR_TYPES = frozenset({
+    "AssertionError", "IntegrityError", "DataError", "ProgrammingError", "DBAPIError",
+    "ValidationError", "IdempotencyConflict", "PermissionDenied", "InvalidRequestError",
+    "TimeoutError", "AttributeError", "TypeError", "ValueError", "RuntimeError", "NameError",
+})
+
+
+def _safe_failure_detail(result: ElementTree.Element, module: str, name: str) -> str:
+    """短回溯仅提取当前测试文件行号和固定异常类别，原文不进入日志。"""
+    path = module.replace(".", "/") + ".py"
+    if path not in _FILES or _TEST_NAME.fullmatch(name) is None:
+        return ""
+    raw = (result.text or "")[:1_048_576]
+    pattern = re.compile(r"(?m)^" + re.escape(path) + r":([1-9][0-9]{0,5}): in " + re.escape(name) + r"$")
+    lines = sorted({int(value) for value in pattern.findall(raw)})
+    details = [f"{path}:{value}" for value in lines[:8]]
+    message = result.get("message", "")[:256]
+    match = re.match(r"(?:[A-Za-z_][A-Za-z0-9_]*\.)*([A-Za-z_][A-Za-z0-9_]*):", message)
+    if match is not None and match[1] in _ERROR_TYPES:
+        details.append(match[1])
+    return " (" + "; ".join(details) + ")" if details else ""
+
 
 
 def _safe_test_diagnostics(root: ElementTree.Element) -> tuple[str, ...]:
-    """只返回固定模块、无参数的测试名与结果类别，不读取异常或任意属性。"""
+    """只返回固定测试标识、结果类别和经过白名单裁剪的位置诊断。"""
     diagnostics: set[str] = set()
     for case in root.iter("testcase"):
         module = case.get("classname", "")
@@ -37,8 +59,10 @@ def _safe_test_diagnostics(root: ElementTree.Element) -> tuple[str, ...]:
         if module not in _MODULES or _TEST_NAME.fullmatch(name) is None:
             continue
         for category in ("failure", "error", "skipped"):
-            if case.find(category) is not None:
-                diagnostics.add(f"{module}::{name} {category}")
+            result = case.find(category)
+            if result is not None:
+                detail = _safe_failure_detail(result, module, name) if category != "skipped" else ""
+                diagnostics.add(f"{module}::{name} {category}{detail}")
     return tuple(sorted(diagnostics))
 
 
@@ -76,7 +100,7 @@ def main() -> int:
             with TemporaryDirectory(prefix="tradeos-isolation-results-") as directory:
                 report = Path(directory) / "results.xml"
                 result = subprocess.run(
-                    [sys.executable, "-m", "pytest", *_FILES, "-q", "--tb=no",
+                    [sys.executable, "-m", "pytest", *_FILES, "-q", "--tb=short",
                      "-o", "addopts=", f"--junitxml={report}"],
                     cwd=_ROOT, env=env, capture_output=True, check=False, timeout=600,
                 )

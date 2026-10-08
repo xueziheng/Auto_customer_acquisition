@@ -197,3 +197,32 @@ def test_diagnostics_ignore_passed_cases_and_deduplicate_parameter_failures() ->
         for path in module._FILES
     ))
     assert module._safe_test_diagnostics(ElementTree.Element("testsuites")) == ()
+
+
+def test_failure_detail_exposes_only_known_test_location_and_exception_category() -> None:
+    module = _runner()
+    result = ElementTree.Element("failure", message="sqlalchemy.exc.IntegrityError: private-canary")
+    result.text = (
+        "tests/integration/test_enterprise_knowledge_isolation.py:61: in test_scope\n"
+        "    private-source-canary\n"
+        "/private/path-canary.py:80: in test_scope\n"
+        "tests/integration/test_enterprise_knowledge_isolation.py:9: in other_test\n"
+        "E sqlalchemy.exc.IntegrityError: private-exception-canary"
+    )
+    assert module._safe_failure_detail(
+        result, "tests.integration.test_enterprise_knowledge_isolation", "test_scope",
+    ) == " (tests/integration/test_enterprise_knowledge_isolation.py:61; IntegrityError)"
+
+
+def test_failure_detail_rejects_arbitrary_paths_types_and_source_lines() -> None:
+    module = _runner()
+    result = ElementTree.Element("failure", message="PrivateCanary: private-canary")
+    result.text = (
+        "tests/integration/test_enterprise_knowledge_isolation.py:61: in test_scope private-canary\n"
+        "tests/integration/test_enterprise_knowledge_isolation.py:9999999: in test_scope\n"
+        "tests/integration/private_canary.py:61: in test_scope"
+    )
+    assert module._safe_failure_detail(
+        result, "tests.integration.test_enterprise_knowledge_isolation", "test_scope",
+    ) == ""
+    assert module._safe_failure_detail(result, "private.module", "test_scope") == ""
