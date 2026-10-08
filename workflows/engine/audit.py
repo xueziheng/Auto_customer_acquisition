@@ -55,6 +55,7 @@ ResearchStopReason = Literal[
     "model_rate_limit",
     "model_provider_error",
     "model_invalid_response",
+    "model_output_limit",
     "model_unknown",
 ]
 

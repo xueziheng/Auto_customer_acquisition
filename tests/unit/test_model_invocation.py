@@ -128,3 +128,71 @@ def test_reply_capability_preserves_canonical_identity():
     assert restored.capability == "reply_qualification"
     assert restored.run_id == "run_reply" and restored.turn_id is None
     assert restored.sequence == 0
+
+
+def image(content=b"\x89PNG\r\n\x1a\nPRIVATE_IMAGE_CONTENT", **patch):
+    import hashlib
+
+    from shared.schemas.model_invocation import ModelInputImage
+
+    return ModelInputImage(**({
+        "mime_type": "image/png", "data": content,
+        "sha256": hashlib.sha256(content).hexdigest(), "byte_length": len(content),
+    } | patch))
+
+
+def test_images_validate_binding_and_hide_bytes():
+    from shared.schemas.model_invocation import ModelRequest
+
+    value = image()
+    request = ModelRequest(model="test-model", system_prompt="JSON", payload={}, max_output_tokens=8, images=(value,))
+    assert request.images == (value,)
+    for serialized in (repr(value), value.model_dump_json(), repr(request), request.model_dump_json()):
+        assert "PRIVATE_IMAGE_CONTENT" not in serialized
+    assert "images" not in request.model_dump()
+    for patch in (
+        {"byte_length": value.byte_length + 1}, {"byte_length": True},
+        {"sha256": "0" * 64}, {"mime_type": "image/jpeg"},
+        {"data": "https://untrusted.invalid/photo.png"},
+        {"url": "https://untrusted.invalid/photo.png"},
+    ):
+        with pytest.raises(ValidationError) as error:
+            image(**patch)
+        assert "PRIVATE_IMAGE_CONTENT" not in str(error.value)
+
+
+def test_image_count_and_aggregate_are_independently_bounded():
+    from shared.schemas.model_invocation import ModelRequest
+
+    base = {"model": "test-model", "system_prompt": "JSON", "payload": {}, "max_output_tokens": 8}
+    small = image()
+    with pytest.raises(ValidationError):
+        ModelRequest(**base, images=(small,) * 11)
+    large = image(b"\x89PNG\r\n\x1a\n" + b"x" * (8 * 1024 * 1024 - 8))
+    assert len(ModelRequest(**base, images=(large, large)).images) == 2
+    with pytest.raises(ValidationError):
+        ModelRequest(**base, images=(large, large, small))
+    with pytest.raises(ValidationError):
+        image(large.data + b"x")
+
+
+def test_model_failure_contract_includes_explicit_output_limit():
+    from pydantic import TypeAdapter
+
+    from shared.schemas.model_invocation import ModelFailureCode, ModelGenerationError
+
+    adapter = TypeAdapter(ModelFailureCode)
+    assert adapter.validate_python("output_limit") == "output_limit"
+    assert "output_limit" in adapter.json_schema()["enum"]
+    assert ModelGenerationError("output_limit").code == "output_limit"
+    with pytest.raises(ValidationError):
+        adapter.validate_python("partial_success")
+
+
+def test_output_limit_is_preserved_by_research_audit_contract():
+    from workflows.engine.audit import RunResearchView
+
+    view = RunResearchView(
+        completion_reason="model_output_limit", stop_reason="model_output_limit"
+    )
+    assert view.completion_reason == view.stop_reason == "model_output_limit"

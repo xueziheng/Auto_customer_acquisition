@@ -1,13 +1,42 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref } from "vue";
+import { apiClient, createApiClient } from "../api/client";
+import { useQuoteRequestScope } from "../views/costing-quotes/quote-request-scope";
 import { RouterLink, useRoute } from "vue-router";
 import { sectionForPath, workspaceForPath, workspaceGroups } from "../navigation";
 
 const props = defineProps<{ level: "primary" | "secondary" }>();
 const route = useRoute();
+const client = inject<ReturnType<typeof createApiClient>>("tradeos-api-client", apiClient);
+const employeeRole = ref<string | null>(null);
+let mounted = false;
+onBeforeUnmount(() => { mounted = false; });
+const gate = useQuoteRequestScope(client, () => [], () => {
+  employeeRole.value = null;
+  if (mounted) globalThis.queueMicrotask(() => void loadRole());
+});
+async function loadRole(): Promise<void> {
+  if (props.level !== "secondary" || !gate.hasIdentity.value) return;
+  const operation = gate.begin("navigation-role");
+  if (!operation?.valid()) return;
+  try {
+    const result = await client.GET("/auth/session", { signal: operation.signal, cache: "no-store" });
+    if (!operation.valid()) return;
+    const identity = client.identitySnapshot().identity;
+    employeeRole.value = result.response.ok && result.data?.employee.is_active
+      && result.data.employee.employee_id === identity?.employeeId
+      && result.data.employee.tenant_id === identity?.tenantId
+      ? result.data.employee.role : null;
+  } catch { if (operation.valid()) employeeRole.value = null; }
+}
+onMounted(() => { mounted = true; void loadRole(); });
+const canReadSupply = computed(() => employeeRole.value !== null
+  && ["boss", "product", "sourcing", "finance"].includes(employeeRole.value));
 const group = computed(() => workspaceForPath(route.path));
 const section = computed(() => sectionForPath(route.path));
-const links = computed(() => props.level === "primary" ? workspaceGroups : group.value.links);
+const links = computed(() => props.level === "primary"
+  ? workspaceGroups
+  : group.value.links.filter(link => link.to !== "/products" || canReadSupply.value));
 </script>
 
 <template>

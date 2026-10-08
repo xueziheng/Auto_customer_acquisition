@@ -45,6 +45,7 @@ class RawArtifactKind(str, Enum):
     WEB_SNAPSHOT = "web_snapshot"
     IMAGE = "image"
     AUDIO = "audio"
+    TEXT = "text"
 
 
 class GeneratedArtifactKind(str, Enum):
@@ -70,6 +71,7 @@ RAW_ARTIFACT_MIME_TYPES: Mapping[RawArtifactKind, frozenset[str]] = MappingProxy
                 "text/csv",
             }
         ),
+        RawArtifactKind.TEXT: frozenset({"text/plain", "text/markdown"}),
         RawArtifactKind.WEB_SNAPSHOT: frozenset({"text/html"}),
         RawArtifactKind.IMAGE: frozenset({"image/png", "image/jpeg", "image/webp"}),
         RawArtifactKind.AUDIO: frozenset({"audio/mpeg", "audio/wav", "audio/mp4"}),

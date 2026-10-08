@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Annotated, Literal, Protocol
 
@@ -18,6 +19,7 @@ ModelCapability = Literal[
     "research",
     "model_probe",
     "reply_qualification",
+    "knowledge_ingest",
 ]
 
 
@@ -67,13 +69,49 @@ class ModelLimits(ModelDTO):
     timeout_seconds: PositiveInt
 
 
+MAX_MODEL_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_MODEL_IMAGES_BYTES = 16 * 1024 * 1024
+MAX_MODEL_IMAGES = 10
+
+
+class ModelInputImage(ModelDTO):
+    """进程内受信图像；仅适配器显式编码，默认投影不包含原件。"""
+
+    mime_type: Literal["image/png", "image/jpeg", "image/webp"]
+    data: bytes = Field(strict=True, repr=False, exclude=True, min_length=1, max_length=MAX_MODEL_IMAGE_BYTES)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    byte_length: int = Field(strict=True, gt=0, le=MAX_MODEL_IMAGE_BYTES)
+
+    @model_validator(mode="after")
+    def validate_content(self) -> ModelInputImage:
+        magic_matches = (
+            (self.mime_type == "image/png" and self.data.startswith(b"\x89PNG\r\n\x1a\n"))
+            or (self.mime_type == "image/jpeg" and self.data.startswith(b"\xff\xd8\xff"))
+            or (self.mime_type == "image/webp" and self.data.startswith(b"RIFF") and self.data[8:12] == b"WEBP")
+        )
+        if (
+            self.byte_length != len(self.data)
+            or self.sha256 != hashlib.sha256(self.data).hexdigest()
+            or not magic_matches
+        ):
+            raise ValueError("模型图像内容与元数据不一致")
+        return self
+
+
 class ModelRequest(ModelDTO):
-    """无身份/凭证的单次 JSON 请求，实际限长由已验证部署配置决定。"""
+    """无身份/凭证的请求；文本限额来自部署配置，图像另有固定容量上限。"""
 
     model: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._/-]+$")
     system_prompt: str = Field(min_length=1, repr=False, exclude=True)
     payload: dict[str, object] = Field(repr=False, exclude=True)
     max_output_tokens: PositiveInt
+    images: tuple[ModelInputImage, ...] = Field(default=(), repr=False, exclude=True, max_length=MAX_MODEL_IMAGES)
+
+    @model_validator(mode="after")
+    def bounded_images(self) -> ModelRequest:
+        if sum(image.byte_length for image in self.images) > MAX_MODEL_IMAGES_BYTES:
+            raise ValueError("模型图像总大小超过上限")
+        return self
 
     @field_validator("payload")
     @classmethod
@@ -131,6 +169,7 @@ ModelFailureCode = Literal[
     "rate_limit",
     "provider_error",
     "invalid_response",
+    "output_limit",
     "unknown",
 ]
 

@@ -85,6 +85,7 @@ from .account_discovery import (
 from .config import SchedulerWorkerConfig
 from .contact_binding import ContactRuntimeResources
 from .directive_reader import DirectiveDemandDiscoveryTaskReader
+from .main import EnterpriseKnowledgeDriverProtocol
 from .notification_projection import NotificationAudienceMember
 from .reply_binding import ReplyRuntimeResources
 from .runtime import (
@@ -279,7 +280,11 @@ class CanonicalSchedulerBootstrap:
         | None
     ) = None
 
+    knowledge_factory: Callable[[async_sessionmaker[AsyncSession]], EnterpriseKnowledgeDriverProtocol] | None = None
+
     def __post_init__(self) -> None:
+        if self.knowledge_factory is not None and not callable(self.knowledge_factory):
+            raise ValidationError("企业资料工厂配置无效")
         if self.research_factory is not None and (not self.research_enabled or self.research is not None):
             raise ValidationError("研究工厂必须显式启用且不能同时指定旧端口")
         if self.research_enabled and self.research_factory is None and not isinstance(
@@ -317,6 +322,10 @@ class CanonicalSchedulerBootstrap:
             raise ValidationError("scheduler Campaign 发送依赖未完整配置")
         if self.reply_factory is not None and not self.campaign_enabled:
             raise ValidationError("scheduler 回复依赖未完整配置")
+
+    def build_knowledge(self, sessions: async_sessionmaker[AsyncSession]) -> EnterpriseKnowledgeDriverProtocol | None:
+        """只构造处理驱动，不在装配时领取任务或触碰外部服务。"""
+        return self.knowledge_factory(sessions) if self.knowledge_factory is not None else None
 
     def build_assistant(self, core: SchedulerCoreServices, sessions: async_sessionmaker[AsyncSession], opportunities: OpportunityService) -> AssistantRuntimePorts | None:
         """只构造独立端口；调度器稍后绑定同一个 engine。"""

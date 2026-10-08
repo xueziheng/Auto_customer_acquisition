@@ -227,6 +227,25 @@ export function createApiClient(
     return { data, response };
   }
 
+  async function uploadKnowledgeDocument(
+    file: File, mimeType: string, idempotencyKey: string, signal: AbortSignal,
+  ): Promise<{ data?: components["schemas"]["KnowledgeDocumentView"]; response: Response }> {
+    const query = new URLSearchParams({ filename: file.name });
+    const generation = identityProvider.generation();
+    const request = bindIdentity(new RequestConstructor(
+      `${baseUrl.replace(/\/$/, "")}/knowledge/documents?${query.toString()}`,
+      { body: file, method: "POST", signal, headers: {
+        "Content-Type": mimeType, "Idempotency-Key": idempotencyKey,
+      } },
+    ), identityProvider);
+    const response = await transport(request);
+    checkResponse(response, generation, identityProvider);
+    const data = response.status === 202
+      ? await response.json() as components["schemas"]["KnowledgeDocumentView"] : undefined;
+    if (generation !== identityProvider.generation()) throw new WebIdentityError("stale_identity_response");
+    return { data, response };
+  }
+
   function identitySnapshot(): WebIdentitySnapshot {
     try {
       const generation = identityProvider.generation();
@@ -246,6 +265,7 @@ export function createApiClient(
 
   return Object.assign(client, {
     uploadWorkArtifact,
+    uploadKnowledgeDocument,
     identitySnapshot,
     subscribeIdentity: (listener: () => void) => identityProvider.subscribe(listener),
   });

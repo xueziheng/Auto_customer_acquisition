@@ -2954,7 +2954,8 @@ class RawArtifactRow(Base):
             "(kind='image' AND mime_type IN "
             "('image/png','image/jpeg','image/webp')) OR "
             "(kind='audio' AND mime_type IN "
-            "('audio/mpeg','audio/wav','audio/mp4'))",
+            "('audio/mpeg','audio/wav','audio/mp4')) OR "
+            "(kind='text' AND mime_type IN ('text/plain','text/markdown'))",
             name="ck_raw_artifacts_kind_mime",
         ),
         CheckConstraint(
@@ -6139,3 +6140,79 @@ class PlatformAccessAuditRow(Base):
     action: Mapped[str] = mapped_column(String(32))
     available: Mapped[bool] = mapped_column(Boolean)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EnterpriseKnowledgeDocumentRow(Base):
+    """企业资料原件绑定；正文只在版本记录，原件引用不可跨企业。"""
+    __tablename__ = "enterprise_knowledge_documents"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "document_id", name="pk_enterprise_knowledge_documents"),
+        UniqueConstraint("tenant_id", "artifact_id", name="uq_knowledge_document_artifact"),
+        ForeignKeyConstraint(["tenant_id", "artifact_id"], ["raw_artifacts.tenant_id", "raw_artifacts.artifact_id"], name="fk_knowledge_document_artifact"),
+        ForeignKeyConstraint(["tenant_id", "uploader_id"], ["employees.tenant_id", "employees.employee_id"], name="fk_knowledge_document_uploader"),
+        CheckConstraint("status IN ('queued','processing','awaiting_confirmation','confirmed','failed','unknown')", name="ck_knowledge_document_status"),
+        CheckConstraint("export_state IN ('pending','synced','failed') AND version > 0", name="ck_knowledge_document_export"),
+        CheckConstraint("jsonb_typeof(payload) = 'object'", name="ck_knowledge_document_payload"),
+        Index("ix_knowledge_document_list", "tenant_id", "created_at", "document_id"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    document_id: Mapped[str] = mapped_column(String(40))
+    artifact_id: Mapped[str] = mapped_column(String(40))
+    uploader_id: Mapped[str] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(32))
+    version: Mapped[int] = mapped_column(Integer)
+    current_revision_id: Mapped[str | None] = mapped_column(String(40))
+    export_state: Mapped[str] = mapped_column(String(16))
+    filename: Mapped[str] = mapped_column(String(240))
+    payload: Mapped[dict] = mapped_column(postgresql.JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EnterpriseKnowledgeJobRow(Base):
+    """处理领取、租约与固定调用身份；过期不自动重试模型。"""
+    __tablename__ = "enterprise_knowledge_jobs"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "job_id", name="pk_enterprise_knowledge_jobs"),
+        ForeignKeyConstraint(["tenant_id", "document_id"], ["enterprise_knowledge_documents.tenant_id", "enterprise_knowledge_documents.document_id"], name="fk_knowledge_job_document"),
+        CheckConstraint("state IN ('queued','processing','complete','failed','unknown')", name="ck_knowledge_job_state"),
+        CheckConstraint("jsonb_typeof(payload) = 'object'", name="ck_knowledge_job_payload"),
+        Index("ix_knowledge_job_queue", "tenant_id", "state", "created_at", "job_id"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    job_id: Mapped[str] = mapped_column(String(40))
+    document_id: Mapped[str] = mapped_column(String(40))
+    state: Mapped[str] = mapped_column(String(16))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    payload: Mapped[dict] = mapped_column(postgresql.JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EnterpriseKnowledgeRevisionRow(Base):
+    """模型原始草稿与服务端来源；确认只补确认字段，不覆盖模型结果。"""
+    __tablename__ = "enterprise_knowledge_revisions"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "revision_id", name="pk_enterprise_knowledge_revisions"),
+        UniqueConstraint("tenant_id", "job_id", name="uq_knowledge_revision_job"),
+        ForeignKeyConstraint(["tenant_id", "document_id"], ["enterprise_knowledge_documents.tenant_id", "enterprise_knowledge_documents.document_id"], name="fk_knowledge_revision_document"),
+        ForeignKeyConstraint(["tenant_id", "job_id"], ["enterprise_knowledge_jobs.tenant_id", "enterprise_knowledge_jobs.job_id"], name="fk_knowledge_revision_job"),
+        CheckConstraint("jsonb_typeof(payload) = 'object'", name="ck_knowledge_revision_payload"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    revision_id: Mapped[str] = mapped_column(String(40))
+    document_id: Mapped[str] = mapped_column(String(40))
+    job_id: Mapped[str] = mapped_column(String(40))
+    payload: Mapped[dict] = mapped_column(postgresql.JSONB)
+
+
+class EnterpriseKnowledgeRequestRow(Base):
+    """每个上传者的幂等键摘要绑定，避免网络重放重复排队。"""
+    __tablename__ = "enterprise_knowledge_requests"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "actor_id", "key_hash", name="pk_enterprise_knowledge_requests"),
+        ForeignKeyConstraint(["tenant_id", "document_id"], ["enterprise_knowledge_documents.tenant_id", "enterprise_knowledge_documents.document_id"], name="fk_knowledge_request_document"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    actor_id: Mapped[str] = mapped_column(String(40))
+    key_hash: Mapped[str] = mapped_column(String(64))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    document_id: Mapped[str] = mapped_column(String(40))

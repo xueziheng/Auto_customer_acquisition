@@ -374,3 +374,11 @@ __all__ = (
     "catalog_cultivation_change_set_ref",
     "catalog_policy_creation_request_hash",
 )
+
+
+from domains.products.knowledge_service import (
+    EnterpriseKnowledgeService,
+    EnterpriseKnowledgeServiceImpl,
+)
+
+__all__ += ("EnterpriseKnowledgeService", "EnterpriseKnowledgeServiceImpl")

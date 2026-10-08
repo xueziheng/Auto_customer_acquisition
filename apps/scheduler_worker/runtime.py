@@ -325,6 +325,7 @@ from .hunter_contacts import (
     build_hunter_contact_tools,
 )
 from .main import (
+    EnterpriseKnowledgeDriverProtocol,
     OutboxDrainer,
     RuntimeActivation,
     SchedulerConfig,
@@ -1007,6 +1008,8 @@ class SchedulerCoreServices:
 
 class SchedulerBootstrap(Protocol):
     """消费本次连接池及已存在服务，按拓扑形成依赖。"""
+
+    def build_knowledge(self, sessions: async_sessionmaker[AsyncSession]) -> EnterpriseKnowledgeDriverProtocol | None: ...
 
     def build_assistant(self, core: SchedulerCoreServices, sessions: async_sessionmaker[AsyncSession], opportunities: OpportunityService) -> AssistantRuntimePorts | None: ...
 
@@ -1792,6 +1795,11 @@ class SchedulerRuntimeFactory:
                 build_assistant = getattr(self._bootstrap, "build_assistant", None)
                 if build_assistant is not None:
                     assistant_ports = build_assistant(core, factory, dependencies.opportunity_service)
+            knowledge_driver = None
+            if self._bootstrap is not None:
+                build_knowledge = getattr(self._bootstrap, "build_knowledge", None)
+                if build_knowledge is not None:
+                    knowledge_driver = build_knowledge(factory)
             assistant_handlers = build_assistant_handlers(assistant_ports) if assistant_ports is not None else {}
             workflow = PostgresWorkflowEngine(
                 factory,
@@ -1972,6 +1980,7 @@ class SchedulerRuntimeFactory:
                     config.lock_key,
                 ),
                 assistant_driver=assistant_driver,
+                knowledge_driver=knowledge_driver,
                 campaign_driver=campaign_driver,
                 activation=runtime_activation,
                 quote_expiry_driver=(
@@ -1990,6 +1999,7 @@ class SchedulerRuntimeFactory:
                 else None,
                 lifecycle=health,
                 capabilities=(
+                    RuntimeCapability(name="enterprise_knowledge", status="enabled" if knowledge_driver is not None else "disabled", reason="composed" if knowledge_driver is not None else "not_requested"),
                     RuntimeCapability(name="builtin_assistant",status="enabled" if assistant_ports else "disabled",reason="composed" if assistant_ports else "not_requested"),
                     RuntimeCapability(name="model",status="enabled" if assistant_ports else "disabled",reason="composed" if assistant_ports else "not_requested"),                    RuntimeCapability(
                         name="research",

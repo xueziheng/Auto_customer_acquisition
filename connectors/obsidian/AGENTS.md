@@ -6,7 +6,7 @@
 
 `workspace.py` 将受信上游已经授权的 UTF-8 Markdown 字节生成单次只读任务目录：
 `root/tenant_id/employee_id/run_id/document-NNNN.md`。它不扫描、导入或同步已有 Obsidian
-vault，不读产品数据库，不负责检索，不启动 Codex，也未接上网页产品上传和资料问答。
+vault，不读产品数据库，不负责检索，也不直接启动 Codex。网页上传与资料问答需由受信应用/worker 装配并分别验收。
 当前没有 Obsidian Sync 或完整 Obsidian connector 能力，不得用此模块的通过测试替代上线验收。
 
 ## 技术边界
@@ -25,10 +25,14 @@ vault，不读产品数据库，不负责检索，不启动 Codex，也未接上
 - 清理是有界同步操作，无 await/后台线程，不因取消而遗留继续运行的写入线程。
   进程崩溃/断电不保证自动清理；没有后台清扫器，不得宣称任何故障都无残留。
 
-## 后续执行器责任
+## 执行器责任
 
 只接受受信调用栈交付的 workspace 句柄，调用 verified_path 后仅挂载该目录；
 不得把共享父目录、数据库、密钥、其他企业目录或旧共享 vault 暴露给 Codex。
 CLI 仍须独立临时会话、禁止项目配置/规则提升、清洁子进程环境和最小只读文件系统；
 网络工具与外部动作只能经过原 Tool Gateway。目录 Unix 模式不是模型沙箱，也不防同 UID
 恶意进程/root。运行前及结果交付前再次核来源授权，引用撤权后不得复用答案。
+
+## 企业 Markdown 投影
+
+`vault.py` 只供受信 worker 发布企业专属、仅追加的 Markdown：`tenant/Docs/document/v<revision>-<status>.md` 与不可变 `tenant/Sources/document.md`。仅接受 awaiting_confirmation / confirmed，两种状态不等于产品发布。路径来自受信身份与版本，模型不得提供路径。root 与子目录固定服务 UID/0700，文件0400；逐层 O_NOFOLLOW、单链接和内容完整性校验，同版本同内容幂等、异内容拒绝。先私有完整写再原子创建最终名字，从不覆盖已存在版本。上游负责发布前后重核资料权限与期望 revision，旧 worker 不写 current 指针。该模块不直读数据库、不解析原件、不自动确认事实，也不部署 Obsidian 桌面或 Sync。

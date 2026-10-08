@@ -228,10 +228,11 @@ class PilotConfig(StrictModel):
     storage: dict[Literal["database", "objects"], StorageIdentity]
     gmail: PilotGmailConfig | None = None
     platform_settings_file: Path | None = Field(default=None, repr=False)
+    knowledge_settings_file: Path | None = Field(default=None, repr=False)
     database_username: str = "pilot"
     database_runtime_password: SecretStr | None = Field(default=None, repr=False)
 
-    @field_validator("platform_settings_file")
+    @field_validator("platform_settings_file", "knowledge_settings_file")
     @classmethod
     def absolute_platform_settings_file(cls, value: Path | None) -> Path | None:
         if value is not None and (not value.is_absolute() or ".." in value.parts):

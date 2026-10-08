@@ -1,0 +1,11 @@
+{
+  "outcome": "accept",
+  "fact_values": [
+    "304 stainless steel",
+    "48 mm"
+  ],
+  "source_kind": "document_text",
+  "image_source_pages": [],
+  "inference_source_pages": [],
+  "note": "原文规格逐字提取；解析提醒独立展示，不能进入正文证据。"
+}

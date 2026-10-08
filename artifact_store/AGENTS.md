@@ -4,7 +4,7 @@
 
 Artifact Store 是内容寻址的受信基础设施，公共契约严格拆成两类：
 
-- `RawArtifactStore`：邮件原文、聊天截图、PDF、Word、Excel、网页快照、图片、音频；
+- `RawArtifactStore`：邮件原文、聊天截图、PDF、Word、Excel、网页快照、图片、音频、UTF-8纯文本/Markdown（ADR0083）；
 - `GeneratedArtifactStore`：系统生成的派生产物，`email_draft`与Phase 2新增`quote_pdf`。
 
 生成草稿不是客户原话，也不能作为原始证据或 Provenance 链终点。禁止恢复一个混合

@@ -271,3 +271,92 @@ async def test_close_prevents_lazy_secret_access():
     with pytest.raises(DeepSeekFailure) as error:
         await connector.generate(request())
     assert not error.value.dispatched
+
+
+async def test_images_are_sent_as_responses_content_without_logging(caplog):
+    import base64
+    import hashlib
+
+    from shared.schemas.model_invocation import ModelInputImage
+
+    caplog.set_level(logging.DEBUG)
+    data = b"\x89PNG\r\n\x1a\nPRIVATE_IMAGE_CONTENT"
+    image = ModelInputImage(mime_type="image/png", data=data, sha256=hashlib.sha256(data).hexdigest(), byte_length=len(data))
+    calls = []
+
+    def respond(req):
+        calls.append(req)
+        return httpx.Response(200, json=body())
+
+    connector = client(httpx.MockTransport(respond))
+    try:
+        await connector.generate(request().model_copy(update={"images": (image,)}))
+    finally:
+        await connector.aclose()
+    payload = json.loads(calls[0].content)
+    encoded = base64.b64encode(data).decode("ascii")
+    assert payload["input"] == [{"role": "user", "content": [
+        {"type": "input_text", "text": json.dumps(request().payload, ensure_ascii=False, allow_nan=False)},
+        {"type": "input_image", "image_url": f"data:image/png;base64,{encoded}", "detail": "high"},
+    ]}]
+    assert payload["store"] is False and len(calls) == 1
+    for value in ("PRIVATE_IMAGE_CONTENT", encoded, KEY, SENTINEL):
+        assert value not in caplog.text
+
+
+async def test_text_only_request_keeps_existing_wire_shape():
+    calls = []
+
+    def respond(req):
+        calls.append(req)
+        return httpx.Response(200, json=body())
+
+    connector = client(httpx.MockTransport(respond))
+    try:
+        await connector.generate(request())
+    finally:
+        await connector.aclose()
+    payload = json.loads(calls[0].content)
+    assert payload["input"] == json.dumps(request().payload, ensure_ascii=False, allow_nan=False)
+
+
+@pytest.mark.parametrize("patch,expected", [
+    ({"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}}, "output_limit"),
+    ({"status": "incomplete", "incomplete_details": {"reason": "content_filter"}}, "invalid_response"),
+    ({"status": "failed", "incomplete_details": {"reason": "max_output_tokens"}}, "invalid_response"),
+    ({"status": "incomplete", "incomplete_details": None}, "invalid_response"),
+    ({"status": "incomplete", "model": "wrong-model", "incomplete_details": {"reason": "max_output_tokens"}}, "invalid_response"),
+])
+def test_explicit_token_truncation_never_delivers_partial_output(patch, expected):
+    from connectors.deepseek.client import DeepSeekFailure, decode_response
+
+    partial = body(**patch)
+    partial["output"][1]["content"][0]["text"] = "PRIVATE_PARTIAL_OUTPUT"
+    with pytest.raises(DeepSeekFailure) as error:
+        decode_response(partial, "test-model")
+    assert error.value.code == expected
+    assert "PRIVATE_PARTIAL_OUTPUT" not in str(error.value)
+    assert "PRIVATE_PARTIAL_OUTPUT" not in repr(error.value)
+
+
+async def test_sdk_preserves_output_limit_as_known_failure_without_retry(caplog):
+    from connectors.deepseek.client import DeepSeekFailure
+
+    caplog.set_level(logging.DEBUG)
+    calls = []
+
+    def respond(req):
+        calls.append(req)
+        partial = body(status="incomplete", incomplete_details={"reason": "max_output_tokens"})
+        partial["output"][1]["content"][0]["text"] = "PRIVATE_PARTIAL_OUTPUT"
+        return httpx.Response(200, json=partial)
+
+    connector = client(httpx.MockTransport(respond))
+    try:
+        with pytest.raises(DeepSeekFailure) as error:
+            await connector.generate(request())
+    finally:
+        await connector.aclose()
+    assert error.value.code == "output_limit" and error.value.dispatched
+    assert len(calls) == 1
+    assert "PRIVATE_PARTIAL_OUTPUT" not in caplog.text

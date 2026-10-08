@@ -923,3 +923,27 @@ __all__ = (
     "ProductSupplyCardView",
     "ProductSupplySourceView",
 )
+
+
+from domains.products.knowledge_schemas import (
+    KnowledgeActor,
+    KnowledgeAnalysis,
+    KnowledgeClaim,
+    KnowledgeConfirmCommand,
+    KnowledgeDocumentDetail,
+    KnowledgeDocumentView,
+    KnowledgeExportState,
+    KnowledgeFact,
+    KnowledgeFailureReason,
+    KnowledgeInference,
+    KnowledgePage,
+    KnowledgeRetryCommand,
+    KnowledgeRevisionView,
+    KnowledgeSource,
+    KnowledgeSourceKind,
+    KnowledgeSyncCommand,
+)
+
+__all__ += ('KnowledgeActor', 'KnowledgeAnalysis', 'KnowledgeClaim', 'KnowledgeConfirmCommand', 'KnowledgeDocumentDetail', 'KnowledgeDocumentView', 'KnowledgeExportState', 'KnowledgeFact', 'KnowledgeFailureReason', 'KnowledgeInference', 'KnowledgePage', 'KnowledgeRetryCommand', 'KnowledgeRevisionView', 'KnowledgeSource', 'KnowledgeSyncCommand')
+
+__all__ += ("KnowledgeSourceKind",)

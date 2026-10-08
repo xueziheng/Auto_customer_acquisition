@@ -8,8 +8,9 @@ export const workspaceGroups = [
     { label: "AI 助手", to: "/commands" },
     { label: "工作记录", to: "/work-uploads" },
   ] },
-  { id: "products", label: "产品资料", to: "/products", links: [
-    { label: "产品与供应", to: "/products" },
+  { id: "products", label: "产品资料", to: "/knowledge", links: [
+    { label: "企业资料库", to: "/knowledge" },
+    { label: "供应卡", to: "/products" },
   ] },
   { id: "customers", label: "客户", to: "/prospects/accounts", links: [
     { label: "找客户", to: "/prospects/accounts" },

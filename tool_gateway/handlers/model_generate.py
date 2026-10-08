@@ -137,13 +137,24 @@ class ModelGenerateHandler:
         self, ctx: ToolCallContext, preflight: object | None
     ) -> PreparedToolCall:
         identity = self._identity.model_dump_json().encode()
+        fingerprint_input: dict[str, object] = {
+            "model": self._request.model,
+            "instructions": self._request.system_prompt,
+            "payload": self._request.payload,
+            "max_output_tokens": self._request.max_output_tokens,
+        }
+        metadata: dict[str, SafeScalar] = {"capability": self._identity.capability}
+        if self._request.images:
+            fingerprint_input["images"] = [
+                {"mime_type": image.mime_type, "sha256": image.sha256, "byte_length": image.byte_length}
+                for image in self._request.images
+            ]
+            metadata.update(
+                image_count=len(self._request.images),
+                image_bytes=sum(image.byte_length for image in self._request.images),
+            )
         request = json.dumps(
-            {
-                "model": self._request.model,
-                "instructions": self._request.system_prompt,
-                "payload": self._request.payload,
-                "max_output_tokens": self._request.max_output_tokens,
-            },
+            fingerprint_input,
             sort_keys=True,
             ensure_ascii=False,
             allow_nan=False,
@@ -152,7 +163,7 @@ class ModelGenerateHandler:
         return PreparedToolCall(
             fingerprint,
             version,
-            {"capability": self._identity.capability},
+            metadata,
             self._request,
         )
 
@@ -262,6 +273,7 @@ class GatewayModelGenerator:
             or request.model != self._model
         ):
             raise ModelGenerationError("configuration")
+        # 既有部署 max_input_bytes 管理文本；图像由 ModelRequest 独立限制容量。
         encoded = json.dumps(request.payload, ensure_ascii=False, allow_nan=False)
         if (
             len(encoded.encode()) + len(request.system_prompt.encode())
@@ -275,6 +287,7 @@ class GatewayModelGenerator:
             system_prompt=request.system_prompt,
             payload=json.loads(encoded),
             max_output_tokens=request.max_output_tokens,
+            images=request.images,
         )
         slot = ModelResponseSlot()
         quota = ModelQuotaCheck(

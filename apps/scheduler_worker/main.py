@@ -52,6 +52,12 @@ class CampaignDriver(Protocol):
     async def scan_once(self) -> int: ...
 
 
+class EnterpriseKnowledgeDriverProtocol(Protocol):
+    """企业资料领取与同步，由原单副本锁控制执行。"""
+
+    async def scan_once(self) -> int: ...
+
+
 class AssistantDriverProtocol(CampaignDriver, Protocol):
     async def start_heartbeat(self, guard: Callable[[], Awaitable[None]]) -> None: ...
     async def stop_heartbeat(self) -> None: ...
@@ -144,8 +150,11 @@ class SchedulerRuntime:
     inbound_driver: InboundDriverProtocol | None = None
     lifecycle: RuntimeLifecycleObserver | None = None
     capabilities: tuple[RuntimeCapability, ...] = ()
+    knowledge_driver: EnterpriseKnowledgeDriverProtocol | None = None
 
     def __post_init__(self) -> None:
+        if self.knowledge_driver is not None and not callable(getattr(self.knowledge_driver, "scan_once", None)):
+            raise ValidationError("企业资料调度依赖无效")
         if not str(self.tenant_id).strip():
             raise ValidationError("scheduler tenant_id 不得为空")
         if self.activation is not None and not callable(
@@ -262,6 +271,7 @@ async def _run_cycle(
     """
     if (
         runtime.assistant_driver is not None
+        or runtime.knowledge_driver is not None
         or runtime.quote_expiry_driver is not None
         or runtime.sourcing_admission_driver is not None
         or runtime.catalog_product_driver is not None
@@ -349,6 +359,18 @@ async def _run_cycle(
             )
         await confirm_lock()
 
+    if runtime.knowledge_driver is not None:
+        assert confirm_lock is not None
+        await confirm_lock()
+        try:
+            await runtime.knowledge_driver.scan_once()
+        except Exception as error:  # noqa: BLE001 - 阶段错误固定脱敏，不能输出资料正文
+            _log_phase_error(
+                phase="enterprise_knowledge", error=error,
+                tenant_id=runtime.tenant_id, cycle=cycle,
+            )
+        await confirm_lock()
+
     if runtime.assistant_driver is not None:
         assert confirm_lock is not None
         await confirm_lock()
@@ -377,6 +399,7 @@ async def _run_cycle(
     if workflow_succeeded and workflow_count > 0:
         if (
             runtime.assistant_driver is not None
+            or runtime.knowledge_driver is not None
             or runtime.sourcing_admission_driver is not None
             or runtime.catalog_product_driver is not None
             or runtime.inbound_driver is not None

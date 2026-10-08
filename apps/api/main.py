@@ -63,6 +63,7 @@ from .routers.crm import router as crm_router
 from .routers.customer_discovery import router as customer_discovery_router
 from .routers.demand_radar import router as demand_radar_router
 from .routers.email_inbound import router as email_inbound_router
+from .routers.enterprise_knowledge import router as enterprise_knowledge_router
 from .routers.health import ReadinessProbe, build_capability_router, build_health_router
 from .routers.inbox import router as inbox_router
 from .routers.notifications import router as notifications_router
@@ -232,6 +233,7 @@ def create_app(
     app.include_router(quotation_actions_router, prefix="/costing-quotes")
     app.include_router(team_router, prefix="/team")
     app.include_router(work_uploads_router, prefix="/work-uploads")
+    app.include_router(enterprise_knowledge_router, prefix="/knowledge")
     app.include_router(commitments_router, prefix="/commitments")
     app.include_router(runs_router, prefix="/runs")
     app.include_router(settings_router, prefix="/settings")

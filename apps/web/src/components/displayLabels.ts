@@ -70,6 +70,7 @@ const labels: Readonly<Record<string, string>> = {
   "model.generate": "模型生成", "web.search": "网页搜索", "web.read_page": "网页读取", "email.send": "发送邮件",
   "contact.enrich": "补全联系人", "contact.verify": "验证联系人", "email.verify": "验证邮箱",
   authentication: "认证失败", permission: "权限不足", configuration: "配置不可用", quota: "达到调用额度或并发上限",
+  output_limit: "模型输出达到上限，请缩小范围后重试",
   insufficient_balance: "模型账户余额不足", invalid_request: "请求参数无效", invalid_response: "返回内容无效",
   rate_limit: "请求受限", rate_limited: "请求受限", provider_error: "服务商异常", reconciliation_required: "需要人工核对",
   provider_permanent: "服务调用已阻断", provider_transient: "服务暂时不可用", provider_auth_required: "服务认证需要恢复",

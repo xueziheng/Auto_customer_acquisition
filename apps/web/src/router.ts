@@ -83,6 +83,11 @@ const router = createRouter({
       component: () => import("./views/NotificationCenter.vue"),
     },
     {
+      path: "/knowledge",
+      name: "enterprise-knowledge",
+      component: () => import("./views/knowledge/KnowledgeCenter.vue"),
+    },
+    {
       path: "/products",
       name: "products",
       component: () => import("./views/products/ProductSupplyCenter.vue"),

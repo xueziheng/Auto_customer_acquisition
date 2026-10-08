@@ -22,6 +22,7 @@ from infra.authentication.service import PostgresAuthentication
 from infra.db.platform_access import EnterpriseReaderBinding
 from infra.db.session import create_engine_from
 from infra.pilot.config import PILOT_GMAIL_MAILBOX_ALIAS, PilotConfig
+from infra.standalone.knowledge_settings import load_knowledge_settings
 from infra.standalone.platform_settings import PlatformSettings, load_platform_settings
 from infra.standalone.settings import StandaloneModelSettings, load_model_settings
 from shared.schemas.identifiers import TenantId
@@ -37,6 +38,7 @@ def create_standalone_app(
     profile: PilotConfig, settings: StandaloneModelSettings, build: Path,
     *, platform_settings: PlatformSettings | None = None,
 ) -> FastAPI:
+    knowledge = load_knowledge_settings(profile.knowledge_settings_file) if profile.knowledge_settings_file is not None else None
     runtime = runtime_settings(profile)
     if settings.research is not None:
         runtime = replace(
@@ -59,6 +61,8 @@ def create_standalone_app(
     )
     business = create_runtime_app_from_settings(
         runtime,
+        enterprise_knowledge_enabled=knowledge is not None and knowledge.enabled,
+        knowledge_maximum_upload_bytes=knowledge.max_upload_bytes if knowledge is not None else 10 * 1024 * 1024,
         secret_resolver=secret_resolver,
         object_store_settings=S3ObjectStoreSettings.from_pilot_environ(
             profile.runtime_environment()

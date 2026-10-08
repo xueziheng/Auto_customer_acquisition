@@ -110,6 +110,7 @@ from workflows.sourcing_case.application import (
     SourcingCaseApplication,
 )
 
+from .composition.enterprise_knowledge import EnterpriseKnowledgeApplication
 from .composition.quotations import QuotationHttpComposition
 from .composition.research_accounts import ResearchEvidenceReader
 from .middleware import ApiSettings
@@ -298,6 +299,7 @@ class ConfiguredApiDependencies:
     commitments: CommitmentService | None = None
     costing: CostingService | None = None
     work_uploads: WorkUploadApplicationService | None = None
+    enterprise_knowledge: EnterpriseKnowledgeApplication | None = None
     run_audit: RunAuditService | None = None
     research_access: ResearchAccessService | None = None
     research_execution: DiscoveryExecutionReader | None = None

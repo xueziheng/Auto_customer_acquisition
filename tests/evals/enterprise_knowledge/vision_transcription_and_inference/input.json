@@ -1,0 +1,34 @@
+{
+  "source_kind": "synthetic",
+  "document": "",
+  "candidate_response": {
+    "source_text": "Page 3: Model: AX-42.\nPage 7: Packaging: 20 units per carton.",
+    "analysis": {
+      "title": "待核对扫描资料",
+      "facts": [
+        {
+          "label": "型号",
+          "value": "AX-42",
+          "source_quote": "Model: AX-42."
+        }
+      ],
+      "inferences": [
+        {
+          "text": "AI推断：图像中的外观近似圆形，需要对照原件核对。",
+          "evidence_quotes": [],
+          "image_pages": [
+            2
+          ]
+        }
+      ]
+    }
+  },
+  "image_source_pages": [
+    3,
+    7
+  ],
+  "parse_warnings": [
+    "vision_transcription_required",
+    "visual_pages_rendered_1600"
+  ]
+}

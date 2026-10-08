@@ -32,6 +32,10 @@ from infra.db.run_audit import PostgresRunAuditRepository
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from infra.pilot.config import PILOT_GMAIL_MAILBOX_ALIAS, PilotConfig
 from infra.secrets import EnvironmentSecretResolver
+from infra.standalone.knowledge_settings import (
+    KnowledgeSettings,
+    load_knowledge_settings,
+)
 from infra.standalone.runtime import ModelRuntimeLifecycle
 from infra.standalone.settings import StandaloneModelSettings, load_model_settings
 from shared.schemas.identifiers import EmployeeId, TenantId, UserId, new_id
@@ -44,7 +48,7 @@ from workflows.engine.audit import Phase1RunAuditAuthorizer, RunAuditService
 
 from .bootstrap import CanonicalSchedulerBootstrap, ResearchRuntimePorts
 from .config import SchedulerWorkerConfig
-from .main import SchedulerRuntime
+from .main import EnterpriseKnowledgeDriverProtocol, SchedulerRuntime
 from .main import main as run_worker
 from .pilot import UnconfiguredDnsResolver, UnconfiguredDnsStep
 from .runtime import (
@@ -116,6 +120,7 @@ def _create_standalone_factory(
     research_ports: ResearchRuntimePorts | None = None,
     reply_inbound: InboundRuntimePorts | None = None,
     instance_id: str,
+    knowledge_settings: KnowledgeSettings | None = None,
 ) -> SchedulerRuntimeFactory:
     inbound = _reply_ports(profile, settings, reply_inbound)
     send_transport: GmailHttpTransport | None = None
@@ -190,6 +195,16 @@ def _create_standalone_factory(
             lifecycle,
         )
 
+    def knowledge_driver(sessions: async_sessionmaker[AsyncSession]) -> EnterpriseKnowledgeDriverProtocol:
+        from .knowledge import build_knowledge_driver
+
+        assert knowledge_settings is not None and knowledge_settings.enabled
+        return build_knowledge_driver(
+            profile=profile, settings=settings, knowledge=knowledge_settings,
+            model_resolver=model_resolver, sessions=sessions,
+            fingerprints=fingerprints, instance_id=instance_id,
+        )
+
     scoring, handoff = profile.policy.scoring_policy, profile.policy.handoff_policy
     return SchedulerRuntimeFactory(
         env,
@@ -209,6 +224,7 @@ def _create_standalone_factory(
             ),
             HandoffPolicy(handoff.sla_seconds, handoff.backlog_threshold),
             assistant_factory=assistant,
+            knowledge_factory=knowledge_driver if knowledge_settings is not None and knowledge_settings.enabled else None,
             research_enabled=research_ports is not None,
             research_factory=(
                 lambda core, sessions: bind_research(
@@ -276,6 +292,10 @@ def create_standalone_factory(
         from connectors.tavily.transport import TavilySearchApiTransport
         from connectors.web_search.transport import SafePublicPageHttpTransport
 
+        knowledge_settings = (
+            load_knowledge_settings(profile.knowledge_settings_file)
+            if profile.knowledge_settings_file is not None else None
+        )
         ports = research_ports
         owned: S3ObjectBlobTransport | None = None
         research = settings.research
@@ -313,6 +333,7 @@ def create_standalone_factory(
                 research_ports=ports,
                 reply_inbound=reply_inbound,
                 instance_id=new_id("mrt").lower(),
+                knowledge_settings=knowledge_settings,
             )
             async with factory() as runtime:
                 yield runtime

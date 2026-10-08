@@ -26,6 +26,7 @@ dependencies = [
     "tldextract==5.3.1",
     "reportlab==5.0.1",
     "pypdf==6.16.2",
+    "Pillow==12.3.0",
     "PyYAML==6.0.3",
     "google-auth>=2,<3",
     "google-auth-oauthlib>=1,<2",

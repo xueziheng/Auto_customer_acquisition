@@ -133,7 +133,10 @@ from domains.products.permissions import (
     ProductActor,
     ProductRole,
 )
-from domains.products.service import CatalogProposalService
+from domains.products.service import (
+    CatalogProposalService,
+    EnterpriseKnowledgeServiceImpl,
+)
 from domains.products.service_impl import ProductServiceImpl
 from domains.prospecting.service import ContactValueHasher
 from domains.prospecting.service_impl import ProspectingServiceImpl
@@ -179,6 +182,7 @@ from infra.db.email_feedback_uow import (
     SendingIdentityServiceBuilder,
     SqlAlchemyFeedbackPageUnitOfWork,
 )
+from infra.db.enterprise_knowledge import SqlAlchemyKnowledgeUnitOfWork
 from infra.db.organization_uow import SqlAlchemyOrganizationUnitOfWork
 from infra.db.outbox_delivery import OutboxDeliverer
 from infra.db.outreach_uow import SqlAlchemyOutreachUnitOfWork
@@ -221,6 +225,7 @@ from shared.errors import (
     TransientError,
     ValidationError,
 )
+from shared.schemas.evidence_read import ObjectReadLimits
 from shared.schemas.identifiers import (
     ApprovalId,
     CampaignId,
@@ -327,6 +332,10 @@ from ..runtime_config import Phase1RuntimeSettings
 from .demand_radar import (
     AuthorizedDemandRadarService,
     ProspectingDemandAccountNames,
+)
+from .enterprise_knowledge import (
+    MAXIMUM_KNOWLEDGE_UPLOAD_BYTES,
+    EnterpriseKnowledgeApplication,
 )
 from .quotations import (
     build_need_unit_authorizer,
@@ -855,6 +864,8 @@ def build_phase1_dependencies(
     object_store_settings: S3ObjectStoreSettings | None = None,
     model_client: StructuredJsonModelClient | None = None,
     inbound_mailbox: InboundMailbox | None = None,
+    enterprise_knowledge_enabled: bool = False,
+    knowledge_maximum_upload_bytes: int = MAXIMUM_KNOWLEDGE_UPLOAD_BYTES,
 ) -> ConfiguredApiDependencies:
     """同步装配，零数据库连接、Provider SDK 初始化与解析器进程启动。
 
@@ -908,13 +919,18 @@ def build_phase1_dependencies(
     generated_documents = None
     generated_metadata = None
     work_uploads = None
+    enterprise_knowledge = None
     object_transport = None
     if object_store_settings is not None:
         object_transport = DeferredS3ObjectBlobTransport(
             object_store_settings, resolved_secret_resolver
         )
         bounded_raw = (
-            None
+            (S3BoundedObjectBlobTransport(
+                object_store_settings, resolved_secret_resolver,
+                limits=ObjectReadLimits(connect_timeout_ms=3000, read_timeout_ms=5000,
+                    total_timeout_ms=15000, chunk_bytes=65536, maximum_attempts=1),
+            ) if enterprise_knowledge_enabled else None)
             if settings.quotation is None
             else S3BoundedObjectBlobTransport(
                 object_store_settings,
@@ -948,6 +964,14 @@ def build_phase1_dependencies(
         work_uploads = WorkUploadApplicationServiceImpl(
             raw_artifacts, work_intake, object_store_settings.raw_max_bytes
         )
+        if enterprise_knowledge_enabled:
+            knowledge = EnterpriseKnowledgeServiceImpl(
+                lambda requested_tenant: SqlAlchemyKnowledgeUnitOfWork(factory, requested_tenant),
+                now=now,
+            )
+            enterprise_knowledge = EnterpriseKnowledgeApplication(
+                knowledge, raw_artifacts, maximum_upload_bytes=knowledge_maximum_upload_bytes,
+            )
         if settings.quotation is not None:
             quote_settings = settings.quotation
             artifact_reader = None
@@ -1623,6 +1647,7 @@ def build_phase1_dependencies(
         commitments=commitments,
         costing=costing,
         work_uploads=work_uploads,
+        enterprise_knowledge=enterprise_knowledge,
         run_audit=run_audit,
         research_access=research_access,
         research_execution=PostgresDiscoveryExecutionReader(factory),

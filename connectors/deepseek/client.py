@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from collections.abc import Callable, Mapping
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from openai import (
     APIConnectionError,
@@ -13,6 +14,7 @@ from openai import (
     AsyncOpenAI,
     DefaultAsyncHttpxClient,
 )
+from openai.types.responses import ResponseInputParam
 from pydantic import ValidationError
 
 from connectors.deepseek.sdk_logging import private_sdk_logs
@@ -25,6 +27,7 @@ FailureCode = Literal[
     "rate_limit",
     "provider_error",
     "invalid_response",
+    "output_limit",
     "unknown",
 ]
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
@@ -57,7 +60,16 @@ def _invalid() -> DeepSeekFailure:
 
 def decode_response(body: Mapping[str, object], expected_model: str) -> ModelResponse:
     """验证完整最终 JSON；缺失 usage 保留未知，拒绝隐式工具调用。"""
-    if body.get("status") != "completed" or body.get("model") != expected_model:
+    if body.get("model") != expected_model:
+        raise _invalid()
+    incomplete = body.get("incomplete_details")
+    if (
+        body.get("status") == "incomplete"
+        and isinstance(incomplete, Mapping)
+        and incomplete.get("reason") == "max_output_tokens"
+    ):
+        raise DeepSeekFailure("output_limit")
+    if body.get("status") != "completed":
         raise _invalid()
     output = body.get("output")
     if not isinstance(output, list):
@@ -168,12 +180,24 @@ class DeepSeekClient:
     async def generate(self, request: ModelRequest) -> ModelResponse:
         """单次调用，不自行重试；所有返回均经本地完成状态与 JSON 校验。"""
         sdk = await self._sdk()
+        payload = json.dumps(request.payload, ensure_ascii=False, allow_nan=False)
+        provider_input: str | ResponseInputParam = payload
+        if request.images:
+            content = [{"type": "input_text", "text": payload}]
+            for image in request.images:
+                encoded = base64.b64encode(image.data).decode("ascii")
+                content.append({
+                    "type": "input_image",
+                    "image_url": f"data:{image.mime_type};base64,{encoded}",
+                    "detail": "high",
+                })
+            provider_input = cast(ResponseInputParam, [{"role": "user", "content": content}])
         try:
             with private_sdk_logs():
                 response = await sdk.responses.create(
                     model=request.model,
                     instructions=request.system_prompt,
-                    input=json.dumps(request.payload, ensure_ascii=False, allow_nan=False),
+                    input=provider_input,
                     max_output_tokens=request.max_output_tokens,
                     store=False,
                     text={"format": {"type": "json_object"}},

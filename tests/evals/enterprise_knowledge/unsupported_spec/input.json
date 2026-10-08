@@ -1,0 +1,15 @@
+{
+  "source_kind": "synthetic",
+  "document": "Product: Valve AX-42.\nMaterial: 304 stainless steel.\nDiameter: 48 mm.\nMOQ: 500 units.",
+  "candidate_response": {
+    "title": "无依据规格",
+    "facts": [
+      {
+        "label": "压力",
+        "value": "20 bar",
+        "source_quote": "Pressure rating: 20 bar."
+      }
+    ],
+    "inferences": []
+  }
+}

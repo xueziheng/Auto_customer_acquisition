@@ -1,0 +1,30 @@
+{
+  "source_kind": "synthetic",
+  "document": "",
+  "candidate_response": {
+    "source_text": "Model: AX-42.",
+    "analysis": {
+      "title": "越界图像引用",
+      "facts": [
+        {
+          "label": "型号",
+          "value": "AX-42",
+          "source_quote": "Model: AX-42."
+        }
+      ],
+      "inferences": [
+        {
+          "text": "AI推断：外观需要核对。",
+          "evidence_quotes": [],
+          "image_pages": [
+            3
+          ]
+        }
+      ]
+    }
+  },
+  "image_source_pages": [
+    3,
+    7
+  ]
+}

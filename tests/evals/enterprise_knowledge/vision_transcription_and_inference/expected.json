@@ -1,0 +1,15 @@
+{
+  "outcome": "accept",
+  "fact_values": [
+    "AX-42"
+  ],
+  "source_kind": "vision_transcription",
+  "image_source_pages": [
+    3,
+    7
+  ],
+  "inference_source_pages": [
+    7
+  ],
+  "note": "人工构造模型转录只验证AI标签与本次图像到原文件页码映射，不评估OCR准确率或逐句定位。"
+}

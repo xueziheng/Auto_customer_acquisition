@@ -21,6 +21,7 @@ _FILES = (
     "tests/integration/test_tenant_row_security.py",
     "tests/integration/test_enterprise_api_isolation.py",
     "tests/integration/test_platform_access.py",
+    "tests/integration/test_enterprise_knowledge_isolation.py",
 )
 
 

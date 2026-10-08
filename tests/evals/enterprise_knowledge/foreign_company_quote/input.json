@@ -1,0 +1,16 @@
+{
+  "source_kind": "synthetic",
+  "document": "Product: Valve AX-42.\nMaterial: 304 stainless steel.\nDiameter: 48 mm.\nMOQ: 500 units.",
+  "candidate_response": {
+    "title": "混入其他企业规格",
+    "facts": [
+      {
+        "label": "另一企业内部型号",
+        "value": "RIVAL-900",
+        "source_quote": "Other Company product: RIVAL-900."
+      }
+    ],
+    "inferences": []
+  },
+  "foreign_context_not_available": "Other Company product: RIVAL-900."
+}

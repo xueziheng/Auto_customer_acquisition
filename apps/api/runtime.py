@@ -120,6 +120,8 @@ def create_runtime_app_from_settings(
     authentication_origin: str | None = None,
     authentication_cookie: AuthenticationCookieSettings | None = None,
     assistant_factory: Callable[[async_sessionmaker[AsyncSession], ConfiguredApiDependencies], AssistantApiComposition] | None = None,
+    enterprise_knowledge_enabled: bool = False,
+    knowledge_maximum_upload_bytes: int = 10 * 1024 * 1024,
 ) -> FastAPI:
     """按显式配置与端口装配；旧模型仅借给开发测试，生产模型须由 assistant Gateway 装配。
 
@@ -138,6 +140,8 @@ def create_runtime_app_from_settings(
             manual_send=manual_send,
             gmail_transport=gmail_transport,
             inbound_mailbox=inbound_mailbox,
+            enterprise_knowledge_enabled=enterprise_knowledge_enabled,
+            knowledge_maximum_upload_bytes=knowledge_maximum_upload_bytes,
         )
         assistant = assistant_factory(factory, dependencies) if assistant_factory is not None else None
         if assistant is not None:

@@ -3,11 +3,12 @@ import { createMemoryHistory, createRouter } from "vue-router";
 import { afterEach, describe, expect, it } from "vitest";
 import WorkspaceNavigation from "../src/components/WorkspaceNavigation.vue";
 import applicationRouter from "../src/router";
+import { createApiClient, type WebIdentityProvider } from "../src/api/client";
 
 let app: App | undefined;
 afterEach(() => { app?.unmount(); document.body.replaceChildren(); });
 
-async function mountNavigation(path: string) {
+async function mountNavigation(path: string, client?: ReturnType<typeof createApiClient>) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: applicationRouter.getRoutes().map(route => ({ path: route.path, component: { template: "<div />" } })),
@@ -16,6 +17,7 @@ async function mountNavigation(path: string) {
   const host = document.createElement("div");
   document.body.append(host);
   app = createApp({ render: () => h("div", [h(WorkspaceNavigation, { level: "primary" }), h(WorkspaceNavigation, { level: "secondary" })]) });
+  if (client) app.provide("tradeos-api-client", client);
   app.use(router).mount(host);
   await nextTick();
   return { host, router };
@@ -23,6 +25,7 @@ async function mountNavigation(path: string) {
 
 describe("统一工作区导航", () => {
   it.each([
+    ["/knowledge", "产品资料", "企业资料库"],
     ["/crm/handoffs/hf_synthetic", "工作台", "待跟进"],
     ["/approvals?approval_id=apr_synthetic", "工作台", "待审批"],
     ["/demand/needs/need_synthetic", "客户", "需求证据"],
@@ -56,4 +59,28 @@ describe("统一工作区导航", () => {
     expect(router.currentRoute.value.path).toBe("/runs");
     expect(runs.getAttribute("aria-current")).toBe("page");
   });
+});
+
+it.each([["boss", true], ["sales", false]])("企业资料入口共享，供应卡只对已核实的内部角色 %s 显示", async (role, visible) => {
+  let generation = 1;
+  let active = true;
+  const listeners = new Set<() => void>();
+  const provider: WebIdentityProvider = {
+    generation: () => generation,
+    current: () => active ? { mode: "fixed-dev", tenantId: "tenant_fixture", employeeId: "employee_fixture" } : null,
+    subscribe: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+  };
+  const client = createApiClient({
+    baseUrl: "https://tradeos.test",
+    fetch: async () => new Response(JSON.stringify({
+      employee: { tenant_id: "tenant_fixture", employee_id: "employee_fixture", role, is_active: true },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }),
+  }, provider);
+  const { host } = await mountNavigation("/knowledge", client);
+  await new Promise(resolve => setTimeout(resolve, 0)); await nextTick();
+  expect(host.querySelector('.primary a[href="/knowledge"]')?.textContent).toBe("产品资料");
+  expect(host.querySelector('.secondary a[href="/knowledge"]')).not.toBeNull();
+  expect(host.querySelector('.secondary a[href="/products"]') !== null).toBe(visible);
+  active = false; generation += 1; for (const listener of listeners) listener(); await nextTick();
+  expect(host.querySelector('.secondary a[href="/products"]')).toBeNull();
 });

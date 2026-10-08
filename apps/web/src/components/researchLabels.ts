@@ -44,6 +44,7 @@ const researchStopLabels: Record<NonNullable<components["schemas"]["RunResearchV
     model_invalid_request: "模型服务未接受请求",
     model_rate_limit: "模型服务请求受限，本轮研究已停止",
     model_provider_error: "模型服务异常，本轮研究已停止",
+    model_output_limit: "模型输出达到上限，请缩小研究范围后重新发起",
     model_invalid_response: "模型返回内容无效，本轮研究已停止",
     model_unknown: "模型请求结果不确定，禁止自动重试",
     budget_missing: "缺少明确研究预算", not_configured: "未配置免费研究账户",

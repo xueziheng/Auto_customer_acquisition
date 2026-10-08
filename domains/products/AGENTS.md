@@ -4,7 +4,7 @@
 
 **Supply Capability Center（供应能力中心）**：公司供应侧的全貌。
 
-定位必须说清：它是**能力清单，不是获客起点**。设计稿的核心纠正就是「不能以公司产品为中心去找买家」。现有产品在打分里获得「供应准备度加成」（供货确定、报价快、图片全、利润可信），但**不主导探索方向**。
+按根总纲及 ADR0081，每家企业先完善并确认自己的产品资料，再用于本企业的客户探索。产品匹配仅形成需求假设，不能直接认定采购需求已验证。
 
 ## 三个供应池
 
@@ -65,3 +65,8 @@ V2 投影的 Product 固定为 `source_only`，保留 canonical public evidence 
 - 培养审批所引用的 conversation/web/upload Evidence 必须是可路由定位符；测试数据也不得绕过该契约。
 - 同一 facts hash 的事件重放、审批重投和 runtime 重启必须收敛到同一 evaluation、proposal、Approval 和 Case；批准前必须重读当前 Demand 事实，hash 已变只能转 `stale`。
 - `CatalogCultivationQueued` 是 metadata-only 事实，不得在本域偷偷补外部动作；下游消费者未独立设计和授权前，培养队列就是终点。
+
+
+## 企业共享资料
+
+knowledge_* 承载本企业上传原件绑定、持久处理、证据草稿和人工确认；在职 boss/sales 共享，只有当前 boss 确认。模型草稿不能自动创建正式产品或报价。原文事实逐项绑定引文与来源，推断独立；租约过期或模型结果未知不得自动重试。Obsidian 只是可重建的 Markdown 投影，同步重试不再次调用模型。
