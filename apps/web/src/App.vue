@@ -9,7 +9,7 @@ import NotificationBadge from "./components/NotificationBadge.vue";
 import WorkspaceNavigation from "./components/WorkspaceNavigation.vue";
 import { currentAuthenticationMutation, listenForSessionInvalidation, logout, restoreSession, subscribeAuthenticationMutation, supportsAuthenticationMutations } from "./api/authentication";
 
-const isPlatform = /^\/platform\/?$/.test(window.location.pathname);
+const isPlatform = /^\/platform\/?$/.test(globalThis.location.pathname);
 const isControlled = controlledWebConfig() !== null;
 const isIsolatedDevelopment = import.meta.env.DEV && !import.meta.env.PROD;
 const snapshot = ref(apiClient.identitySnapshot());
