@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -23,6 +24,22 @@ _FILES = (
     "tests/integration/test_platform_access.py",
     "tests/integration/test_enterprise_knowledge_isolation.py",
 )
+_MODULES = frozenset(path.removesuffix(".py").replace("/", ".") for path in _FILES)
+_TEST_NAME = re.compile(r"test_[A-Za-z0-9_]+")
+
+
+def _safe_test_diagnostics(root: ElementTree.Element) -> tuple[str, ...]:
+    """只返回固定模块、无参数的测试名与结果类别，不读取异常或任意属性。"""
+    diagnostics: set[str] = set()
+    for case in root.iter("testcase"):
+        module = case.get("classname", "")
+        name = case.get("name", "").partition("[")[0]
+        if module not in _MODULES or _TEST_NAME.fullmatch(name) is None:
+            continue
+        for category in ("failure", "error", "skipped"):
+            if case.find(category) is not None:
+                diagnostics.add(f"{module}::{name} {category}")
+    return tuple(sorted(diagnostics))
 
 
 def main() -> int:
@@ -34,6 +51,7 @@ def main() -> int:
 
     container = None
     code, passed = 2, 0
+    diagnostics: tuple[str, ...] = ()
     stage = "Docker/PostgreSQL 启动"
     failure = None
     print("企业隔离验收：启动独立临时 PostgreSQL。", flush=True)
@@ -63,8 +81,10 @@ def main() -> int:
                     cwd=_ROOT, env=env, capture_output=True, check=False, timeout=600,
                 )
                 code = result.returncode
+                report_root = ElementTree.parse(report).getroot()
+                diagnostics = _safe_test_diagnostics(report_root)
                 if code == 0:
-                    cases = list(ElementTree.parse(report).getroot().iter("testcase"))
+                    cases = list(report_root.iter("testcase"))
                     passed = len(cases)
                     if not cases or any(
                         case.find(tag) is not None
@@ -89,6 +109,8 @@ def main() -> int:
         print(f"企业隔离验收失败：{failure}，退出码 {code}。")
     else:
         print(f"企业隔离验收失败：pytest 退出码 {code}，临时 PostgreSQL 已回收。")
+    for diagnostic in diagnostics:
+        print(f"隔离测试结果：{diagnostic}")
     return code
 
 
