@@ -51,9 +51,13 @@ import runpy
 from infra.db.tenant_security import _tenant_table_names
 tables = _tenant_table_names()
 assert {'mailbox_accounts', 'mailbox_messages'} <= tables
-assert len(tables) == 140
+assert len(tables) == 143
 migration = runpy.run_path('migrations/versions/0070_tenant_row_security.py')
-assert set(migration['_TABLES']) == tables
+platform = runpy.run_path('migrations/versions/0071_platform_access.py')
+original, added = set(migration['_TABLES']), set(platform['_TABLES'])
+assert added == {'platform_admin_grants', 'platform_enterprises', 'platform_access_audits'}
+assert original.isdisjoint(added)
+assert original | added == tables
 """
     result = subprocess.run(
         [sys.executable, "-c", script], cwd=root,
