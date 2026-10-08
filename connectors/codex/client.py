@@ -114,7 +114,7 @@ def response_sse(response: ModelResponse) -> str:
             "output_tokens": usage.output_tokens,
             "total_tokens": usage.input_tokens + usage.output_tokens,
         }
-    events = [
+    events: list[dict[str, object]] = [
         {
             "type": "response.created",
             "response": {**complete, "status": "in_progress", "output": []},

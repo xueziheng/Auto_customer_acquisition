@@ -900,7 +900,7 @@ class ProductSupplyCardView(BaseModel):
         return self
 
 
-__all__ = (
+__all__: tuple[str, ...] = (
     "CandidateIndicativePriceRef",
     "CandidateProductCreate",
     "CatalogApprovalDecisionInput",

@@ -321,7 +321,7 @@ class CatalogProposalService(Protocol):
     ) -> tuple[CatalogCultivationCaseView, ...]: ...
 
 
-__all__ = (
+__all__: tuple[str, ...] = (
     "CandidateStatus",
     "CatalogApprovalDecisionInput",
     "CatalogClusterFactsInput",

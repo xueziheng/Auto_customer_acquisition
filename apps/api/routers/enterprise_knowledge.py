@@ -1,7 +1,7 @@
 """企业共享资料接口：租户与员工仅来自已认证身份。"""
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -33,7 +33,7 @@ from ..identity import RequestIdentity
 from ..middleware import ApiErrorResponse
 
 router = APIRouter()
-_ERRORS = {400: {"model": ApiErrorResponse}, 403: {"model": ApiErrorResponse}, 409: {"model": ApiErrorResponse}, 503: {"model": ApiErrorResponse}}
+_ERRORS: dict[int | str, dict[str, Any]] = {400: {"model": ApiErrorResponse}, 403: {"model": ApiErrorResponse}, 409: {"model": ApiErrorResponse}, 503: {"model": ApiErrorResponse}}
 Identity = Annotated[RequestIdentity, Depends(get_request_identity)]
 Dependencies = Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)]
 

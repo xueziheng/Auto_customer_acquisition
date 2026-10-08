@@ -2,11 +2,11 @@
 
 这是 TradeOS 的 Vue 3 + TypeScript + Vite 网页应用，已有业务页面、登录会话与后端 API 接线。页面可打开不等于其中的外部服务已配置，也不等于真实获客、发信或成交流程已验收。
 
-当前路由表有 26 条记录，其中根路径 `/` 转到工作台 `/crm/handoffs`，其余 25 条记录共用 23 个页面组件。接管详情和报价版本分别复用对应列表/工作台组件。
+当前路由表有 28 条记录，其中根路径 `/` 转到工作台 `/crm/handoffs`，其余 27 条记录共用 25 个页面组件。接管详情和报价版本分别复用对应列表/工作台组件。平台控制台 `/platform` 是独立入口，不属于企业的五组日常导航。
 
 ## 页面入口
 
-顶层导航只有五个业务入口，分组页面直接显示在二级导航栏，没有“更多”折叠菜单。需求、寻源、接管和报价详情由页面内的链接打开。分组与导航文案定义在 `src/navigation.ts`，由 `components/WorkspaceNavigation.vue` 渲染；表中“页面组件”均位于 `src/views/`，独立路由以 `src/router.ts` 为准。
+顶层导航只有五个业务入口，分组页面直接显示在二级导航栏，没有“更多”折叠菜单。需求、寻源、接管和报价详情由页面内的链接打开。分组与导航文案定义在 `src/navigation.ts`，由 `components/WorkspaceNavigation.vue` 渲染；表中“页面组件”默认位于 `src/views/`；平台控制台的组件路径相对于 `src/`。独立路由以 `src/router.ts` 为准。
 
 | 主入口 | 页面 / 用途 | 路由 | 页面组件 |
 |---|---|---|---|
@@ -16,6 +16,7 @@
 | 工作台 | 本人通知 | `/notifications` | `NotificationCenter.vue` |
 | 工作台 | 助手与指挥提案 | `/commands` | `command-center/CommandCenter.vue` |
 | 工作台 | 员工工作上传与提取确认 | `/work-uploads` | `work-uploads/WorkUploads.vue` |
+| 产品资料 | 企业资料上传、AI 整理与管理员确认 | `/knowledge` | `knowledge/KnowledgeCenter.vue` |
 | 产品资料 | 内部供应卡、目录候选产品管理 | `/products` | `products/ProductSupplyCenter.vue` |
 | 客户 | 客户发现 | `/prospects/accounts` | `customer-discovery/CustomerDiscovery.vue` |
 | 客户 | 开发任务与活动状态 | `/campaigns` | `campaigns/CampaignCenter.vue` |
@@ -32,6 +33,7 @@
 | 企业设置 | 发件身份、认证、预热与入站绑定 | `/crm/sending-identities` | `SendingIdentityCenter.vue` |
 | 企业设置 | 运行记录与证据概览 | `/runs` | `runs/RunCenter.vue` |
 | 企业设置 | 手工发送与发送结果核对 | `/crm/outreach` | `OutreachWorkbench.vue` |
+| 独立平台入口 | 平台管理 | `/platform` | `components/PlatformConsole.vue` |
 | 非日常导航 | 订阅计费“未开通”兼容页 | `/billing` | `billing/BillingUnavailable.vue` |
 
 审批页在生产和开发构建中都使用实际审批组件。页面显示哪些数据、能执行哪些操作，由现有后端会话和权限检查决定；导航可见不是操作授权。
@@ -40,7 +42,7 @@
 
 - `App.vue` 管理会话恢复、登录、退出和导航。`components/LoginPanel.vue` 是全局未登录状态，当前没有独立 `/login` 页面。`ControlledModeBar` 只在显式受控开发配置下显示。
 - `crm/OpportunityDetail.vue`、`crm/HandoffPacketView.vue`、Agent 对话、产品策略/候选/培养面板和报价表单由父页面挂载。它们不是独立顶层页面，但都有实际引用，不能因为路由表里没有就删除。
-- “产品资料”目前连接现有供应卡和目录候选产品界面。企业上传产品、完善规格、确认发布的完整产品建档流程尚未实现；员工工作上传也不能替代这个流程。
+- `/knowledge` 已实现企业资料上传、整理结果审阅、管理员确认和独立资料库写入状态展示；确认资料版本不会自动创建正式 Product、发布供应能力、启动开发任务或形成客户报价。`/products` 仍是内部供应卡与目录候选产品页面；员工工作上传不能替代企业资料流程。
 - 团队页目前是员工资料和分配规则的展示；企业自助开户、员工账号邀请与创建界面尚未实现。
 - 智能收件箱和本人邮箱使用不同的数据与权限范围；开发任务与手工发送故障恢复也有不同职责。可以统一导航，不能合并后扩大数据可见范围或发送权限。
 - 新建开发任务的目标市场与产品类别由当前企业填写，不再预填历史试验的国家和品类；现有发送限额、停止条件及后端门禁仍适用。
@@ -62,7 +64,7 @@ npm run test
 npm run build
 ```
 
-`npm run gen:api` 只把临时 OpenAPI JSON 通过标准输出传给生成器；仓库中唯一提交的生成物是 `src/api/api.d.ts`。
+`npm run gen:api` 把业务与平台 OpenAPI JSON 通过标准输出传给生成器；提交的生成物为 `src/api/api.d.ts` 和 `src/api/platform-api.d.ts`，两者均不得手写修改。
 
 所有 API 身份由 `src/api/client.ts` 的统一中间件注入，页面组件不得自行设置
 `X-Tenant-Id` 或 `X-Employee-Id`。Vite 开发模式只有在 `VITE_TENANT_ID` 与
