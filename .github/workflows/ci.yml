@@ -29,6 +29,50 @@ jobs:
           test -x /usr/bin/bwrap
           test -x /usr/bin/pdftoppm
           test -d /proc
+      - name: Verify enterprise knowledge sandbox startup
+        run: |
+          python - <<'PY'
+          import json
+          import platform
+          import subprocess
+          from pathlib import Path
+          from connectors.files.knowledge import KnowledgeFileParser
+
+          # 仅运行固定合成诊断，不读取环境、上传原件或 Provider 凭证。
+          print("sandbox_host", json.dumps({
+              "machine": platform.machine(),
+              "system_python": str(Path("/usr/bin/python3").resolve()),
+              "apparmor_userns": Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").read_text().strip()
+                  if Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").is_file() else "unavailable",
+              "userns_max": Path("/proc/sys/user/max_user_namespaces").read_text().strip()
+                  if Path("/proc/sys/user/max_user_namespaces").is_file() else "unavailable",
+          }), flush=True)
+          parser = KnowledgeFileParser(
+              python_binary=Path("/usr/bin/python3"),
+              bwrap_binary=Path("/usr/bin/bwrap"),
+          )
+          probes = (
+              ("system_runtime", "text/plain",
+               "import json, socket, sys, xml.etree.ElementTree; print(json.dumps({'python': sys.version.split()[0]}))"),
+              ("visual_runtime", "application/pdf",
+               "import sys; sys.path.insert(0, '/parser-libs'); import pypdf; from PIL import Image, _imaging; print('visual_runtime_ready')"),
+          )
+          for name, mime, source in probes:
+              command = parser._command(mime)
+              assert command[-4:] == ["/usr/bin/python3", "-I", "-B", "/parser.py"]
+              command = command[:-1] + ["-c", source]
+              result = subprocess.run(
+                  command, capture_output=True, text=True, timeout=15,
+                  env={"PATH": "/usr/bin", "LANG": "C.UTF-8"}, check=False,
+              )
+              print(name, json.dumps({
+                  "returncode": result.returncode,
+                  "stdout": result.stdout[:4096],
+                  "stderr": result.stderr[:4096],
+              }), flush=True)
+              if result.returncode:
+                  raise SystemExit("企业资料真实沙箱启动检查失败")
+          PY
       - name: Install Chromium
         run: python -m playwright install --with-deps chromium
       - name: Setup Node
