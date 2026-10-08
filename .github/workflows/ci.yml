@@ -35,7 +35,7 @@ jobs:
         run: npm ci
       - name: Generate API types
         working-directory: apps/web
-        run: npm run gen:api && git diff --exit-code -- src/api/api.d.ts
+        run: npm run gen:api && git diff --exit-code -- src/api/api.d.ts src/api/platform-api.d.ts
       - name: Web type check
         working-directory: apps/web
         run: npm run typecheck
@@ -48,6 +48,12 @@ jobs:
       - name: Web build
         working-directory: apps/web
         run: npm run build
+      - name: Upload production web build
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: tradeos-web-dist
+          path: apps/web/dist
+          retention-days: 3
       - name: Lint
         run: ruff check .
       - name: Type check

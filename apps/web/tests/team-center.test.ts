@@ -130,7 +130,7 @@ describe("TeamCenter", () => {
     const { root } = await mountTeam(fetch);
 
     await eventually(() => {
-      expect(root.textContent).toContain("只有老板可以查看完整团队与分配矩阵");
+      expect(root.textContent).toContain("只有企业管理员可以查看完整团队与分配矩阵");
     });
   });
 });

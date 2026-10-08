@@ -9,10 +9,11 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "gen:api": "bash -o pipefail -c 'python3 scripts/export_openapi.py | openapi-typescript -o src/api/api.d.ts'",
+    "gen:api": "bash -o pipefail -c 'python3 scripts/export_openapi.py | openapi-typescript -o src/api/api.d.ts' && npm run gen:platform-api",
     "lint": "eslint .",
     "test": "vitest run",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "gen:platform-api": "bash -o pipefail -c 'python3 scripts/export_platform_openapi.py | openapi-typescript -o src/api/platform-api.d.ts'"
   },
   "dependencies": {
     "ant-design-vue": "4.2.6",

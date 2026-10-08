@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from infra.authentication.passwords import (
     csrf_for,
     hash_password,
+    hash_test_password,
     password_work,
     token_digest,
     verify_password,
@@ -334,6 +335,7 @@ class PostgresAuthentication:
         employee_id: EmployeeId,
         *,
         session: AsyncSession | None = None,
+        test_password: bool = False,
     ) -> AuthPrincipal:
         """绑定现有活跃员工；可接收可信本机装配的事务以原子创建员工与账号。
 
@@ -345,7 +347,7 @@ class PostgresAuthentication:
         username = normalize_login_username(username)
         if session is not None and not session.in_transaction():
             raise AuthenticationInputInvalid()
-        record = await password_work(hash_password, password)
+        record = await password_work(hash_test_password if test_password else hash_password, password)
 
         async def bind(target: AsyncSession) -> AuthPrincipal:
             await self._bucket(target, "attempts")

@@ -4,25 +4,27 @@ import { apiClient, controlledWebConfig } from "./api/client";
 import { RouterView } from "vue-router";
 import ControlledModeBar from "./components/ControlledModeBar.vue";
 import LoginPanel from "./components/LoginPanel.vue";
+import PlatformConsole from "./components/PlatformConsole.vue";
 import NotificationBadge from "./components/NotificationBadge.vue";
 import WorkspaceNavigation from "./components/WorkspaceNavigation.vue";
 import { currentAuthenticationMutation, listenForSessionInvalidation, logout, restoreSession, subscribeAuthenticationMutation, supportsAuthenticationMutations } from "./api/authentication";
 
+const isPlatform = /^\/platform\/?$/.test(window.location.pathname);
 const isControlled = controlledWebConfig() !== null;
 const isIsolatedDevelopment = import.meta.env.DEV && !import.meta.env.PROD;
 const snapshot = ref(apiClient.identitySnapshot());
 const identityGeneration = ref(snapshot.value.generation);
 const authenticationSupported = supportsAuthenticationMutations();
 const authMutation = ref(currentAuthenticationMutation());
-const unsubscribeMutation = subscribeAuthenticationMutation(() => { authMutation.value = currentAuthenticationMutation(); });
-const loading = ref(authenticationSupported && !snapshot.value.identity && !isControlled && !isIsolatedDevelopment);
+const unsubscribeMutation = isPlatform ? () => {} : subscribeAuthenticationMutation(() => { authMutation.value = currentAuthenticationMutation(); });
+const loading = ref(!isPlatform && authenticationSupported && !snapshot.value.identity && !isControlled && !isIsolatedDevelopment);
 const sessionError = ref("");
 const exiting = ref(false);
-const unsubscribeIdentity = apiClient.subscribeIdentity(() => {
+const unsubscribeIdentity = isPlatform ? () => {} : apiClient.subscribeIdentity(() => {
   snapshot.value = apiClient.identitySnapshot();
   identityGeneration.value = snapshot.value.generation;
 });
-const stopListening = isControlled || isIsolatedDevelopment ? () => {} : listenForSessionInvalidation();
+const stopListening = isPlatform || isControlled || isIsolatedDevelopment ? () => {} : listenForSessionInvalidation();
 onUnmounted(() => { unsubscribeIdentity(); unsubscribeMutation(); stopListening(); });
 async function restore(): Promise<void> {
   loading.value = true; sessionError.value = "";
@@ -43,7 +45,11 @@ const appName: string = "TradeOS";
 </script>
 
 <template>
-  <main :aria-label="appName">
+  <PlatformConsole v-if="isPlatform" />
+  <main
+    v-else
+    :aria-label="appName"
+  >
     <p
       v-if="!authenticationSupported && !isIsolatedDevelopment"
       role="alert"

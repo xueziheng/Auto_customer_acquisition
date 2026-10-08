@@ -65,6 +65,7 @@ async function submit(): Promise<void> {
       <p class="meta">
         登录后查看当前账号已连接的邮箱与可用功能。
       </p>
+      <a href="/platform">平台管理员登录</a>
     </form>
   </section>
 </template>

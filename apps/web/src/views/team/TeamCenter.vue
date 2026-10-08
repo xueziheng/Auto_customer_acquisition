@@ -25,11 +25,11 @@ const assignedEmployees = computed(
 );
 
 const roleLabels: Readonly<Record<string, string>> = Object.freeze({
-  boss: "老板",
+  boss: "企业管理员",
   finance: "财务",
   manager: "经理",
   product: "产品",
-  sales: "销售",
+  sales: "员工",
   sourcing: "寻源",
   viewer: "只读",
 });
@@ -52,7 +52,7 @@ function dimension(values: string[] | undefined): string {
 }
 
 function safeError(status: number): string {
-  if (status === 403) return "只有老板可以查看完整团队与分配矩阵";
+  if (status === 403) return "只有企业管理员可以查看完整团队与分配矩阵";
   if (status === 503) return "团队服务暂不可用";
   return "团队与分配矩阵读取失败，请稍后重试";
 }

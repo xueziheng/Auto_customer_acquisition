@@ -6081,3 +6081,61 @@ class ModelProbeRow(Base):
     idempotency_key: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PlatformAdminGrantRow(Base):
+    """平台控制租户的显式授权；员工角色不能替代本表授权。"""
+    __tablename__ = "platform_admin_grants"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "employee_id", name="pk_platform_admin_grants"),
+        UniqueConstraint("tenant_id", "user_id", name="uq_platform_admin_grants_user"),
+        ForeignKeyConstraint(
+            ["tenant_id", "employee_id"], ["employees.tenant_id", "employees.employee_id"],
+            name="fk_platform_admin_grants_employee", ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"], ["employees.tenant_id", "employees.user_id"],
+            name="fk_platform_admin_grants_user", ondelete="RESTRICT",
+        ),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    employee_id: Mapped[str] = mapped_column(String(32))
+    user_id: Mapped[str] = mapped_column(String(32))
+    enabled: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class PlatformEnterpriseRow(Base):
+    """目录属于平台控制租户，目标企业不得等于控制租户。"""
+    __tablename__ = "platform_enterprises"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "enterprise_tenant_id", name="pk_platform_enterprises"),
+        CheckConstraint("tenant_id <> enterprise_tenant_id", name="ck_platform_enterprises_distinct"),
+        CheckConstraint("btrim(name) <> ''", name="ck_platform_enterprises_name"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    enterprise_tenant_id: Mapped[str] = mapped_column(String(32))
+    name: Mapped[str] = mapped_column(String(200))
+    enabled: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class PlatformAccessAuditRow(Base):
+    """平台概览审计只保存身份、目标和结果，不保存业务明文或凭证。"""
+    __tablename__ = "platform_access_audits"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "audit_id", name="pk_platform_access_audits"),
+        CheckConstraint("action = 'overview'", name="ck_platform_access_audits_action"),
+        ForeignKeyConstraint(
+            ["tenant_id", "actor_employee_id"], ["employees.tenant_id", "employees.employee_id"],
+            name="fk_platform_access_audits_employee", ondelete="RESTRICT",
+        ),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    audit_id: Mapped[str] = mapped_column(String(32))
+    actor_employee_id: Mapped[str] = mapped_column(String(32))
+    actor_user_id: Mapped[str] = mapped_column(String(32))
+    target_tenant_id: Mapped[str | None] = mapped_column(String(32))
+    action: Mapped[str] = mapped_column(String(32))
+    available: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

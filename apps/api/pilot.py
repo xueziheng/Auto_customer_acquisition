@@ -7,7 +7,7 @@ import logging
 import socket
 import sys
 from collections.abc import AsyncIterator, Mapping
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 
@@ -93,7 +93,9 @@ def runtime_settings(config: PilotConfig) -> Phase1RuntimeSettings:
     )
 
 
-def mount_web(business: FastAPI, build: Path) -> FastAPI:
+def mount_web(
+    business: FastAPI, build: Path, *, platform: FastAPI | None = None
+) -> FastAPI:
     """显式进入被挂载 API lifespan；路径穿越、未知资源不回退 SPA。"""
     build = build.resolve()
     if not (build / "index.html").is_file():
@@ -101,10 +103,31 @@ def mount_web(business: FastAPI, build: Path) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        async with business.router.lifespan_context(business):
+        async with AsyncExitStack() as stack:
+            if platform is not None and hasattr(business.state, "runtime_engine"):
+                async def close_preprobed_business(
+                    _exception_type: object,
+                    primary: BaseException | None,
+                    _traceback: object,
+                ) -> bool:
+                    try:
+                        await business.state.runtime_engine.dispose()
+                    except BaseException as failure:
+                        if primary is None:
+                            if not isinstance(failure, Exception):
+                                raise
+                            raise RuntimeError("web_database_close_failed") from None
+                    return False
+
+                stack.push_async_exit(close_preprobed_business)
+            if platform is not None:
+                await stack.enter_async_context(platform.router.lifespan_context(platform))
+            await stack.enter_async_context(business.router.lifespan_context(business))
             yield
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    if platform is not None:
+        app.mount("/api/platform", platform)
     app.mount("/api", business)
 
     @app.get("/{path:path}", include_in_schema=False)

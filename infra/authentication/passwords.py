@@ -18,16 +18,16 @@ from shared.authentication import AuthenticationInputInvalid
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="authentication")
 _SLOTS = threading.BoundedSemaphore(2)
-_RECORD = re.compile(r"scrypt\$131072\$8\$1\$([0-9a-f]{32})\$([0-9a-f]{64})", re.ASCII)
+_RECORD = re.compile(r"(?:scrypt|scrypt-test)\$131072\$8\$1\$([0-9a-f]{32})\$([0-9a-f]{64})", re.ASCII)
 
 
-def _password_bytes(password: SecretStr) -> bytes:
+def _password_bytes(password: SecretStr, *, minimum_length: int = 10) -> bytes:
     value = password.get_secret_value()
     try:
         encoded = value.encode("utf-8")
     except UnicodeError:
         raise AuthenticationInputInvalid() from None
-    if not 10 <= len(value) <= 128 or len(encoded) > 512:
+    if not minimum_length <= len(value) <= 128 or len(encoded) > 512:
         raise AuthenticationInputInvalid()
     return encoded
 
@@ -46,17 +46,28 @@ def hash_password(password: SecretStr) -> SecretStr:
     return SecretStr(f"scrypt$131072$8$1${salt.hex()}${digest.hex()}")
 
 
+def hash_test_password(password: SecretStr) -> SecretStr:
+    """仅可信测试账号初始化可用；记录显式测试策略，普通开户仍要求十字符。"""
+    data = _password_bytes(password, minimum_length=6)
+    salt = secrets.token_bytes(16)
+    digest = _derive(data, salt)
+    return SecretStr(f"scrypt-test$131072$8$1${salt.hex()}${digest.hex()}")
+
+
 def verify_password(password: SecretStr, record: SecretStr) -> bool:
     """只接受唯一固定格式；非法记录在分配 scrypt 内存前拒绝。"""
     match = _RECORD.fullmatch(record.get_secret_value())
     if match is None:
         return False
     try:
-        data = _password_bytes(password)
+        data = _password_bytes(password, minimum_length=0)
     except AuthenticationInputInvalid:
         return False
     actual = _derive(data, bytes.fromhex(match[1]))
-    return hmac.compare_digest(actual, bytes.fromhex(match[2]))
+    matches = hmac.compare_digest(actual, bytes.fromhex(match[2]))
+    # 长度不合策略也做相同工作，避免通过耗时识别六位测试账号与不存在账号。
+    minimum_length = 6 if record.get_secret_value().startswith("scrypt-test$") else 10
+    return matches and len(password.get_secret_value()) >= minimum_length
 
 
 async def password_work[T](operation: Callable[..., T], *args: object) -> T:

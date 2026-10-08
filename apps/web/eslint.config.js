@@ -11,6 +11,7 @@ export default tseslint.config(
       "coverage/**",
       "node_modules/**",
       "src/api/api.d.ts",
+      "src/api/platform-api.d.ts",
     ],
   },
   js.configs.recommended,

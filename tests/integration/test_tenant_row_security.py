@@ -80,7 +80,7 @@ async def _migrate(url: URL, action: str, revision: str) -> None:
 def prepared_isolation_url() -> URL:
     """全进程只准备一次 schema；初始化失败不得由后续用例反复重跑迁移。"""
     url = _test_url()
-    _migrate_sync(url, "upgrade", "0070")
+    _migrate_sync(url, "upgrade", "head")
     return url
 
 
@@ -336,7 +336,7 @@ async def test_0070_roundtrip_revokes_access_while_rls_is_absent(
         with pytest.raises(TenantIsolationViolation):
             await assert_tenant_database_isolation(db.apps[0], db.tenants[0])
     finally:
-        await _migrate(db.url, "upgrade", "0070")
+        await _migrate(db.url, "upgrade", "head")
         async with db.admin.begin() as connection:
             for tenant, password in zip(db.tenants, db.passwords, strict=True):
                 await provision_tenant_role(connection, tenant, password)

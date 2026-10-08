@@ -4,6 +4,11 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
+      path: "/platform",
+      name: "platform-console",
+      component: () => import("./components/PlatformConsole.vue"),
+    },
+    {
       path: "/",
       redirect: "/crm/handoffs",
     },

@@ -1,4 +1,4 @@
-"""在本地临时PostgreSQL中执行两组真实企业隔离验收，不消费部署连接。"""
+"""在本地临时PostgreSQL中执行企业与平台真实隔离验收，不消费部署连接。"""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 _FILES = (
     "tests/integration/test_tenant_row_security.py",
     "tests/integration/test_enterprise_api_isolation.py",
+    "tests/integration/test_platform_access.py",
 )
 
 
