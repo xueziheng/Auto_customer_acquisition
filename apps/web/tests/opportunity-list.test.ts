@@ -177,6 +177,17 @@ function makeReadFetch(
     const request = asRequest(input);
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/notifications") return jsonResponse([]);
+    if (request.method === "GET" && url.pathname === "/auth/session") {
+      return jsonResponse({
+        employee: {
+          tenant_id: request.headers.get("x-tenant-id"),
+          employee_id: request.headers.get("x-employee-id"),
+          name: "合成测试员工", role: "sales", is_active: true,
+        },
+        csrf_token: "synthetic-session-csrf",
+        expires_at: "2099-01-01T00:00:00Z",
+      });
+    }
     if (request.method === "GET" && url.pathname === "/crm/opportunities") {
       return jsonResponse(records);
     }
@@ -263,11 +274,12 @@ describe("opportunity board", () => {
     expect(root.textContent).toContain("9007199254740993.1200 USD");
 
     await eventually(() => {
-      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(fetch).toHaveBeenCalledTimes(4);
     });
     const requests = fetch.mock.calls.map(([request]) => asRequest(request));
     expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
       "/notifications",
+      "/auth/session",
       "/crm/opportunities",
       "/crm/opportunities/opportunity-demo-one",
     ]);

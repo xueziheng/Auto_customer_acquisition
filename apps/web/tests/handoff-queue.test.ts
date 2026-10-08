@@ -297,6 +297,17 @@ function readFetch(
     const request = asRequest(input);
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/notifications") return jsonResponse([]);
+    if (request.method === "GET" && url.pathname === "/auth/session") {
+      return jsonResponse({
+        employee: {
+          tenant_id: request.headers.get("x-tenant-id"),
+          employee_id: request.headers.get("x-employee-id"),
+          name: "合成测试员工", role: "sales", is_active: true,
+        },
+        csrf_token: "synthetic-session-csrf",
+        expires_at: "2099-01-01T00:00:00Z",
+      });
+    }
     if (request.method === "GET" && url.pathname === "/crm/handoffs") return jsonResponse(queue);
     const handoffMatch = url.pathname.match(/^\/crm\/handoffs\/([^/]+)$/);
     if (request.method === "GET" && handoffMatch) {
@@ -362,6 +373,7 @@ describe("handoff queue", () => {
     expect(new URL(queueRequest.url).searchParams.get("limit")).toBe("50");
     expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
       "/notifications",
+      "/auth/session",
       "/crm/handoffs",
       "/crm/handoffs/handoff-demo-one",
       "/crm/opportunities/opportunity-demo-one",

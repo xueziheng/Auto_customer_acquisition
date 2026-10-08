@@ -5545,7 +5545,7 @@ export interface components {
             /** Configuration Version */
             configuration_version?: string | null;
             /** Failure Code */
-            failure_code?: ("permission" | "configuration" | "quota" | "authentication" | "insufficient_balance" | "invalid_request" | "rate_limit" | "provider_error" | "invalid_response" | "unknown") | null;
+            failure_code?: ("permission" | "configuration" | "quota" | "authentication" | "insufficient_balance" | "invalid_request" | "rate_limit" | "provider_error" | "invalid_response" | "output_limit" | "unknown") | null;
             limits?: components["schemas"]["ModelLimits"] | null;
             /** Model */
             model?: string | null;
@@ -7628,7 +7628,7 @@ export interface components {
          */
         RunResearchView: {
             /** Completion Reason */
-            completion_reason?: ("plan_completed" | "budget_exhausted" | "no_results" | "page_disallowed" | "no_readable_pages" | "pending_verification" | "no_supported_signals" | "quota_exhausted" | "usage_unknown" | "paid_enabled" | "request_uncertain" | "unsupported" | "model_permission" | "model_configuration" | "model_quota" | "model_authentication" | "model_insufficient_balance" | "model_invalid_request" | "model_rate_limit" | "model_provider_error" | "model_invalid_response" | "model_unknown") | null;
+            completion_reason?: ("plan_completed" | "budget_exhausted" | "no_results" | "page_disallowed" | "no_readable_pages" | "pending_verification" | "no_supported_signals" | "quota_exhausted" | "usage_unknown" | "paid_enabled" | "request_uncertain" | "unsupported" | "model_permission" | "model_configuration" | "model_quota" | "model_authentication" | "model_insufficient_balance" | "model_invalid_request" | "model_rate_limit" | "model_provider_error" | "model_invalid_response" | "model_output_limit" | "model_unknown") | null;
             /**
              * Consumed Credits
              * @default 0
@@ -7706,7 +7706,7 @@ export interface components {
              */
             source_channels: ("public_web" | "industry_directory" | "association_members" | "trade_show_exhibitors" | "public_procurement" | "company_news" | "public_linkedin_company" | "public_trade_records")[];
             /** Stop Reason */
-            stop_reason?: ("plan_completed" | "budget_exhausted" | "no_results" | "page_disallowed" | "no_readable_pages" | "pending_verification" | "no_supported_signals" | "quota_exhausted" | "usage_unknown" | "paid_enabled" | "request_uncertain" | "unsupported" | "model_permission" | "model_configuration" | "model_quota" | "model_authentication" | "model_insufficient_balance" | "model_invalid_request" | "model_rate_limit" | "model_provider_error" | "model_invalid_response" | "model_unknown") | null;
+            stop_reason?: ("plan_completed" | "budget_exhausted" | "no_results" | "page_disallowed" | "no_readable_pages" | "pending_verification" | "no_supported_signals" | "quota_exhausted" | "usage_unknown" | "paid_enabled" | "request_uncertain" | "unsupported" | "model_permission" | "model_configuration" | "model_quota" | "model_authentication" | "model_insufficient_balance" | "model_invalid_request" | "model_rate_limit" | "model_provider_error" | "model_invalid_response" | "model_output_limit" | "model_unknown") | null;
             /**
              * Uncertain Credits
              * @default 0
@@ -8783,7 +8783,7 @@ export interface components {
              */
             created_at: string;
             /** Error Code */
-            error_code?: ("permission" | "configuration" | "quota" | "authentication" | "insufficient_balance" | "invalid_request" | "rate_limit" | "provider_error" | "invalid_response" | "unknown") | null;
+            error_code?: ("permission" | "configuration" | "quota" | "authentication" | "insufficient_balance" | "invalid_request" | "rate_limit" | "provider_error" | "invalid_response" | "output_limit" | "unknown") | null;
             /**
              * Input Text
              * @default
