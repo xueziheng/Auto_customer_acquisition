@@ -1,6 +1,7 @@
 """企业资料的 PostgreSQL 事务适配，所有SQL显式绑定企业。"""
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from types import TracebackType
 from typing import Self
@@ -105,7 +106,8 @@ class PostgresKnowledgeRepository:
 
     async def get_revision(self, revision_id: str) -> KnowledgeRevisionView | None:
         row = (await self._session.scalars(select(RevisionRow).where(RevisionRow.tenant_id == self._tenant, RevisionRow.revision_id == revision_id))).one_or_none()
-        return KnowledgeRevisionView.model_validate(row.payload) if row else None
+        # JSONB 的枚举与时间为 JSON 字符串；须保留嵌套 Provenance 的严格 JSON 校验。
+        return KnowledgeRevisionView.model_validate_json(json.dumps(row.payload)) if row else None
 
     async def save_revision(self, revision: KnowledgeRevisionView) -> None:
         row = (await self._session.scalars(select(RevisionRow).where(RevisionRow.tenant_id == self._tenant, RevisionRow.revision_id == revision.revision_id))).one_or_none()

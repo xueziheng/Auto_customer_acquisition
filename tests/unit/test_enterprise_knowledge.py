@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -282,3 +283,38 @@ async def test_parser_warnings_reject_unbounded_or_sensitive_content(setup, warn
             model="synthetic", extracted_by="synthetic", parse_warnings=warnings,
         )
     assert not repos[TENANT].revisions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirmed", [False, True])
+async def test_persisted_revision_restores_strict_provenance_for_read_and_confirmation(setup, confirmed):
+    from infra.db.enterprise_knowledge import PostgresKnowledgeRepository
+
+    service, _, _ = setup
+    _, _, draft = await processed(service)
+    detail = await service.confirm(
+        TENANT, BOSS, draft.document.document_id,
+        revision_id=draft.revision.revision_id, expected_version=draft.document.version,
+    ) if confirmed else draft
+    revision = detail.revision
+    payload = revision.model_dump(mode="json")
+
+    class StoredRows:
+        def one_or_none(self):
+            return SimpleNamespace(payload=payload)
+
+    class Session:
+        async def scalars(self, statement):
+            return StoredRows()
+
+    repository = PostgresKnowledgeRepository(Session(), TENANT)
+    restored = await repository.get_revision(revision.revision_id)
+    assert restored == revision
+    assert restored.fact_provenance[0].extracted_at.tzinfo is not None
+    assert restored.fact_provenance[0].confirmed_at == revision.confirmed_at
+
+    from pydantic import ValidationError as PydanticValidationError
+
+    payload["fact_provenance"][0]["extracted_at"] = "2026-10-08T00:00:00"
+    with pytest.raises(PydanticValidationError):
+        await repository.get_revision(revision.revision_id)
