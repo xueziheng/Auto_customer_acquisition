@@ -1142,6 +1142,8 @@ def test_orm_metadata_parity_with_head() -> None:
         "ix_auth_sessions_account": ("tenant_id", "username", "created_at"),
         "ix_model_invocations_quota": ("tenant_id", "created_at", "employee_id"),
         "uq_agent_turn_active": ("tenant_id", "session_id"),
+        "ix_knowledge_document_list": ("tenant_id", "created_at", "document_id"),
+        "ix_knowledge_job_queue": ("tenant_id", "state", "created_at", "job_id"),
     })
     actual_indexes: dict[str, tuple[str, ...]] = {}
     for tbl in metadata.tables.values():

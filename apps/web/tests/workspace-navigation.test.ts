@@ -1,12 +1,12 @@
 import { createApp, h, nextTick, type App } from "vue";
 import { createMemoryHistory, createRouter } from "vue-router";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import WorkspaceNavigation from "../src/components/WorkspaceNavigation.vue";
 import applicationRouter from "../src/router";
-import { createApiClient, type WebIdentityProvider } from "../src/api/client";
+import { clearAuthenticatedIdentity, configureControlledIdentity, createApiClient, type WebIdentityProvider } from "../src/api/client";
 
 let app: App | undefined;
-afterEach(() => { app?.unmount(); document.body.replaceChildren(); });
+afterEach(() => { app?.unmount(); app = undefined; clearAuthenticatedIdentity(); document.body.replaceChildren(); vi.unstubAllEnvs(); });
 
 async function mountNavigation(path: string, client?: ReturnType<typeof createApiClient>) {
   const router = createRouter({
@@ -67,7 +67,7 @@ it.each([["boss", true], ["sales", false]])("企业资料入口共享，供应�
   const listeners = new Set<() => void>();
   const provider: WebIdentityProvider = {
     generation: () => generation,
-    current: () => active ? { mode: "fixed-dev", tenantId: "tenant_fixture", employeeId: "employee_fixture" } : null,
+    current: () => active ? { mode: "authenticated", tenantId: "tenant_fixture", employeeId: "employee_fixture" } : null,
     subscribe: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
   };
   const client = createApiClient({
@@ -82,5 +82,43 @@ it.each([["boss", true], ["sales", false]])("企业资料入口共享，供应�
   expect(host.querySelector('.secondary a[href="/knowledge"]')).not.toBeNull();
   expect(host.querySelector('.secondary a[href="/products"]') !== null).toBe(visible);
   active = false; generation += 1; for (const listener of listeners) listener(); await nextTick();
+  expect(host.querySelector('.secondary a[href="/products"]')).toBeNull();
+});
+
+
+it("受控开发导航不读取登录会话，角色切换保留当前员工且不反复失效", async () => {
+  vi.stubEnv("DEV", true);
+  vi.stubEnv("PROD", false);
+  vi.stubEnv("VITE_TENANT_ID", "tenant_controlled");
+  vi.stubEnv("VITE_EMPLOYEE_ID", "employee_first");
+  vi.stubEnv("VITE_CONTROLLED_CONFIG", JSON.stringify({
+    owner: "a".repeat(32),
+    tenantId: "tenant_controlled",
+    identities: [
+      { employeeId: "employee_first", label: "第一位演练员工" },
+      { employeeId: "employee_second", label: "第二位演练员工" },
+    ],
+  }));
+  let requests = 0;
+  const client = createApiClient({
+    baseUrl: "https://tradeos.test",
+    fetch: async () => {
+      requests += 1;
+      return new Response(null, { status: requests === 1 ? 401 : 503 });
+    },
+  });
+  const { host, router } = await mountNavigation("/settings", client);
+  configureControlledIdentity("employee_second");
+  const selected = client.identitySnapshot();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await nextTick();
+  }
+  expect(requests).toBe(0);
+  expect(client.identitySnapshot()).toEqual(selected);
+  expect(selected.identity?.employeeId).toBe("employee_second");
+  await router.push("/knowledge");
+  await nextTick();
+  expect(host.querySelector('.secondary a[href="/knowledge"]')).not.toBeNull();
   expect(host.querySelector('.secondary a[href="/products"]')).toBeNull();
 });

@@ -20,6 +20,8 @@ async function loadRole(): Promise<void> {
   const operation = gate.begin("navigation-role");
   if (!operation?.valid()) return;
   try {
+    // 受控演练只使用开发身份头，没有可供此端点恢复的登录会话。
+    if (client.identitySnapshot().identity?.mode !== "authenticated") return;
     const result = await client.GET("/auth/session", { signal: operation.signal, cache: "no-store" });
     if (!operation.valid()) return;
     const identity = client.identitySnapshot().identity;

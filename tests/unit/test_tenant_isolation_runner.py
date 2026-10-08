@@ -130,10 +130,16 @@ def test_runner_rejects_remote_docker_before_container_creation(monkeypatch) -> 
 def test_diagnostics_emit_only_fixed_modules_test_names_and_categories() -> None:
     module = _runner()
     root = ElementTree.Element("testsuites", {"message": "private-attribute-canary"})
+    parameter_canary = secrets.token_hex(16)
+    redact_credentials = False
+    synthetic_url = URL.create(
+        "postgresql", username="synthetic", password=parameter_canary,
+        host="host.invalid", database="fixture",
+    ).render_as_string(hide_password=redact_credentials)
     case = ElementTree.SubElement(
         root, "testcase",
         classname="tests.integration.test_enterprise_knowledge_isolation",
-        name="test_company_scope[postgresql://synthetic:private-parameter-canary@host/db]",
+        name=f"test_company_scope[{synthetic_url}]",
         file="private-file-canary",
         other="private-other-canary",
     )
