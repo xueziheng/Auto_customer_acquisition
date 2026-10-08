@@ -1,5 +1,7 @@
 # JSLT 平台与企业账号权限设计
 
+
+> 2026-10-08 实施边界更新：四个指定账号、独立平台只读概况、停用全部旧账号采用 [ADR 0082](../../adr/0082-platform-account-boundary.md)。本文的邀请激活、自助企业开户等仍是后续设计；“保留 test_admin”和本批邀请开户流程已被用户新要求覆盖。
 日期：2026-10-07（北京时间）
 状态：待用户审阅的设计；未实施产品功能，未变更线上账号或数据库。
 开发位置：阿里云 `/srv/tradeos/development/TradeOS`，分支 `codex/jslt-enterprise-access`。

@@ -11,7 +11,7 @@
 - 仅在阿里云 /srv/tradeos/development/TradeOS 写源代码；重型测试使用 CI。
 - 所有表、读写、审计都绑定 tenant；保留 Origin/CSRF/Web Locks 及后台权限。
 - 平台不加入 JSLT、不执行企业写入/审批/模型任务；未知统计不冒充零。
-- 新账号验证后取消其余账号和会话；历史员工保留但停用。
+- 账号创建与旧账号停用、会话撤销在同一事务中提交，随后验证新旧登录；历史员工保留但停用。
 - 不发送邮件、不调用模型、不新增备份；临时测试资源验完清理。
 
 ## Review Focus
@@ -22,26 +22,28 @@
 - 初始化重复或失败：事务回滚，不留下半套账号；账号停用与会话同时撤销。
 
 ### 1. 平台后端与持久化
-- [ ] 新增 domains/organization/platform_access.py，DTO/Protocol/授权服务。
-- [ ] 新增 infra/db/platform_access.py，固定 reader 与只读统计、控制 tenant 审计。
+- [x] 新增 domains/organization/platform_access.py，DTO/Protocol/授权服务。
+- [x] 新增 infra/db/platform_access.py，固定 reader 与只读统计、控制 tenant 审计。
 - [ ] 新增三个 ORM 表及 0071 迁移，RLS 两策略、复合身份引用、迁移往返。
-- [ ] 新增 apps/api/platform_access.py::create_platform_app(control_tenant,engine,origin,readers)；独立 Session DTO，固定 /api/platform Cookie。
+- [x] 新增 apps/api/platform_access.py::create_platform_app(control_tenant,engine,origin,readers)；独立 Session DTO，固定 /api/platform Cookie。
 - [ ] 单元与真实 PostgreSQL 集成验证身份、CSRF、撤权、越租户拒绝。
 
 ### 2. 平台前端
-- [ ] /platform 使用独立 PlatformConsole 与平台认证模块；原业务会话不运行。
-- [ ] 入口链接、平台身份、企业概况与成员、未知/失败态，手机尺寸不溢出。
-- [ ] 平台类型由独立 OpenAPI schema 生成；认证并发/登出失败/401 清理测试。
+- [x] /platform 使用独立 PlatformConsole 与平台认证模块；原业务会话不运行。
+- [x] 入口链接、平台身份、企业概况与成员、未知/失败态，手机尺寸不溢出。
+- [x] 平台类型由独立 OpenAPI schema 生成；认证并发/登出失败/401 清理测试。
 
 ### 3. 受信初始化与装配
-- [ ] 新增私有 platform 配置与应用装配；父 lifespan 同时管理平台和业务。
-- [ ] 可信命令创建控制身份/grant、JSLT 三账号与经理绑定、平台目录。
+- [x] 新增私有 platform 配置与应用装配；父 lifespan 同时管理平台和业务。
+- [x] 可信命令创建控制身份/grant、JSLT 三账号与经理绑定、平台目录。
 - [ ] 先 dry-run 核对旧账号与负责人；应用时事务停用旧账号/员工并撤销会话，重复配置拒绝或幂等核实。
-- [ ] 密码仅私有文件输出给用户，不出现在命令行/日志/Git。
+- [ ] 真实凭证仅通过私有文件交付，不进入 Git 或日志；用户指定的测试密码只用于受信维护进程，测试夹具运行时生成。
 - [ ] 迁移、旧租户角色新表授权、平台角色、配置文件与新 release 明确执行；不启动时自动迁移。
 
 ### 4. 验收、部署与交付
 - [ ] 结构自检、敏感扫描、类型/lint、相关单元与集成、迁移 roundtrip、前端构建、CI。
-- [ ] 独立复查平台越权、客户负责人范围、旧账号撤销。
+- [x] 独立复查平台越权、客户负责人范围、旧账号撤销。
 - [ ] 新 release 切换；健康、四账号真实 HTTPS 登录/恢复/退出、旧账号失败、各权限反向检查。
 - [ ] 浏览器核验平台与企业页面；提交 push 核对远端；清理临时文件/测试 Docker。
+
+当前源码检查：平台单测 20、应用生命周期单测 6、密码策略单测 3 已通过；前端类型/测试/构建、Python 类型已在 CI 通过。完整数据库验收与实际部署仍待执行，不能据此宣称账号已经上线。

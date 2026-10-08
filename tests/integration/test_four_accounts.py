@@ -1,6 +1,7 @@
 """四个指定账号初始化的真实事务、旧身份撤销和拒绝重入验收。"""
 from __future__ import annotations
 
+import secrets
 from datetime import UTC, datetime
 
 import pytest
@@ -26,11 +27,11 @@ from shared.schemas.identifiers import TenantId, new_id
 
 
 def passwords():
-    return {name: SecretStr("synthetic-" + name + "-password") for name in ACCOUNT_NAMES}
+    return {name: SecretStr(secrets.token_urlsafe(24)) for name in ACCOUNT_NAMES}
 
 
 async def prepare(factory, tenant):
-    password = SecretStr("synthetic-previous-password")
+    password = SecretStr(secrets.token_urlsafe(24))
     await run_account_command(
         factory, tenant,
         AccountCommand(action="create", username="test_admin", name="旧测试管理员", role="boss"),
@@ -184,7 +185,7 @@ async def test_six_character_test_password_requires_explicit_initialization_flag
     factory = async_sessionmaker(integration_engine, expire_on_commit=False)
     business, control = TenantId(new_id("tn")), TenantId(new_id("tn"))
     tenants = (business, control)
-    short_password = SecretStr("123456")
+    short_password = SecretStr(secrets.token_hex(3))
     try:
         auth, _, old_session = await prepare(factory, business)
         before = await snapshot(factory, tenants)

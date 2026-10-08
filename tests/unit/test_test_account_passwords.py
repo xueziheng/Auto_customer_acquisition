@@ -1,5 +1,7 @@
 """显式测试账号策略不放宽普通账号和重置密码要求。"""
 
+import secrets
+
 import pytest
 from pydantic import SecretStr
 
@@ -12,7 +14,7 @@ from shared.authentication import AuthenticationInputInvalid
 
 
 def test_short_password_requires_explicit_test_record() -> None:
-    password = SecretStr("sample")
+    password = SecretStr(secrets.token_hex(3))
     with pytest.raises(AuthenticationInputInvalid):
         hash_password(password)
     record = hash_test_password(password)
@@ -25,7 +27,7 @@ def test_short_password_requires_explicit_test_record() -> None:
 
 
 def test_normal_password_record_policy_is_unchanged() -> None:
-    password = SecretStr("ordinary-fixture-password")
+    password = SecretStr(secrets.token_urlsafe(24))
     record = hash_password(password)
     assert record.get_secret_value().startswith("scrypt$")
     assert verify_password(password, record)

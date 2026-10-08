@@ -1,6 +1,7 @@
 """真实企业数据库角色下验证独立平台授权与只读统计；只使用合成数据。"""
 from __future__ import annotations
 
+import secrets
 from datetime import UTC, datetime
 
 import pytest
@@ -50,7 +51,7 @@ async def test_platform_real_grants_readonly_statistics_and_cross_scope_denial(
     bf = async_sessionmaker(business_engine, expire_on_commit=False)
     auth = PostgresAuthentication(cf, control)
     business_auth = PostgresAuthentication(bf, business)
-    password = SecretStr("synthetic-platform-test-password")
+    password = SecretStr(secrets.token_urlsafe(24))
     missing_tenant = TenantId(new_id("tn"))
     nongrantee = EmployeeId(new_id("emp"))
     business_boss = EmployeeId(new_id("emp"))
