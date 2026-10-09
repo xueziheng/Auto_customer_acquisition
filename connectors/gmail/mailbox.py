@@ -132,8 +132,9 @@ class _Cursor(BaseModel):
 
 
 class GmailMailboxReader:
-    def __init__(self, provider: MailboxProvider, expected_email: str):
+    def __init__(self, provider: MailboxProvider, expected_email: str, *, refresh_latest: bool = False):
         self.provider, self.expected_email = provider, expected_email.casefold()
+        self.refresh_latest = refresh_latest
 
     async def fetch(self, cursor: str | None) -> MailboxPage:
         """每次核验账号；只在本页完整成功时交付新的检查点。"""
@@ -153,8 +154,9 @@ class GmailMailboxReader:
         except Exception:  # noqa: BLE001 - 凭证和 Provider 原文不得越过安全边界
             raise MailboxFailure("invalid_response") from None
         is_full = state.phase == "backfill"
+        latest_only = self.refresh_latest and is_full and cursor is not None
         params = {"maxResults": str(PAGE_SIZE)}
-        if state.page:
+        if state.page and not latest_only:
             params["pageToken"] = state.page
         if is_full:
             params["includeSpamTrash"] = "true"
@@ -193,7 +195,7 @@ class GmailMailboxReader:
                 raise ValueError()
         except Exception:  # noqa: BLE001 - 凭证和 Provider 原文不得越过安全边界
             raise MailboxFailure("invalid_response") from None
-        offset = state.offset
+        offset = 0 if latest_only else state.offset
         messages: list[MailboxMessage] = []
         deleted: list[str] = []
         for mid in refs[offset : offset + PAGE_SIZE]:
@@ -207,6 +209,13 @@ class GmailMailboxReader:
                 if error.code != "message_deleted":
                     raise
                 deleted.append(mid)
+        if latest_only:
+            # 手动刷新只补最新一页，保留历史进度和初始 history 锚点，后续仍能完整追平。
+            assert cursor is not None
+            return MailboxPage(
+                cursor=cursor, phase=state.phase, messages=messages,
+                deleted_ids=deleted, refresh_complete=True,
+            )
         complete = False
         if offset + PAGE_SIZE < len(refs):
             state.offset += PAGE_SIZE

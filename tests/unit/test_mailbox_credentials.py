@@ -124,3 +124,37 @@ def test_refresh_failure_preserves_retryability(tmp_path, monkeypatch, kind, exp
         GmailMailboxHttpProvider(path)._get("profile", {})
     assert error.value.code == expected
     assert "synthetic-secret" not in str(error.value)
+
+
+@pytest.mark.parametrize("reason,expected,delay", [
+    ("rateLimitExceeded", "rate_limited", 60),
+    ("userRateLimitExceeded", "rate_limited", 60),
+    ("dailyLimitExceeded", "rate_limited", 3600),
+    ("insufficientPermissions", "authorization_required", 60),
+    ("domainPolicy", "authorization_required", 60),
+])
+def test_google_403_distinguishes_quota_from_revoked_access(tmp_path, monkeypatch, reason, expected, delay):
+    import requests
+    from google.oauth2.credentials import Credentials
+    tmp_path.chmod(0o700)
+    path = tmp_path / "credentials.json"
+    _save(path, json.dumps({"token_uri": "https://oauth2.googleapis.com/token", "scopes": SCOPES}))
+    monkeypatch.setattr(Credentials, "from_authorized_user_info",
+                        lambda *a: SimpleNamespace(valid=True, token="synthetic-only"))
+
+    class Reply:
+        status_code = 403
+        def __init__(self):
+            self.headers = {}
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def iter_content(self, size):
+            yield json.dumps({"error": {"errors": [{"reason": reason}],
+                                       "message": "private-provider-text"}}).encode()
+
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: Reply())
+    with pytest.raises(MailboxFailure) as error:
+        GmailMailboxHttpProvider(path)._get("profile", {})
+    assert error.value.code == expected
+    assert error.value.retry_after == delay
+    assert "private-provider-text" not in str(error.value)

@@ -235,6 +235,7 @@ class SqlMailboxRepository:
             account.last_attempt_at = datetime.now(UTC)
             if page.phase == "synced":
                 account.last_synced_at = account.last_attempt_at
+            if page.phase == "synced" or page.refresh_complete:
                 account.sync_requested = False
 
     async def failed(self, actor: MailboxActor, mailbox_id: str, code: str) -> None:

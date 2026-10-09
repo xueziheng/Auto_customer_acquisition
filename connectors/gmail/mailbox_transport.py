@@ -9,10 +9,34 @@ import re
 import stat
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from shared.schemas.mailbox import MailboxFailure
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+
+def _quota_retry_after(response: Any) -> int | None:
+    """只识别有界错误体中的已知配额原因；权限拒绝或畸形响应仍需人工处理。"""
+    try:
+        chunks, size = [], 0
+        for chunk in response.iter_content(4096):
+            size += len(chunk)
+            if size > 16384:
+                return None
+            chunks.append(chunk)
+        errors = json.loads(b"".join(chunks))["error"]["errors"]
+        reasons = {item["reason"] for item in errors}
+        if not reasons or not reasons <= {
+            "rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded"
+        }:
+            return None
+        if "dailyLimitExceeded" in reasons:
+            return 3600
+        retry = response.headers.get("Retry-After", "60")
+        return min(3600, max(60, int(retry))) if retry.isdigit() else 60
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _private_read(path: Path) -> bytes:
@@ -146,7 +170,12 @@ class GmailMailboxHttpProvider:
                 allow_redirects=False,
                 stream=True,
             ) as response:
-                if response.status_code in {401, 403}:
+                if response.status_code == 403:
+                    retry_after = _quota_retry_after(response)
+                    if retry_after is not None:
+                        raise MailboxFailure("rate_limited", retry_after)
+                    raise MailboxFailure("authorization_required")
+                if response.status_code == 401:
                     raise MailboxFailure("authorization_required")
                 if response.status_code == 429:
                     retry = response.headers.get("Retry-After", "60")

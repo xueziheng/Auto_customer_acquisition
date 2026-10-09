@@ -139,3 +139,30 @@ async def test_failure_halfway_through_page_delivers_no_checkpoint():
 
     with pytest.raises(MailboxFailure, match="rate_limited"):
         await GmailMailboxReader(Fails(), "owner@example.com").fetch(None)
+
+
+@pytest.mark.asyncio
+async def test_requested_latest_page_preserves_historical_checkpoint():
+    provider = Provider()
+    first = await GmailMailboxReader(provider, "owner@example.com").fetch(None)
+    provider.calls.clear()
+    latest = await GmailMailboxReader(provider, "owner@example.com", refresh_latest=True).fetch(first.cursor)
+    assert [m.message_id for m in latest.messages] == ["a1"]
+    assert latest.cursor == first.cursor
+    assert latest.phase == "backfill"
+    assert latest.refresh_complete and not latest.full_scan_complete
+    assert ("messages", {"maxResults": "25", "includeSpamTrash": "true"}) in provider.calls
+    resumed = await GmailMailboxReader(provider, "owner@example.com").fetch(latest.cursor)
+    assert [m.message_id for m in resumed.messages] == ["a2"]
+    assert resumed.phase == "catch_up"
+
+
+@pytest.mark.asyncio
+async def test_requested_latest_does_not_reset_incremental_sync():
+    provider = Provider()
+    reader = GmailMailboxReader(provider, "owner@example.com")
+    first = await reader.fetch(None)
+    second = await reader.fetch(first.cursor)
+    result = await GmailMailboxReader(provider, "owner@example.com", refresh_latest=True).fetch(second.cursor)
+    assert result.phase == "synced"
+    assert [m.message_id for m in result.messages] == ["a3"]

@@ -157,6 +157,20 @@ async def test_sync_uses_real_gateway_and_lock_and_persists_safe_failure(
     try:
         first = await sync.once()
         assert first.phase == "backfill"
+        await repo.request_sync(actor, mailbox)
+        latest_sync = MailboxSync(
+            repo, actor, mailbox,
+            GmailMailboxReader(provider, "owner@example.com", refresh_latest=True),
+            HmacFingerprintProvider("test-v1", b"test-only-mailbox-fingerprint-key-12345"),
+            lock,
+        )
+        latest = await latest_sync.once()
+        assert latest.refresh_complete and not latest.full_scan_complete
+        after_refresh = await repo.checkpoint(actor, mailbox)
+        assert after_refresh.cursor == first.cursor
+        assert after_refresh.phase == "backfill"
+        assert not after_refresh.sync_requested
+        assert (await repo.mailboxes(actor))[0].message_count == 1
         await sync.once()
         await sync.once()
         assert (await repo.mailboxes(actor))[0].message_count == 3

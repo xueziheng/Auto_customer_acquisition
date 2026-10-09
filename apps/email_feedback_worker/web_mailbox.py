@@ -45,7 +45,9 @@ async def sync_binding(engine: AsyncEngine, sessions: async_sessionmaker[AsyncSe
             return None
         await SqlGmailWebAccess(sessions).role(binding.actor)
         reader = GmailMailboxReader(GmailWebMailboxHttpProvider(
-            store.credentials_file(binding.operation_id)), binding.email)
+            store.credentials_file(binding.operation_id)), binding.email,
+            refresh_latest=checkpoint.sync_requested)
+
         return await MailboxSync(repository, actor, binding.mailbox_id, reader, fingerprints, lock).once()
     finally:
         await lock.close()

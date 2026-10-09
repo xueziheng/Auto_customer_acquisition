@@ -60,6 +60,7 @@ class MailboxPage(BaseModel):
     deleted_ids: list[str] = Field(default_factory=list, repr=False)
     reset: bool = False
     full_scan_complete: bool = False
+    refresh_complete: bool = False
 
 
 class MailboxProvider(Protocol):
