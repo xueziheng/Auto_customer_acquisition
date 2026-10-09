@@ -62,6 +62,11 @@ _SALES_READ_GATE = Depends(
     )
 )
 _EXPECTED_API_PATHS = {
+    "/inbox/gmail/complete",
+    "/inbox/gmail/start",
+    "/inbox/gmail/status",
+    "/inbox/gmail/template",
+    "/inbox/gmail/test",
     "/inbox/mailboxes",
     "/inbox/mailboxes/{mailbox_id}/threads",
     "/inbox/mailboxes/{mailbox_id}/threads/{thread_id}",
