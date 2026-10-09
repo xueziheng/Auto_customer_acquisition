@@ -101,6 +101,7 @@ async def test_send_uses_real_gateway_and_preserves_same_grant(integration_engin
     identities = SendingIdentityServiceImpl(
         lambda tenant: SqlAlchemySendingIdentityUnitOfWork(service.sessions, tenant),
         Phase1SendingIdentityAuthorizer(actor.tenant_id), StandardAuditLogger(),
+        now=lambda: datetime.now(UTC),
     )
     identity_id = await identities.register(actor.tenant_id, IdentityRegisterRequest(
         address="owner@gmail.com", domain="gmail.com", role=DomainRole.PRIMARY_BUSINESS,

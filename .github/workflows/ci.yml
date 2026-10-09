@@ -141,7 +141,6 @@ jobs:
         run: pytest -q -m "not e2e" --ignore=tests/integration --ignore=tests/e2e --durations=15
 
   integration:
-    needs: checks
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     strategy:
@@ -213,7 +212,6 @@ jobs:
           PY
 
   acceptance:
-    needs: checks
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
