@@ -109,6 +109,8 @@ jobs:
             apps/web/src/api/api.d.ts
             apps/web/src/api/platform-api.d.ts
           retention-days: 3
+      - name: Verify committed API contracts
+        run: git diff --exit-code -- apps/web/src/api/api.d.ts apps/web/src/api/platform-api.d.ts
       - name: Web type check
         working-directory: apps/web
         run: npm run typecheck
@@ -137,8 +139,6 @@ jobs:
         run: python3 scripts/scan_sensitive.py
       - name: Unit tests
         run: pytest -q -m "not e2e" --ignore=tests/integration --ignore=tests/e2e --durations=15
-      - name: Verify committed API contracts
-        run: git diff --exit-code -- apps/web/src/api/api.d.ts apps/web/src/api/platform-api.d.ts
 
   integration:
     needs: checks

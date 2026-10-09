@@ -35,6 +35,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    # API 契约生成固定工具链，避免不同环境生成输入/输出类型漂移。
+    "fastapi==0.143.0",
+    "pydantic==2.14.0",
     "pytest",
     "pytest-asyncio",
     "testcontainers",
