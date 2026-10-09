@@ -14,6 +14,7 @@ import uvicorn
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from apps.api.composition.gmail_web import GmailWebService
 from apps.composition_support.email_inbound import InboundMailbox
 from connectors.gmail.inbound_transport import GmailInboundApiTransport
 from connectors.gmail.send_oauth import GmailOAuthSecretResolver, GmailOAuthTokenSource
@@ -22,6 +23,7 @@ from infra.authentication.service import PostgresAuthentication
 from infra.db.platform_access import EnterpriseReaderBinding
 from infra.db.session import create_engine_from
 from infra.pilot.config import PILOT_GMAIL_MAILBOX_ALIAS, PilotConfig
+from infra.standalone.gmail_settings import load_gmail_settings
 from infra.standalone.knowledge_settings import load_knowledge_settings
 from infra.standalone.platform_settings import PlatformSettings, load_platform_settings
 from infra.standalone.settings import StandaloneModelSettings, load_model_settings
@@ -89,6 +91,10 @@ def create_standalone_app(
         ),
     )
     sessions.configure(bind=business.state.runtime_engine)
+    if profile.gmail_web_settings_file is not None:
+        business.state.gmail_web = GmailWebService(
+            load_gmail_settings(profile.gmail_web_settings_file), sessions, fingerprints,
+        )
     platform = None
     if platform_settings is not None:
         if platform_settings.control_tenant_id == profile.tenant_id:

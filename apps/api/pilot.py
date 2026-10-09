@@ -141,7 +141,7 @@ def mount_web(
             return FileResponse(target, headers={"Cache-Control": "no-cache"})
         if path.startswith("assets/") or "." in path.rsplit("/", 1)[-1]:
             return Response(status_code=404)
-        return FileResponse(build / "index.html", headers={"Cache-Control": "no-store"})
+        return FileResponse(build / "index.html", headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
     app.state.business_app = business
     return app

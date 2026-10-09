@@ -68,3 +68,9 @@ API报价结果仅经原structured_log通知出口，不宣称站内已投递，
 人工准入仅允许 boss/sourcing，必须验证恰好一个未经修剪的原始 `Idempotency-Key`，并经
 `workflows/sourcing_case/application.py` 与 scheduler 共用的单项 claim/start/bind 路径；错 tenant
 和错角色须在服务 IO 前拒绝，内部依赖错误统一映射为脱敏 503。
+
+## ADR0084 网页本人 Gmail
+
+`gmail_web` 仅接受已认证用户及原会话，授权 state 与企业、员工、用户、会话共同绑定。
+OAuth 交换只经 `email.gmail.connect`；固定诊断仍经 ADR0079 的 HIGH 六阶段。
+回调不是匿名 API，不得放宽 Cookie、CSRF 或来源校验；授权码、令牌和客户端密钥不进入日志与模型。

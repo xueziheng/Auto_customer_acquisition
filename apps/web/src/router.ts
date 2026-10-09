@@ -45,6 +45,7 @@ const router = createRouter({
     {
       path: "/inbox/mailbox",
       name: "my-mailbox",
+      alias: "/inbox/mailbox/google-callback",
       component: () => import("./views/inbox/MyMailbox.vue"),
     },
     {

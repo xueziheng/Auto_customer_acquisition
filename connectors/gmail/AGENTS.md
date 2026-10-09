@@ -101,3 +101,9 @@ Task5b消费者只传耐久opaque cursor；初始化时间/after先保存再prof
 ## ADR0079 本人邮箱诊断
 
 `email.mailbox.test` 复用固定事务 MIME 的单封发送与只读对账，仅用于在职老板明确确认的本人收件箱，正文固定。它使用 HIGH 六阶段，不使用内部通知的四阶段例外；私有授权精确绑定收发双方、租户、员工和单次幂等键。不得创建客户序列、修改 DNS 认证事实、扩展为任意正文或把诊断成功当作 Campaign 认证通过。
+
+## ADR0084 网页 OAuth
+
+网页专用连接器只接受 Web 客户端与精确 HTTPS 回调，使用 state、PKCE、完整 readonly+send scope，
+核对实际 Gmail profile 后才发布私有凭证。固定 Google 端点、有限响应和超时，不跟随重定向或环境代理。
+网页镜像仅使用 GET；既有纯只读连接器不扩大 scope。授权码和客户端密钥仅在受信交换链路内使用。

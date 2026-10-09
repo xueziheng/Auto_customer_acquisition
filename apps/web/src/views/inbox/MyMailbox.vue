@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import GmailConnectionPanel from "./GmailConnectionPanel.vue";
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
 import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
@@ -34,7 +35,7 @@ const failures: Record<string, string> = {
   account_mismatch: "授权的 Google 账号与绑定邮箱不同，同步已停止",
   rate_limited: "Google 暂时限流，后台将稍后重试",
   provider_unavailable: "暂时无法连接 Gmail，已保留同步进度",
-  configuration_invalid: "邮箱连接配置不可用，请检查本机授权",
+  configuration_invalid: "邮箱连接配置不可用，请重新连接 Gmail",
   invalid_response: "邮件读取未完成，已保留同步进度",
 };
 function clear() {
@@ -137,6 +138,7 @@ onBeforeUnmount(() => { disposed = true; if (timer) globalThis.clearInterval(tim
         客户回复工作台
       </RouterLink>
     </header>
+    <GmailConnectionPanel @connected="refresh" />
     <p
       v-if="error"
       role="alert"
@@ -149,7 +151,7 @@ onBeforeUnmount(() => { disposed = true; if (timer) globalThis.clearInterval(tim
       class="mailbox-empty"
     >
       <h2>尚未连接邮箱</h2>
-      <p>连接 Gmail 并完成只读授权后，将补齐整个账号的历史邮件。已有邮件不会因为连接大模型而自动出现。</p>
+      <p>连接 Gmail 并完成授权后，将补齐整个账号的历史邮件。已有邮件不会因为连接大模型而自动出现。</p>
       <p>邮箱仅本人可见，邮件不会自动发送给大模型或转为客户、商机。</p>
     </section>
     <template v-if="mailboxes.length">

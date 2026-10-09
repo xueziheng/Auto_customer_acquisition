@@ -102,6 +102,9 @@ class GmailMailboxHttpProvider:
     def __init__(self, credentials_file: Path):
         self._file = credentials_file
 
+    def _required_scopes(self) -> list[str]:
+        return list(SCOPES)
+
     async def get(self, path: str, params: dict[str, str]) -> dict[str, object]:
         return await asyncio.to_thread(self._get, path, params)
 
@@ -120,9 +123,9 @@ class GmailMailboxHttpProvider:
             data = json.loads(_private_read(self._file))
             if data.get("token_uri") != "https://oauth2.googleapis.com/token" or set(
                 data.get("scopes", [])
-            ) != set(SCOPES):
+            ) != set(self._required_scopes()):
                 raise MailboxFailure("configuration_invalid")
-            credentials = Credentials.from_authorized_user_info(data, SCOPES)
+            credentials = Credentials.from_authorized_user_info(data, self._required_scopes())
             if not credentials.valid:
                 try:
                     credentials.refresh(Request())

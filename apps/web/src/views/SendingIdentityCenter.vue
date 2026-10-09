@@ -182,6 +182,9 @@ onMounted(()=>void loadIdentities());
     <p class="meta">
       人工登记 → 认证检查 → 刷新核对认证 → 明确启动预热。仅显示后端事实，修改配置须逐次确认。
     </p>
+    <p class="meta">
+      Gmail 授权与本人邮件同步请前往 <a href="/inbox/mailbox">本人邮箱</a>。
+    </p>
     <form
       class="card register-form"
       @submit.prevent="prepareRegistration"
