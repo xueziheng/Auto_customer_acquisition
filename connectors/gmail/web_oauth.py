@@ -83,7 +83,7 @@ class GmailWebOAuth:
                     raw = b"".join(parts).decode()
             flow.oauth2session.token = WebApplicationClient(
                 flow.client_config["client_id"]
-            ).parse_request_body_response(raw, scope=SEND_SCOPES)
+            ).parse_request_body_response(raw, scope=" ".join(SEND_SCOPES))
             credentials = flow.credentials
             if (set(credentials.scopes or ()) != set(SEND_SCOPES)
                     or set(flow.oauth2session.token.get("scope", ())) != set(SEND_SCOPES)
