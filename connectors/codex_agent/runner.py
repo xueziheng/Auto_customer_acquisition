@@ -146,7 +146,6 @@ def main() -> int:
             config["model_instructions_file"] = str(instructions_path)
         command = [
             "/codex",
-            "--no-daemon",
             "exec",
             "--ignore-user-config",
             "--ignore-rules",
