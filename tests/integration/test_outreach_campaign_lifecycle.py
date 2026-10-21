@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -21,6 +22,7 @@ from domains.outreach.schemas import (
     CampaignApprovalSnapshot,
     CampaignApprovalState,
     CampaignCreateRequest,
+    CustomerAgentPolicyInput,
     OutreachSenderRole,
     SendingIdentityEligibilitySnapshot,
     SequenceStepRequest,
@@ -56,8 +58,9 @@ async def lifecycle_engine(db_url: str) -> AsyncIterator[AsyncEngine]:
         await engine.dispose()
 
 
+@pytest.mark.parametrize("with_policy", [False, True])
 async def test_exact_version_approval_and_revision_are_durable(
-    lifecycle_engine: AsyncEngine,
+    lifecycle_engine: AsyncEngine, with_policy: bool,
 ) -> None:
     try:
         service_type = importlib.import_module(
@@ -69,7 +72,7 @@ async def test_exact_version_approval_and_revision_are_durable(
     rows = importlib.import_module("infra.db.tables")
     tenant = TenantId(new_id("tn"))
     sender_id = SendingIdentityId(new_id("sid"))
-    actor = Actor("boss:integration", OutreachScope(level=ScopeLevel.TENANT), "boss")
+    actor = Actor(new_id("emp"), OutreachScope(level=ScopeLevel.TENANT), "boss")
     factory = async_sessionmaker(lifecycle_engine, expire_on_commit=False)
     trace = Trace()
     approvals = FakeApprovals(trace)
@@ -111,7 +114,13 @@ async def test_exact_version_approval_and_revision_are_durable(
             handoff_triggers=(),
         )
 
-    created = await service.create_campaign(tenant, request("Discovery v1"), actor=actor)
+    policy = CustomerAgentPolicyInput(
+        owner_employee_id=EmployeeId(new_id("emp")), assessment_ref="lia:corporate-2026"
+    ) if with_policy else None
+    created = await service.create_campaign(
+        tenant, replace(request("Discovery v1"), customer_agent_policy=policy), actor=actor
+    )
+    assert created.boundary.customer_agent_policy is not None if with_policy else created.boundary.customer_agent_policy is None
     await service.submit_campaign(tenant, created.campaign_id, actor=actor)
     approval = CampaignApprovalSnapshot(
         tenant_id=tenant,
@@ -151,3 +160,6 @@ async def test_exact_version_approval_and_revision_are_durable(
             (1, "Discovery v1"),
             (2, "Discovery v2"),
         ]
+
+        assert versions[0].customer_agent_policy == (created.boundary.customer_agent_policy.model_dump(mode="json") if with_policy else None)
+        assert versions[1].customer_agent_policy is None

@@ -3966,6 +3966,7 @@ export interface components {
         CampaignBoundaryBody: {
             /** Allowed Categories */
             allowed_categories: string[];
+            customer_agent_policy?: components["schemas"]["CustomerAgentPolicyInput"] | null;
             /** Daily New Contact Limit */
             daily_new_contact_limit: number;
             /** Daily Total Message Limit */
@@ -3992,6 +3993,7 @@ export interface components {
         CampaignBoundaryView: {
             /** Allowed Categories */
             allowed_categories: string[];
+            customer_agent_policy?: components["schemas"]["CustomerAgentPolicy"] | null;
             /** Daily New Contact Limit */
             daily_new_contact_limit: number;
             /** Daily Total Message Limit */
@@ -5119,6 +5121,81 @@ export interface components {
              * @enum {string}
              */
             role: "boss" | "manager" | "sales";
+        };
+        /**
+         * CustomerAgentPolicy
+         * @description 当前认证员工确认的范围事实，随不可变 Campaign 版本存储。
+         */
+        CustomerAgentPolicy: {
+            /** Assessment Ref */
+            assessment_ref: string;
+            /**
+             * Basis
+             * @default legitimate_interest
+             * @constant
+             */
+            basis: "legitimate_interest";
+            /**
+             * Confirmed At
+             * Format: date-time
+             */
+            confirmed_at: string;
+            /** Confirmed By */
+            confirmed_by: string;
+            /**
+             * Contact Type
+             * @default role_based
+             * @constant
+             */
+            contact_type: "role_based";
+            /** Owner Employee Id */
+            owner_employee_id: string;
+            /**
+             * Prepare And Enroll
+             * @default true
+             * @constant
+             */
+            prepare_and_enroll: true;
+            /**
+             * Subject Type
+             * @default legal_entity
+             * @constant
+             */
+            subject_type: "legal_entity";
+        };
+        /**
+         * CustomerAgentPolicyInput
+         * @description 由真人提交的企业法人职务邮箱范围；确认身份与时间只能由服务补充。
+         */
+        CustomerAgentPolicyInput: {
+            /** Assessment Ref */
+            assessment_ref: string;
+            /**
+             * Basis
+             * @default legitimate_interest
+             * @constant
+             */
+            basis: "legitimate_interest";
+            /**
+             * Contact Type
+             * @default role_based
+             * @constant
+             */
+            contact_type: "role_based";
+            /** Owner Employee Id */
+            owner_employee_id: string;
+            /**
+             * Prepare And Enroll
+             * @default true
+             * @constant
+             */
+            prepare_and_enroll: true;
+            /**
+             * Subject Type
+             * @default legal_entity
+             * @constant
+             */
+            subject_type: "legal_entity";
         };
         /** CustomerAllocationView */
         CustomerAllocationView: {

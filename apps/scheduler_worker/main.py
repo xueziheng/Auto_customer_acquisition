@@ -458,7 +458,7 @@ async def _run_cycle(
 async def _same_lock_backend(connection: AsyncConnection, expected_pid: int) -> bool:
     """确认 dedicated physical connection 未变化，并结束 heartbeat 事务。"""
     try:
-        current_pid = (
+        current_pid: int = (
             await connection.execute(text("SELECT pg_backend_pid()"))
         ).scalar_one()
         await connection.commit()
@@ -683,7 +683,7 @@ async def _run_scheduler_worker(
             cleanup_signals()
             if lock_owned:
                 try:
-                    released = (
+                    released: bool = (
                         await connection.execute(
                             text("SELECT pg_advisory_unlock(:lock_key)"),
                             {"lock_key": lock_key},

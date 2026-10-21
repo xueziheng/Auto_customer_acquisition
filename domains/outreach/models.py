@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from domains.outreach.customer_agent_policy import CustomerAgentPolicy
 from shared.errors import InvalidStateTransition, ValidationError
 from shared.schemas.identifiers import (
     CampaignId,
@@ -354,6 +355,7 @@ class CampaignBoundary:
     daily_total_message_limit: int
     handoff_triggers: tuple[str, ...]
     stop_on_reply: bool = True
+    customer_agent_policy: CustomerAgentPolicy | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(

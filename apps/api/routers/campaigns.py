@@ -34,6 +34,7 @@ from domains.outreach.permissions import (
 from domains.outreach.schemas import (
     CampaignCreateRequest,
     CampaignView,
+    CustomerAgentPolicyInput,
     EnrollmentView,
     MessageAttemptView,
     SequenceStepRequest,
@@ -94,6 +95,7 @@ class CampaignBoundaryBody(BaseModel):
     daily_total_message_limit: int = Field(ge=1)
     handoff_triggers: list[str]
     stop_on_reply: bool = True
+    customer_agent_policy: CustomerAgentPolicyInput | None = None
 
 
 class CampaignPauseBody(BaseModel):
@@ -136,6 +138,7 @@ def _campaign_request(body: CampaignBoundaryBody) -> CampaignCreateRequest:
         daily_total_message_limit=body.daily_total_message_limit,
         handoff_triggers=tuple(body.handoff_triggers),
         stop_on_reply=body.stop_on_reply,
+        customer_agent_policy=body.customer_agent_policy,
     )
 
 
@@ -161,6 +164,8 @@ def _approval_change(campaign: CampaignView) -> dict[str, object]:
         "daily_total_message_limit": boundary.daily_total_message_limit,
         "handoff_triggers": list(boundary.handoff_triggers),
         "stop_on_reply": boundary.stop_on_reply,
+        **({"customer_agent_policy": boundary.customer_agent_policy.model_dump(mode="json")}
+           if boundary.customer_agent_policy is not None else {}),
     }
 
 

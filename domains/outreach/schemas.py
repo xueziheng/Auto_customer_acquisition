@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 
+from domains.outreach.customer_agent_policy import (
+    CustomerAgentPolicy,
+    CustomerAgentPolicyInput,
+)
 from domains.outreach.models import (
     CampaignBoundary,
     CampaignState,
@@ -255,6 +259,7 @@ class CampaignCreateRequest:
     daily_total_message_limit: int
     handoff_triggers: tuple[str, ...]
     stop_on_reply: bool = True
+    customer_agent_policy: CustomerAgentPolicyInput | None = None
 
     def __post_init__(self) -> None:
         _require_safe_text(self.name, "Campaign name", allow_spaces=True)
@@ -603,6 +608,7 @@ class CampaignBoundaryView:
     daily_total_message_limit: int
     handoff_triggers: tuple[str, ...]
     stop_on_reply: bool
+    customer_agent_policy: CustomerAgentPolicy | None = None
 
 
 @dataclass(frozen=True)

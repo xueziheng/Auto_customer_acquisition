@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime
 
@@ -9,6 +10,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domains.outreach.customer_agent_policy import CustomerAgentPolicy
 from domains.outreach.models import (
     ActionRecord,
     Campaign,
@@ -138,6 +140,8 @@ def _version_row(version: CampaignVersion) -> OutreachCampaignVersionRow:
         daily_total_message_limit=boundary.daily_total_message_limit,
         handoff_triggers=list(boundary.handoff_triggers),
         stop_on_reply=boundary.stop_on_reply,
+        customer_agent_policy=(boundary.customer_agent_policy.model_dump(mode="json")
+            if boundary.customer_agent_policy is not None else None),
         created_by=str(version.created_by),
         created_at=version.created_at,
     )
@@ -169,6 +173,8 @@ def _row_to_version(
             daily_total_message_limit=row.daily_total_message_limit,
             handoff_triggers=tuple(row.handoff_triggers),
             stop_on_reply=row.stop_on_reply,
+            customer_agent_policy=(CustomerAgentPolicy.model_validate_json(json.dumps(row.customer_agent_policy))
+                if row.customer_agent_policy is not None else None),
         ),
         created_by=EmployeeId(row.created_by),
         created_at=row.created_at,

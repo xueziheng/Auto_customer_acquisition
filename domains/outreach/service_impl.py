@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
+from domains.outreach.customer_agent_policy import CustomerAgentPolicy
 from domains.outreach.errors import (
     AccountAlreadyEnrolledError,
     CampaignApprovalRequiredError,
@@ -247,7 +248,7 @@ class OutreachServiceImpl:
         raise TenantIsolationViolation("跨租户数据隔离违规")
 
     @staticmethod
-    def _boundary(request: CampaignCreateRequest) -> CampaignBoundary:
+    def _boundary(request: CampaignCreateRequest, actor: Actor, now: datetime) -> CampaignBoundary:
         if not isinstance(request, CampaignCreateRequest):
             raise ValidationError("Campaign request 无效")
         return CampaignBoundary(
@@ -263,6 +264,11 @@ class OutreachServiceImpl:
             daily_total_message_limit=request.daily_total_message_limit,
             handoff_triggers=request.handoff_triggers,
             stop_on_reply=request.stop_on_reply,
+            customer_agent_policy=(
+                CustomerAgentPolicy(**request.customer_agent_policy.model_dump(),
+                    confirmed_by=EmployeeId(actor.actor_id), confirmed_at=now)
+                if request.customer_agent_policy is not None else None
+            ),
         )
 
     @staticmethod
@@ -333,6 +339,7 @@ class OutreachServiceImpl:
                 daily_total_message_limit=boundary.daily_total_message_limit,
                 handoff_triggers=tuple(boundary.handoff_triggers),
                 stop_on_reply=boundary.stop_on_reply,
+                customer_agent_policy=boundary.customer_agent_policy,
             ),
             approval_id=(
                 ApprovalId(campaign.approval_id) if campaign.approval_id else None
@@ -370,7 +377,7 @@ class OutreachServiceImpl:
     ) -> CampaignView:
         action = OutreachAction.CAMPAIGN_CREATE
         actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
-        boundary = self._boundary(request)
+        boundary = self._boundary(request, actor, self._validate_now(self._now()))
         campaign_id = CampaignId(new_id("cmp"))
         rule = self._require(actor, action, tenant_id, campaign_id)
         await self._validate_senders(tenant_id, boundary, actor, action)
@@ -465,7 +472,7 @@ class OutreachServiceImpl:
     ) -> CampaignView:
         action = OutreachAction.CAMPAIGN_REVISE
         actor, _pre_rule = self._preauthorize(actor, action, tenant_id)
-        boundary = self._boundary(request)
+        boundary = self._boundary(request, actor, self._validate_now(self._now()))
         await self._validate_senders(tenant_id, boundary, actor, action)
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
