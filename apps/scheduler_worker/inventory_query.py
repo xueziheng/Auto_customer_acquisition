@@ -38,6 +38,7 @@ def compose_inventory_query(
     supplement: str,
     *,
     public_domains: tuple[str, ...] = (),
+    maximum_chars: int = 400,
 ) -> str:
     """完整保留任务首产品/地域/受信策略，仅补充普通词；不扩大查询或证据范围。"""
     if (
@@ -71,7 +72,7 @@ def compose_inventory_query(
         )
         if part
     )
-    if not fixed or len(fixed) > 400 or len(fixed.split()) > 50:
+    if not fixed or len(fixed) > maximum_chars or len(fixed.split()) > 50:
         raise ValueError("采集检索条件无效")
     text = _plain_spacing(supplement)
     if query.confirmed_refs or query.intent:
@@ -111,13 +112,13 @@ def compose_inventory_query(
             continue
         if count >= 50:
             break
-        if len(result) + 1 + len(word) > 400:
+        if len(result) + 1 + len(word) > maximum_chars:
             continue
         result += " " + word
         seen.add(normalized)
         count += 1
     for domain in dict.fromkeys(domains):
-        if count < 50 and len(result) + len(domain) + 1 <= 400:
+        if count < 50 and len(result) + len(domain) + 1 <= maximum_chars:
             result += " " + domain
             count += 1
     return result

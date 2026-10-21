@@ -67,6 +67,7 @@ from .account_discovery import (
 )
 from .contact_hashing import DomainSeparatedContactValueHasher
 from .customer_preparation_model import CustomerPreparationExtractor, preparation_run_id
+from .inventory_ports import InventoryRuntimePorts
 from .inventory_web import InventoryWebTools, build_inventory_web
 
 if TYPE_CHECKING:
@@ -121,6 +122,7 @@ async def build_customer_preparation(
     research: ResearchRuntimePorts | None,
     owner: str,
     hunter: HunterCustomerSettings | None = None,
+    inventory_ports: InventoryRuntimePorts | None = None,
 ) -> PreparationRuntime:
     """只读取已有配置/验证事实；真实双工具装配完成后等待原singleton激活。"""
     now = lambda: datetime.now(UTC)
@@ -146,18 +148,19 @@ async def build_customer_preparation(
         now=now,
     )
     extractor = None
-    bounded = research.bounded_object_transport if research is not None else None
+    pages = inventory_ports or research
+    bounded = pages.bounded_object_transport if pages is not None else None
     if (
         bounded is None
-        and research is not None
-        and callable(getattr(research.object_transport, "get_bounded", None))
+        and pages is not None
+        and callable(getattr(pages.object_transport, "get_bounded", None))
     ):
-        bounded = cast(BoundedObjectBlobTransport, research.object_transport)
-    if research is not None and bounded is not None:
+        bounded = cast(BoundedObjectBlobTransport, pages.object_transport)
+    if pages is not None and bounded is not None:
         artifacts = RawArtifactStoreImpl(
             lambda t: SqlAlchemyArtifactUnitOfWork(sessions, t),  # type: ignore[arg-type]
-            research.object_transport,
-            research.maximum_artifact_bytes,
+            pages.object_transport,
+            pages.maximum_artifact_bytes,
             now,
             new_id,
             bounded_transport=bounded,
@@ -177,10 +180,7 @@ async def build_customer_preparation(
                 category=claim.authorization.query.product_tags[0],
                 guard=guard,
                 fingerprints=fingerprints,
-                search_transport=research.search_transport,
-                page_transport=research.page_transport,
-                secret_resolver=research.secret_resolver,
-                secret_ref=research.secret_ref,
+                page_transport=pages.page_transport,
                 artifacts=artifacts,
                 now=now,
                 candidate_url=allocation.candidate.source_url,

@@ -125,6 +125,8 @@ class AcquisitionJobRow(Base):
     key_hash: Mapped[str] = mapped_column(String(64))
     employee_id: Mapped[str] = mapped_column(String(40))
     query: Mapped[dict] = mapped_column(JSONB)
+    search_binding: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    search_reservations: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"))
     fit_batches: Mapped[list] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )

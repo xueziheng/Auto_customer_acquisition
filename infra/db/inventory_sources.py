@@ -8,6 +8,7 @@ from domains.assistant.schemas import ModelConfigurationSnapshot
 from domains.prospecting.service import AcquisitionJob, AcquisitionWorker, SourceState
 from shared.schemas.discovery_sources import DISCOVERY_SOURCES
 from shared.schemas.identifiers import TenantId
+from shared.schemas.search_backend import InventorySearchPolicy
 from tool_gateway.free_search_contracts import SearchQuotaRepository
 
 WEB_INVENTORY_SOURCES = frozenset(
@@ -35,12 +36,17 @@ class InventorySources:
         backend: AcquisitionWorker,
         quota: SearchQuotaRepository,
         configured: bool,
+        search_policy: InventorySearchPolicy | None = None,
+        bind_search: Callable[[AcquisitionJob], Awaitable[object]] | None = None,
         model_snapshot: Callable[[TenantId], Awaitable[ModelConfigurationSnapshot | None]] | None = None,
         probe: Callable[
             [AcquisitionJob, Callable[[], Awaitable[None]]], Awaitable[None]
         ]
         | None = None,
     ) -> None:
+        self.search_policy = search_policy
+        self.search_ready = False
+        self.bind_search = bind_search
         self.probe = probe
         self.model_snapshot = model_snapshot
         self.tenant_id, self.backend, self.quota, self.configured = (
@@ -50,25 +56,32 @@ class InventorySources:
             configured,
         )
 
+    async def validate_binding(
+        self, job: AcquisitionJob, guard: Callable[[], Awaitable[None]]
+    ) -> None:
+        """恢复时仅核对持久后端和当前本地资格，不重复远端用量探针。"""
+        if job.tenant_id != self.tenant_id:
+            raise ValueError("来源租户不匹配")
+        if self.search_policy is not None and self.search_policy.backend_id == "deepseek":
+            if not self.search_policy.paid_search_enabled or self.probe is None:
+                raise ValueError("独立搜索付费许可未开启")
+            await guard()
+            await self.probe(job, guard)
+            self.search_ready = True
+            return
+        if self.bind_search is not None:
+            await guard()
+            await self.bind_search(job)
+
     async def prepare(
         self, job: AcquisitionJob, guard: Callable[[], Awaitable[None]]
     ) -> None:
-        """仅后台新任务经Gateway重新核实未知用量；API列表始终只读。"""
-        if job.tenant_id != self.tenant_id:
-            raise ValueError("来源租户不匹配")
+        """仅后台新任务经Gateway核实未知用量；API列表始终只读。"""
+        await self.validate_binding(job, guard)
+        if self.search_policy is not None and self.search_policy.backend_id == "deepseek":
+            return
         snapshot = await self.quota.snapshot() if self.configured else None
-        # ADR0076：按量状态未知，不否认已独立核实的套餐内免费额度。
-        if (
-            self.configured
-            and self.probe is not None
-            and (
-                snapshot is None
-                or (
-                    snapshot.cost_status is SearchCostStatus.UNKNOWN
-                    and not snapshot.included_credits_free
-                )
-            )
-        ):
+        if self.configured and self.probe is not None and (snapshot is None or (snapshot.cost_status is SearchCostStatus.UNKNOWN and not snapshot.included_credits_free)):
             await guard()
             await self.probe(job, guard)
 
@@ -113,6 +126,9 @@ class InventorySources:
                         )
                     else:
                         availability = "permission_denied"
+            if source.source_id in WEB_INVENTORY_SOURCES and self.search_policy is not None and self.search_policy.backend_id == "deepseek":
+                cost = "paid"
+                availability = ("available" if self.search_ready else "unhealthy") if self.search_policy.paid_search_enabled else "permission_denied"
             capability: Literal["not_integrated", "web_discovery", "search_backend", "model_runner"] = "not_integrated"
             if source.source_id in WEB_INVENTORY_SOURCES:
                 capability = "web_discovery"

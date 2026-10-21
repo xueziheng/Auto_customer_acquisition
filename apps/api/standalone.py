@@ -225,6 +225,7 @@ def create_standalone_app(
             quota=PostgresSearchQuotaRepository(
                 sessions, TenantId(profile.tenant_id), now=lambda: datetime.now(UTC),
             ),
+            search_policy=settings.inventory_search,
             configured=(settings.research is not None
                         and settings.research.exclusive_account_confirmed),
         )

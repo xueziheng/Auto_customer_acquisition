@@ -198,3 +198,12 @@ async def test_search_anchor_and_snippet_do_not_prove_page_country():
     assert "tricycle Nigeria" in actual[0]
     assert result.candidates == ()
     assert result.summary.rejected.country_address_unproven == 1
+
+
+def test_backend_query_limit_preserves_whole_anchors():
+    from apps.scheduler_worker.inventory_query import compose_inventory_query
+    query = InventoryQuery(country="ZA", product_tags=("电动三轮车",))
+    result = compose_inventory_query(query, "official company website contact", " ".join(f"word{i}" for i in range(60)), maximum_chars=128)
+    assert result.startswith("electric tricycle South Africa official company website contact")
+    assert len(result) <= 128
+    assert all(word.startswith("word") and word[4:].isdigit() for word in result.split()[9:])

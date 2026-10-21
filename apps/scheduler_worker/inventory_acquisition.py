@@ -286,6 +286,11 @@ class InventoryAcquisitionDriver:
                 )
                 return 1
             plan = job.source_plan
+            if plan:
+                validate = getattr(self.sources, "validate_binding", None)
+                if validate is not None:
+                    await external_guard()
+                    await validate(job, external_guard)
             if not plan:
                 prepare = getattr(self.sources, "prepare", None)
                 if prepare is not None:

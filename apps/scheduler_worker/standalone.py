@@ -61,6 +61,7 @@ from workflows.engine.audit import Phase1RunAuditAuthorizer, RunAuditService
 from .bootstrap import CanonicalSchedulerBootstrap, ResearchRuntimePorts
 from .config import SchedulerWorkerConfig
 from .customer_preparation_runtime import PreparationRuntime
+from .inventory_ports import InventoryRuntimePorts
 from .main import EnterpriseKnowledgeDriverProtocol, SchedulerRuntime
 from .main import main as run_worker
 from .pilot import UnconfiguredDnsResolver, UnconfiguredDnsStep
@@ -171,6 +172,7 @@ def _create_standalone_factory(
     provider_factory: Callable[[], ModelProvider] | None = None,
     trial_provider_factory: Callable[[TrialProviderBudget, InvocationIdentity], ModelProvider] | None = None,
     research_ports: ResearchRuntimePorts | None = None,
+    inventory_ports: InventoryRuntimePorts | None = None,
     reply_inbound: InboundRuntimePorts | None = None,
     instance_id: str,
     knowledge_settings: KnowledgeSettings | None = None,
@@ -267,10 +269,10 @@ def _create_standalone_factory(
 
     def inventory_driver(core, sessions):
         from .standalone_inventory import build_inventory_driver
-        assert inventory_control is not None and research_ports is not None
+        assert inventory_control is not None and (inventory_ports is not None or research_ports is not None)
         return build_inventory_driver(core=core,sessions=sessions,control_sessions=inventory_control[0],
             control_tenant=inventory_control[1],tenant_id=tenant,settings=settings,resolver=model_resolver,
-            fingerprints=fingerprints,research=research_ports,owner=instance_id)
+            fingerprints=fingerprints,research=research_ports,owner=instance_id, inventory_ports=inventory_ports)
 
     async def preparation_driver(core: SchedulerCoreServices, sessions: async_sessionmaker[AsyncSession], outreach: OutreachService, verifier: ContactVerifier | None) -> PreparationRuntime:
         from .customer_preparation_runtime import build_customer_preparation
@@ -278,7 +280,7 @@ def _create_standalone_factory(
         return await build_customer_preparation(core=core, sessions=sessions, control_sessions=inventory_control[0],
             control_tenant=inventory_control[1], tenant_id=tenant, outreach=outreach, existing_verifier=verifier,
             settings=settings, resolver=model_resolver, fingerprints=fingerprints, research=research_ports,
-            owner=instance_id, hunter=hunter_customer_settings)
+            owner=instance_id, hunter=hunter_customer_settings, inventory_ports=inventory_ports)
 
     scoring, handoff = profile.policy.scoring_policy, profile.policy.handoff_policy
     return SchedulerRuntimeFactory(
@@ -300,7 +302,7 @@ def _create_standalone_factory(
             ),
             HandoffPolicy(handoff.sla_seconds, handoff.backlog_threshold),
             assistant_factory=assistant,
-            inventory_factory=inventory_driver if inventory_control is not None and research_ports is not None else None,
+            inventory_factory=inventory_driver if inventory_control is not None and (inventory_ports is not None or research_ports is not None) else None,
             preparation_factory=preparation_driver if inventory_control is not None else None,
             knowledge_factory=knowledge_driver if knowledge_settings is not None and knowledge_settings.enabled else None,
             research_enabled=research_ports is not None,
@@ -362,6 +364,7 @@ def create_standalone_factory(
     provider_factory: Callable[[], ModelProvider] | None = None,
     trial_provider_factory: Callable[[TrialProviderBudget, InvocationIdentity], ModelProvider] | None = None,
     research_ports: ResearchRuntimePorts | None = None,
+    inventory_ports: InventoryRuntimePorts | None = None,
     reply_inbound: InboundRuntimePorts | None = None,
     qq_dns_enabled: bool = False,
     hunter_customer_settings_file: Path | None = None,
@@ -383,6 +386,7 @@ def create_standalone_factory(
         )
         hunter_customer_settings = load_hunter_customer_settings(hunter_customer_settings_file)
         ports = research_ports
+        page_ports = inventory_ports
         owned: S3ObjectBlobTransport | None = None
         control_engine = None
         inventory_control = None
@@ -417,6 +421,15 @@ def create_standalone_factory(
                         limits=ObjectReadLimits(connect_timeout_ms=3000, read_timeout_ms=5000,
                             total_timeout_ms=15000, chunk_bytes=65536, maximum_attempts=1)),
                 )
+            if page_ports is None and ports is not None:
+                page_ports = InventoryRuntimePorts(ports.page_transport, ports.object_transport,
+                    ports.maximum_artifact_bytes, ports.bounded_object_transport)
+            if page_ports is None and profile.platform_settings_file is not None:
+                owned = S3ObjectBlobTransport(S3ObjectStoreSettings.from_pilot_environ(profile.runtime_environment()), profile)
+                page_ports = InventoryRuntimePorts(SafePublicPageHttpTransport(timeout_seconds=10), owned, 4 * 1024 * 1024,
+                    S3BoundedObjectBlobTransport(S3ObjectStoreSettings.from_pilot_environ(profile.runtime_environment()), profile,
+                        limits=ObjectReadLimits(connect_timeout_ms=3000, read_timeout_ms=5000,
+                            total_timeout_ms=15000, chunk_bytes=65536, maximum_attempts=1)))
             if profile.platform_settings_file is not None:
                 platform = load_platform_settings(profile.platform_settings_file).model_copy(update={"database_port":profile.database_port})
                 if platform.control_tenant_id == profile.tenant_id:
@@ -431,6 +444,7 @@ def create_standalone_factory(
                 provider_factory=provider_factory,
                 trial_provider_factory=trial_provider_factory,
                 research_ports=ports,
+                inventory_ports=page_ports,
                 reply_inbound=reply_inbound,
                 instance_id=new_id("mrt").lower(),
                 knowledge_settings=knowledge_settings,

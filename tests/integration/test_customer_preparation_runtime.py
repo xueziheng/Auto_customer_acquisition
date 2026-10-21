@@ -178,7 +178,7 @@ async def seed_country(service, tenant, boss, now, allowed=True):
 @pytest.mark.parametrize("configured,private,failure", [(False,False,None),(True,False,None),(True,True,None),
     (True,False,"no_policy"),(True,False,"policy_revoked"),(True,False,"scope_withdrawn"),
     (True,False,"owner_transfer"),(True,False,"artifact_mismatch"),(True,False,"suppressed"),(True,False,"sender_retired"),(True,False,"no_basis"),(True,False,"unknown_verifier"),(True,False,"legacy")])
-async def test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch, configured, private, failure, browser_width=0):
+async def test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch, configured, private, failure, browser_width=0, page_only=False, deepseek_search=False):
     browser_check = None
     if browser_width:
         from tests.customer_preparation_browser import PreparationBrowserCheck
@@ -219,7 +219,8 @@ async def test_actual_request_and_singleton_prepare_with_sending_disabled(integr
     app = create_app(settings=ApiSettings(tenant_id=tenant,dev_mode=True,retry_after_seconds=1),dependencies=api, cors_allowed_origins=(browser_check.web_origin,) if browser_check else ())
     app.dependency_overrides[get_request_identity] = lambda:identity
     catalog = PostgresPublicCatalog(sessions,control,now=lambda:now)
-    await catalog.save_public((candidate(observed_at=now,expires_at=now.replace(year=now.year+1)),))
+    if not deepseek_search:
+        await catalog.save_public((candidate(observed_at=now,expires_at=now.replace(year=now.year+1)),))
     inventory = PostgresInventoryService(sessions,tenant,catalog,now=lambda:now,assignment_bridge=CustomerAssignmentBridge(now=lambda:now),followup_authority=CurrentCustomerAgentAuthority(api,tenant))
     app.state.prospect_inventory_factory = lambda identity:bind_inventory(inventory,api,identity)
     keyfile = tmp_path/"synthetic-hunter-key"; keyfile.write_text("synthetic-hunter-only"); keyfile.chmod(0o600)
@@ -232,6 +233,20 @@ async def test_actual_request_and_singleton_prepare_with_sending_disabled(integr
         await readiness.mark_validation_started(tenant,config.configuration_hash,validation_key=IdempotencyKey("validated"),actor=readiness_actor)
         await readiness.mark_validation_passed(tenant,config.configuration_hash,validation_key=IdempotencyKey("validated"),evidence_ref="tool-call:synthetic-validation",actor=readiness_actor)
     settings = StandaloneModelSettings.model_validate({**model_settings(),"limits": {**model_settings()["limits"], "max_output_tokens": 2048, "max_input_bytes": 16384, "tenant_calls": 10, "employee_calls": 10}, "codex_job_root":tmp_path/"codex-jobs", "api_control_tenant":control, "api_key_file":tmp_path/"synthetic-model-unused", "api_verified_at":now,"api_business_tenant":tenant})
+    if deepseek_search:
+        from shared.schemas.search_backend import InventorySearchPolicy
+        settings = settings.model_copy(update={"api_connection_version":"synthetic-cv1", "inventory_search":InventorySearchPolicy(version="search-p1",paid_search_enabled=True,maximum_cost_cny="0.05")})
+        class SearchTransport:
+            async def search(self, query, country, limit, *, api_key):
+                assert api_key == "synthetic-key-only"
+                assert len(query) <= 128 and "内部" not in query
+                return {"results":[{"title":"Acme Ltd", "url":"https://acme.com/", "snippet":"Hinges distributor"}]}
+        monkeypatch.setattr("apps.scheduler_worker.standalone_inventory.DeepSeekSearchApiTransport", SearchTransport)
+        monkeypatch.setattr("apps.scheduler_worker.standalone_inventory.ModelKeyFileResolver", lambda *a:external)
+        async def fetch(url):
+            external.pages += 1
+            return PublicPageResponse(url,b"<p>Acme Ltd. We distribute hinges.</p><p>Address: United States</p><p>Sales sales@acme.com.</p>")
+        external.fetch = fetch
     repository = SqlModelConfigurationRepository(sessions,fingerprints)
     await repository.initialize(tenant,settings.configuration_version,settings.model,settings.limits,True)
     for process in ("api","scheduler"):
@@ -242,11 +257,28 @@ async def test_actual_request_and_singleton_prepare_with_sending_disabled(integr
     send_guards = []
     async def prepare(core,factory,outreach,verifier):
         send_guards.append(build_preparation_send_guard(core, factory, tenant, outreach, lambda: datetime.now(UTC)))
-        return await build_customer_preparation(core=core,sessions=factory,control_sessions=sessions,control_tenant=control,tenant_id=tenant,outreach=outreach,existing_verifier=verifier,settings=settings,resolver=external,fingerprints=fingerprints,research=ports,owner="synthetic-preparation",hunter=hunter if configured else None)
+        return await build_customer_preparation(core=core,sessions=factory,control_sessions=sessions,control_tenant=control,tenant_id=tenant,outreach=outreach,existing_verifier=verifier,settings=settings,resolver=external,fingerprints=fingerprints,research=None if page_only else ports,owner="synthetic-preparation",hunter=hunter if configured else None, inventory_ports=__import__("apps.scheduler_worker.inventory_ports", fromlist=["InventoryRuntimePorts"]).InventoryRuntimePorts(external,objects,2097152,objects) if page_only else None)
     from apps.scheduler_worker.standalone_inventory import build_inventory_driver
     monkeypatch.setattr("apps.scheduler_worker.inventory_model.configured_codex_provider", lambda *_args, **_kwargs:external)
+    if deepseek_search:
+        class DiscoveryProvider:
+            def __init__(self, session): self.session = session
+            async def generate(self, request):
+                import json
+                if "candidates_for_fit" in request.payload:
+                    return await external.generate(request)
+                source = request.payload["allowed_source"]
+                rows = []
+                if source == "company_websites":
+                    found = await self.session.call("source_search", {"source_id":source,"query":"hinges United States"})
+                    page = found["results"][0]["page_id"]
+                    await self.session.call("read_public_page", {"page_id":page})
+                    rows = [{"page_id":page,"name":"Acme Ltd","country":"US","public_emails":["sales@acme.com"]}]
+                return ModelResponse(text=json.dumps({"candidates":rows}),model=request.model,usage=ModelUsage(input_tokens=100,output_tokens=100,cached_input_tokens=0))
+            async def aclose(self): pass
+        monkeypatch.setattr("apps.scheduler_worker.inventory_model.configured_codex_provider", lambda *a, discovery:DiscoveryProvider(discovery))
     def acquire(core,factory):
-        return build_inventory_driver(core=core,sessions=factory,control_sessions=sessions,control_tenant=control,tenant_id=tenant,settings=settings,resolver=external,fingerprints=fingerprints,research=ports,owner="synthetic-acquisition")
+        return build_inventory_driver(core=core,sessions=factory,control_sessions=sessions,control_tenant=control,tenant_id=tenant,settings=settings,resolver=external,fingerprints=fingerprints,research=None if deepseek_search else ports,owner="synthetic-acquisition",inventory_ports=__import__("apps.scheduler_worker.inventory_ports",fromlist=["InventoryRuntimePorts"]).InventoryRuntimePorts(external,objects,2097152,objects) if deepseek_search else None)
     bootstrap = CanonicalSchedulerBootstrap(phase.scoring_policy,phase.handoff_policy,preparation_factory=prepare,inventory_factory=acquire if private else None)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url="http://test",headers={"X-Tenant-Id":tenant}) as client:
         created = await client.post("/crm/campaigns",json={"name":"合成准备范围","markets":["US"],"target_entity_types":["distributor"],"allowed_categories":["hinges"],"sender_identity_ids":[sender],"steps":[{"step_number":1,"intent":"discovery","wait_days":0}],"daily_new_contact_limit":5,"daily_total_message_limit":5,"handoff_triggers":[],"stop_on_reply":True,"customer_agent_policy":{"owner_employee_id":sales,"assessment_ref":"lia:synthetic","confirmed_refs":[ref]}})
@@ -336,7 +368,8 @@ async def test_actual_request_and_singleton_prepare_with_sending_disabled(integr
                 assert {"web.read_page","model.generate","contact.verify"}.issubset(tools)
                 point = (await db.scalars(select(ContactPointRow).where(ContactPointRow.tenant_id==tenant))).one()
                 assert point.verification_status == "verified"
-                assert external.pages == external.verifications == 1
+                assert external.pages == (2 if deepseek_search else 1)
+                assert external.verifications == 1
                 assert external.models == (2 if private else 1)
                 assert "customer_preparation" in list(await db.scalars(select(ModelInvocationRow.capability).where(ModelInvocationRow.tenant_id==tenant)))
         allocation = (await inventory.list_allocations(tenant,None,10))[0]
@@ -359,3 +392,11 @@ async def test_actual_request_and_singleton_prepare_with_sending_disabled(integr
 @pytest.mark.parametrize("width", [1280, 390])
 async def test_actual_preparation_browser(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch, width):
     await test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch, True, False, None, browser_width=width)
+
+
+async def test_preparation_without_tavily_or_search_key(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch):
+    await test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch, True, False, None, page_only=True)
+
+
+async def test_deepseek_search_page_private_fit_allocation_without_tavily(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch):
+    await test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch, True, True, None, page_only=True, deepseek_search=True)

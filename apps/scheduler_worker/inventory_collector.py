@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from hashlib import sha256
-from typing import Protocol, cast
+from typing import Protocol
 from urllib.parse import urlsplit
 
 from connectors.codex_agent.discovery import (
@@ -29,7 +29,6 @@ from shared.schemas.discovery_diagnostic import (
 from shared.schemas.identifiers import RunId
 from shared.schemas.page_failure import PageReadFailure
 from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
-from tool_gateway.handlers.free_search import FreeSearchGatewaySearcher
 from tool_gateway.handlers.web_slots import SearchResultBatch
 from workflows.enterprise_knowledge.confirmed_context import ConfirmedContextReader
 
@@ -150,6 +149,7 @@ class CodexInventoryCollector:
                         search_query,
                         strategies[arguments["source_id"]],
                         arguments["query"],
+                        maximum_chars=getattr(tools, "maximum_query_chars", 400),
                         public_domains=tuple(
                             sorted(
                                 {
@@ -163,7 +163,7 @@ class CodexInventoryCollector:
                     raise DiscoveryDiagnosticError(
                         DiscoveryDiagnostic("source_scope", "invalid_request", 0)
                     ) from None
-                batch = await cast(FreeSearchGatewaySearcher, tools.searcher).search(
+                batch = await tools.searcher.search(
                     job.tenant_id,
                     run_id,
                     query,

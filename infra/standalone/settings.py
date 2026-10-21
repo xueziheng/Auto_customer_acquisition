@@ -10,6 +10,7 @@ from infra.pilot.config import PilotError, private_read
 from infra.standalone.qq_continuous_settings import QQContinuousSettings
 from infra.standalone.qq_trial_settings import QQTrialLaunchSettings
 from shared.schemas.model_invocation import ModelLimits
+from shared.schemas.search_backend import InventorySearchPolicy
 
 
 class StandaloneResearchSettings(BaseModel):
@@ -90,6 +91,7 @@ class StandaloneModelSettings(BaseModel):
     automatic_send_enabled: bool = Field(default=False, strict=True)
     qq_reply: QQReplySettings | None = None
     research: StandaloneResearchSettings | None = None
+    inventory_search: InventorySearchPolicy | None = None
 
     @model_validator(mode="after")
     def research_output_limit(self) -> "StandaloneModelSettings":
