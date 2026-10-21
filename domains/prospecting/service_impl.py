@@ -7,6 +7,10 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+from domains.prospecting.agent_profile import (
+    AgentAccountProfilePatch,
+    AgentProfileEvidenceReader,
+)
 from domains.prospecting.customer_preparation import AccountProfilePatch
 from domains.prospecting.errors import (
     ContactPointNotFoundError,
@@ -231,6 +235,44 @@ class ProspectingServiceImpl:
                 if getattr(account, key) is None:
                     setattr(account, key, getattr(request, key))
                     account.field_provenance[key] = provenance
+            await uow.accounts.update_profile(account)
+            return _account_view(account)
+
+    async def fill_account_profile_from_evidence(
+        self, tenant_id: TenantId, account_id: ProspectAccountId,
+        request: AgentAccountProfilePatch, *, evidence: AgentProfileEvidenceReader,
+    ) -> ProspectAccountView:
+        """仅补空字段；同租户快照、URL/hash和逐字引用全部匹配，永不补造人工确认。"""
+        from urllib.parse import urlsplit
+        snapshot = await evidence.read(tenant_id, request.artifact_id)
+        if (snapshot.tenant_id != tenant_id or snapshot.artifact_id != request.artifact_id
+            or snapshot.page_hash != request.page_hash or snapshot.source_url != request.source_url
+            or request.extracted_at < snapshot.observed_at or request.extracted_at > self._now()):
+            raise ValidationError("Agent资料快照引用不一致")
+        parsed = urlsplit(request.source_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValidationError("Agent资料来源URL无效")
+        fields = {"entity_type": request.entity_type, "industry": request.industry}
+        for fact in fields.values():
+            if not fact.value.strip() or not fact.quote.strip() or fact.quote not in snapshot.text:
+                raise ValidationError("Agent资料缺少逐字来源证据")
+        async with self._uow_factory(tenant_id) as uow:
+            account = await uow.accounts.get_for_update(tenant_id, account_id)
+            if account is None:
+                raise ProspectAccountNotFoundError("潜在企业不存在")
+            if not account.website_domain or _canonical_domain(parsed.hostname) != _canonical_domain(account.website_domain):
+                raise ValidationError("Agent资料官网与客户档案不一致")
+            if any(getattr(account, key) is not None and getattr(account, key) != fact.value for key, fact in fields.items()):
+                raise ProspectingConflictError("客户资料与已有字段冲突，拒绝覆盖")
+            for key, fact in fields.items():
+                if getattr(account, key) is None:
+                    setattr(account, key, fact.value)
+                    account.field_provenance[key] = Provenance(
+                        source_type=SourceType.WEB_PAGE, source_id=str(request.artifact_id),
+                        extracted_by=request.extracted_by, extracted_at=request.extracted_at,
+                        source_url=request.source_url, page_hash=request.page_hash,
+                        source_quote=fact.quote,
+                    )
             await uow.accounts.update_profile(account)
             return _account_view(account)
 

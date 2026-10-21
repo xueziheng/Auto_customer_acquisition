@@ -23,3 +23,9 @@
 政策增加明确 document_id/revision_id 引用（最多5份）。旧政策缺引用可读回，但自动消费必须阻断并要求补资料、产生新版本重新批准。不得凭 allowed_categories 标签推断已确认产品，也不得自动选择企业全部目录。
 
 scope 引用与 query 引用分别复核，均经 ConfirmedContextReader。scope 引用只参与自动准备内部适配，不改变 InventoryQuery 的公共库存选择：即时库存可交付并入队，但建联系人和入组前仍须当前资料复核与有据适配。query.confirmed_refs 非空继续走原 private fit。确认资料不表示正式产品发布或客户可见许可；邮件内容仍走原客户视图与审批。
+
+## 跨进程复用与来源边界
+
+取得与归属的机械同事务桥接归属 infra/db/customer_assignment.py，API只保留兼容导出，scheduler使用同一实现。跨域授权编排归属 workflows/customer_preparation，经显式注入的员工、Outreach、审批与确认资料公共接口读取当前事实，不扩大composition_support白名单或引入反向进程依赖。
+
+Agent资料独立使用fill_account_profile_from_evidence：必须匹配当前租户原件、实际Gateway页URL、重新计算的原件hash与逐字引文，并核对客户官网；只补空字段、冲突拒绝、不写人工确认。模型适配仍是推断，不能因此制造ValidatedNeed。原人工入口保持原语义。搜索/分配保留ADR0093的在职老板权限，负责人可委托在职sales/manager。

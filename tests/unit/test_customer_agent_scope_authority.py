@@ -116,7 +116,7 @@ async def test_current_scope_authority(failure):
         approvals=Approvals(),
         enterprise_knowledge=SimpleNamespace(service=Knowledge()),
     )
-    authority = CurrentCustomerAgentAuthority(dependencies)
+    authority = CurrentCustomerAgentAuthority(dependencies, TENANT)
     scope = InventoryFollowupScope(
         campaign_id=view.campaign_id, campaign_version=2 if failure == "version" else 1
     )

@@ -10,6 +10,7 @@ from domains.assistant.service_impl import ModelConfigurationServiceImpl
 from domains.employees.permissions import Actor, EmployeeScope
 from domains.products.service import EnterpriseKnowledgeServiceImpl
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
+from infra.db.customer_assignment import CustomerAssignmentBridge
 from infra.db.enterprise_knowledge import SqlAlchemyKnowledgeUnitOfWork
 from infra.db.inventory_sources import InventorySources
 from infra.db.model_configuration import SqlModelConfigurationRepository
@@ -41,7 +42,7 @@ def build_inventory_driver(
     """构造不访问外部；所有来源动作由job lease及Gateway再次授权。"""
     now = lambda: datetime.now(UTC)
     catalog = PostgresPublicCatalog(control_sessions, control_tenant)
-    backend = PostgresInventoryService(sessions, tenant_id, catalog)
+    backend = PostgresInventoryService(sessions, tenant_id, catalog, assignment_bridge=CustomerAssignmentBridge())
     authority = InventoryEmployeeAuthority(core.employee_scope)
     lookup = Actor("system:inventory-model", EmployeeScope.SYSTEM, "system")
     configuration_repository = SqlModelConfigurationRepository(

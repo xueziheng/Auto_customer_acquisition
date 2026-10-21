@@ -210,7 +210,7 @@ def create_standalone_app(
         )
         inventory = PostgresInventoryService(sessions, TenantId(profile.tenant_id), catalog,
             assignment_bridge=CustomerAssignmentBridge(),
-            followup_authority=CurrentCustomerAgentAuthority(business.state.dependencies))
+            followup_authority=CurrentCustomerAgentAuthority(business.state.dependencies, TenantId(profile.tenant_id)))
         business.state.prospect_inventory_factory = lambda identity: bind_inventory(
             inventory, business.state.dependencies, identity,
         )
