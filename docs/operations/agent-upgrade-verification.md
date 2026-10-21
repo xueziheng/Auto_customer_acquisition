@@ -1,6 +1,6 @@
 # TradeOS Agent 升级验收记录
 
-日期：2026-10-22。状态：Task6实现及最终验证已完成；Task6独立评审与全分支独立评审由控制者执行，尚未完成。本文件不声明生产发布或真实邮件发送。
+日期：2026-10-22。状态：Task6首次独立评审发现2项Important，现已完成fix round1实现与相关验证；独立复审及全分支独立评审由控制者执行，尚未完成。本文件不声明生产发布或真实邮件发送。
 
 ## 范围与代码来源
 
@@ -40,7 +40,7 @@
 
 ## 验证证据与实际边界
 
-最终同批结果如下，退出码均明确记录。早期通过数不相加充当最终结果。
+下表为首次交付 `43a1148084b0b304e3cd85b1e611bf34716db8bb` 的全量验证证据；不是fix round1重新运行的结果。退出码均明确记录，早期通过数不相加充当最终结果。
 
 |检查|最终结果|证据|
 |---|---|---|
@@ -51,7 +51,29 @@
 |结构/ruff/完整mypy/差异|通过，exit0；mypy955文件|`final-boundaries8`、`final-ruff8`、`final-mypy8`、`final-diff8`日志|
 |敏感扫描|tracked与新增共3130路径、默认tracked与index均exit0|`final-sensitive-all`、`final-tracked-scan`、`final-staged-scan`日志；无scanner豁免变更|
 
-具体命令从仓库根运行（Web命令在`apps/web`，PATH前置Node24）：
+### fix round1：服务计划预算与周期恢复
+
+首次审查I1确认高级档每轮30次直接传给平台0..24构造校验会失败；现DeepSeek/Tavily正式装配先取服务档与平台policy的较小值，原持久cap和当前降档仍只收紧。高级档30和平台24分别保留，升级不扩张已绑定cap。
+
+I2确认独立额度预留已提交、InventoryRequest事务回滚后，原周期被自身预留阻塞。现只用当前有效服务期的原receipt恢复同key/数量；原额度不重复扣除、不因切档改变请求指纹。当前排程、员工授权和确认资料仍在新请求前重核；实际候选/页面/搜索执行仍受当前档位收紧。暂停/到期不新建请求，旧服务期receipt不能用于续期后的消费；已有请求回执仍可按原规则补绑定。
+
+fix round1相关验证：201通过，20.52秒，exit0（`/tmp/tau-task6-fix1-final.log`）。涵盖五个真实PG/持久仓储模块及五个相关单元模块；其中两后端装配的模型身份端口是合成替身，没有解析凭证或调用供应商。真实PG故障点位于InventoryRequest已flush后，断言事务回滚且独立预留留下，再用新service/store恢复；另覆盖升降档、原数量冲突、暂停、到期、续期、撤销员工/产品权限。完整mypy955文件、ruff、结构、敏感扫描及差异检查均exit0，日志前缀`/tmp/tau-task6-fix1-final-`。未重复全unit/evals、302 PG、Web或Linux套件；这些既有证据保留上表的版本边界。M1既有告警交控制者分流，没有顺带修改。
+
+```bash
+.venv/bin/python /tmp/tradeos-agent-upgrade-20261021/fresh_test_database.py \
+  tests/integration/test_inventory_service_plan.py \
+  tests/integration/test_prospecting_service_plans.py \
+  tests/integration/test_inventory_search_budget.py \
+  tests/integration/test_inventory_search_readiness.py \
+  tests/integration/test_prospect_inventory.py \
+  tests/unit/test_account_discovery_service_tiers.py \
+  tests/unit/test_prospecting_service_tiers.py \
+  tests/unit/test_prospecting_service_plan_contracts.py \
+  tests/unit/test_prospecting_service_plan_cli.py \
+  tests/unit/test_inventory_search_policy.py -q --basetemp=/tmp/t6-fix1-final
+```
+
+首次交付具体命令从仓库根运行（Web命令在`apps/web`，PATH前置Node24）：
 
 ```bash
 .venv/bin/python -m pytest tests/unit tests/evals -q --basetemp=/tmp/t6-final-unit4

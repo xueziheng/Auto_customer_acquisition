@@ -128,7 +128,7 @@ def build_inventory_driver(
             policy_version=policy.version)
         limits = await service_budget.limits(job)
         budget = InventorySearchBudget(sessions, tenant_id, job.id, job.lease_token, pin, policy, now=now,
-            trusted_maximum_requests=limits["searches"] if limits else None,
+            trusted_maximum_requests=min(limits["searches"], policy.maximum_requests) if limits else None,
             trusted_cap_reader=lambda: current_cap(job))
         await budget.bind()
         async def current_guard() -> None:
@@ -149,7 +149,7 @@ def build_inventory_driver(
         pin = SearchBackendPin(backend_id="tavily",connection_version=settings.configuration_version,policy_version=effective.version)
         limits = await service_budget.limits(job)
         budget = InventorySearchBudget(sessions,tenant_id,job.id,job.lease_token,pin,effective,now=now,
-            trusted_maximum_requests=limits["searches"] if limits else None,
+            trusted_maximum_requests=min(limits["searches"], effective.maximum_requests) if limits else None,
             trusted_cap_reader=lambda: current_cap(job))
         await budget.bind()
         return budget

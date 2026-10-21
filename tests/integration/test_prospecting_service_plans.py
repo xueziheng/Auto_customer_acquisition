@@ -201,7 +201,7 @@ async def test_driver_unknown_request_keeps_identity_and_recovers_exact_key(tmp_
     async with store_db(tmp_path) as (store, _):
         state = await inventory_scheduled(store)
         driver = ScheduledInventoryDriver(SimpleNamespace(scan=AsyncMock(return_value=0)), tenant_id=TENANT,
-            store=store, requests=SimpleNamespace(request=request), receipts=SimpleNamespace(find_request=find),
+            store=store, requests=SimpleNamespace(request=request), receipts=SimpleNamespace(find_request=find, request_reservation=AsyncMock(return_value=None)),
             authority=SimpleNamespace(authorize_schedule=AsyncMock()), context=SimpleNamespace(read=AsyncMock()), now=lambda:NOW)
         with pytest.raises(TransientError): await driver.submit_due()
         original = await store.begin_cycle(TENANT, NOW)
@@ -1039,3 +1039,32 @@ async def test_inventory_request_reservation_caps_and_unknown_survive_restart(tm
             await budget.reserve_request('b' * 64, 50)
         state = await store.get(TENANT)
         assert (state.candidates_reserved, state.searches_reserved) == (10, 10)
+
+
+async def test_reserved_inventory_quantity_survives_downgrade_but_cannot_change_or_renew(tmp_path):
+    from infra.db.inventory_service_plan import InventoryServicePlanBudget
+    from shared.errors import PermissionDenied
+
+    async with store_db(tmp_path) as (store, factory):
+        state = await assigned(store, 'advanced')
+        budget = InventoryServicePlanBudget(factory, TENANT, now=lambda: NOW)
+        await budget.reserve_request('a' * 64, 30)
+        state = await store.assign(TENANT, 'basic', expected_version=state.version, actor_id='operator', now=NOW)
+        restarted = InventoryServicePlanBudget(factory, TENANT, now=lambda: NOW)
+        await restarted.reserve_request('a' * 64, 30)
+        for changed_count in (10, 31):
+            with pytest.raises(InvalidStateTransition):
+                await restarted.reserve_request('a' * 64, changed_count)
+        with pytest.raises(PermissionDenied):
+            await restarted.reserve_request('b' * 64, 30)
+        current = await store.get(TENANT)
+        assert (current.candidates_reserved, current.searches_reserved) == (30, 30)
+        expiry = NOW + timedelta(days=30)
+        expired = InventoryServicePlanBudget(factory, TENANT, now=lambda: expiry)
+        with pytest.raises(InvalidStateTransition):
+            await expired.reserve_request('a' * 64, 10)
+        await store.assign(TENANT, 'basic', expected_version=state.version, actor_id='operator', now=expiry)
+        with pytest.raises(InvalidStateTransition):
+            await expired.reserve_request('a' * 64, 10)
+        current = await store.get(TENANT)
+        assert (current.candidates_reserved, current.searches_reserved) == (0, 0)

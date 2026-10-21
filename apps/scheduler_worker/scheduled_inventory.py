@@ -38,13 +38,19 @@ class ScheduledInventoryDriver:
             or cycle.query is None or cycle.employee_id is None):
             return 0
         policy = tier_policy(state.tier)
-        if state.candidates_reserved + policy.per_run_signal_limit > policy.candidate_limit or state.searches_reserved + policy.per_run_search_limit > policy.search_limit:
+        reserved = await self.receipts.request_reservation(cycle.key)
+        # 请求事务可回滚而独立预留已提交；同周期重放不能再次收费或改变数量。
+        if reserved is None and (
+            state.candidates_reserved + policy.per_run_signal_limit > policy.candidate_limit
+            or state.searches_reserved + policy.per_run_search_limit > policy.search_limit
+        ):
             return 0
+        count = reserved.candidates if reserved is not None else policy.per_run_signal_limit
         await self.authority.authorize_schedule(self.tenant, EmployeeId(cycle.employee_id), cycle.acting_user_id)
         await self.context.read(self.tenant, EmployeeId(cycle.employee_id), cycle.query.confirmed_refs)
         if not await self.store.claim_cycle_start(self.tenant, key=cycle.key, expected_version=state.version, now=self.now()):
             return 0
-        await self.requests.request(self.tenant, EmployeeId(cycle.employee_id), cycle.query, policy.per_run_signal_limit, cycle.key)
+        await self.requests.request(self.tenant, EmployeeId(cycle.employee_id), cycle.query, count, cycle.key)
         receipt = await self.receipts.find_request(cycle.key)
         if receipt is None:
             raise InvalidStateTransition("库存请求回执尚未确认")

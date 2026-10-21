@@ -40,10 +40,11 @@ class InventoryServicePlanBudget:
         if state is None:
             return
         policy = tier_policy(state.tier)
-        if count > policy.per_run_signal_limit:
-            raise PermissionDenied("本档单次候选处理上限不足，请减少请求数量")
         key = "inventory:" + key_hash
         receipt = await self.store.reservation(self.tenant_id, key=key, now=self.now())
+        # 重放原预留数量保持请求身份；降档只收紧后续执行，不改历史已记用量。
+        if receipt is None and count > policy.per_run_signal_limit:
+            raise PermissionDenied("本档单次候选处理上限不足，请减少请求数量")
         await self.store.reserve(self.tenant_id, key=key, candidates=count,
             searches=receipt.searches if receipt else policy.per_run_search_limit,
             contacts=0, now=self.now())
@@ -110,6 +111,11 @@ class InventoryServicePlanBudget:
                 raise PermissionDenied("本企业页面上限已用尽")
             usage[digest] = {"kind": kind, "amount": amount, "host": host}
             row.execution_usage = usage
+
+    async def request_reservation(self, request_key: str) -> ServicePlanReservation | None:
+        """仅返回当前有效服务期内独立提交的原请求预留。"""
+        digest = sha256(request_key.encode()).hexdigest()
+        return await self.store.reservation(self.tenant_id, key="inventory:" + digest, now=self.now())
 
     async def find_request(self, request_key: str) -> str | None:
         """即时命中无 job 仍有持久请求；恢复不得重新提交。"""
