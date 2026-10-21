@@ -192,3 +192,14 @@ flowchart TD
 已确认保留 TradeOS 业务体系并沿用 Codex CLI，围绕“企业资料与已确认产品 → 条件搜索获客 → 邮箱验证与自动沟通 → 已验证需求及人工接管”完善产品。PenguinHarness 仅保留调研记录，本轮不接入。
 
 本轮已确认业务入口、主流程、产品角色、模型管理边界和运行引擎。实际编码前仍需统一权威代码基线，并将接入缺口收敛为明确范围的实施规格。无须让企业用户选择框架、填写模型 API 或理解这些内部实现。
+
+
+## 10. 执行中确认的搜索调整（2026-10-22）
+
+用户要求主搜索使用 Codex CLI 与 DeepSeek 自有搜索能力，Tavily 保留为可选获客源，不再作为必需依赖；获客源验收优先对免费或有免费额度的来源进行少量只读实测。此调整不授权真实邮件发送或生产部署。
+
+官方资料当日核实：DeepSeek 已提供独立 Search/Fetch API；Responses 服务端 web_search 当前仅 deepseek-v4-pro 支持，Flash 忽略此工具，且 max_tool_calls 参数不生效。独立搜索接口可供 Codex 受限工具循环调用，不能把“CLI 能运行”当成“已经真实搜索”。平台仍决定每个企业的模型/API，升级不得静默替换已有企业模型。
+
+官方中文计费说明注明：Search/Fetch 按成功且非空的请求计费，每千次 5 元；DeepSeek Harness/Claude Code/Codex 服务端工具调用目前未计费，2026-11-01 00:00（北京时间）起按次收费。模型 token 费用与搜索请求费用分别核对。实测时重新确认当前额度与价格，不能把限时免搜索费写成永久免费模型运行。
+
+依据：[搜索与抓取](https://api-docs.deepseek.com/zh-cn/guides/search/)、[Responses 兼容性](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)、[Codex 接入](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/)。实现与实际可用性由新增 Task 7 验收，本文记载要求和官方能力，不代表已接通。
