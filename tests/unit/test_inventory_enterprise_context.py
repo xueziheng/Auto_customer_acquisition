@@ -344,3 +344,47 @@ def test_model_can_narrow_only_to_selected_public_country_and_known_business_str
         "distributor SECRET",
     )
     assert "distributor" in text and "SECRET" not in text
+
+
+def test_private_fit_selection_binds_exact_query_and_evidence():
+    from datetime import UTC, datetime
+
+    from domains.prospecting.inventory_fit import (
+        FitCandidateVersion,
+        InventoryFitAssessment,
+        InventoryFitBatch,
+        candidate_evidence_version,
+        fit_query_fingerprint,
+        selected_fit_candidates,
+    )
+    from tests.unit.test_prospect_inventory import candidate
+
+    c = candidate()
+    query = InventoryQuery(product_tags=("hinges",), intent="有维修网络")
+    version = candidate_evidence_version(c)
+    assessment = InventoryFitAssessment(
+        candidate_id=c.id,
+        evidence_version=version,
+        matched=True,
+        evidence_quote=c.evidence_text,
+        inference="推断适配",
+        extracted_by="synthetic",
+        extracted_at=datetime.now(UTC),
+    )
+    batch = InventoryFitBatch(
+        query_fingerprint=fit_query_fingerprint(query),
+        sequence=0,
+        state="complete",
+        candidates=(FitCandidateVersion(candidate_id=c.id, evidence_version=version),),
+        assessments=(assessment,),
+    )
+    assert selected_fit_candidates((c,), (batch,), query) == (c,)
+    assert not selected_fit_candidates(
+        (c,), (batch,), query.model_copy(update={"intent": "只要大型工厂"})
+    )
+    assert not selected_fit_candidates(
+        (c.model_copy(update={"evidence_text": "changed"}),), (batch,), query
+    )
+    assert not selected_fit_candidates(
+        (c,), (batch.model_copy(update={"state": "started"}),), query
+    )

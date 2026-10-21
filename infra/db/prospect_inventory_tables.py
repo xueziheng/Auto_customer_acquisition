@@ -10,6 +10,7 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -119,6 +120,9 @@ class AcquisitionJobRow(Base):
     key_hash: Mapped[str] = mapped_column(String(64))
     employee_id: Mapped[str] = mapped_column(String(40))
     query: Mapped[dict] = mapped_column(JSONB)
+    fit_batches: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
     requested_count: Mapped[int] = mapped_column(Integer)
     remaining_count: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(16))

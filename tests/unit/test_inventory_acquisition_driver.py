@@ -57,7 +57,9 @@ class Backend:
     async def fail_job(self, tenant, job, token, reason):
         self.calls.append(reason)
 
-    async def record_source_attempt(self, tenant, job, token, source, outcome, count, *, diagnostic=None):
+    async def record_source_attempt(
+        self, tenant, job, token, source, outcome, count, *, diagnostic=None
+    ):
         self.calls.append((source, outcome, count))
         self.last_diagnostic = diagnostic
 
@@ -100,7 +102,15 @@ class Collector:
     async def collect(self, job, source, guard, **kwargs):
         await guard()
         self.sources.append(source)
-        return CollectionResult((candidate(),) * 3, ProjectionSummary(input_shape="valid", raw_count=3, projected_count=3, projection_complete=True))
+        return CollectionResult(
+            (candidate(),) * 3,
+            ProjectionSummary(
+                input_shape="valid",
+                raw_count=3,
+                projected_count=3,
+                projection_complete=True,
+            ),
+        )
 
 
 async def test_exploration_and_counts_come_from_saved_new_domains():
@@ -171,7 +181,15 @@ async def test_failed_source_still_attempts_planned_exploration():
             self.sources.append(source)
             if len(self.sources) == 1:
                 raise ValueError("site unavailable")
-            return CollectionResult((candidate(),) * 3, ProjectionSummary(input_shape="valid", raw_count=3, projected_count=3, projection_complete=True))
+            return CollectionResult(
+                (candidate(),) * 3,
+                ProjectionSummary(
+                    input_shape="valid",
+                    raw_count=3,
+                    projected_count=3,
+                    projection_complete=True,
+                ),
+            )
 
     collector = FailingCollector()
     driver = driver_type()(
@@ -236,3 +254,140 @@ async def test_failed_collection_still_delivers_candidates_already_available():
         now=lambda: NOW,
     ).scan()
     assert backend.calls[-1] == "deliver"
+
+
+async def test_private_full_cache_is_evaluated_not_counted_as_collection_success():
+    from domains.prospecting.inventory_fit import (
+        FitCandidateVersion,
+        InventoryFitAssessment,
+        InventoryFitBatch,
+        candidate_evidence_version,
+        fit_query_fingerprint,
+    )
+
+    backend, collector = Backend(), Collector()
+    backend.job = JOB.model_copy(
+        update={
+            "query": InventoryQuery(
+                country="KE", product_tags=("hinges",), intent="仅有维修网络的经销商"
+            )
+        }
+    )
+    bad = candidate(
+        id="pci_bad", country="KE", public_emails=(), evidence_text="Retail hinges"
+    )
+    good = candidate(
+        id="pci_good",
+        canonical_domain="repair.example",
+        country="KE",
+        public_emails=(),
+        evidence_text="Dealer with repair network and hinges",
+    )
+    pool = [bad]
+    evaluations = []
+
+    class Fit:
+        async def evaluate(self, job, batch, candidates, guard):
+            await guard()
+            evaluations.extend(c.id for c in candidates)
+            return tuple(
+                InventoryFitAssessment(
+                    candidate_id=c.id,
+                    evidence_version=candidate_evidence_version(c),
+                    matched=c.id == good.id,
+                    evidence_quote=c.evidence_text,
+                    inference="适配推断",
+                    extracted_by="synthetic",
+                    extracted_at=NOW,
+                )
+                for c in candidates
+            )
+
+    class Cache(Catalog):
+        async def fresh(self, *args):
+            return tuple(pool)
+
+    async def reserve(tenant, job, token, candidates):
+        batch = InventoryFitBatch(
+            query_fingerprint=fit_query_fingerprint(backend.job.query),
+            sequence=len(backend.job.fit_batches),
+            state="started",
+            candidates=tuple(
+                FitCandidateVersion(
+                    candidate_id=c.id, evidence_version=candidate_evidence_version(c)
+                )
+                for c in candidates
+            ),
+        )
+        backend.job = backend.job.model_copy(
+            update={"fit_batches": (*backend.job.fit_batches, batch)}
+        )
+        return batch
+
+    async def complete(tenant, job, token, sequence, decisions):
+        batches = list(backend.job.fit_batches)
+        batches[sequence] = batches[sequence].model_copy(
+            update={"state": "complete", "assessments": decisions}
+        )
+        backend.job = backend.job.model_copy(update={"fit_batches": tuple(batches)})
+
+    async def save(*args):
+        if len(pool) == 1:
+            pool.append(good)
+        return SaveSummary(total_count=3, inserted_fresh=3, query_match=3, fresh=3)
+
+    async def fit_pool(*args):
+        return tuple(pool)
+
+    backend.fit_pool = fit_pool
+    backend.reserve_fit_batch, backend.complete_fit_batch, backend.save_collected = (
+        reserve,
+        complete,
+        save,
+    )
+    driver = driver_type()(
+        tenant_id="tenant",
+        backend=backend,
+        catalog=Cache(),
+        authority=Authority(),
+        sources=Sources(),
+        collector=collector,
+        fit_model=Fit(),
+        now=lambda: NOW,
+    )
+    assert await driver.scan() == 1
+    assert collector.sources
+    assert evaluations == [bad.id, good.id]
+    assert "deliver" in backend.calls
+
+
+async def test_revoked_knowledge_blocks_reusing_completed_fit_before_delivery():
+    from shared.errors import PermissionDenied
+
+    backend, collector = Backend(), Collector()
+    backend.job = JOB.model_copy(
+        update={
+            "query": InventoryQuery(
+                product_tags=("hinges",),
+                confirmed_refs=({"document_id": "doc", "revision_id": "rev"},),
+            )
+        }
+    )
+
+    class Revoked:
+        async def read(self, *args):
+            raise PermissionDenied("撤权")
+
+    driver = driver_type()(
+        tenant_id="tenant",
+        backend=backend,
+        catalog=Catalog(),
+        authority=Authority(),
+        sources=Sources(),
+        collector=collector,
+        context_reader=Revoked(),
+        now=lambda: NOW,
+    )
+    assert await driver.scan() == 1
+    assert "deliver" not in backend.calls and not collector.sources
+    assert "collector_failed" in backend.calls

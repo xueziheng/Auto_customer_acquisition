@@ -160,9 +160,24 @@ async def test_inventory_model_uses_job_identity_and_persistent_gateway(
 
     class Provider:
         calls = 0
+        fit_mode = False
 
         async def generate(self, request):
             self.calls += 1
+            if self.fit_mode:
+                assert request.payload["allowed_source"] == "inventory_fit"
+                assert request.payload["internal_confirmed_context"][0]["facts"]
+                assert (
+                    request.payload["candidates_for_fit"][0]["candidate_id"]
+                    == "pci_test"
+                )
+                return ModelResponse(
+                    text='{"assessments":[{"candidate_id":"pci_test","matched":true,"evidence_quote":"Acme repairs hinges","inference":"推断：公开维修网络与本企业目标适配"}]}',
+                    model=request.model,
+                    usage=ModelUsage(
+                        input_tokens=20, cached_input_tokens=0, output_tokens=10
+                    ),
+                )
             assert request.payload["query"] == job.query.model_dump(mode="json")
             assert request.payload["allowed_source"] == "company_websites"
             if with_context:
@@ -198,7 +213,9 @@ async def test_inventory_model_uses_job_identity_and_persistent_gateway(
     ) as session:
 
         def configured(selected, identity, *, discovery):
-            assert discovery is session and identity.run_id == job.id
+            assert (
+                provider.fit_mode or discovery is session
+            ) and identity.run_id == job.id
             return provider
 
         monkeypatch.setattr(
@@ -257,3 +274,26 @@ async def test_inventory_model_uses_job_identity_and_persistent_gateway(
             ]
         )
         assert "private-query" not in safe and "private-invalid-result" not in safe
+
+    if valid and with_context:
+        from tests.unit.test_prospect_inventory import candidate
+
+        c = candidate(
+            product_tags=("private-query",),
+            evidence_text="Acme repairs hinges through dealer network",
+        )
+        await catalog.save_public((c,))
+        batch = await backend.reserve_fit_batch(tenant, job.id, job.lease_token, (c,))
+        provider.fit_mode = True
+
+        async def guard():
+            await context_reader.read(tenant, employee, job.query.confirmed_refs)
+
+        decisions = await model.evaluate(job, batch, (c,), guard)
+        assert decisions[0].matched and decisions[0].source_type == "agent_inference"
+        await backend.complete_fit_batch(
+            tenant, job.id, job.lease_token, batch.sequence, decisions
+        )
+        result = await backend.deliver_job(tenant, job.id, job.lease_token)
+        assert [allocation.candidate.id for allocation in result.allocations] == [c.id]
+        assert provider.calls == 2

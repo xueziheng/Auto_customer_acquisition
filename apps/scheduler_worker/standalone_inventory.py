@@ -129,6 +129,8 @@ def build_inventory_driver(
         catalog=catalog,
         authority=authority,
         sources=sources,
+        fit_model=model,
+        context_reader=context_reader,
         collector=CodexInventoryCollector(
             tools, model.generate, context_reader=context_reader
         ),

@@ -29,6 +29,7 @@ from shared.schemas.identifiers import (
 )
 from shared.schemas.provenance import Provenance, SourceType
 
+from .inventory_fit import InventoryFitBatch
 from .projection_diagnostic import SaveSummary, SourceDiagnostic
 
 Region = Literal["africa", "asia", "europe", "americas", "oceania"]
@@ -82,6 +83,11 @@ class InventoryQuery(BaseModel):
         ):
             raise ValueError("资料引用重复")
         return self
+
+    @property
+    def requires_private_fit(self) -> bool:
+        """企业私有要求必须经任务内部适配，不得直接消费公共库存。"""
+        return bool(self.intent or self.confirmed_refs)
 
     @property
     def target_countries(self) -> tuple[str, ...]:
@@ -324,6 +330,7 @@ class AcquisitionJob(BaseModel):
     id: AcquisitionJobId
     employee_id: EmployeeId
     query: InventoryQuery
+    fit_batches: tuple[InventoryFitBatch, ...] = Field(default_factory=tuple)
     requested_count: int
     remaining_count: int
     status: Literal["queued", "processing", "complete", "failed"]

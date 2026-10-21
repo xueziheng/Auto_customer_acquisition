@@ -539,7 +539,7 @@ onUnmounted(() => {
       class="inventory-form"
       @submit.prevent="claim"
     >
-      <label>产品关键词<input
+      <label class="inventory-field-product">产品关键词<input
         v-model="keywords"
         aria-label="产品关键词"
         placeholder="例如：三轮车、tricycle"
@@ -563,7 +563,7 @@ onUnmounted(() => {
       >
         <option value="africa">非洲</option><option value="asia">亚洲</option><option value="europe">欧洲</option><option value="americas">美洲</option><option value="oceania">大洋洲</option>
       </select></label>
-      <label>已确认企业资料<select
+      <label class="inventory-field-knowledge">已确认企业资料<select
         v-model="documentIds"
         aria-label="已确认企业资料"
         multiple
@@ -575,14 +575,14 @@ onUnmounted(() => {
           :value="doc.document_id"
         >{{ doc.source.filename }}</option>
       </select><small>最多5份，仅作为内部匹配上下文；确认不代表正式产品发布。未选择时按公开关键词搜索。</small></label>
-      <label>搜索要求<textarea
+      <label class="inventory-field-intent">搜索要求<textarea
         v-model="intent"
         aria-label="搜索要求"
         maxlength="2000"
         placeholder="例如：优先寻找有维修网络的经销商"
         :disabled="claiming || retrying"
       /></label>
-      <label>国家代码（可选，多国用逗号）<input
+      <label class="inventory-field-country">国家代码（可选，多国用逗号）<input
         v-model="country"
         aria-label="国家代码"
         placeholder="如 KE / NG / ZA"
@@ -841,15 +841,34 @@ onUnmounted(() => {
 }
 .inventory-form {
   display: grid;
-  grid-template-columns: minmax(150px, 2fr) 1fr 1fr 100px auto;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: 12px;
-  align-items: end;
+  align-items: start;
 }
 .inventory-form label {
   display: grid;
   gap: 7px;
   font-size: 13px;
   min-width: 0;
+}
+.inventory-form > label,
+.inventory-form > button {
+  grid-column: span 2;
+}
+.inventory-form > .inventory-field-product,
+.inventory-form > .inventory-field-country {
+  grid-column: span 3;
+}
+.inventory-form > .inventory-field-knowledge,
+.inventory-form > .inventory-field-intent {
+  grid-column: span 5;
+}
+.inventory-form select[multiple],
+.inventory-form textarea {
+  min-height: 112px;
+}
+.inventory-form > button {
+  margin-top: 22px;
 }
 .inventory-form input,
 .inventory-form select,
@@ -961,10 +980,18 @@ onUnmounted(() => {
 }
 @media (max-width: 800px) {
   .inventory-form {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
-  .inventory-form label:first-child {
+  .inventory-form > label,
+  .inventory-form > .inventory-field-product,
+  .inventory-form > .inventory-field-country,
+  .inventory-form > .inventory-field-knowledge,
+  .inventory-form > .inventory-field-intent,
+  .inventory-form > button {
     grid-column: 1/-1;
+  }
+  .inventory-form > button {
+    margin-top: 0;
   }
   .inventory-form button {
     grid-column: 1/-1;

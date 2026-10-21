@@ -29,6 +29,18 @@ from domains.prospecting.inventory import (
     validate_assignment_ids,
     validate_request_count,
 )
+from domains.prospecting.inventory_fit import (
+    MAX_FIT_BATCHES,
+    MAX_FIT_CANDIDATES,
+    MAX_FIT_EVIDENCE_BYTES,
+    FitCandidateVersion,
+    InventoryFitAssessment,
+    InventoryFitBatch,
+    candidate_evidence_version,
+    fit_evidence_inputs,
+    fit_query_fingerprint,
+    selected_fit_candidates,
+)
 from domains.prospecting.projection_diagnostic import SaveSummary, SourceDiagnostic
 from infra.db.base import TenantScopedRepository
 from infra.db.prospect_inventory_tables import (
@@ -375,6 +387,7 @@ class PostgresInventoryService(TenantScopedRepository):
                 "id": row.job_id,
                 "employee_id": row.employee_id,
                 "query": row.query,
+                "fit_batches": row.fit_batches or [],
                 "requested_count": row.requested_count,
                 "remaining_count": row.remaining_count,
                 "status": row.status,
@@ -419,7 +432,11 @@ class PostgresInventoryService(TenantScopedRepository):
             )
         )
         now = self.now()
-        fresh = await self.catalog.fresh(query.public_projection(), now)
+        fresh = (
+            ()
+            if query.requires_private_fit
+            else await self.catalog.fresh(query.public_projection(), now)
+        )
         async with self.factory() as session, session.begin():
             quota = await self._quota(session, now)
             existing = (
@@ -850,6 +867,139 @@ class PostgresInventoryService(TenantScopedRepository):
                 )
             )
 
+    async def fit_pool(
+        self, tenant_id: TenantId, job_id: AcquisitionJobId, lease_token: str
+    ) -> tuple[PublicCandidate, ...]:
+        """复用公共缓存，但只评估本企业尚未取得的候选，不把旧客户计入交付缺口。"""
+        self._check(tenant_id)
+        job = await self.get_job(tenant_id, job_id)
+        if job is None or not job.query.requires_private_fit:
+            raise ValueError("企业适配任务无效")
+        fresh = await self.catalog.fresh(job.query.public_projection(), self.now())
+        async with self.factory() as session, session.begin():
+            await self._leased(session, job_id, lease_token, self.now())
+            domains = set(
+                (
+                    await session.scalars(
+                        self.scoped_query(CandidateAllocationRow).with_only_columns(
+                            CandidateAllocationRow.canonical_domain
+                        )
+                    )
+                ).all()
+            )
+            emails = set(
+                (
+                    await session.scalars(
+                        self.scoped_query(AllocationEmailRow).with_only_columns(
+                            AllocationEmailRow.email
+                        )
+                    )
+                ).all()
+            )
+            return tuple(
+                c
+                for c in fresh
+                if c.canonical_domain not in domains
+                and not emails.intersection(c.public_emails)
+            )
+
+    async def reserve_fit_batch(
+        self,
+        tenant_id: TenantId,
+        job_id: AcquisitionJobId,
+        lease_token: str,
+        candidates: tuple[PublicCandidate, ...],
+    ) -> InventoryFitBatch:
+        """模型派发前持久化批次；未知结果保留started，稳定序号不得重派。"""
+        self._check(tenant_id)
+        if (
+            not 1 <= len(candidates) <= MAX_FIT_CANDIDATES
+            or len(
+                json.dumps(fit_evidence_inputs(candidates), ensure_ascii=False).encode()
+            )
+            > MAX_FIT_EVIDENCE_BYTES
+        ):
+            raise ValueError("适配批次大小无效")
+        async with self.factory() as session, session.begin():
+            row = await self._leased(session, job_id, lease_token, self.now())
+            if (
+                not InventoryQuery.model_validate(row.query).requires_private_fit
+                or len(row.fit_batches) >= MAX_FIT_BATCHES
+            ):
+                raise ValueError("适配预算已用完")
+            versions = tuple(
+                FitCandidateVersion(
+                    candidate_id=str(c.id),
+                    evidence_version=candidate_evidence_version(c),
+                )
+                for c in candidates
+            )
+            seen = {
+                (c["candidate_id"], c["evidence_version"])
+                for b in row.fit_batches
+                for c in b["candidates"]
+            }
+            if len({v.candidate_id for v in versions}) != len(versions) or any(
+                (v.candidate_id, v.evidence_version) in seen for v in versions
+            ):
+                raise ValueError("适配批次不得重派")
+            batch = InventoryFitBatch(
+                sequence=len(row.fit_batches),
+                state="started",
+                candidates=versions,
+                query_fingerprint=fit_query_fingerprint(
+                    InventoryQuery.model_validate(row.query)
+                ),
+            )
+            row.fit_batches = [*row.fit_batches, batch.model_dump(mode="json")]
+            return batch
+
+    async def complete_fit_batch(
+        self,
+        tenant_id: TenantId,
+        job_id: AcquisitionJobId,
+        lease_token: str,
+        sequence: int,
+        assessments: tuple[InventoryFitAssessment, ...],
+    ) -> None:
+        """只提交本任务当前租约完整批次；模型结果不能选择别的任务/证据版本。"""
+        self._check(tenant_id)
+        async with self.factory() as session, session.begin():
+            row = await self._leased(session, job_id, lease_token, self.now())
+            batches = [InventoryFitBatch.model_validate(b) for b in row.fit_batches]
+            if not 0 <= sequence < len(batches) or batches[sequence].state != "started":
+                raise ValueError("适配批次状态无效")
+            batch = batches[sequence]
+            if batch.query_fingerprint != fit_query_fingerprint(
+                InventoryQuery.model_validate(row.query)
+            ):
+                raise ValueError("适配目标已变化")
+            expected = {(c.candidate_id, c.evidence_version) for c in batch.candidates}
+            if (
+                len(assessments) != len(expected)
+                or {(a.candidate_id, a.evidence_version) for a in assessments}
+                != expected
+            ):
+                raise ValueError("适配结果证据绑定无效")
+            public = {
+                (str(c.id), candidate_evidence_version(c)): c
+                for c in await self.catalog.fresh(
+                    InventoryQuery.model_validate(row.query).public_projection(),
+                    self.now(),
+                )
+            }
+            if any(
+                (a.candidate_id, a.evidence_version) not in public
+                or a.evidence_quote
+                not in public[(a.candidate_id, a.evidence_version)].evidence_text[:4000]
+                for a in assessments
+            ):
+                raise ValueError("适配结果公开证据无效")
+            batches[sequence] = batch.model_copy(
+                update={"state": "complete", "assessments": assessments}
+            )
+            row.fit_batches = [b.model_dump(mode="json") for b in batches]
+
     async def deliver_job(
         self, tenant_id: TenantId, job_id: AcquisitionJobId, lease_token: str
     ) -> InventoryResult:
@@ -863,6 +1013,14 @@ class PostgresInventoryService(TenantScopedRepository):
         async with self.factory() as session, session.begin():
             quota = await self._quota(session, now)
             row = await self._leased(session, job_id, lease_token, now)
+            if InventoryQuery.model_validate(row.query) != job.query:
+                raise ValueError("采集目标已变化")
+            if job.query.requires_private_fit:
+                fresh = selected_fit_candidates(
+                    fresh,
+                    tuple(InventoryFitBatch.model_validate(b) for b in row.fit_batches),
+                    job.query,
+                )
             count = await self._allocate(
                 session,
                 quota,
@@ -874,7 +1032,15 @@ class PostgresInventoryService(TenantScopedRepository):
             )
             row.updated_at = now
             row.remaining_count -= count
-            row.status = "complete" if row.remaining_count == 0 else "queued"
+            row.status = (
+                "complete"
+                if row.remaining_count == 0
+                else "failed"
+                if job.query.requires_private_fit
+                else "queued"
+            )
+            if row.status == "failed":
+                row.failure_reason = "budget_exhausted"
             row.lease_token = row.lease_until = None
             return await self._result(session, row.key_hash, row)
 
