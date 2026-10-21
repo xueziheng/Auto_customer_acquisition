@@ -62,6 +62,30 @@ class ReplyWorkActionRequest:
             raise ValidationError("回复工作动作类型无效")
 
 
+class ReplyWorkUpdate(BaseModel):
+    """操作者、时间和来源由服务端确定；不接收客户端采购确认事实。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    expected_status: ReplyWorkStatus
+    status: ReplyWorkStatus
+    disposition: Literal["started", "waiting_customer", "handled", "cancelled"] | None = None
+    note: str = Field(default="", max_length=2000)
+    request_id: str | None = Field(default=None, min_length=8, max_length=100, pattern=r"^[a-zA-Z0-9_-]+$")
+
+
+@dataclass(frozen=True)
+class ReplyWorkHandlingView:
+    """仅向当前有权查看会话的员工公开处理历史。"""
+
+    sequence: int
+    expected_status: ReplyWorkStatus
+    status: ReplyWorkStatus
+    disposition: str
+    note: str
+    handled_by: str
+    handled_at: datetime
+
+
 @dataclass(frozen=True)
 class ReplyWorkActionView:
     """Owner queue 只读项；内容通过 message/artifact 授权链另行读取。"""
@@ -77,6 +101,8 @@ class ReplyWorkActionView:
     status: ReplyWorkStatus
     idempotency_key: IdempotencyKey
     created_at: datetime
+    can_handle: bool = False
+    history: tuple[ReplyWorkHandlingView, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -126,6 +152,7 @@ class ConversationInboxItem:
     classified_at: datetime | None
     correction_count: int
     required_actions: tuple[str, ...]
+    latest_direction: str | None = None
 
 
 @dataclass(frozen=True)
@@ -190,3 +217,14 @@ class InboxEvidenceRef(BaseModel):
     conversation_id: str
     account_id: str
     artifact_id: str
+
+
+class MessageContentView(BaseModel):
+    """当前授权下的邮件内容投影；只在请求中返回，不写日志或模型。"""
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    subject: str
+    sender: str
+    recipients: str
+    body_text: str | None
+    html_only: bool = False
+    truncated: bool = False

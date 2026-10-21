@@ -47,8 +47,12 @@ class SqlModelConfigurationRepository:
         fingerprints: AssistantFingerprints,
         *,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        deployment_verification: tuple[str, str, datetime] | None = None,
+        deployment_provider: str = "deepseek",
     ) -> None:
         self._factory, self._fingerprints, self._now = factory, fingerprints, now
+        self._deployment_verification = deployment_verification
+        self._deployment_provider = deployment_provider
 
     async def initialize(
         self,
@@ -208,6 +212,7 @@ class SqlModelConfigurationRepository:
                 ).one()
             api, worker = processes.get("api"), processes.get("scheduler")
             return ModelConfigurationSnapshot(
+                provider=self._deployment_provider,
                 configuration_version=head.version,
                 model=config.model,
                 limits=ModelLimits.model_validate(config.limits),
@@ -222,6 +227,9 @@ class SqlModelConfigurationRepository:
                         else None,
                         "verified_at": probe.verified_at
                         if probe and turn and turn.state == "completed"
+                        else self._deployment_verification[2]
+                        if probe is None and self._deployment_verification is not None
+                        and self._deployment_verification[:2] == (tenant_id, head.version)
                         else None,
                         "failure_code": turn.error_code if turn else None,
                         "probe_turn_id": probe.turn_id if probe else None,

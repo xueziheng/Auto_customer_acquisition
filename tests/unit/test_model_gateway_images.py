@@ -98,6 +98,7 @@ async def test_gateway_freezes_payload_without_losing_attachments(monkeypatch):
 
 async def test_output_limit_settles_invalid_and_never_creates_success_result():
     from connectors.deepseek.client import DeepSeekFailure
+    from shared.schemas.discovery_diagnostic import DiscoveryDiagnostic
     from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
 
     states = []
@@ -117,7 +118,7 @@ async def test_output_limit_settles_invalid_and_never_creates_success_result():
     class Provider:
         async def generate(self, model_request):
             provider_calls.append(model_request)
-            raise DeepSeekFailure("output_limit")
+            raise DeepSeekFailure("output_limit", diagnostic=DiscoveryDiagnostic("provider", "output_limit", 3))
 
         async def aclose(self):
             pass
@@ -134,5 +135,6 @@ async def test_output_limit_settles_invalid_and_never_creates_success_result():
     assert states == ["dispatched", "invalid"]
     assert len(provider_calls) == 1
     assert handler.failure.code == "output_limit"
+    assert handler.failure.diagnostic.outcome == "failed:provider:limit:3"
     with pytest.raises(ValueError):
         slot.take("missing")

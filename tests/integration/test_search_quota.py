@@ -931,3 +931,136 @@ async def test_reserve_rechecks_version_under_account_lock_and_never_overwrites_
         fingerprint_version="v1",
     )
     assert (await repository.snapshot()).reservations == 1
+
+async def test_inventory_usage_observation_initializes_without_spending_and_never_raises_ceiling(quota):
+    repo, _factory, _tenant = quota
+    assert hasattr(repo, 'observe_usage'), 'RED: 冷启动用量观察尚未实现'
+    usage = SearchUsage(plan='Researcher', limit=5, used=0, cost_status=SearchCostStatus.FREE, paygo_enabled=False)
+    await repo.observe_usage(usage)
+    assert (await repo.snapshot()).remaining == 5
+    assert (await repo.snapshot()).reservations == 0
+    await repo.observe_usage(SearchUsage(plan='Researcher', limit=20, used=0, cost_status=SearchCostStatus.FREE, paygo_enabled=False))
+    assert (await repo.snapshot()).remaining == 5
+
+async def test_inventory_gateway_cold_start_and_search_without_campaign_policy(quota):
+    from apps.scheduler_worker.inventory_web import build_inventory_web
+    from tool_gateway.fingerprint import HmacFingerprintProvider
+    repository, factory, tenant = quota
+    transport = SearchTransport(limit=5)
+    run = RunId(new_id('run'))
+    checks = []
+    async def guard(): checks.append('current-job-and-employee')
+    tools = build_inventory_web(factory=factory,tenant_id=tenant,run_id=run,user_id=UserId(new_id('usr')),
+        country='KE',category='tricycles',guard=guard,fingerprints=HmacFingerprintProvider('v1',b'x'*32),
+        search_transport=transport,page_transport=Pages(),secret_resolver=Secrets(),secret_ref='TAVILY_API_KEY_REF',artifacts=Artifacts(),now=lambda:NOW)
+    await tools.observe_usage()
+    assert transport.calls == 0 and transport.usage_calls == 1
+    assert (await repository.snapshot()).remaining == 5
+    batch = await tools.searcher.search(tenant,run,'tricycle Kenya','KE','tricycles',1)
+    assert batch.results[0].url == 'https://example.com/'
+    assert transport.calls == 1 and checks
+    tools.searcher.release(batch)
+
+
+async def test_inventory_sources_reserve_actual_gateway_budget_for_exploration(quota):
+    from types import SimpleNamespace
+
+    from apps.scheduler_worker.inventory_collector import CodexInventoryCollector
+    from apps.scheduler_worker.inventory_web import build_inventory_web
+    from connectors.web_search.transport import PublicPageResponse
+    from shared.schemas.identifiers import ArtifactId
+    from tests.unit.test_inventory_acquisition_driver import JOB
+    from tool_gateway.fingerprint import HmacFingerprintProvider
+
+    _repository, factory, tenant = quota
+    job = JOB.model_copy(update={'tenant_id': tenant})
+    class ManyResults(SearchTransport):
+        async def search(self, *args, **kwargs):
+            await super().search(*args, **kwargs)
+            return TavilyHttpResponse(200, {"results": [
+                {"title": "Acme", "url": f"https://example.com/page{i}", "content": "factory"}
+                for i in range(20)
+            ]})
+
+    transport = ManyResults(limit=50)
+    fetched = []
+    user = UserId(new_id('usr'))
+
+    class EvidencePages(Pages):
+        async def fetch(self, url):
+            fetched.append(url)
+            return PublicPageResponse(url, b'<html><body>Acme Kenya tricycles</body></html>')
+
+    class EvidenceArtifacts(Artifacts):
+        async def put(self, *args, **kwargs):
+            from hashlib import sha256
+            return SimpleNamespace(artifact_id=ArtifactId(new_id('art')), tenant_id=args[0], content_hash=sha256(args[2]).hexdigest())
+
+    async def guard():
+        pass
+
+    async def make_tools(*args):
+        return build_inventory_web(factory=factory, tenant_id=tenant, run_id=RunId(str(job.id)),
+            user_id=user, country='KE', category='tricycles', guard=guard,
+            fingerprints=HmacFingerprintProvider('v1',b'x'*32), search_transport=transport,
+            page_transport=EvidencePages(), secret_resolver=Secrets(), secret_ref='TAVILY_API_KEY_REF',
+            artifacts=EvidenceArtifacts(), now=lambda:NOW)
+
+    tools = await make_tools()
+    await tools.observe_usage()
+    consumed = []
+
+    async def generate(job, source, session, payload):
+        found = await session.call('source_search', {'source_id':source, 'query':f'{source} tricycles Kenya'})
+        for item in found['results'][:session.max_requests - 1]:
+            assert 'text' in await session.call('read_public_page', {'page_id':item['page_id']})
+        consumed.append(session.max_requests)
+        return {'candidates':[]}
+
+    collector = CodexInventoryCollector(make_tools, generate)
+    for source in ('company_websites', 'dealer_networks', 'chambers'):
+        await collector.collect(job, source, guard)
+    assert consumed == [7,7,7]
+    assert transport.calls == 3 and len(fetched) == 18
+    async with factory() as session:
+        assert await session.scalar(text("SELECT count(*) FROM tool_calls WHERE tenant_id=:tenant AND run_id=:run AND status='succeeded'"), {'tenant':tenant,'run':str(job.id)}) == 22
+
+async def test_unknown_usage_recovers_via_new_job_gateway_without_refund_or_redispatch(quota):
+    from types import SimpleNamespace
+
+    from apps.scheduler_worker.inventory_web import build_inventory_web
+    from infra.db.inventory_sources import InventorySources
+    from tool_gateway.fingerprint import HmacFingerprintProvider
+
+    repo, factory, tenant = quota
+    usage = SearchUsage('Researcher', 5, 0, False, SearchCostStatus.FREE)
+    old_run = RunId(new_id('run'))
+    await repo.reserve(old_run, 'a' * 64, usage, fingerprint_version='v1')
+    await repo.mark_dispatched(old_run, 'a' * 64)
+    await repo.record_unavailable(old_run)
+    assert (await repo.snapshot()).cost_status is SearchCostStatus.UNKNOWN
+    transport = SearchTransport(limit=20)
+    class Backend:
+        async def source_history(self, tenant): return ()
+    async def guard(): pass
+    async def probe(job, checked):
+        tools = build_inventory_web(factory=factory, tenant_id=tenant, run_id=job.id,
+            user_id=UserId(new_id('usr')), country='KE', category='tricycles', guard=checked,
+            fingerprints=HmacFingerprintProvider('v1', b'x' * 32), search_transport=transport,
+            page_transport=Pages(), secret_resolver=Secrets(), secret_ref='TAVILY_API_KEY_REF',
+            artifacts=Artifacts(), now=lambda: NOW)
+        await tools.observe_usage()
+    reader = InventorySources(tenant_id=tenant, backend=Backend(), quota=repo, configured=True, probe=probe)
+    transport.usage_error = TavilyTransientError()
+    with pytest.raises(ValueError):
+        await reader.prepare(SimpleNamespace(tenant_id=tenant, id=RunId(new_id('run'))), guard)
+    assert (await repo.snapshot()).cost_status is SearchCostStatus.UNKNOWN
+    transport.usage_error = None
+    await reader.prepare(SimpleNamespace(tenant_id=tenant, id=RunId(new_id('run'))), guard)
+    snapshot = await repo.snapshot()
+    assert snapshot.cost_status is SearchCostStatus.FREE
+    assert snapshot.remaining == 4 and snapshot.reservations == 1
+    assert transport.calls == 0 and transport.usage_calls == 2
+    with pytest.raises(ToolGatewayError) as failure:
+        await repo.check_available(old_run, 'b' * 64, fingerprint_version='v1')
+    assert failure.value.reason == 'request_uncertain'

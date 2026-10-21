@@ -26,6 +26,7 @@ from apps.composition_support.delivery_material_reader import (
 )
 from apps.composition_support.email_inbound import (
     InboundMailbox,
+    InboundProviderAdapter,
     build_inbound_composition,
 )
 from apps.composition_support.employee_readers import (
@@ -172,6 +173,7 @@ from infra.db.commitment_uow import SqlAlchemyCommitmentUnitOfWork
 from infra.db.compliance_uow import SqlAlchemyComplianceUnitOfWork
 from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
 from infra.db.costing_uow import SqlAlchemyCostingUnitOfWork
+from infra.db.customer_followup import PostgresCustomerContextReader
 from infra.db.demand_uow import SqlAlchemyDemandUnitOfWork
 from infra.db.directive_uow import SqlAlchemyDirectiveUnitOfWork
 from infra.db.email_feedback_uow import (
@@ -234,6 +236,7 @@ from shared.schemas.identifiers import (
     EnrollmentId,
     IdempotencyKey,
     MessageAttemptId,
+    ProspectAccountId,
     SendingIdentityId,
     TenantId,
     UserId,
@@ -252,6 +255,7 @@ from tool_gateway.handlers.email_send import (
     DeliveryMaterial,
     DeliveryMaterialProvider,
     EmailSendHandler,
+    OutboundMailConnectors,
     UnsubscribeLink,
     UnsubscribeLinkProvider,
 )
@@ -329,6 +333,11 @@ from ..dependencies import (
     ToolGatewayInvoker,
 )
 from ..runtime_config import Phase1RuntimeSettings
+from .customer_followup import CustomerFollowupApplication
+from .customer_preparation import (
+    CustomerPreparationApplication,
+    PostgresCustomerPreparationTransactions,
+)
 from .demand_radar import (
     AuthorizedDemandRadarService,
     ProspectingDemandAccountNames,
@@ -530,7 +539,9 @@ class ManualSendComposition:
     reply_status: ReplyStatusProvider
     delivery_materials: DeliveryMaterialProvider
     secret_resolver: SecretResolver
-    gmail_transport: GmailHttpTransport
+    gmail_transport: GmailHttpTransport | None
+    outbound_mail_connectors: OutboundMailConnectors | None = None
+    gmail_sender_address: str | None = None
 
     def __post_init__(self) -> None:
         providers = (
@@ -540,10 +551,15 @@ class ManualSendComposition:
             (self.reply_status, ReplyStatusProvider),
             (self.delivery_materials, DeliveryMaterialProvider),
             (self.secret_resolver, SecretResolver),
-            (self.gmail_transport, GmailHttpTransport),
         )
         if any(not isinstance(value, contract) for value, contract in providers):
             raise TypeError("API 手工发送依赖未完整配置")
+        if self.gmail_transport is not None and not isinstance(self.gmail_transport, GmailHttpTransport):
+            raise TypeError("API 邮件传输配置无效")
+        if self.outbound_mail_connectors is not None and not isinstance(self.outbound_mail_connectors, OutboundMailConnectors):
+            raise TypeError("API 邮件连接器配置无效")
+        if self.gmail_transport is None and self.outbound_mail_connectors is None:
+            raise TypeError("API 邮件连接器未配置")
 
 
 class _BoundGmailSecretResolver:
@@ -624,7 +640,7 @@ class _ResolvedBinding:
     enrollment_id: EnrollmentId
     sending_identity_id: SendingIdentityId
     idempotency_key: IdempotencyKey
-    campaign_created_by: EmployeeId
+    account_id: ProspectAccountId
 
 
 class ResolvedManualSendGateway:
@@ -664,8 +680,8 @@ class ResolvedManualSendGateway:
             )
             if attempt is None:
                 return None
-            campaign = await uow.campaigns.get(self._tenant_id, attempt.campaign_id)
-        if campaign is None:
+            enrollment = await uow.enrollments.get(self._tenant_id, attempt.enrollment_id)
+        if enrollment is None or enrollment.campaign_id != attempt.campaign_id:
             return None
         return _ResolvedBinding(
             attempt.attempt_id,
@@ -673,8 +689,18 @@ class ResolvedManualSendGateway:
             attempt.enrollment_id,
             attempt.sending_identity_id,
             attempt.idempotency_key,
-            campaign.created_by,
+            enrollment.account_id,
         )
+
+    async def _current_owner(self, account_id: ProspectAccountId) -> str | None:
+        """只读当前绑定企业/客户的归属事实，不扩大员工域 SYSTEM 权限。"""
+        from infra.db.tables import OwnershipLockRow
+
+        async with self._factory() as session:
+            return await session.scalar(select(OwnershipLockRow.owner).where(
+                OwnershipLockRow.tenant_id == self._tenant_id,
+                OwnershipLockRow.account_id == account_id,
+            ))
 
     async def _authorized(
         self,
@@ -692,16 +718,10 @@ class ResolvedManualSendGateway:
                     return False
                 if employee.role == "boss":
                     return True
-                if employee.role == "sales":
-                    return employee.employee_id == binding.campaign_created_by
-                if employee.role != "manager":
+                if employee.role not in {"sales", "manager"}:
                     return False
-                creator = await service.get_employee(
-                    self._tenant_id,
-                    binding.campaign_created_by,
-                    actor=self._employee_lookup_actor,
-                )
-                return creator.is_active and creator.manager_id == employee.employee_id
+                owner = await self._current_owner(binding.account_id)
+                return owner is not None and str(employee.employee_id) == owner
         except (PermissionDenied, ValidationError, TransientError):
             return False
 
@@ -838,6 +858,14 @@ class PostgresCampaignScopeResolver:
         self._factory = factory
         self._tenant_id = tenant_id
 
+    async def account_ids_for(self, *, owner: str) -> frozenset[str]:
+        from infra.db.tables import OwnershipLockRow
+        async with self._factory() as session:
+            values = await session.scalars(select(OwnershipLockRow.account_id).where(
+                OwnershipLockRow.tenant_id == self._tenant_id, OwnershipLockRow.owner == owner,
+            ))
+            return frozenset(values.all())
+
     async def campaign_ids_for(
         self, *, created_by: frozenset[str]
     ) -> frozenset[CampaignId]:
@@ -859,11 +887,16 @@ def build_phase1_dependencies(
     *,
     now: Callable[[], datetime],
     manual_send: ManualSendComposition | None = None,
+    automatic_followup_enabled: bool = False,
+    private_reply_tests_enabled: bool = False,
     gmail_transport: GmailHttpTransport | None = None,
+    outbound_mail_connectors: OutboundMailConnectors | None = None,
+    gmail_sender_address: str | None = None,
     secret_resolver: SecretResolver | None = None,
     object_store_settings: S3ObjectStoreSettings | None = None,
     model_client: StructuredJsonModelClient | None = None,
     inbound_mailbox: InboundMailbox | None = None,
+    inbound_adapter_factory: Callable[[async_sessionmaker[AsyncSession]], InboundProviderAdapter] | None = None,
     enterprise_knowledge_enabled: bool = False,
     knowledge_maximum_upload_bytes: int = MAXIMUM_KNOWLEDGE_UPLOAD_BYTES,
 ) -> ConfiguredApiDependencies:
@@ -921,16 +954,17 @@ def build_phase1_dependencies(
     work_uploads = None
     enterprise_knowledge = None
     object_transport = None
+    raw_artifacts = None
     if object_store_settings is not None:
         object_transport = DeferredS3ObjectBlobTransport(
             object_store_settings, resolved_secret_resolver
         )
         bounded_raw = (
-            (S3BoundedObjectBlobTransport(
+            S3BoundedObjectBlobTransport(
                 object_store_settings, resolved_secret_resolver,
                 limits=ObjectReadLimits(connect_timeout_ms=3000, read_timeout_ms=5000,
                     total_timeout_ms=15000, chunk_bytes=65536, maximum_attempts=1),
-            ) if enterprise_knowledge_enabled else None)
+            )
             if settings.quotation is None
             else S3BoundedObjectBlobTransport(
                 object_store_settings,
@@ -969,8 +1003,19 @@ def build_phase1_dependencies(
                 lambda requested_tenant: SqlAlchemyKnowledgeUnitOfWork(factory, requested_tenant),
                 now=now,
             )
+            knowledge_artifacts = RawArtifactStoreImpl(
+                cast(
+                    ArtifactUnitOfWorkFactory,
+                    lambda requested_tenant: SqlAlchemyArtifactUnitOfWork(factory, requested_tenant),
+                ),
+                object_transport,
+                knowledge_maximum_upload_bytes,
+                now,
+                new_id,
+                bounded_transport=bounded_raw,
+            )
             enterprise_knowledge = EnterpriseKnowledgeApplication(
-                knowledge, raw_artifacts, maximum_upload_bytes=knowledge_maximum_upload_bytes,
+                knowledge, knowledge_artifacts, maximum_upload_bytes=knowledge_maximum_upload_bytes,
             )
         if settings.quotation is not None:
             quote_settings = settings.quotation
@@ -1090,19 +1135,21 @@ def build_phase1_dependencies(
         SendingIdentityStandardAuditLogger(),
         now=now,
     )
-    if gmail_transport is not None:
-        if manual_send is not None or not isinstance(
-            gmail_transport, GmailHttpTransport
-        ):
+    if gmail_transport is not None or outbound_mail_connectors is not None:
+        if manual_send is not None:
             raise TypeError("API 发送组配置冲突")
+        from infra.db.private_reply_test import PrivateReplyContactEligibility
+        current_contacts = CurrentContactEligibilityReader(tenant, prospecting, demand, now=now)
         manual_send = ManualSendComposition(
-            CurrentContactEligibilityReader(tenant, prospecting, demand, now=now),
+            PrivateReplyContactEligibility(factory, current_contacts, now=now) if private_reply_tests_enabled else current_contacts,
             CurrentSendingIdentityReader(tenant, sending_identities, now=now),
             CurrentCampaignApprovalReader(tenant, approvals, now=now),
             CurrentReplyStatusReader(tenant, prospecting, conversations, now=now),
             CurrentDeliveryMaterialReader(tenant, prospecting, sending_identities),
             resolved_secret_resolver,
             gmail_transport,
+            outbound_mail_connectors,
+            gmail_sender_address,
         )
     unavailable_send_sources = _UnavailableManualSendSources()
     contact_eligibility = (
@@ -1128,6 +1175,11 @@ def build_phase1_dependencies(
         if manual_send is not None
         else unavailable_send_sources
     )
+    from infra.db.private_reply_history import PrivateReplyTestHistoryReader
+    private_reply_history = (
+        PrivateReplyTestHistoryReader(factory, now=now)
+        if private_reply_tests_enabled else None
+    )
     outreach = OutreachServiceImpl(
         lambda requested_tenant: SqlAlchemyOutreachUnitOfWork(  # type: ignore[arg-type, return-value]
             factory, requested_tenant, now=now
@@ -1139,6 +1191,7 @@ def build_phase1_dependencies(
         Phase1OutreachAuthorizer(tenant),
         OutreachStandardAuditLogger(),
         now=now,
+        private_reply_history=private_reply_history,
     )
     unsubscribe_keys: dict[str, bytes] = {}
     for reference in settings.unsubscribe_key_refs:
@@ -1243,7 +1296,8 @@ def build_phase1_dependencies(
             manual_send.gmail_transport,
             manual_send.secret_resolver,
             settings.gmail_oauth_token_ref,
-        )
+        ) if manual_send.gmail_transport is not None else None
+        from infra.outbound_mail_archive import OutboundMailArchive
         handler = EmailSendHandler(
             gmail,
             manual_send.delivery_materials,
@@ -1252,6 +1306,9 @@ def build_phase1_dependencies(
             outreach=outreach,
             outreach_actor_factory=_delivery_binding_actor,
             route_id=settings.email_feedback_route_id,
+            connectors=manual_send.outbound_mail_connectors,
+            gmail_sender_address=manual_send.gmail_sender_address,
+            archive=OutboundMailArchive(factory, raw_artifacts, conversations) if raw_artifacts is not None else None,
         )
         registry = ToolRegistry()
         registry.register(_email_send_manifest(), handler)
@@ -1574,7 +1631,7 @@ def build_phase1_dependencies(
         if (
             inbound_mailbox.tenant_id != tenant
             or object_store_settings is None
-            or gmail_transport is None
+            or (gmail_transport is None and inbound_adapter_factory is None)
         ):
             raise ValidationError("入站组合缺少显式受信依赖")
         inbound = build_inbound_composition(
@@ -1584,7 +1641,8 @@ def build_phase1_dependencies(
             employees=employees,
             employee_actor=employee_system_actor,
             outreach_builder=build_feedback_outreach,
-            provider=cast(GmailInboundHttpTransport, gmail_transport),
+            provider=None if inbound_adapter_factory else cast(GmailInboundHttpTransport, gmail_transport),
+            adapter=inbound_adapter_factory(factory) if inbound_adapter_factory else None,
             secret_resolver=resolved_secret_resolver,
             secret_ref=settings.gmail_oauth_token_ref,
             object_settings=object_store_settings,
@@ -1600,9 +1658,9 @@ def build_phase1_dependencies(
         mailbox=MailboxService(SqlMailboxRepository(factory)),
         inbox_evidence=(
             build_inbox_evidence_reader(
-                tenant, factory, conversations, inbound.bounded_raw_store, now=now
+                tenant, factory, conversations, raw_artifacts, now=now
             )
-            if inbound is not None
+            if raw_artifacts is not None
             else None
         ),
         email_inbound=inbound,
@@ -1628,8 +1686,18 @@ def build_phase1_dependencies(
         employee_lookup_actor=employee_system_actor,
         provider_readiness=provider_readiness,
         provider_readiness_actor=provider_readiness_actor,
+        customer_followup=CustomerFollowupApplication(
+            PostgresCustomerContextReader(factory, tenant), prospecting, demand, outreach,
+            automatic_enabled=automatic_followup_enabled and manual_send is not None,
+        ),
+        customer_preparation=CustomerPreparationApplication(
+            PostgresCustomerContextReader(factory, tenant),
+            PostgresCustomerPreparationTransactions(factory, _DomainSeparatedContactValueHasher(fingerprint_provider), now=now),
+            now=now,
+        ),
         prospecting=prospecting,
         demand_radar=demand_radar,
+        demand_service=demand,
         directives=directives,
         trade_manager=trade_manager,
         approvals=approvals,

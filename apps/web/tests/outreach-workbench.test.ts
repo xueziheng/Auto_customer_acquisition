@@ -17,6 +17,7 @@ const enrollment: EnrollmentView = {
   current_step: 1,
   enrolled_at: "2026-08-15T08:00:00Z",
   enrollment_id: "enr-demo-one",
+  execution_mode: "automatic",
   next_send_at: "2026-08-16T09:00:00Z",
   sending_identity_id: "sid-demo-one",
   state: "in_sequence",
@@ -180,6 +181,7 @@ async function typeDraftAndSend(
 
 async function mountWorkbench(
   fetch: ReturnType<typeof vi.fn<typeof globalThis.fetch>>,
+  path = "/crm/outreach",
 ): Promise<{ app: VueApp; root: HTMLElement }> {
   const root = document.createElement("div");
   document.body.replaceChildren(root);
@@ -188,7 +190,7 @@ async function mountWorkbench(
   app.provide("tradeos-api-client", client);
   app.use(router);
   app.mount(root);
-  await router.replace("/crm/outreach");
+  await router.replace(path);
   await new Promise((resolve) => setTimeout(resolve, 0));
   return { app, root };
 }
@@ -198,6 +200,20 @@ afterEach(() => {
 });
 
 describe("OutreachWorkbench", () => {
+  it("preselects only an authorized query enrollment without preparing or sending", async () => {
+    const fetch = makeSendFetch();
+    const { root } = await mountWorkbench(fetch, "/crm/outreach?enrollment_id=enr-demo-one");
+    await eventually(() => {
+      expect(root.querySelector('[aria-label="选中入组记录详情"]')?.textContent).toContain("enr-demo-one");
+      expect(root.textContent).toContain("手工准备草稿");
+    });
+    expect(fetch.mock.calls.every(([input]) => asRequest(input as URL | RequestInfo).method === "GET")).toBe(true);
+    await router.replace("/crm/outreach?enrollment_id=enr-foreign");
+    await eventually(() => {
+      expect(root.querySelector('[aria-label="选中入组记录详情"]')?.textContent).not.toContain("enr-demo-one");
+    });
+    expect(fetch.mock.calls.every(([input]) => asRequest(input as URL | RequestInfo).method === "GET")).toBe(true);
+  });
   it("registers the /crm/outreach route and renders the ledger", async () => {
     expect(router.getRoutes().map((route) => route.path)).toContain(
       "/crm/outreach",

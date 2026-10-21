@@ -374,6 +374,7 @@ def _validate_completion(
     elif retry_after_at is not None or (
         status is ToolCallStatus.FAILED_PERMANENT
         and error_category in _TRANSIENT_CATEGORIES
+        and error_category is not ToolErrorCategory.RECONCILIATION_REQUIRED
     ):
         raise ValidationError("永久失败分类无效")
 

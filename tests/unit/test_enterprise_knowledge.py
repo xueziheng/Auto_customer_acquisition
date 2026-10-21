@@ -89,6 +89,19 @@ async def processed(service):
 
 
 @pytest.mark.asyncio
+async def test_display_title_uses_source_name_without_rewriting_model_record(setup):
+    service, repos, _ = setup
+    document, _, result = await processed(service)
+    raw = repos[TENANT].revisions[result.revision.revision_id]
+    assert raw.analysis.title == ANALYSIS.title
+    assert result.revision.analysis.title == SOURCE.filename
+    detail = await service.get_detail(TENANT, BOSS, document.document_id)
+    assert detail.revision.analysis.title == SOURCE.filename
+    assert detail.revision.analysis.facts == raw.analysis.facts
+    assert repos[TENANT].revisions[result.revision.revision_id].analysis.title == ANALYSIS.title
+
+
+@pytest.mark.asyncio
 async def test_upload_is_shared_and_idempotent_without_duplicate_jobs(setup):
     service, repos, _ = setup
     document = await uploaded(service)

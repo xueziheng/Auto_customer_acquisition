@@ -12,7 +12,7 @@ import zipfile
 from typing import Any
 from xml.etree import ElementTree
 
-MAX_FILE = 10 * 1024 * 1024
+MAX_FILE = 25 * 1024 * 1024
 MAX_CHARS = 60000
 MAX_PAGES = 100
 MAX_ARCHIVE_ENTRIES = 2000

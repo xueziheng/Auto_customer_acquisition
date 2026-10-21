@@ -1,0 +1,9 @@
+{
+  "subject": "Lunch photos",
+  "body": "Here are the photos from our family lunch on Sunday.",
+  "candidate_response": {
+    "category": "other",
+    "reason": "没有业务沟通内容",
+    "evidence_quote": "family lunch on Sunday"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "subject": "Forwarded inquiry",
+  "body": "password=synthetic-eval-only; please quote hinges",
+  "candidate_response": {
+    "category": "business",
+    "reason": "该候选不应被调用",
+    "evidence_quote": "quote hinges"
+  }
+}

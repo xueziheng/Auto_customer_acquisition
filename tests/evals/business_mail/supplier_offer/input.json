@@ -1,0 +1,9 @@
+{
+  "subject": "Supplier quotation",
+  "body": "We can supply brass hinges. Supplier quotation is attached for your review.",
+  "candidate_response": {
+    "category": "business",
+    "reason": "供应商供货与报价联系，需要人工核对原始报价",
+    "evidence_quote": "We can supply brass hinges"
+  }
+}

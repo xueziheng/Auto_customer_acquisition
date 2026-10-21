@@ -29,7 +29,7 @@ const signal = {
 const research = { execution_mode: "research_only", planned_discovery_lanes: ["importer", "distributor", "ecommerce"], discovery_lanes: ["importer"], planned_source_channels: proposal.planned_source_channels, searched_source_channels: ["public_web", "industry_directory"], source_channels: ["industry_directory"], completion_reason: "budget_exhausted", stop_reason: "quota_exhausted", searches_used: 9, pages_used: 1, signal_count: 1, hypothesis_count: 0, pending_verification_count: 1, validated_need_count: 0, qualified_opportunity_count: 0, queued_count: 0, consumed_credits: 1, reserved_credits: 2, uncertain_credits: 3 };
 const run = { run_id: "run_controlled", workflow_type: "demand_discovery", workflow_version: 2, subject_ref: "dpr_controlled", current_step: "complete", status: "completed", created_at: "2026-08-27T00:00:00Z", last_activity_at: "2026-08-27T00:00:00Z", next_poll_at: null, retry_count: 0, last_error: null, research };
 
-async function mount(component: Parameters<typeof createApp>[0], routes: Record<string, unknown>) {
+async function mount(component: Parameters<typeof createApp>[0], routes: Record<string, unknown>, withIdentity = false) {
   const requests: string[] = [];
   const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
     const request = input as Request;
@@ -43,7 +43,7 @@ async function mount(component: Parameters<typeof createApp>[0], routes: Record<
   const root = document.createElement("div");
   document.body.replaceChildren(root);
   const app = createApp(component);
-  app.provide("tradeos-api-client", createApiClient({ baseUrl: "https://tradeos.test", fetch }));
+  app.provide("tradeos-api-client", createApiClient({ baseUrl: "https://tradeos.test", fetch }, withIdentity ? {generation: () => 0, current: () => ({tenantId: "tn_test", employeeId: "emp_test", mode: "fixed-dev"}), subscribe: () => () => {}} : undefined));
   await router.replace("/commands");
   app.use(router);
   app.mount(root);
@@ -267,14 +267,13 @@ describe("公开研究展示", () => {
     app.unmount();
   });
 
-  it("自动找客户页仅展示已找到客户及其研究证据", async () => {
-    const account = { account_id: "acc_controlled", name: "Synthetic", country: "US", website_domain: "example.test", source_signal_refs: ["sig_controlled"], research_signals: [signal] };
-    const { root, app } = await mount(CustomerDiscovery, { "/runs": [run], "/prospects/accounts": [account], "/prospects/accounts/acc_controlled": { account, contacts: [] } });
-    expect(root.textContent).toContain("无需手动操作");
-    root.querySelector<HTMLElement>('.account-list li[role="button"]')!.click();
-    await settle();
-    expect(root.textContent).toContain("进口商候选");
-    expect(root.textContent).toContain("待核验");
+  it("管理员搜索保留公开验证说明，研究证据不再重复加载潜在企业大面板", async () => {
+    const { root, requests, app } = await mount(CustomerDiscovery, { "/prospects/customers/access": {role:"boss",can_search:true,can_assign:true} }, true);
+    expect(root.querySelector('[aria-label="候选库存"] form')).not.toBeNull();
+    expect(root.textContent).toContain("公开邮箱仍需验证");
+    expect(root.querySelector('.account-list')).toBeNull();
+    expect(requests).not.toContain("GET /prospects/accounts");
+    expect(requests).not.toContain("GET /prospects/inventory/sources");
     app.unmount();
   });
 

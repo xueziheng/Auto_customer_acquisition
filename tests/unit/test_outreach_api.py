@@ -152,6 +152,9 @@ class _Resolver:
         self.campaign_ids = campaign_ids
         self.calls: list[frozenset[str]] = []
 
+    async def account_ids_for(self, *, owner: str) -> frozenset[str]:
+        return frozenset({"acc_01K39P9M5D6K4A91YEQ80EJZ0X"})
+
     async def campaign_ids_for(self, *, created_by: frozenset[str]) -> frozenset[CampaignId]:
         self.calls.append(created_by)
         return self.campaign_ids
@@ -281,22 +284,22 @@ def test_sales_list_sees_only_own_campaign_enrollments() -> None:
     tenant, scope, limit, actor = outreach.list_calls[0]
     assert tenant == TENANT and limit == 10
     assert scope.level is OutreachScopeLevel.SELF
-    assert scope.allowed_campaign_ids == frozenset({CAMPAIGN_A})
+    assert scope.allowed_account_ids == frozenset({"acc_01K39P9M5D6K4A91YEQ80EJZ0X"})
     assert actor.role == "sales"
     assert actor.actor_id == str(SALES)
 
 
-def test_manager_list_scope_covers_self_and_direct_reports() -> None:
+def test_manager_list_scope_covers_only_own_customers() -> None:
     app, outreach, resolver = _app(
         _employee(MANAGER, "manager"),
         active=[_employee(MANAGER, "manager"), _employee(REPORT, "sales", manager_id=MANAGER)],
     )
     response = _Client(app).get("/crm/enrollments?limit=10", headers=_headers(MANAGER))
     assert response.status_code == 200
-    assert resolver.calls == [frozenset({str(MANAGER), str(REPORT)})]
+    assert resolver.calls == [frozenset({str(MANAGER)})]
     _, scope, _, actor = outreach.list_calls[0]
     assert scope.level is OutreachScopeLevel.MANAGER
-    assert scope.allowed_campaign_ids == frozenset({CAMPAIGN_A})
+    assert scope.allowed_account_ids == frozenset({"acc_01K39P9M5D6K4A91YEQ80EJZ0X"})
     assert actor.role == "manager"
 
 

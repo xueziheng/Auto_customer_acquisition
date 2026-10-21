@@ -10,7 +10,17 @@ const router = createRouter({
     },
     {
       path: "/",
-      redirect: "/crm/handoffs",
+      redirect: "/customers",
+    },
+    {
+      path: "/customers",
+      name: "customers",
+      component: () => import("./views/customers/MyCustomers.vue"),
+    },
+    {
+      path: "/customers/:allocationId",
+      name: "customer-detail",
+      component: () => import("./views/customers/CustomerDetail.vue"),
     },
     {
       path: "/commands",
@@ -30,7 +40,8 @@ const router = createRouter({
     {
       path: "/prospects/accounts",
       name: "customer-discovery",
-      component: () => import("./views/customer-discovery/CustomerDiscovery.vue"),
+      component: () =>
+        import("./views/customer-discovery/CustomerDiscovery.vue"),
     },
     {
       path: "/campaigns",
@@ -41,6 +52,16 @@ const router = createRouter({
       path: "/inbox",
       name: "smart-inbox",
       component: () => import("./views/inbox/SmartInbox.vue"),
+    },
+    {
+      path: "/inbox/conversations/:conversationId",
+      name: "smart-inbox-conversation",
+      component: () => import("./views/inbox/SmartInbox.vue"),
+    },
+    {
+      path: "/inbox/business-mail",
+      name: "business-mail",
+      component: () => import("./views/inbox/BusinessMail.vue"),
     },
     {
       path: "/inbox/mailbox",

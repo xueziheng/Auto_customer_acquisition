@@ -8,6 +8,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from shared.schemas.discovery_diagnostic import DiscoveryDiagnostic
 from shared.schemas.identifiers import AgentTurnId, EmployeeId, RunId, TenantId, UserId
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
@@ -19,7 +20,9 @@ ModelCapability = Literal[
     "research",
     "model_probe",
     "reply_qualification",
+    "business_mail_triage",
     "knowledge_ingest",
+    "inventory_discovery",
 ]
 
 
@@ -60,8 +63,8 @@ class ModelLimits(ModelDTO):
     """部署方必须逐项提供，不能用测试阈值开启付费服务。"""
 
     window_seconds: PositiveInt
-    tenant_calls: PositiveInt
-    employee_calls: PositiveInt
+    tenant_calls: PositiveInt | None = Field(description="null表示不限制窗口调用次数")
+    employee_calls: PositiveInt | None = Field(description="null表示不限制窗口调用次数")
     tenant_concurrency: PositiveInt
     employee_concurrency: PositiveInt
     max_input_bytes: PositiveInt
@@ -177,6 +180,7 @@ ModelFailureCode = Literal[
 class ModelGenerationError(RuntimeError):
     """固定安全失败分类；不能据此自动重新发送可能已经执行的请求。"""
 
-    def __init__(self, code: ModelFailureCode) -> None:
+    def __init__(self, code: ModelFailureCode, *, diagnostic: DiscoveryDiagnostic | None = None) -> None:
         super().__init__("模型调用未能交付可用结果")
         self.code = code
+        self.diagnostic = diagnostic

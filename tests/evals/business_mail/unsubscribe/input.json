@@ -1,0 +1,9 @@
+{
+  "subject": "Remove me",
+  "body": "Please stop contacting this mailbox and remove me from your mailing list.",
+  "candidate_response": {
+    "category": "review",
+    "reason": "发件人提出停止联系，须人工确认与处理，不代表采购需求",
+    "evidence_quote": "remove me from your mailing list"
+  }
+}

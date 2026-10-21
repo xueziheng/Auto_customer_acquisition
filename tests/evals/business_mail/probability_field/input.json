@@ -1,0 +1,10 @@
+{
+  "subject": "Inquiry",
+  "body": "Could you quote hinges?",
+  "candidate_response": {
+    "category": "business",
+    "reason": "业务询价",
+    "evidence_quote": "quote hinges",
+    "confidence": 0.99
+  }
+}

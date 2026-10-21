@@ -6,7 +6,7 @@
 
 `knowledge.py` 与固定 `_knowledge_parser.py` 只接收受信上游已授权的 bytes，不接受用户任意文件路径。支持 UTF-8（可 BOM）TXT/Markdown/CSV、DOCX、XLSX、PDF，以及 PNG/JPEG/WebP。
 
-- 原件最多10 MiB；文字最多60000字符、PDF最多100页、进程最多30秒。超限拒绝，不静默截断。
+- 原件默认10 MiB，显式配置最高25 MiB；文字最多60000字符、PDF最多100页、进程最多30秒。超限拒绝，不静默截断。
 - Office ZIP 限条目数、解压总量/单条目/压缩比，拒绝加密、宏、路径注入与重复条目。XML 禁 DTD/entity。外链不访问；公式不执行，原始单元格地址保留并显式警告。
 - PDF 使用独立 knowledge-text-v1 契约：CPython3.12.x + pypdf6.16.2，不借用 evidence_text 的3.12.14固定 profile 验收。保留全部已提取文字及原页号。
 - PNG/JPEG/WebP 使用 Pillow12.3.0 真解码，拒绝动画和超过2000万像素的原件，去元数据后归一为PNG。最长边1600；缩放显式提示，其清晰度不保证小字准确识别。

@@ -266,7 +266,7 @@ async def configure_playbook(runtime, worker):
     "complete,outlook", [(False, False), (True, False), (False, True)]
 )
 async def test_real_need_evidence_questions_and_handoff(
-    page_runtime, monkeypatch, complete, outlook
+    page_runtime, monkeypatch, record_property, complete, outlook
 ):
     runtime = page_runtime
     await prepare_sent(runtime, reply_source=True)
@@ -413,7 +413,7 @@ async def test_real_need_evidence_questions_and_handoff(
                 [] if complete else ["application", "size_spec"]
             )
             assert len(suggestions["suggestions"]) == (0 if complete else 2)
-        # Task7：真实当前负责人和其直属经理走Conversations→Outreach→Demand全链。
+        # ADR0093：销售/经理仅看本人客户，直属关系不扩大收件箱范围。
         from domains.employees.permissions import Actor as EmployeeActor
         from domains.employees.permissions import EmployeeScope
         from tests.integration.test_inbox_access import inbox_actor
@@ -451,16 +451,25 @@ async def test_real_need_evidence_questions_and_handoff(
                     f"/inbox/conversations/{message.conversation_id}/messages/{message.message_id}/next-questions",
                     headers={"X-Employee-Id": inbox_actor(runtime, role).employee_id},
                 )
-                assert response.status_code == 200, response.json()
-                assert response.json() == suggestions
+                if role == "manager":
+                    assert response.status_code == 403, response.json()
+                    assert response.json() == {"code": "forbidden", "message": "没有权限"}
+                    record_property("adr0093_non_owner_manager", "403_redacted")
+                else:
+                    assert response.status_code == 200, response.json()
+                    assert response.json() == suggestions
+                    record_property("adr0093_current_sales", "200_equal_suggestions")
         if not complete and not outlook:
             from tests.integration.test_inbox_access import change_access
 
             original_read = runtime["deps"].reply_suggestions.demand.get_need
+            transferred_during_read = False
 
             async def read_and_transfer(*args, **kwargs):
+                nonlocal transferred_during_read
                 need = await original_read(*args, **kwargs)
                 await change_access(runtime, detail.account_id, "transfer")
+                transferred_during_read = True
                 return need
 
             monkeypatch.setattr(
@@ -472,11 +481,37 @@ async def test_real_need_evidence_questions_and_handoff(
                     headers={"X-Employee-Id": sales_actor.employee_id},
                 )
                 assert stale.status_code == 403
+                assert transferred_during_read
+                record_property("adr0093_transfer_during_read", "executed_old_owner_403")
+            monkeypatch.setattr(
+                runtime["deps"].reply_suggestions.demand, "get_need", original_read
+            )
         assert len(model.calls) == 1
         assert "buyer@example.test" not in json.dumps(model.calls)
         assert "https://" not in json.dumps(model.calls)
         if outlook:
             assert "We offered 100 units" not in model.calls[0]["body"]
+        # 同一真实HTTP入口验证经理成为当前owner后可读，不伪造allowed_owner_ids。
+        manager_id = EmployeeId(
+            next(item.employee_id for item in runtime["staff"] if item.role == "manager")
+        )
+        async with runtime["deps"].employees(tenant) as employees:
+            await employees.transfer(
+                tenant,
+                detail.account_id,
+                manager_id,
+                actor=trusted_boss,
+                transferred_by=boss_actor.employee_id,
+                reason="测试经理本人负责客户的下一问读取",
+            )
+        async with await client_for(runtime) as client:
+            manager_owned = await client.get(
+                f"/inbox/conversations/{message.conversation_id}/messages/{message.message_id}/next-questions",
+                headers={"X-Employee-Id": manager_id},
+            )
+            assert manager_owned.status_code == 200, manager_owned.json()
+            assert manager_owned.json() == suggestions
+            record_property("adr0093_current_manager", "200_equal_suggestions")
     finally:
         await inbound.aclose()
 

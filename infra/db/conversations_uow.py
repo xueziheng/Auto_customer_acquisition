@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import zlib
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Self
 
@@ -32,10 +32,13 @@ class SqlAlchemyConversationsUnitOfWork:
         tenant_id: TenantId,
         *,
         now: Callable[[], datetime] | None = None,
+        trial_commit: Callable[[AsyncSession, MessageId | None], Awaitable[None]] | None = None,
     ) -> None:
         self._factory = session_factory
         self._tenant_id = tenant_id
         self._now = now
+        self._trial_commit = trial_commit
+        self._trial_message: MessageId | None = None
 
     async def __aenter__(self) -> Self:
         session = self._factory()
@@ -55,6 +58,7 @@ class SqlAlchemyConversationsUnitOfWork:
         跨租户调用 fail closed。"""
         if tenant_id != self._tenant_id:
             raise TenantIsolationViolation("跨租户数据隔离违规")
+        self._trial_message = message_id
         key = zlib.crc32(f"{tenant_id}:{message_id}".encode()) & 0x7FFFFFFF
         await self._session.execute(
             text("SELECT pg_advisory_xact_lock(:key)"), {"key": key}
@@ -91,6 +95,9 @@ class SqlAlchemyConversationsUnitOfWork:
         session = self._session
         try:
             if exc_type is None:
+                trial_commit = getattr(self, "_trial_commit", None)
+                if trial_commit is not None and (self._trial_message is not None or session.new or session.dirty):
+                    await trial_commit(session, self._trial_message)
                 await session.commit()
             else:
                 await session.rollback()

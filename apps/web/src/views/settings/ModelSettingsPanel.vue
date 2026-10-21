@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { codeLabel } from "../../components/displayLabels";
-/* global setTimeout, clearTimeout */
+/* global setTimeout, clearTimeout, Event, HTMLInputElement */
 import { computed, inject, onMounted, onBeforeUnmount, ref } from 'vue';
 import type { components } from '../../api/api';
 import { apiClient } from '../../api/client';
@@ -22,6 +22,11 @@ function resetDraft(){
 let key:string|null=null, timer:ReturnType<typeof setTimeout>|undefined;
 const labels:Record<View['status'],string>={missing:'尚未配置',pending_restart:'已保存，等待进程重启',unverified:'已装配，尚未验证',verified:'连接验证通过',failed:'连接测试未通过'};
 const fields:Record<keyof Limits,string>={window_seconds:'额度窗口（秒）',tenant_calls:'公司调用上限',employee_calls:'每人调用上限',tenant_concurrency:'公司并发上限',employee_concurrency:'每人并发上限',max_input_bytes:'输入上限（字节）',max_output_tokens:'输出上限（模型计量单位）',timeout_seconds:'超时（秒）'};
+function toggleCallLimit(field:'tenant_calls'|'employee_calls',event:Event){
+  if(!limits.value)return;
+  limits.value[field]=(event.target as HTMLInputElement).checked?null:(view.value?.limits?.[field]??1);
+  dirty.value=true;
+}
 const scope=useQuoteRequestScope(client,()=>[],()=>{view.value=null;limits.value=null;model.value='';editVersion.value=null;exportEnabled.value=false;key=null;busy.value=false;dirty.value=false;if(timer)clearTimeout(timer);});
 async function load() {
   const op=scope.begin('load');if(!op)return;
@@ -55,7 +60,7 @@ async function save(){
     if(r.data){view.value=r.data;resetDraft();key=null;}else{
       if(r.response.status===409)await load();
       if(!op.valid())return;
-      error.value='保存未完成，请核对正整数额度和当前配置版本';
+      error.value='保存未完成，请核对次数上限、其他正整数限制和当前配置版本';
     }
   }catch{if(op.valid())error.value='保存回执未收到，请刷新核对版本后再操作';}
   finally{if(op.valid())busy.value=false;}
@@ -70,7 +75,7 @@ onMounted(()=>void load());onBeforeUnmount(()=>{if(timer)clearTimeout(timer);});
   >
     <header>
       <h2 id="model-settings-title">
-        DeepSeek 模型连接
+        模型连接
       </h2><button
         type="button"
         @click="load"
@@ -78,7 +83,7 @@ onMounted(()=>void load());onBeforeUnmount(()=>{if(timer)clearTimeout(timer);});
         刷新连接状态
       </button>
     </header>
-    <p>密钥由管理员在服务器端配置，本页只保存模型与额度。保存和启动都不会自动调用模型。</p>
+    <p>密钥由管理员在服务器端配置，本页只保存模型与额度。设置生效后，符合当前配置的待处理任务会按新额度继续处理。</p>
     <p
       v-if="error"
       role="alert"
@@ -100,7 +105,7 @@ onMounted(()=>void load());onBeforeUnmount(()=>{if(timer)clearTimeout(timer);});
       >
         连接测试正在后台处理，请等待结果。
       </p>
-      <p>连接测试会发出一次短请求，消耗 DeepSeek 额度；结果未知不会自动重试。</p>
+      <p>连接测试会发出一次短请求，消耗模型服务商额度；结果未知不会自动重试。</p>
       <button
         type="button"
         :disabled="busy||!view.can_probe||['queued','running'].includes(view.probe_state??'')"
@@ -126,24 +131,43 @@ onMounted(()=>void load());onBeforeUnmount(()=>{if(timer)clearTimeout(timer);});
         @submit.prevent="save"
         @input="dirty=true"
       >
-        <label><input v-model="exportEnabled" type="checkbox" :disabled="busy">允许业务资料发送至模型服务（保存新版本）</label>
+        <label><input
+          v-model="exportEnabled"
+          type="checkbox"
+          :disabled="busy"
+        >允许业务资料发送至模型服务（保存新版本）</label>
         <label>模型编号<input
           v-model="model"
           required
           maxlength="128"
           :disabled="busy"
         ></label>
-        <label
+        <div
           v-for="(label,field) in fields"
           :key="field"
-        >{{ label }}<input
-          v-model.number="limits[field]"
-          type="number"
-          min="1"
-          step="1"
-          required
-          :disabled="busy"
-        ></label>
+        >
+          <label>{{ label }}<input
+            v-model.number="limits[field]"
+            :aria-label="label"
+            type="number"
+            min="1"
+            step="1"
+            required
+            :disabled="busy||limits[field]===null"
+          ></label>
+          <label v-if="field==='tenant_calls'||field==='employee_calls'">
+            <input
+              type="checkbox"
+              :aria-label="label+'不限次数'"
+              :checked="limits[field]===null"
+              :disabled="busy"
+              @change="toggleCallLimit(field,$event)"
+            >不限次数
+          </label>
+        </div>
+        <p v-if="limits.tenant_calls===null||limits.employee_calls===null">
+          不限次数仍会产生模型服务商费用，并发和单次请求限制继续生效。
+        </p>
         <button
           type="submit"
           :disabled="busy||!dirty||conflict"

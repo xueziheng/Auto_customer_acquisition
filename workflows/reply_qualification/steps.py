@@ -27,7 +27,10 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from agent_runtime.qualification_agent.agent import ReplyClassifier
+from agent_runtime.qualification_agent.agent import (
+    ReplyClassificationResult,
+    ReplyClassifier,
+)
 from domains.conversations.schemas import (
     ReplyCategory,
     ReplyFieldEvidence,
@@ -68,6 +71,7 @@ from workflows.reply_qualification.ports import (
     ReplyActionContext,
     ReplyActionPorts,
     ReplyClassificationAccess,
+    ReplyContentNeedsReview,
 )
 
 _SYSTEM_ACTOR_ID = "system:reply-qualification"
@@ -149,24 +153,30 @@ class ClassifyStep:
             if run.subject_ref != message_id:
                 raise ValidationError("回复流程消息绑定不一致")
             await access.require(run.tenant_id, message_id, outbound_message_id)
-        content = await self._content_reader.load(run.tenant_id, message_id)
-        if content is None:
-            raise ValidationError("回复消息原文不可读")
-        # 硬边界 1：凭证/API key/token-like 文本绝不进模型——先过输入护栏
-        self._input_guard.check(subject=content.subject, body=content.body)
-        if access is not None:
-            await access.require(run.tenant_id, message_id, outbound_message_id)
-        result = await self._classifier.classify(
-            message={
-                "message_id": str(message_id),
-                # 无主题 → 固定非敏感占位，模型侧永不因缺主题失败
-                "subject": content.subject or "(no subject)",
-                "body": content.body,
-            }
-        )
-        require_reply_evidence(content, result)
-        category = result.category
         classified_by = self._classifier.model
+        try:
+            content = await self._content_reader.load(run.tenant_id, message_id)
+        except ReplyContentNeedsReview:
+            # 仅可信投影的中性结果；权限、原件、护栏、provider 错误继续失败。
+            result = ReplyClassificationResult(category=ReplyCategory.NEEDS_REVIEW)
+            classified_by = "system:reply-content-review-v1"
+        else:
+            if content is None:
+                raise ValidationError("回复消息原文不可读")
+            # 硬边界 1：凭证/API key/token-like 文本绝不进模型——先过输入护栏
+            self._input_guard.check(subject=content.subject, body=content.body)
+            if access is not None:
+                await access.require(run.tenant_id, message_id, outbound_message_id)
+            result = await self._classifier.classify(
+                message={
+                    "message_id": str(message_id),
+                    # 无主题 → 固定非敏感占位，模型侧永不因缺主题失败
+                    "subject": content.subject or "(no subject)",
+                    "body": content.body,
+                }
+            )
+            require_reply_evidence(content, result)
+        category = result.category
         actor = (
             await access.require(run.tenant_id, message_id, outbound_message_id)
             if access is not None
@@ -244,6 +254,7 @@ class ApplyActionsStep:
             await self._suppress(run, category)
             return
         methods = {
+            "review_reply": "review_reply",
             "route_bounce": "route_bounce",
             "record_complaint": "record_complaint",
             "handoff": "request_handoff",

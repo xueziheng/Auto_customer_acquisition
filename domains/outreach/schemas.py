@@ -11,6 +11,7 @@ from domains.outreach.models import (
     CampaignBoundary,
     CampaignState,
     DeliveryFeedbackKind,
+    EnrollmentExecutionMode,
     EnrollmentState,
     EnrollmentStopReason,
     MessageAttemptState,
@@ -315,14 +316,36 @@ class CampaignCreateRequest:
 
 
 @dataclass(frozen=True)
+class EnrollmentOwnershipBinding:
+    """工作流分配步骤取得的真实归属版本，不能用入组时的现状补造。"""
+
+    owner_id: EmployeeId
+    locked_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_safe_id(self.owner_id, "owner_id", prefix="emp")
+        _require_utc(self.locked_at, "locked_at")
+
+
+@dataclass(frozen=True)
 class EnrollmentCreateRequest:
+    """延迟工作流必须携带原归属版本；即时客户动作仍由外层持锁guard授权。"""
+
     account_id: ProspectAccountId
     contact_point_id: ContactPointId
     idempotency_key: IdempotencyKey
     source_hypothesis_id: NeedHypothesisId | None = None
     campaign_version: int | None = None
+    ownership: EnrollmentOwnershipBinding | None = None
+    execution_mode: EnrollmentExecutionMode = EnrollmentExecutionMode.AUTOMATIC
 
     def __post_init__(self) -> None:
+        if not isinstance(self.execution_mode, EnrollmentExecutionMode):
+            raise ValidationError("入组执行模式无效")
+        if self.ownership is not None and not isinstance(
+            self.ownership, EnrollmentOwnershipBinding
+        ):
+            raise ValidationError("入组归属绑定无效")
         _require_safe_id(self.account_id, "account_id", prefix="acc")
         _require_safe_id(self.contact_point_id, "contact_point_id", prefix="cp")
         _require_safe_text(self.idempotency_key, "idempotency_key")
@@ -394,6 +417,17 @@ class SuppressionRequest:
 
 
 @dataclass(frozen=True)
+class PrivateReplyTestPermission:
+    """受信存储的单封私有测试用途；不代表联系人可达性验证。"""
+    sending_identity_id: SendingIdentityId
+    owner_id: EmployeeId
+
+    def __post_init__(self) -> None:
+        _require_safe_id(self.sending_identity_id, "sending_identity_id", prefix="sid")
+        _require_safe_id(self.owner_id, "owner_id", prefix="emp")
+
+
+@dataclass(frozen=True)
 class ContactEligibilitySnapshot:
     tenant_id: TenantId
     contact_point_id: ContactPointId
@@ -407,11 +441,14 @@ class ContactEligibilitySnapshot:
     entity_type: str
     qualified_categories: frozenset[str]
     observed_at: datetime
+    private_reply_test: PrivateReplyTestPermission | None = None
 
     def __post_init__(self) -> None:
         _require_safe_id(self.tenant_id, "tenant_id", prefix="tn")
         _require_safe_id(self.contact_point_id, "contact_point_id", prefix="cp")
         _require_safe_id(self.account_id, "account_id", prefix="acc")
+        if self.private_reply_test is not None and not isinstance(self.private_reply_test, PrivateReplyTestPermission):
+            raise ValidationError("private_reply_test 无效")
         if not isinstance(self.verification, ContactVerificationStatus):
             raise ValidationError("verification 无效")
         if not isinstance(self.legal_basis, ContactLegalBasis):
@@ -514,6 +551,47 @@ class ReplyStatusSnapshot:
             raise ValidationError("no-reply snapshot 不能带 replied_at")
 
 
+
+@dataclass(frozen=True)
+class PrivateReplyTestMessage:
+    """原始关联的只读事实，不含正文；是否可开始新轮次由触达域决定。"""
+    message_id: MessageId
+    category: str | None
+    source_campaign_id: CampaignId | None
+    source_is_private_sent: bool
+
+    def __post_init__(self) -> None:
+        _require_safe_id(self.message_id, "message_id", prefix="msg")
+        if self.category is not None:
+            _require_safe_text(self.category, "category", max_length=40)
+        if self.source_campaign_id is not None:
+            _require_safe_id(self.source_campaign_id, "source_campaign_id", prefix="cmp")
+        if type(self.source_is_private_sent) is not bool:
+            raise ValidationError("私有回复关联事实无效")
+
+
+@dataclass(frozen=True)
+class PrivateReplyTestHistory:
+    """当前租户、联系人、企业范围内的完整有界私有回复关联。"""
+    tenant_id: TenantId
+    contact_point_id: ContactPointId
+    account_id: ProspectAccountId
+    messages: tuple[PrivateReplyTestMessage, ...]
+    observed_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_safe_id(self.tenant_id, "tenant_id", prefix="tn")
+        _require_safe_id(self.contact_point_id, "contact_point_id", prefix="cp")
+        _require_safe_id(self.account_id, "account_id", prefix="acc")
+        if (
+            not isinstance(self.messages, tuple) or len(self.messages) > 100
+            or any(not isinstance(item, PrivateReplyTestMessage) for item in self.messages)
+            or len({item.message_id for item in self.messages}) != len(self.messages)
+        ):
+            raise ValidationError("私有回复历史不完整或关联不唯一")
+        _require_utc(self.observed_at, "observed_at")
+
+
 @dataclass(frozen=True)
 class CampaignBoundaryView:
     markets: tuple[str, ...]
@@ -561,6 +639,7 @@ class EnrollmentView:
     stopped_at: datetime | None
     stop_reason: EnrollmentStopReason | None
     source_hypothesis_id: NeedHypothesisId | None = None
+    execution_mode: EnrollmentExecutionMode = EnrollmentExecutionMode.AUTOMATIC
 
 
 @dataclass(frozen=True)

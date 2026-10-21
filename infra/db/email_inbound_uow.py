@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from types import TracebackType
 from typing import Self, cast
@@ -73,7 +73,10 @@ class SqlAlchemyInboundPageUnitOfWork:
         *,
         outreach_builder: OutreachServiceBuilder,
         audit_sink: AuditSink,
+        trial_commit: Callable[[AsyncSession, MessageId | None], Awaitable[None]] | None = None,
     ):
+        self._trial_commit = trial_commit
+        self._trial_message: MessageId | None = None
         self._store, self._expected, self._builder, self._sink = (
             store,
             expected,
@@ -142,6 +145,10 @@ class SqlAlchemyInboundPageUnitOfWork:
         reason: str | None,
     ) -> None:
         raw = item.raw
+        if self._trial_commit is not None and message_id is not None:
+            if self._trial_message is not None:
+                raise InboundPageError("page_integrity")
+            self._trial_message = message_id
         self._session.add(
             EmailInboundReceiptRow(
                 tenant_id=self._store.tenant_id,
@@ -193,6 +200,9 @@ class SqlAlchemyInboundPageUnitOfWork:
                 await self._session.rollback()
             else:
                 try:
+                    trial_commit = getattr(self, "_trial_commit", None)
+                    if trial_commit is not None:
+                        await trial_commit(self._session, self._trial_message)
                     await self._session.commit()
                 except Exception:  # noqa: BLE001 - 提交结果必须由新事务核实
                     raise InboundCommitUnknown() from None

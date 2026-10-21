@@ -34,6 +34,7 @@ _SECRET_MARKER = re.compile(
     r"(?:bearer|token|secret|password|authorization|akia|sk-)", re.IGNORECASE
 )
 _SOURCE_EVENTS: dict[NotificationKind, frozenset[str]] = {
+    NotificationKind.CUSTOMER_REPLY: frozenset({"ReplyReceived"}),
     NotificationKind.HANDOFF_ESCALATION: frozenset(
         {"HandoffRequested", "HandoffEscalationNotice"}
     ),
@@ -49,6 +50,7 @@ _SOURCE_EVENTS: dict[NotificationKind, frozenset[str]] = {
     NotificationKind.QUOTE_APPROVAL_RESULT: frozenset({SOURCE_EVENT}),
 }
 _KIND_PRIORITIES: dict[NotificationKind, NotificationPriority] = {
+    NotificationKind.CUSTOMER_REPLY: NotificationPriority.LOW,
     NotificationKind.HANDOFF_ESCALATION: NotificationPriority.URGENT,
     NotificationKind.HANDOFF_QUEUE_BACKLOGGED: NotificationPriority.URGENT,
     NotificationKind.SENDING_IDENTITY_SUSPENDED: NotificationPriority.URGENT,
@@ -75,6 +77,7 @@ _REPUTATION_METRICS = frozenset(
 )
 _REPUTATION_SEVERITIES = frozenset({"watch", "throttled", "suspended"})
 _KIND_IDS: dict[NotificationKind, tuple[re.Pattern[str], re.Pattern[str] | None]] = {
+    NotificationKind.CUSTOMER_REPLY: (re.compile(rf"msg_{_ULID}\Z"), re.compile(rf"con_{_ULID}\Z")),
     NotificationKind.QUOTE_APPROVAL_RESULT: (
         re.compile(rf"quo_{_ULID}\Z"),
         re.compile(rf"run_{_ULID}\Z"),
@@ -114,6 +117,11 @@ class _Template:
 
 
 _TEMPLATES: dict[NotificationKind, _Template] = {
+    NotificationKind.CUSTOMER_REPLY: _Template(
+        "客户回复待负责人跟进",
+        "查看消息分类与原件，由当前负责人继续沟通",
+        lambda context: f"/inbox/conversations/{context.secondary_id}",
+    ),
     NotificationKind.QUOTE_APPROVAL_RESULT: _Template(
         TITLE,
         NEXT_STEP,
@@ -260,6 +268,11 @@ def _safe_value(value: str) -> bool:
 
 
 def _valid_kind_context(context: NotificationContext) -> bool:
+    if context.kind is NotificationKind.CUSTOMER_REPLY:
+        return context.reason_code in {
+            "clear_interest", "willing_to_continue", "requests_materials",
+            "requests_quote", "requests_sample", "provides_specification",
+        } and context.level is None
     if context.kind is NotificationKind.QUOTE_APPROVAL_RESULT:
         return context.reason_code in OUTCOMES and context.level is None
     if context.kind is NotificationKind.HANDOFF_ESCALATION:

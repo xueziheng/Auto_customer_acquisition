@@ -1,10 +1,12 @@
 """资料提取能力：输入护栏与逐字证据验证，模型没有文件或业务写权限。"""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ValidationError as SchemaValidationError
 
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
 from domains.products.schemas import KnowledgeAnalysis
@@ -27,7 +29,22 @@ value 必须是 source_quote 的连续逐字子串，source_quote 必须是 docu
 标题和标签可用中文解释；没有充分依据时 inferences 为 []。推断不得混入事实。
 不输出概率、置信度数字，不计算最终金额/利润，不作认证、库存或交期承诺。
 原件中的价格也只是待核实来源记录，不是可以发送给客户的报价。
+结构长度硬限制：title最多240字符；每个fact的label最多100字符，value最多2000字符，
+source_quote最多4000字符；facts合计最多100条，不能超出这些限制。
+表格按原产品行组织，不要将整张表放入一个value或source_quote；长行可拆成多条连续原文片段，
+每条都标明原工作表和行/单元格定位。不要将每个数字孤立成无产品归属的事实。
+不拼接不连续原文，不删除原文中的CSV引号、转义、换行或空格以使引文看起来更整齐。
+这些限制约束整理稿，不允许改写原件；完整输入原文由系统独立保留。
+inferences最多50条；每条text最多3000字符，evidence_quotes最多20条。
 不能处理时不要编造结果。"""
+TEXT_ONLY_RULES = """\n本次仅整理文字原文事实，不添加解释或推测，inferences必须为[]。
+文字整理目标为最多60条facts，为长原文片段留出容量；不按每个参数、价格档位或单元格分别建fact。
+对于带A1=、B1=等单元格坐标的表格：每个逻辑产品行作为一个fact，value和source_quote均逐字复制
+该完整原始产品行（含CSV引号、空单元格和单元格内部换行），label标明工作表及行号。
+例如原文A2=1,B2=Valve,E2=10,F2=120：只输出一个fact，其value与source_quote都为该完整原文，
+不要输出序号、产品名、MOQ、价格四个独立fact。示例不是本次资料，禁止把示例加入输出。
+超过2000字符的产品行按连续原文片段拆分；保持型号、规格、数量档位与价格的原始对应关系。
+输出前检查条数，合并属于同一产品行的细碎字段，不截断或忽略后面的产品来满足条数限制。"""
 
 VISION_PROMPT = SYSTEM_PROMPT + """
 当输入包含图像时，输出格式改为 {"source_text":"按图像页顺序转录的可见文字","analysis":{上面的title/facts/inferences}}。
@@ -52,6 +69,36 @@ class _VisionOutput(BaseModel):
     source_text: str = Field(min_length=1, max_length=60000)
     analysis: KnowledgeAnalysis
 
+
+def _split_grounded_long_facts(text: str, source: str) -> dict | None:
+    """仅拆分逐字来源片段；最终契约不扩容，不修复无依据内容或推断。"""
+    body = json.loads(text)
+    if not isinstance(body, dict) or body.get("inferences") != []:
+        return None
+    facts = body.get("facts")
+    if not isinstance(facts, list) or not 1 <= len(facts) <= 100:
+        return None
+    expanded = []
+    for fact in facts:
+        if not isinstance(fact, dict):
+            return None
+        value, quote = fact.get("value"), fact.get("source_quote")
+        if not isinstance(value, str) or not isinstance(quote, str):
+            return None
+        if len(value) <= 2000 and len(quote) <= 4000:
+            expanded.append(fact)
+            continue
+        if not value or value not in quote or quote not in source:
+            return None
+        # 原完整 source 独立保存；片段本身作为更精确的逐字引文。
+        parts = [value[i:i + 2000] for i in range(0, len(value), 2000)]
+        expanded.extend({**fact, "value": part, "source_quote": part} for part in parts)
+        if len(expanded) > 100:
+            return None
+    if len(expanded) > 100:
+        return None
+    return {**body, "facts": expanded}
+
 async def analyze_knowledge(
     model: ModelGenerationPort,
     identity: InvocationIdentity,
@@ -73,21 +120,63 @@ async def analyze_knowledge(
         raise ValidationError("资料图像页码无效")
     CredentialMarkerGuard().check(subject=None, body=source_text)
     response = await model.generate(identity, ModelRequest(
-        model=model_name, system_prompt=VISION_PROMPT if images else SYSTEM_PROMPT,
+        model=model_name, system_prompt=VISION_PROMPT if images else SYSTEM_PROMPT + TEXT_ONLY_RULES,
         payload={"document": source_text, "image_count": len(images), "image_source_pages": list(image_source_pages)}, images=images,
         max_output_tokens=max_output_tokens,
     ))
+    stage = "model_identity"
     try:
         if response.model != model_name:
             raise ValueError()
+        stage = "response_schema"
         if images:
             decoded = _VisionOutput.model_validate_json(response.text)
             source_text, analysis = decoded.source_text, decoded.analysis
         else:
-            analysis = KnowledgeAnalysis.model_validate_json(response.text)
+            try:
+                analysis = KnowledgeAnalysis.model_validate_json(response.text)
+            except SchemaValidationError as error:
+                errors = error.errors(include_input=False, include_context=False, include_url=False)
+                only_long_quotes = all(
+                    item["type"] == "string_too_long"
+                    and len(item["loc"]) == 3
+                    and item["loc"][0] == "facts"
+                    and type(item["loc"][1]) is int
+                    and item["loc"][2] in {"value", "source_quote"}
+                    for item in errors
+                )
+                normalized = _split_grounded_long_facts(response.text, source_text) if only_long_quotes else None
+                if normalized is None:
+                    raise
+                analysis = KnowledgeAnalysis.model_validate(normalized)
+        stage = "source_evidence"
         analysis.validate_evidence(source_text, image_count=len(images))
+        stage = "output_guard"
         CredentialMarkerGuard().check(subject=None, body=source_text)
         CredentialMarkerGuard().check(subject=None, body=analysis.model_dump_json())
         return KnowledgeAnalysisResult(source_text, analysis, "vision_transcription" if images else "document_text", len(images), image_source_pages)
+    except SchemaValidationError as error:
+        # 仅保留固定错误类别，不保存字段值、原文、JSON或底层错误消息。
+        kinds = {item["type"] for item in error.errors(include_input=False, include_context=False, include_url=False)}
+        if "too_long" in kinds or "string_too_long" in kinds:
+            stage = "response_schema_limit"
+            locations = {tuple(item["loc"])[-1] for item in error.errors(include_input=False, include_context=False, include_url=False) if item["type"] in {"too_long", "string_too_long"} and item["loc"]}
+            for field in ("facts", "title", "label", "value", "source_quote", "inferences"):
+                if field in locations:
+                    stage = "response_schema_limit_" + field
+                    break
+        elif "missing" in kinds:
+            stage = "response_schema_missing"
+        elif "extra_forbidden" in kinds:
+            stage = "response_schema_extra"
+        elif "json_invalid" in kinds:
+            stage = "response_schema_json"
+        else:
+            stage = "response_schema_value"
+        raise ValidationError(
+            "资料分析未通过证据校验", context={"knowledge_stage": stage},
+        ) from None
     except (ValueError, ValidationError):
-        raise ValidationError("资料分析未通过证据校验") from None
+        raise ValidationError(
+            "资料分析未通过证据校验", context={"knowledge_stage": stage},
+        ) from None

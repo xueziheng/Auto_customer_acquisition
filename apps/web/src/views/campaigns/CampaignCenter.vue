@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { codeLabel } from "../../components/displayLabels";
-/* global window */
-import { computed, inject, onMounted, reactive, ref } from "vue";
+/* global window, Event, HTMLSelectElement */
+import { computed, inject, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
@@ -15,6 +16,12 @@ type Identity = components["schemas"]["IdentityView"];
 type RuntimeCapability = components["schemas"]["RuntimeCapability"];
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
+const route = useRoute();
+const router = useRouter();
+let disposed = false;
+onBeforeUnmount(() => { disposed = true; });
+const configurationMode = ref<Enrollment["execution_mode"]>(route.query.execution_mode === "manual" ? "manual" : "automatic");
+const manual = computed(() => configurationMode.value === "manual");
 const campaigns = ref<Campaign[]>([]);
 const identities = ref<Identity[]>([]);
 const capabilities = ref<RuntimeCapability[]>([]);
@@ -52,13 +59,18 @@ const form = reactive<CampaignBody>({
 });
 
 function reset(): void {
+  configurationMode.value = "automatic";
+  if (!disposed && route.query.execution_mode !== undefined) {
+    const query = { ...route.query }; delete query.execution_mode;
+    void router.replace({ query });
+  }
   campaigns.value = []; identities.value = []; enrollments.value = []; selectedId.value = null;
   loading.value = false; detailLoading.value = false; identitiesLoading.value = false; capabilitiesLoading.value = false; actionBusy.value = false;
   capabilities.value = []; capabilityError.value = false;
   error.value = null; identityError.value = null; enrollmentError.value = null; actionMessage.value = "";
   editorOpen.value = false; editingCampaignId.value = null; commandUnknown.value = false; pendingTransition.value = null;
   marketsText.value = ""; entityTypesText.value = ""; categoriesText.value = ""; triggersText.value = "";
-  Object.assign(form, { name: "", markets: [], target_entity_types: [], allowed_categories: [], sender_identity_ids: [], steps: [], handoff_triggers: [] });
+  Object.assign(form, { name: "", markets: [], target_entity_types: [], allowed_categories: [], sender_identity_ids: [], steps: [], handoff_triggers: [], daily_new_contact_limit: 3, daily_total_message_limit: 3, stop_on_reply: true });
 }
 const gate = useQuoteRequestScope(client, () => [], reset);
 function protectedFailure(status: number): void {
@@ -70,25 +82,38 @@ const selected = computed(
 const hasUsableSender = computed(() =>
   identities.value.some((identity) => identity.usable_for_cold_outreach),
 );
-const requiredCapabilities = ["research", "contacts", "campaign", "reply"] as const;
+const requiredCapabilities = computed(() => manual.value ? ["campaign"] : ["research", "contacts", "campaign", "reply"]);
 const realFlowComposed = computed(() =>
-  !capabilitiesLoading.value && !capabilityError.value && requiredCapabilities.every(
+  !capabilitiesLoading.value && !capabilityError.value && requiredCapabilities.value.every(
     (name) => capabilities.value.some((item) => item.name === name && item.status === "enabled"),
   ),
 );
+function usableSenders(ids: string[]): boolean {
+  return ids.length > 0 && ids.every(id => identities.value.some(identity => identity.identity_id === id && identity.usable_for_cold_outreach));
+}
+const formSendersUsable = computed(() => usableSenders(form.sender_identity_ids));
+const selectedSendersUsable = computed(() => usableSenders(selected.value?.boundary.sender_identity_ids ?? []));
+const modeLocked = computed(() => editorOpen.value || actionBusy.value || commandUnknown.value);
+function changeConfigurationMode(event: Event): void {
+  if (modeLocked.value) return;
+  const value = (event.target as HTMLSelectElement).value;
+  if (value !== "manual" && value !== "automatic") return;
+  configurationMode.value = value;
+  actionMessage.value = ""; error.value = null;
+}
 const selectedSenderAddress = computed(() => {
   const identityId = selected.value?.boundary.sender_identity_ids[0];
   return identities.value.find((item) => item.identity_id === identityId)?.address ?? "已配置";
 });
 
-const stateLabels: Record<string, string> = {
+const stateLabels = computed<Record<string, string>>(() => ({
   draft: "草稿",
-  pending_approval: "准备启动",
-  active: "运行中",
+  pending_approval: manual.value ? "等待批准" : "准备启动",
+  active: manual.value ? "范围已批准" : "运行中",
   paused: "已暂停",
   completed: "已完成",
   cancelled: "已取消",
-};
+}));
 
 function safeError(status: number): string {
   if (status === 401) return "登录身份已失效，请重新选择有效身份";
@@ -112,15 +137,16 @@ function syncFormCollections(): void {
 }
 
 function newCampaign(): void {
+  if (actionBusy.value || commandUnknown.value) return;
   editingCampaignId.value = null;
   form.name = "";
   marketsText.value = "";
-  entityTypesText.value = "importer, distributor, fleet_operator";
+  entityTypesText.value = manual.value ? "" : "importer, distributor, fleet_operator";
   categoriesText.value = "";
   triggersText.value = "quantity_provided, materials_requested, sample_requested, quote_requested, specification_file_received, payment_or_contract_terms";
   form.sender_identity_ids = [];
-  form.daily_new_contact_limit = 3;
-  form.daily_total_message_limit = 3;
+  form.daily_new_contact_limit = manual.value ? 1 : 3;
+  form.daily_total_message_limit = manual.value ? 1 : 3;
   form.stop_on_reply = true;
   form.steps = [
     { step_number: 1, intent: "discovery", wait_days: 0 },
@@ -209,10 +235,10 @@ async function loadEnrollments(campaignId: string): Promise<void> {
   finally { if (op.valid() && selectedId.value === campaignId) detailLoading.value = false; }
 }
 async function saveBoundary(): Promise<void> {
-  if (actionBusy.value || commandUnknown.value || identityError.value || identitiesLoading.value || !realFlowComposed.value || !hasUsableSender.value) return;
+  if (actionBusy.value || commandUnknown.value || identityError.value || identitiesLoading.value || !realFlowComposed.value || !formSendersUsable.value) return;
   syncFormCollections();
-  if (!form.markets.length || !form.allowed_categories.length || !form.sender_identity_ids.length) {
-    error.value = "请填写目标市场、产品并选择发件邮箱";
+  if (!form.markets.length || !form.allowed_categories.length || !form.sender_identity_ids.length || (manual.value && !form.target_entity_types.length)) {
+    error.value = manual.value ? "请填写目标市场、客户类型、产品并选择发件邮箱" : "请填写目标市场、产品并选择发件邮箱";
     return;
   }
   if (!form.name.trim()) form.name = `${form.markets[0]} · ${form.allowed_categories[0]}`;
@@ -238,7 +264,7 @@ async function saveBoundary(): Promise<void> {
           error.value = commandUnknown.value ? "启动结果待核对，请刷新当前活动；不自动重发" : safeError(started.response.status);
           return;
         }
-        actionMessage.value = "新版本已启动；真实搜索、联系人验证和发信仍以运行门禁状态为准。";
+        actionMessage.value = manual.value ? "新版本联系范围已批准，本页尚未发信；请在客户详情手动入组后逐封核对发送。" : "新版本已启动；真实搜索、联系人验证和发信仍以运行门禁状态为准。";
         editorOpen.value = false;
         await loadCampaigns();
         return;
@@ -263,7 +289,7 @@ async function saveBoundary(): Promise<void> {
           error.value = commandUnknown.value ? "启动结果待核对，请刷新当前活动；不自动重发" : safeError(started.response.status);
           return;
         }
-        actionMessage.value = "活动边界已启动；尚需确认真实搜索、邮箱验证和发信门禁就绪。";
+        actionMessage.value = manual.value ? "手动联系范围已批准，本页尚未发信；请在客户详情手动入组后逐封核对发送。" : "活动边界已启动；尚需确认真实搜索、邮箱验证和发信门禁就绪。";
         editorOpen.value = false;
         await loadCampaigns();
         return;
@@ -281,7 +307,7 @@ async function saveBoundary(): Promise<void> {
 
 async function transition(action: "start" | "activate" | "pause" | "cancel"): Promise<void> {
   if (!selected.value || actionBusy.value || commandUnknown.value) return;
-  if ((action === "start" || action === "activate") && (!realFlowComposed.value || !hasUsableSender.value)) return;
+  if ((action === "start" || action === "activate") && (!realFlowComposed.value || !selectedSendersUsable.value || identitiesLoading.value || identityError.value)) return;
   const op = gate.begin("command"); if (!op?.valid()) return;
   actionBusy.value = true;
   error.value = null;
@@ -304,14 +330,14 @@ async function transition(action: "start" | "activate" | "pause" | "cancel"): Pr
       });
       if (!op.valid() || selectedId.value !== campaignId) return;
       if (result.response.status !== 200 || !result.data) { protectedFailure(result.response.status); commandUnknown.value = result.response.status >= 500; error.value = commandUnknown.value ? "启动结果待核对，请刷新当前活动，不自动重发" : safeError(result.response.status); return; }
-      actionMessage.value = "活动边界已启动；尚需确认真实搜索、邮箱验证和发信门禁就绪。";
+      actionMessage.value = manual.value ? "手动联系范围已批准，本页尚未发信；实际发送仍须手动入组并逐封核对。" : "活动边界已启动；尚需确认真实搜索、邮箱验证和发信门禁就绪。";
     } else if (action === "activate") {
       const result = await client.POST("/crm/campaigns/{campaign_id}/activate", {
         params: { path: { campaign_id: campaignId } },
       });
       if (!op.valid() || selectedId.value !== campaignId) return;
       if (result.response.status !== 200) { protectedFailure(result.response.status); commandUnknown.value = result.response.status >= 500; error.value = commandUnknown.value ? "操作结果待核对，请刷新当前活动，不自动重发" : safeError(result.response.status); return; }
-      actionMessage.value = "活动已恢复；新发送仍须通过联系人、邮箱和退订门禁。";
+      actionMessage.value = manual.value ? "已恢复批准范围；现有入组模式不会改变，手动联系须从客户详情手动入组。" : "活动已恢复；新发送仍须通过联系人、邮箱和退订门禁。";
     } else {
       const result = await client.POST("/crm/campaigns/{campaign_id}/cancel", {
         params: { path: { campaign_id: campaignId } },
@@ -339,30 +365,50 @@ onMounted(() => {
       <div>
         <p class="eyebrow">
           客户开发
-        </p><h1>自动发邮件</h1>
+        </p><h1>{{ manual ? "手动联系范围" : "自动发邮件" }}</h1>
       </div>
       <button
         class="btn-primary"
         type="button"
+        :disabled="actionBusy || commandUnknown"
         @click="newCampaign"
       >
-        设置自动任务
+        {{ manual ? "设置手动联系范围" : "设置自动任务" }}
       </button>
     </div>
 
-    <div class="principle">
+    <label class="purpose-picker">配置用途<select
+      :value="configurationMode"
+      aria-label="配置用途"
+      :disabled="modeLocked"
+      @change="changeConfigurationMode"
+    ><option value="manual">单封手动联系</option><option value="automatic">自动开发任务</option></select></label>
+    <div
+      v-if="manual"
+      class="principle"
+    >
+      <strong>逐封核对后发送。</strong><span>这里只配置和批准联系范围，开发任务本身不会保存为手动模式，现有入组模式不会改变。请从客户详情手动入组；手动入组不会被自动发送调度选中。</span>
+    </div>
+    <div
+      v-else
+      class="principle"
+    >
       <strong>首轮仅发第一封。</strong><span>按本企业设置的产品与目标市场寻找客户；真实搜索与邮箱验证就绪后才可发送，明确购买意向转人工。</span>
     </div>
     <p
       v-if="!identitiesLoading && !identityError && !hasUsableSender"
       class="safe-banner"
       role="status"
-    >当前没有通过认证并可用于冷开发的发件邮箱，自动发信尚不能启动。</p>
+    >
+      当前没有通过认证并可用于冷开发的发件邮箱，{{ manual ? "手动联系范围尚不能批准。" : "自动发信尚不能启动。" }}
+    </p>
     <p
       v-if="!capabilitiesLoading && !realFlowComposed"
       class="safe-banner"
       role="status"
-    >真实搜索、联系人验证、发信或回复处理尚未完整接通；当前不能启动外发活动。{{ capabilityError ? "能力状态读取失败，请刷新页面核对。" : "" }}</p>
+    >
+      {{ manual ? "手动发送能力尚未接通，当前不能批准手动联系范围。" : "真实搜索、联系人验证、发信或回复处理尚未完整接通；当前不能启动外发活动。" }}{{ capabilityError ? "能力状态读取失败，请刷新页面核对。" : "" }}
+    </p>
     <div
       v-if="error"
       class="safe-banner danger"
@@ -391,7 +437,7 @@ onMounted(() => {
       aria-label="活动边界编辑器"
     >
       <header>
-        <div><h2>{{ editingCampaignId ? "修改活动边界" : "创建客户开发任务" }}</h2><p>只保存首封邮件边界；活动启动不代表外部搜索和发信已经就绪。</p></div><button
+        <div><h2>{{ manual ? (editingCampaignId ? "修订联系范围" : "创建手动联系范围") : (editingCampaignId ? "修改活动边界" : "创建客户开发任务") }}</h2><p>{{ manual ? "新范围默认只发首封了解需求的邮件，每日新增联系人及总邮件上限均为1；已有边界修订保留原值，批准本身不发送。" : "只保存首封邮件边界；活动启动不代表外部搜索和发信已经就绪。" }}</p></div><button
           type="button"
           @click="editorOpen = false"
         >
@@ -401,11 +447,18 @@ onMounted(() => {
       <form @submit.prevent="saveBoundary">
         <label>目标市场<input
           v-model="marketsText"
+          aria-label="目标市场"
           placeholder="填写本次开发的目标市场"
         ></label>
         <label>产品<input
           v-model="categoriesText"
+          aria-label="产品类别"
           placeholder="填写本企业要开发的产品类别"
+        ></label>
+        <label v-if="manual">客户类型<input
+          v-model="entityTypesText"
+          aria-label="客户类型"
+          placeholder="填写客户类型，如 distributor；多项用逗号分隔"
         ></label>
         <fieldset class="sender-picker">
           <legend>发件邮箱</legend><label
@@ -441,9 +494,9 @@ onMounted(() => {
           </button><button
             class="btn-primary"
             type="submit"
-            :disabled="actionBusy || commandUnknown || identitiesLoading || Boolean(identityError) || !realFlowComposed || !hasUsableSender"
+            :disabled="actionBusy || commandUnknown || identitiesLoading || Boolean(identityError) || !realFlowComposed || !formSendersUsable"
           >
-            {{ actionBusy ? "启动中…" : editingCampaignId ? "保存并继续自动发邮件" : "创建并启动自动发邮件" }}
+            {{ actionBusy ? (manual ? "批准中…" : "启动中…") : manual ? (editingCampaignId ? "保存并批准联系范围" : "创建并批准手动联系范围") : editingCampaignId ? "保存并继续自动发邮件" : "创建并启动自动发邮件" }}
           </button>
         </div>
       </form>
@@ -452,7 +505,7 @@ onMounted(() => {
     <section class="campaign-layout">
       <aside class="campaign-list">
         <header>
-          <h2>自动任务</h2>
+          <h2>{{ manual ? "已有开发任务范围" : "自动任务" }}</h2>
         </header>
         <div
           v-if="loading"
@@ -475,7 +528,7 @@ onMounted(() => {
           v-if="!loading && !error && !campaigns.length"
           class="empty"
         >
-          暂无自动任务
+          {{ manual ? "暂无已配置范围" : "暂无自动任务" }}
         </div>
       </aside>
 
@@ -494,18 +547,18 @@ onMounted(() => {
             <button
               v-if="selected.state === 'draft' || selected.state === 'pending_approval'"
               type="button"
-              :disabled="actionBusy || commandUnknown || !realFlowComposed || !hasUsableSender"
+              :disabled="actionBusy || commandUnknown || identitiesLoading || Boolean(identityError) || !realFlowComposed || !selectedSendersUsable"
               @click="transition('start')"
             >
-              启动自动发邮件
+              {{ manual ? "批准手动联系范围" : "启动自动发邮件" }}
             </button><button
               v-if="selected.state === 'paused'"
               class="btn-primary"
               type="button"
-              :disabled="actionBusy || commandUnknown || !realFlowComposed || !hasUsableSender"
+              :disabled="actionBusy || commandUnknown || identitiesLoading || Boolean(identityError) || !realFlowComposed || !selectedSendersUsable"
               @click="transition('activate')"
             >
-              启动自动安全发送
+              {{ manual ? "恢复已批准范围" : "启动自动安全发送" }}
             </button><button
               v-if="selected.state === 'active'"
               type="button"
@@ -528,11 +581,14 @@ onMounted(() => {
           class="automation-running"
           role="status"
         >
-          <strong>活动已启动</strong><span>这只表示边界已获准；真实搜索、已验证联系人、可用发件身份和公网退订入口都就绪后才会外发。</span>
+          <strong>{{ manual ? "联系范围已批准" : "活动已启动" }}</strong><span>{{ manual ? "本页尚未发信。实际联系必须从客户详情手动入组，再逐封核对发送；此视图不改变已有自动入组，自动发送也未因此启用。" : "这只表示边界已获准；真实搜索、已验证联系人、可用发件身份和公网退订入口都就绪后才会外发。" }}</span>
         </div>
         <dl class="task-summary">
           <div><dt>目标市场</dt><dd>{{ selected.boundary.markets.join("、") }}</dd></div>
           <div><dt>产品</dt><dd>{{ selected.boundary.allowed_categories.join("、") }}</dd></div>
+          <div v-if="manual">
+            <dt>客户类型</dt><dd>{{ selected.boundary.target_entity_types.map(value => codeLabel(value)).join("、") }}</dd>
+          </div>
           <div><dt>发件邮箱</dt><dd>{{ selectedSenderAddress }}</dd></div>
           <div><dt>今日已安排</dt><dd>{{ selected.today_messages_reserved }} / {{ selected.boundary.daily_total_message_limit }}</dd></div>
         </dl>
@@ -577,7 +633,7 @@ onMounted(() => {
         v-else
         class="campaign-detail empty"
       >
-        发件邮箱就绪后，设置自动任务即可开始
+        {{ manual ? "发件邮箱就绪后，设置并批准手动联系范围" : "发件邮箱就绪后，设置自动任务即可开始" }}
       </div>
     </section>
   </div>
@@ -587,6 +643,7 @@ onMounted(() => {
 .campaign-shell { overflow: auto; }
 .campaign-head { justify-content: space-between; padding-top: var(--space3); }
 .campaign-head > div { display: flex; align-items: baseline; gap: var(--space3); }
+.purpose-picker { max-width: 300px; margin-bottom: var(--space3); }
 .eyebrow { color: var(--fact); font-size: 11px; font-weight: 800; letter-spacing: .16em; }
 .principle { display: flex; gap: var(--space3); border-left: 4px solid var(--fact); background: var(--fact-soft); padding: var(--space3) var(--space4); }
 .principle span, .action-note { color: var(--text-secondary); }

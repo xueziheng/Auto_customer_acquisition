@@ -88,11 +88,11 @@ describe("生产导航与业务深链", () => {
     expect(component).toMatchObject({ __name: "ApprovalCenter" });
   });
 
-  it("默认入口进入现有待跟进工作台", async () => {
+  it("默认入口进入本人客户工作台", async () => {
     const { default: router } = await import("../src/router");
     await router.replace("/");
-    expect(router.currentRoute.value.path).toBe("/crm/handoffs");
-    expect(router.currentRoute.value.name).toBe("crm-handoffs");
+    expect(router.currentRoute.value.path).toBe("/customers");
+    expect(router.currentRoute.value.name).toBe("customers");
   });
 
   it("普通企业设置给出明确入口，不显示固定试验目标或伪造就绪状态", async () => {

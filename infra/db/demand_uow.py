@@ -8,6 +8,13 @@ from typing import Self
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from domains.demand.repository import (
+    DemandSignalRepository,
+    NeedClusterRepository,
+    NeedHypothesisRepository,
+    SnapshotArtifactEvidenceRepository,
+    ValidatedNeedRepository,
+)
 from infra.db.outbox import PostgresEventBus
 from infra.db.repositories.demand import (
     DemandSignalRepositoryImpl,
@@ -18,6 +25,7 @@ from infra.db.repositories.need_hypotheses import (
     NeedHypothesisRepositoryImpl,
     ValidatedNeedRepositoryImpl,
 )
+from shared.events.bus import EventBus
 from shared.schemas.identifiers import TenantId
 
 
@@ -68,3 +76,32 @@ class SqlAlchemyDemandUnitOfWork:
                 await session.rollback()
         finally:
             await session.close()
+
+
+class BorrowedDemandUnitOfWork:
+    """上层原子操作借用的会话；退出只flush，不提交/回滚/关闭。"""
+
+    signals: DemandSignalRepository
+    snapshot_artifacts: SnapshotArtifactEvidenceRepository
+    hypotheses: NeedHypothesisRepository
+    needs: ValidatedNeedRepository
+    clusters: NeedClusterRepository
+    bus: EventBus
+
+    def __init__(self, session: AsyncSession, tenant_id: TenantId,
+                 *, now: Callable[[], datetime] | None = None) -> None:
+        self._session = session
+        self.signals = DemandSignalRepositoryImpl(session, tenant_id)
+        self.snapshot_artifacts = SnapshotArtifactEvidenceRepositoryImpl(session, tenant_id)
+        self.hypotheses = NeedHypothesisRepositoryImpl(session, tenant_id, now=now)
+        self.needs = ValidatedNeedRepositoryImpl(session, tenant_id, now=now)
+        self.clusters = NeedClusterRepositoryImpl(session, tenant_id, now=now)
+        self.bus = PostgresEventBus(session, tenant_id, now=now)
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, exc_type: type[BaseException] | None,
+                        exc: BaseException | None, tb: object) -> None:
+        if exc_type is None:
+            await self._session.flush()

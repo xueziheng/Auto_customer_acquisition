@@ -1,5 +1,6 @@
 """业务回复模型的受信绑定；正文和模型输出不得授予调用身份。"""
 
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from pydantic import ValidationError as SchemaValidationError
@@ -23,7 +24,9 @@ from shared.schemas.model_invocation import (
     ModelGenerationError,
     ModelGenerationPort,
 )
+from shared.schemas.qq_trial import QQTrialGate
 from shared.schemas.quote_facts import QuoteEmployeeFact
+from tool_gateway.qq_trial_model import TrialMessageGenerators, TrialModelGenerator
 
 
 class ReplyRunBindingReader(Protocol):
@@ -44,6 +47,15 @@ class ReplyRunBindingReader(Protocol):
         ...
 
 
+class ReplyRetryAuthority(Protocol):
+    async def retry_identity(
+        self, tenant: TenantId, message: MessageId, version: str
+    ) -> InvocationIdentity | None: ...
+    async def authorize_identity(
+        self, identity: InvocationIdentity
+    ) -> InvocationIdentity: ...
+
+
 class ReplyModelAuthority:
     """受托员工的当前资格、规范回复关联与模型许可必须同时成立。"""
 
@@ -57,7 +69,11 @@ class ReplyModelAuthority:
         tenant_id: TenantId,
         employee_id: EmployeeId,
         model: str,
+        retries: ReplyRetryAuthority | None = None,
+        recovery_only: bool = False,
     ) -> None:
+        self._recovery_only = recovery_only
+        self._retries = retries
         self._runs = runs
         self._employees = employees
         self._lookup = lookup
@@ -100,6 +116,15 @@ class ReplyModelAuthority:
         """从持久关联和当前员工产生固定序号，拒绝历史身份漂移。"""
         run_id = await self._runs.resolve(self._tenant_id, message_id)
         actor = await self._actor()
+        if self._retries is not None:
+            retry = await self._retries.retry_identity(
+                self._tenant_id, message_id, configuration_version
+            )
+            if retry is not None:
+                if retry.run_id != run_id:
+                    raise ModelGenerationError("permission")
+                await self.check(retry)
+                return retry
         try:
             identity = InvocationIdentity(
                 **actor.model_dump(),
@@ -116,19 +141,34 @@ class ReplyModelAuthority:
     async def check(self, identity: InvocationIdentity) -> None:
         """派发前和返回后均重读；历史任何版本不匹配即拒绝新调用。"""
         if (
-            identity.tenant_id != self._tenant_id
+            (self._recovery_only and identity.sequence < 1)
+            or identity.tenant_id != self._tenant_id
             or identity.employee_id != self._employee_id
             or identity.capability != "reply_qualification"
             or identity.turn_id is not None
-            or identity.sequence != 0
+            or (
+                identity.sequence != 0
+                and not (identity.sequence >= 1 and self._retries is not None)
+            )
         ):
             raise ModelGenerationError("permission")
         await self._runs.validate(self._tenant_id, identity.run_id)
         actor = await self._actor()
         if actor.user_id != identity.user_id:
             raise ModelGenerationError("permission")
+        allowed = [identity]
+        if identity.sequence >= 1:
+            if self._retries is None:
+                raise ModelGenerationError("permission")
+            original = await self._retries.authorize_identity(identity)
+            allowed.append(original)
         for prior, model in await self._runs.prior(self._tenant_id, identity.run_id):
-            if prior != identity or model != self._model:
+            authorized_retry = (
+                identity.sequence >= 1
+                and 0 <= prior.sequence < identity.sequence
+                and prior.model_copy(update={"sequence": identity.sequence}) == identity
+            )
+            if (prior not in allowed and not authorized_retry) or model != self._model:
                 raise ModelGenerationError("permission")
         try:
             await self._configuration.authorize(
@@ -144,22 +184,37 @@ class BoundReplyClassifier:
     def __init__(
         self,
         authority: ReplyModelAuthority,
-        generator: ModelGenerationPort,
+        generator: ModelGenerationPort | TrialMessageGenerators,
         *,
         model: str,
         configuration_version: str,
         max_output_tokens: int,
+        retry_generator: Callable[[InvocationIdentity, MessageId], ModelGenerationPort]
+        | None = None,
+        replay: Callable[[MessageId], Awaitable[ReplyClassificationResult | None]]
+        | None = None,
     ) -> None:
+        self._replay = replay
+        self._retry_generator = retry_generator
         self._authority = authority
         self._generator = generator
         self._model = model
         self._version = configuration_version
-        self._max_output_tokens = max_output_tokens
+        if type(max_output_tokens) is not int or max_output_tokens < 128:
+            raise ValidationError("回复输出上限无效")
+        # 能力上限不能迫使部署改写既有不可变全局配置版本。
+        self._max_output_tokens = min(max_output_tokens, 8192)
 
     @property
     def model(self) -> str:
         """供分类持久记录标识实际模型。"""
         return self._model
+
+    def uses_trial_gate(self, gate: QQTrialGate) -> bool:
+        return (
+            isinstance(self._generator, (TrialModelGenerator, TrialMessageGenerators))
+            and self._generator.gate is gate
+        )
 
     async def classify(self, *, message: dict[str, str]) -> ReplyClassificationResult:
         """调用身份只来自持久化消息关联，不能由正文或模型结果改变。"""
@@ -169,10 +224,25 @@ class BoundReplyClassifier:
             or not message["message_id"].strip()
         ):
             raise ValidationError("回复消息输入无效")
+        if self._replay is not None:
+            committed = await self._replay(MessageId(message["message_id"]))
+            if committed is not None:
+                return committed
         identity = await self._authority.identity_for_message(
             MessageId(message["message_id"]), self._version
         )
-        client = GatewayJsonModelClient(identity, self._generator)
+        generator = (
+            self._generator.bind_message(message["message_id"])
+            if isinstance(self._generator, TrialMessageGenerators)
+            else self._generator
+        )
+        if identity.sequence >= 1:
+            if self._retry_generator is None:
+                raise ModelGenerationError("permission")
+            generator = self._retry_generator(
+                identity, MessageId(message["message_id"])
+            )
+        client = GatewayJsonModelClient(identity, generator)
         port = StructuredReplyModelPort(
             client, self._model, max_output_tokens=self._max_output_tokens
         )

@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal, cast
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
 from agent_runtime.model_client import StructuredJsonModelClient
 from agent_runtime.qualification_agent.agent import QualificationAgent, ReplyClassifier
 from agent_runtime.qualification_agent.openai_port import StructuredReplyModelPort
+from domains.conversations.schemas import (
+    ReplyCategory,
+    ReplyWorkAction,
+    ReplyWorkActionRequest,
+)
 from domains.conversations.service import (
     ConversationsUnitOfWork,
+    reply_requires_owner_attention,
     require_reply_internal_access,
 )
+from domains.conversations.service_impl import ConversationServiceImpl
 from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.permissions import EmployeeScope
 from domains.opportunities.permissions import Actor as OpportunityActor
@@ -24,8 +33,11 @@ from domains.organization.permissions import (
 )
 from domains.outreach.service import OutreachService
 from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
+from infra.db.private_reply_test import PrivateReplyTestReader
+from infra.db.qq_trial import SqlQQTrialGate
+from infra.db.reply_retry import SqlReplyRetryRepository
 from shared.errors import TenantIsolationViolation
-from shared.schemas.identifiers import EmployeeId, TenantId
+from shared.schemas.identifiers import EmployeeId, IdempotencyKey, MessageId, TenantId
 from shared.schemas.quote_facts import QuoteEmployeeFact
 from workflows.reply_qualification.ports import MessageContentReader, ReplyActionContext
 
@@ -48,8 +60,18 @@ class CurrentEmployeeReplyFactory:
     model_client: StructuredJsonModelClient | None = None
     model: str = ""
     classifier: ReplyClassifier | None = None
+    trial_gate: SqlQQTrialGate | None = None
+    retries: SqlReplyRetryRepository | None = None
+    recovery_only: bool = False
 
     def __post_init__(self) -> None:
+        if self.trial_gate is not None:
+            from apps.scheduler_worker.reply_model_binding import BoundReplyClassifier
+
+            if not isinstance(
+                self.classifier, BoundReplyClassifier
+            ) or not self.classifier.uses_trial_gate(self.trial_gate):
+                raise ValueError("受控回复必须接入同一持久模型门禁")
         if (self.classifier is None) == (self.model_client is None):
             raise ValueError("回复分类端口必须且只能配置一种")
         if self.classifier is None and not self.model.strip():
@@ -61,16 +83,49 @@ class CurrentEmployeeReplyFactory:
         outreach: OutreachService,
         resources: ReplyRuntimeResources,
     ) -> ReplyQualificationComposition:
+        async def commit(session: AsyncSession, message: MessageId | None) -> None:
+            if (
+                self.retries is not None
+                and message is not None
+                and await self.retries.exists(self.tenant_id, message)
+            ):
+                await self.retries.commit_message(session, self.tenant_id, message)
+            elif self.trial_gate is not None:
+                await self.trial_gate.commit_message(session, message)
+
+        if self.retries is not None:
+            if resources.bind_classification_commit is None:
+                raise ValueError("回复恢复必须绑定原会话提交门禁")
+            resources.bind_classification_commit(commit)
+
         def uow(tenant: TenantId) -> ConversationsUnitOfWork:
             return cast(
                 ConversationsUnitOfWork,
                 SqlAlchemyConversationsUnitOfWork(
-                    resources.sessions, tenant, now=resources.now
+                    resources.sessions,
+                    tenant,
+                    now=resources.now,
+                    trial_commit=commit if self.trial_gate or self.retries else None,
                 ),
             )
 
+        if (
+            resources.trial_gate is not None
+            and resources.trial_gate is not self.trial_gate
+        ):
+            raise ValueError("原运行资源与回复门禁不一致")
+        if self.retries is None and self.trial_gate is not None and resources.trial_gate is None:
+            core = replace(
+                core, conversations=ConversationServiceImpl(uow, now=resources.now)
+            )
         access = CurrentReplyAccess(
-            self.tenant_id, self.employee_id, core.employee_scope, uow
+            self.tenant_id,
+            self.employee_id,
+            core.employee_scope,
+            uow,
+            self.trial_gate,
+            self.retries,
+            self.recovery_only,
         )
         content = GatewayReplyContentReader(
             self.tenant_id,
@@ -130,6 +185,7 @@ class CurrentEmployeeReplyActions:
         context: ReplyActionContext,
         key: str,
         method: Literal[
+            "review_reply",
             "route_bounce",
             "record_complaint",
             "request_handoff",
@@ -161,6 +217,43 @@ class CurrentEmployeeReplyActions:
                 }
             )
             require_reply_internal_access(self.tenant_id, fact, action="qualify")
+            private_test = await PrivateReplyTestReader(
+                self.resources.sessions
+            ).matches(
+                tenant,
+                context.account_id,
+                context.contact_point_id,
+                context.enrollment_id,
+            )
+            if private_test and method not in {
+                "route_bounce",
+                "record_complaint",
+                "review_reply",
+            }:
+                classification = (
+                    await self.core.conversations.get_effective_reply_category(
+                        tenant, context.message_id
+                    )
+                )
+                if classification is None:
+                    raise ValueError("私有测试回复分类不存在")
+                if reply_requires_owner_attention(ReplyCategory(classification)):
+                    # 所有正向测试回复合为原owner工作项；不晋升Need或创建Handoff。
+                    await self.core.conversations.enqueue_reply_work_action(
+                        tenant,
+                        ReplyWorkActionRequest(
+                            message_id=context.message_id,
+                            outbound_message_id=context.outbound_message_id,
+                            enrollment_id=context.enrollment_id,
+                            account_id=context.account_id,
+                            contact_point_id=context.contact_point_id,
+                            action=ReplyWorkAction.START_QUALIFICATION,
+                            idempotency_key=IdempotencyKey(
+                                f"reply:start_qualification:{context.message_id}"
+                            ),
+                        ),
+                    )
+                return
             opportunity_actor = OpportunityActor(
                 str(employee.employee_id),
                 OpportunityScope(level=ScopeLevel.TENANT),
@@ -224,6 +317,11 @@ class CurrentEmployeeReplyActions:
         self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
     ) -> None:
         await self._run(tenant_id, context, idempotency_key, "request_handoff")
+
+    async def review_reply(
+        self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
+    ) -> None:
+        await self._run(tenant_id, context, idempotency_key, "review_reply")
 
     async def start_qualification(
         self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str

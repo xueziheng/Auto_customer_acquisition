@@ -25,7 +25,7 @@ MAX_REPLY_FIELD_QUOTE_CODEPOINTS = 500
 
 
 class ReplyCategory(str, Enum):
-    """回复分类 —— 设计稿第十二节的 14 类，每类对应确定的系统动作。
+    """回复分类 —— 原 14 类业务结果加中性人工核对，每类对应确定动作。
 
     分类由 ``agent_runtime/qualification_agent`` 做，**动作映射是
     确定性代码**（``REPLY_ACTIONS``）——模型判断类别，代码决定做什么。
@@ -78,6 +78,9 @@ class ReplyCategory(str, Enum):
     """自动回复（out-of-office 等）。→ **不算回复，序列继续。**
     唯一不停序列的类别——当回复处理会错停序列并污染回复率统计。"""
 
+    NEEDS_REVIEW = "needs_review"
+    """当前表达不足或矛盾。停序列，交当前负责人核对，不认定需求。"""
+
     COMPLAINT = "complaint"
     """投诉。→ 停序列 + 抑制 + 计入发件身份信誉 + 通知负责人。"""
 
@@ -96,6 +99,7 @@ class ReplyWorkAction(str, Enum):
     MARK_FUTURE_RESTART = "mark_future_restart"
     CREATE_FOLLOW_UP = "create_follow_up"
     INTAKE_NEW_CONTACT = "intake_new_contact"
+    REVIEW_REPLY = "review_reply"
 
 
 class ReplyWorkQueue(str, Enum):
@@ -104,6 +108,7 @@ class ReplyWorkQueue(str, Enum):
     NEED_QUALIFICATION = "need_qualification"
     FUTURE_RESTART_REVIEW = "future_restart_review"
     FOLLOW_UP = "follow_up"
+    REPLY_REVIEW = "reply_review"
     VERIFIED_CONTACT_INTAKE_REVIEW = "verified_contact_intake_review"
 
 
@@ -115,6 +120,7 @@ class ReplyWorkStatus(str, Enum):
 
 
 REPLY_WORK_QUEUES: dict[ReplyWorkAction, ReplyWorkQueue] = {
+    ReplyWorkAction.REVIEW_REPLY: ReplyWorkQueue.REPLY_REVIEW,
     ReplyWorkAction.START_QUALIFICATION: ReplyWorkQueue.NEED_QUALIFICATION,
     ReplyWorkAction.MARK_FUTURE_RESTART: ReplyWorkQueue.FUTURE_RESTART_REVIEW,
     ReplyWorkAction.CREATE_FOLLOW_UP: ReplyWorkQueue.FOLLOW_UP,
@@ -125,6 +131,7 @@ REPLY_WORK_QUEUES: dict[ReplyWorkAction, ReplyWorkQueue] = {
 
 
 REPLY_ACTIONS: dict[ReplyCategory, tuple[str, ...]] = {
+    ReplyCategory.NEEDS_REVIEW: ("stop_sequence", "review_reply"),
     ReplyCategory.CLEAR_INTEREST: ("stop_sequence", "start_qualification"),
     ReplyCategory.WILLING_TO_CONTINUE: ("stop_sequence", "start_qualification"),
     ReplyCategory.REQUESTS_MATERIALS: ("stop_sequence", "handoff"),
@@ -196,6 +203,22 @@ class MessageClassification:
 
 
 @dataclass(frozen=True)
+class ReplyWorkUpdateRecord:
+    """人员处理的追加记录；说明不是客户确认事实，不用于需求晋升。"""
+
+    tenant_id: TenantId
+    action_id: str
+    sequence: int
+    request_id: str
+    expected_status: ReplyWorkStatus
+    status: ReplyWorkStatus
+    disposition: str
+    note: str
+    handled_by: str
+    handled_at: datetime
+
+
+@dataclass(frozen=True)
 class ReplyWorkRecord:
     """metadata-only 回复工作事实；客户正文与地址不得进入本记录。"""
 
@@ -215,8 +238,8 @@ class ReplyWorkRecord:
     def __post_init__(self) -> None:
         if self.owner_queue is not REPLY_WORK_QUEUES.get(self.action):
             raise ValidationError("回复工作动作与 owner queue 不匹配")
-        if self.status is not ReplyWorkStatus.PENDING:
-            raise ValidationError("新回复工作动作状态无效")
+        if not isinstance(self.status, ReplyWorkStatus):
+            raise ValidationError("回复工作动作状态无效")
         if (
             not isinstance(self.created_at, datetime)
             or self.created_at.tzinfo is None

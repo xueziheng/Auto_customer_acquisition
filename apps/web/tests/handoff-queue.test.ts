@@ -360,7 +360,7 @@ describe("handoff queue", () => {
     const requests = fetch.mock.calls.map(([input]) => asRequest(input));
     const queueRequest = requests.find(request => new URL(request.url).pathname === "/crm/handoffs")!;
     expect(new URL(queueRequest.url).searchParams.get("limit")).toBe("50");
-    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+    expect(requests.filter(request => !request.url.endsWith("/prospects/customers/access")).map((request) => new URL(request.url).pathname)).toEqual([
       "/notifications",
       "/crm/handoffs",
       "/crm/handoffs/handoff-demo-one",

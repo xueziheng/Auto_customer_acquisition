@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-from connectors.gmail.client import GmailConnector, GmailSendRequest
+from connectors.gmail.client import GmailSendRequest, GmailSendResult
 from domains.outreach.schemas import (
     DeliveryCorrelationBinding,
     MessageAttemptView,
@@ -16,11 +16,13 @@ from domains.outreach.service import Actor, OutreachService
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ContactPointId,
+    EmployeeId,
     MessageAttemptId,
     ProspectAccountId,
     SendingIdentityId,
     TenantId,
 )
+from tool_gateway.errors import DeliveryCertainty, ToolErrorCategory, ToolGatewayError
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.pipeline import PreparedToolCall, ToolCallContext
 
@@ -88,18 +90,42 @@ class DeliveryCorrelationActorFactory(Protocol):
     def __call__(self, attempt_id: MessageAttemptId) -> Actor: ...
 
 
+class OutboundMailConnector(Protocol):
+    async def send_once(self, request: GmailSendRequest) -> GmailSendResult: ...
+
+    async def reconcile_once(self, request: GmailSendRequest) -> GmailSendResult: ...
+
+
+@runtime_checkable
+class OutboundMailConnectors(Protocol):
+    async def resolve(
+        self, tenant_id: TenantId, employee_id: EmployeeId, from_address: str
+    ) -> OutboundMailConnector:
+        """EXECUTING 后解析当前员工精确发件地址的凭证；不得降级成其他邮箱。"""
+        ...
+
+
+class OutboundMailArchive(Protocol):
+    async def record_sent(self, tenant_id: TenantId, attempt_id: MessageAttemptId,
+                          request: GmailSendRequest, provider_ref: str) -> None:
+        """已确认发送后归档提交内容；失败必须走原发送对账，不能重发。"""
+        ...
+
+
 @dataclass(frozen=True)
 class _EmailPayload:
     tenant_id: TenantId
+    employee_id: EmployeeId
+    attempt_id: MessageAttemptId
     request: GmailSendRequest = field(repr=False)
 
 
 class EmailSendHandler:
-    """在 current-fact preflight 之后解析材料，执行时只调用 Gmail。"""
+    """保留六段发送管线，仅在执行或对账阶段解析发件连接器。"""
 
     def __init__(
         self,
-        gmail: GmailConnector,
+        gmail: OutboundMailConnector | None,
         materials: DeliveryMaterialProvider,
         unsubscribe_links: UnsubscribeLinkProvider,
         fingerprints: HmacFingerprintProvider,
@@ -107,12 +133,20 @@ class EmailSendHandler:
         outreach: OutreachService,
         outreach_actor_factory: DeliveryCorrelationActorFactory,
         route_id: str,
+        connectors: OutboundMailConnectors | None = None,
+        gmail_sender_address: str | None = None,
+        archive: OutboundMailArchive | None = None,
     ) -> None:
         if not isinstance(materials, DeliveryMaterialProvider):
             raise ValidationError("发送材料 provider 无效")
         if not isinstance(unsubscribe_links, UnsubscribeLinkProvider):
             raise ValidationError("退订链接 provider 无效")
+        self._archive = archive
         self._gmail = gmail
+        if gmail is None and connectors is None:
+            raise ValidationError("发送连接器未配置")
+        self._connectors = connectors
+        self._gmail_sender_address = gmail_sender_address
         self._materials = materials
         self._unsubscribe_links = unsubscribe_links
         self._fingerprints = fingerprints
@@ -260,8 +294,19 @@ class EmailSendHandler:
                 "body_bytes": len(body.encode()),
                 "has_unsubscribe": True,
             },
-            payload=_EmailPayload(ctx.tenant_id, request),
+            payload=_EmailPayload(ctx.tenant_id, EmployeeId(str(ctx.user_id)), preflight.attempt_id, request),
         )
+
+    async def _connector(self, payload: _EmailPayload) -> OutboundMailConnector:
+        if self._gmail is not None and payload.request.from_address == self._gmail_sender_address:
+            return self._gmail
+        if self._connectors is not None:
+            return await self._connectors.resolve(
+                payload.tenant_id, payload.employee_id, payload.request.from_address
+            )
+        if self._gmail is None:
+            raise ValidationError("发送连接器未配置")
+        return self._gmail
 
     async def execute(
         self, tenant_id: TenantId, prepared: PreparedToolCall
@@ -269,7 +314,9 @@ class EmailSendHandler:
         payload = prepared.payload
         if not isinstance(payload, _EmailPayload) or payload.tenant_id != tenant_id:
             raise ValidationError("发送 payload 无效")
-        result = await self._gmail.send_once(payload.request)
+        connector = await self._connector(payload)
+        result = await connector.send_once(payload.request)
+        await self._record_sent(payload, result)
         return {
             "provider_ref": result.provider_ref,
             "already_existed": result.already_existed,
@@ -278,12 +325,25 @@ class EmailSendHandler:
     async def reconcile(
         self, tenant_id: TenantId, prepared: PreparedToolCall
     ) -> dict[str, str | bool | None]:
-        """模糊发送只查询既有 Gmail 消息，搜索未命中也不得重发。"""
+        """模糊发送只查询既有消息，搜索未命中也不得重发。"""
         payload = prepared.payload
         if not isinstance(payload, _EmailPayload) or payload.tenant_id != tenant_id:
             raise ValidationError("发送 payload 无效")
-        result = await self._gmail.reconcile_once(payload.request)
+        connector = await self._connector(payload)
+        result = await connector.reconcile_once(payload.request)
+        await self._record_sent(payload, result)
         return {
             "provider_ref": result.provider_ref,
             "already_existed": result.already_existed,
         }
+
+
+    async def _record_sent(self, payload: _EmailPayload, result: GmailSendResult) -> None:
+        if self._archive is None:
+            return
+        if result.certainty is not DeliveryCertainty.SENT or not result.provider_ref:
+            raise ToolGatewayError(ToolErrorCategory.RECONCILIATION_REQUIRED)
+        try:
+            await self._archive.record_sent(payload.tenant_id, payload.attempt_id, payload.request, result.provider_ref)
+        except Exception:  # noqa: BLE001 - SMTP已接受后任何归档失败只能对账
+            raise ToolGatewayError(ToolErrorCategory.RECONCILIATION_REQUIRED) from None

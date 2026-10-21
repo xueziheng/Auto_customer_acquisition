@@ -389,7 +389,8 @@ def parse_inbound_content(raw_mime: bytes) -> InboundContent:
 
 
 def parse_inbound_message(
-    message_ref: str, result: GmailInboundRawResult
+    message_ref: str, result: GmailInboundRawResult,
+    *, authorized_reply_alias: tuple[str, str] | None = None,
 ) -> ProviderInboundItem:
     """固定disposition，无效客户输入不会成为网络临时错误。"""
     digest = hashlib.sha256(message_ref.encode("utf-8")).hexdigest()
@@ -422,6 +423,11 @@ def parse_inbound_message(
             _one(headers, "In-Reply-To"),
             _one(headers, "Date"),
         )
+        if authorized_reply_alias is not None:
+            provider, canonical = authorized_reply_alias
+            if reply != provider or not _ID.fullmatch(provider) or not _REPLY.fullmatch(canonical):
+                raise _ParseLimit(D.INVALID_IN_REPLY_TO)
+            reply = canonical
         disposition = D.CANDIDATE
         if external is None:
             disposition = (

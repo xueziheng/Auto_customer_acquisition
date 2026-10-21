@@ -67,3 +67,10 @@ ADR0066：受托 record_classification 必须在原事务内按 Inbox 的 owners
 ADR0075 的本人邮箱镜像与原业务会话独立。租户、active 员工与固定邮箱 owner 同时校验，
 boss/manager 无跨本人读取特权。全邮箱镜像不发布 InboundMessageStored/ReplyReceived，
 不创建客户、需求或商机，不允许进入 Agent 上下文；需要业务提取时另走原证据与审批链。
+
+ADR0095 的阿里邮箱连接契约使用 SecretStr 隔离认证输入，不进入会话、模型或审计正文；连接状态仅投影上次 SMTP/IMAP 认证时间，不表示发件身份通过、已发送或自动回复已开通。
+
+ADR0112的`business_mail.py`是普通业务来信独立公开契约。邮件事实与追加分类推断分开，
+只允许当前active邮箱owner读取/纠正，老板无跨邮箱特权。未知联系人恒待确认，归类不晋升
+客户、需求或贸易机会。纠正必须CAS并保留原判，模型前已纠正则不派发，在途结果不得覆盖
+人工当前归类。旧本人Gmail镜像仍禁止进入Agent；普通QQ来信须使用独立明确授权和来源链。

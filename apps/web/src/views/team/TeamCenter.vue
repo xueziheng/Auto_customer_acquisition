@@ -13,6 +13,15 @@ const employees = ref<Employee[]>([]);
 const territory = ref<Territory[]>([]);
 const loading = ref(true);
 const error = ref<string | null>(null);
+const canCreate = ref(false);
+const creating = ref(false);
+const newUsername = ref("");
+const newName = ref("");
+const newPassword = ref("");
+const creationMessage = ref("");
+const creationFailed = ref(false);
+const validNewAccount = computed(() => newUsername.value.length > 0 &&
+  newName.value.trim().length > 0 && newPassword.value.length >= 10 && newPassword.value.length <= 128);
 
 const employeeNames = computed(
   () => new Map(employees.value.map((item) => [item.employee_id, item.name])),
@@ -60,6 +69,7 @@ function safeError(status: number): string {
 async function loadTeam(): Promise<void> {
   loading.value = true;
   error.value = null;
+  canCreate.value = false;
   try {
     const [employeeResult, territoryResult] = await Promise.all([
       client.GET("/team/employees"),
@@ -75,6 +85,8 @@ async function loadTeam(): Promise<void> {
     }
     employees.value = employeeResult.data;
     territory.value = territoryResult.data;
+    const availability = await client.GET("/team/account-creation");
+    canCreate.value = availability.response.status === 200 && availability.data === true;
   } catch {
     error.value = "无法连接团队服务";
   } finally {
@@ -83,6 +95,35 @@ async function loadTeam(): Promise<void> {
 }
 
 onMounted(() => void loadTeam());
+
+async function createEmployee(): Promise<void> {
+  if (!canCreate.value || creating.value || !validNewAccount.value) return;
+  creating.value = true;
+  creationMessage.value = "";
+  creationFailed.value = false;
+  try {
+    const result = await client.POST("/team/employees", { body: {
+      username: newUsername.value, name: newName.value.trim(), password: newPassword.value,
+    } });
+    if (result.response.status !== 201 || !result.data) {
+      creationFailed.value = true;
+      creationMessage.value = result.response.status === 403
+        ? "当前账号没有创建权限，请刷新后核对。"
+        : "未确认创建成功。请先刷新团队核对是否已存在，再检查登录名和密码要求；不会自动重试。";
+      return;
+    }
+    creationMessage.value = `员工 ${result.data.name} 已创建，可使用自己的账号登录。`;
+    newUsername.value = "";
+    newName.value = "";
+    await loadTeam();
+  } catch {
+    creationFailed.value = true;
+    creationMessage.value = "连接中断，创建结果待核对。请先刷新团队，勿重复提交。";
+  } finally {
+    newPassword.value = "";
+    creating.value = false;
+  }
+}
 </script>
 
 <template>
@@ -114,6 +155,53 @@ onMounted(() => void loadTeam());
     >
       {{ error }}
     </div>
+
+    <section
+      v-if="canCreate"
+      class="team-panel account-create-panel"
+      aria-label="创建员工账号"
+    >
+      <h2>创建员工账号</h2>
+      <p>仅创建本企业普通员工，可共享公司资料；客户和跟进仍按负责人限制。不会发送邀请邮件。</p>
+      <form @submit.prevent="createEmployee">
+        <label>登录名<input
+          v-model="newUsername"
+          autocomplete="off"
+          maxlength="254"
+          required
+          :disabled="creating"
+        ></label>
+        <label>员工姓名<input
+          v-model="newName"
+          autocomplete="off"
+          maxlength="200"
+          required
+          :disabled="creating"
+        ></label>
+        <label>初始密码<input
+          v-model="newPassword"
+          type="password"
+          autocomplete="new-password"
+          minlength="10"
+          maxlength="128"
+          required
+          :disabled="creating"
+        ></label>
+        <p>密码至少10位，请私下交给员工，不要发到聊天或知识库。</p>
+        <button
+          type="submit"
+          :disabled="creating || !validNewAccount"
+        >
+          {{ creating ? "正在创建…" : "创建员工账号" }}
+        </button>
+      </form>
+    </section>
+    <p
+      v-if="creationMessage"
+      :role="creationFailed ? 'alert' : 'status'"
+    >
+      {{ creationMessage }}
+    </p>
 
     <section
       class="team-metrics"
@@ -256,4 +344,8 @@ dd { margin: 0; overflow-wrap: anywhere; font-size: 11px; }
 .empty { display: grid; place-items: center; min-height: 220px; color: var(--text-secondary); }
 @media (max-width: 1000px) { .team-metrics { grid-template-columns: repeat(2, 1fr); } .team-layout { grid-template-columns: 1fr; } }
 @media (max-width: 600px) { .team-metrics, .territory-card dl { grid-template-columns: 1fr; } .territory-card > header { align-items: flex-start; flex-direction: column; } }
+.account-create-panel form { display: grid; gap: var(--space3); max-width: 560px; }
+.account-create-panel label { display: grid; gap: var(--space1); }
+.account-create-panel input { box-sizing: border-box; width: 100%; min-width: 0; }
+.account-create-panel p { color: var(--text-secondary); }
 </style>

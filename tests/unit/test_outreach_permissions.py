@@ -89,10 +89,6 @@ _ALLOWED = {
     },
     ("manager", "MANAGER"): {
         "REPLY_SOURCE_READ",
-        "CAMPAIGN_SUBMIT",
-        "CAMPAIGN_REVISE",
-        "CAMPAIGN_PAUSE",
-        "CAMPAIGN_CANCEL",
         "CAMPAIGN_READ",
         "CAMPAIGN_LIST",
         "ENROLLMENT_CREATE",
@@ -119,6 +115,8 @@ _ALLOWED = {
         "REPLY_SOURCE_READ",
         "CAMPAIGN_READ",
         "CAMPAIGN_LIST",
+        "ENROLLMENT_CREATE",
+        "ENROLLMENT_STOP",
         "ENROLLMENT_READ",
         "ENROLLMENT_LIST",
     },
@@ -148,6 +146,7 @@ def _scope_for(role: str, action: object) -> object:
         return permissions.OutreachScope(
             level=permissions.ScopeLevel.SELF,
             allowed_campaign_ids={CAMPAIGN},
+            allowed_account_ids={ACCOUNT},
             allowed_enrollment_ids={ENROLLMENT},
         )
     if action.name.startswith("SUPPRESSION_"):
@@ -515,7 +514,6 @@ def test_reply_source_scope_requires_one_account_and_cannot_read_other_account(
         )
     if role == "sales":
         for action in (
-            p.OutreachAction.ENROLLMENT_READ,
             p.OutreachAction.CAMPAIGN_READ,
             p.OutreachAction.DELIVERY_FEEDBACK_RESOLVE,
         ):

@@ -1087,3 +1087,24 @@ async def test_http_account_run_keeps_user_id_for_actual_worker_mapping(unit_eng
     finally:
         if deps.model_lifecycle:
             await deps.model_lifecycle.aclose()
+
+
+async def test_manual_sender_reads_only_current_tenant_owner(integration_engine):
+    from apps.api.composition.runtime import ResolvedManualSendGateway
+    from infra.db.tables import EmployeeRow, OwnershipLockRow
+
+    sessions = async_sessionmaker(integration_engine, expire_on_commit=False)
+    tenants = [TenantId(new_id("tn")), TenantId(new_id("tn"))]
+    owners = [new_id("emp"), new_id("emp")]
+    account = ProspectAccountId(new_id("acc"))
+    async with sessions() as session, session.begin():
+        for tenant, owner in zip(tenants, owners, strict=True):
+            session.add(EmployeeRow(tenant_id=tenant, employee_id=owner,
+                                    name="Owner", role="sales", is_active=True))
+        await session.flush()
+        for tenant, owner in zip(tenants, owners, strict=True):
+            session.add(OwnershipLockRow(lock_id=new_id("olk"), tenant_id=tenant,
+                account_id=account, owner=owner, locked_at=NOW, locked_by_rule="test"))
+    gateway = ResolvedManualSendGateway(None, sessions, None, None, tenants[0])
+    assert await gateway._current_owner(account) == owners[0]
+    assert await gateway._current_owner(ProspectAccountId(new_id("acc"))) is None

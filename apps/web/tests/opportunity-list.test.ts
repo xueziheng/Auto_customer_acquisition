@@ -263,9 +263,9 @@ describe("opportunity board", () => {
     expect(root.textContent).toContain("9007199254740993.1200 USD");
 
     await eventually(() => {
-      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(fetch.mock.calls.filter(([request]) => !asRequest(request).url.endsWith("/prospects/customers/access"))).toHaveLength(3);
     });
-    const requests = fetch.mock.calls.map(([request]) => asRequest(request));
+    const requests = fetch.mock.calls.map(([request]) => asRequest(request)).filter(request => !request.url.endsWith("/prospects/customers/access"));
     expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
       "/notifications",
       "/crm/opportunities",

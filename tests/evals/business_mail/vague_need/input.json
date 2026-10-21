@@ -1,0 +1,9 @@
+{
+  "subject": "Possible future interest",
+  "body": "We may need something for our workshop later. I do not know the type or quantity yet.",
+  "candidate_response": {
+    "category": "review",
+    "reason": "需求对象和采购计划均不明确，待人工确认",
+    "evidence_quote": "I do not know the type or quantity yet"
+  }
+}

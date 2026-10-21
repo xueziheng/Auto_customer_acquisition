@@ -15,8 +15,9 @@ from connectors.web_search.transport import (
     SafePublicPageHttpTransport,
     WebSearchRateLimitedError,
 )
-from shared.errors import TransientError, ValidationError
+from shared.errors import ValidationError
 from shared.schemas.identifiers import ArtifactId, TenantId, new_id
+from shared.schemas.page_failure import PageReadFailure
 from tests.public_page_url_fixtures import HOSTILE_PUBLIC_PAGE_URLS
 from tool_gateway.errors import ToolErrorCategory
 from tool_gateway.handlers.web_search import map_web_provider_error
@@ -235,7 +236,7 @@ async def test_public_page_429_is_rate_limited(monkeypatch, robots: bool) -> Non
 
 
 @pytest.mark.parametrize("robots", [False, True])
-async def test_public_page_5xx_is_transient(monkeypatch, robots: bool) -> None:
+async def test_public_page_5xx_has_definite_response_and_keeps_gateway_transient(monkeypatch, robots: bool) -> None:
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
@@ -251,8 +252,10 @@ async def test_public_page_5xx_is_transient(monkeypatch, robots: bool) -> None:
         return 503, None, "text/plain", None, b""
 
     monkeypatch.setattr(transport, "_request_once", response)
-    with pytest.raises(TransientError):
+    with pytest.raises(PageReadFailure) as failure:
         await transport.fetch("https://example.com/about")
+    assert failure.value.reason == "http_error"
+    assert map_web_provider_error(failure.value).category is ToolErrorCategory.PROVIDER_TRANSIENT
 
 
 async def test_public_cross_origin_redirect_cannot_escape_search_source(monkeypatch):

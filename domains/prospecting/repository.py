@@ -33,6 +33,16 @@ class AccountRepository(Protocol):
         self, tenant_id: TenantId, account_id: ProspectAccountId
     ) -> ProspectAccount | None: ...
 
+    async def get_for_update(
+        self, tenant_id: TenantId, account_id: ProspectAccountId
+    ) -> ProspectAccount | None:
+        """按租户锁定账户，让资料补充串行且与归属事务顺序一致。"""
+        ...
+
+    async def update_profile(self, account: ProspectAccount) -> None:
+        """保存域已判定的类型/行业和完整来源；不改变名称、归属或消歧身份。"""
+        ...
+
     async def find_by_domain(
         self, tenant_id: TenantId, website_domain: str
     ) -> ProspectAccount | None:

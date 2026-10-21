@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -83,9 +85,12 @@ _TRANSIENT_RESULT_CATEGORIES = frozenset(
         ToolErrorCategory.RECONCILIATION_REQUIRED,
     }
 )
-_PERMANENT_RESULT_CATEGORIES = frozenset(ToolErrorCategory) - (
-    _TRANSIENT_RESULT_CATEGORIES
-)
+# 需核对可同时是不可自动恢复的终态；不得据分类本身推断可重试。
+_PERMANENT_RESULT_CATEGORIES = (
+    frozenset(ToolErrorCategory) - _TRANSIENT_RESULT_CATEGORIES
+) | {ToolErrorCategory.RECONCILIATION_REQUIRED}
+_logger = logging.getLogger(__name__)
+_CANCELLATION_CLEANUP_SECONDS = 5
 
 
 @dataclass(frozen=True)
@@ -343,6 +348,7 @@ class ToolGateway:
         lease_owner: str,
         now: Callable[[], datetime] | None = None,
         id_factory: Callable[[str], str],
+        manual_reconciliation_only: bool = False,
     ) -> None:
         if not isinstance(checks, Mapping):
             raise ValidationError("Gateway checks 无效")
@@ -363,6 +369,9 @@ class ToolGateway:
         self._lease_owner = lease_owner
         self._now = now or (lambda: datetime.now(UTC))
         self._id_factory = id_factory
+        if type(manual_reconciliation_only) is not bool:
+            raise ValidationError("Gateway 对账策略无效")
+        self._manual_reconciliation_only = manual_reconciliation_only
 
     async def invoke(self, ctx: ToolCallContext) -> ToolCallResult:
         """执行一次工具调用。
@@ -632,6 +641,28 @@ class ToolGateway:
                     stage="ledger.claim",
                 )
         try:
+            return await self._execute_claimed(
+                ctx, call_id, state, handler, canonical_claimed, reconciliation_only
+            )
+        except asyncio.CancelledError:
+            if self._manual_reconciliation_only:
+                await self._settle_cancelled(ctx, call_id)
+            raise
+
+    async def _execute_claimed(
+        self,
+        ctx: ToolCallContext,
+        call_id: ToolCallId,
+        state: ToolInvocationState,
+        handler: _GatewayHandler,
+        canonical_claimed: bool,
+        reconciliation_only: bool,
+    ) -> ToolCallResult:
+        manifest = state.manifest
+        prepared = state.prepared
+        if prepared is None:
+            raise ValidationError("工具执行前准备记录缺失")
+        try:
             async with self._uow_factory(ctx.tenant_id) as uow:
                 await uow.calls.mark_executing(ctx.tenant_id, call_id)
                 await uow.calls.append_event(
@@ -662,10 +693,10 @@ class ToolGateway:
                     raise ToolGatewayError(
                         ToolErrorCategory.RECONCILIATION_REQUIRED
                     )
-                handler_output = await reconcile(ctx.tenant_id, state.prepared)
+                handler_output = await reconcile(ctx.tenant_id, prepared)
             else:
                 handler_output = await handler.execute(
-                    ctx.tenant_id, state.prepared
+                    ctx.tenant_id, prepared
                 )
         except ToolGatewayError as error:
             return await self._fail_typed(
@@ -683,7 +714,11 @@ class ToolGateway:
             return await self._fail_typed(
                 ctx,
                 call_id,
-                ToolGatewayError(ToolErrorCategory.UNEXPECTED),
+                ToolGatewayError(
+                    ToolErrorCategory.RECONCILIATION_REQUIRED
+                    if self._manual_reconciliation_only
+                    else ToolErrorCategory.UNEXPECTED
+                ),
                 canonical=True,
                 stage="connector",
             )
@@ -747,6 +782,50 @@ class ToolGateway:
             )
         return safe_result
 
+    async def _settle_cancelled(
+        self, ctx: ToolCallContext, call_id: ToolCallId
+    ) -> None:
+        async def persist() -> None:
+            # 单独的有界清理不改变调用原有超时；二次取消也不得留下失管的写任务。
+            async with asyncio.timeout(_CANCELLATION_CLEANUP_SECONDS):
+                async with self._uow_factory(ctx.tenant_id) as uow:
+                    record = await uow.calls.get(ctx.tenant_id, call_id)
+                    if record is None:
+                        raise ValidationError("工具取消记录不存在")
+                    category = record.error_category
+                    rule = "cancellation:state_preserved"
+                    if record.status is ToolCallStatus.EXECUTING:
+                        category = ToolErrorCategory.RECONCILIATION_REQUIRED
+                        rule = "cancellation:manual_reconciliation"
+                        await uow.calls.complete(
+                            ctx.tenant_id,
+                            call_id,
+                            status=ToolCallStatus.FAILED_PERMANENT,
+                            provider_ref=None,
+                            error_category=category,
+                            retry_after_at=None,
+                        )
+                    # 已提交的成功/明确失败不覆盖；未确认 EXECUTING 的 claim 也不猜测。
+                    await uow.calls.append_event(
+                        self._event(ctx, call_id, "runtime", "cancelled", rule, category)
+                    )
+
+        cleanup = asyncio.create_task(persist())
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                continue
+            except Exception:  # noqa: BLE001 -- 原取消继续传播，不回显持久化异常
+                break
+        try:
+            cleanup.result()
+        except (Exception, asyncio.CancelledError):  # noqa: BLE001 -- 保留原取消且不泄露清理异常
+            _logger.error(
+                "工具取消状态写入未确认，需按原调用核对",
+                extra={"tool_call_id": str(call_id)},
+            )
+
     async def _fail_typed(
         self,
         ctx: ToolCallContext,
@@ -767,15 +846,20 @@ class ToolGateway:
                 ),
                 category_override=error.category,
             )
+        terminal_unknown = (
+            self._manual_reconciliation_only
+            and error.category is ToolErrorCategory.RECONCILIATION_REQUIRED
+        )
         status = (
             ToolCallStatus.FAILED_TRANSIENT
-            if error.is_retryable
+            if error.is_retryable and not terminal_unknown
             else ToolCallStatus.FAILED_PERMANENT
         )
+        retry_seconds = None if terminal_unknown else error.retry_after_seconds
         retry_at = (
             self._require_now(self._now())
-            + timedelta(seconds=error.retry_after_seconds)
-            if error.retry_after_seconds is not None
+            + timedelta(seconds=retry_seconds)
+            if retry_seconds is not None
             else None
         )
         async with self._uow_factory(ctx.tenant_id) as uow:
@@ -802,7 +886,7 @@ class ToolGateway:
             status=status,
             tool_call_id=str(call_id),
             error_category=error.category,
-            retry_after_seconds=error.retry_after_seconds,
+            retry_after_seconds=retry_seconds,
         )
 
     async def _reject(

@@ -17,6 +17,7 @@ from domains.conversations.models import (
     ReplyWorkAction,
     ReplyWorkRecord,
     ReplyWorkStatus,
+    ReplyWorkUpdateRecord,
 )
 from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
@@ -32,6 +33,12 @@ class ConversationRepository(Protocol):
     async def add(self, conversation: Conversation) -> None: ...
 
     async def update(self, conversation: Conversation) -> None: ...
+
+    async def advance_last_outbound_at(
+        self, tenant_id: TenantId, conversation_id: ConversationId, sent_at: datetime,
+    ) -> None:
+        """原子单调推进出站活动时间，不能改写入站时间。"""
+        ...
 
     async def advance_last_inbound_at(
         self,
@@ -118,6 +125,27 @@ class ReplyWorkRepository(Protocol):
         *,
         limit: int,
     ) -> list[ReplyWorkRecord]: ...
+
+
+    async def list_owned(
+        self, tenant_id: TenantId, *, actor: InboxActor,
+        status: ReplyWorkStatus, limit: int, account_id: ProspectAccountId | None = None,
+    ) -> list[ReplyWorkRecord]: ...
+
+    async def get_action(
+        self, tenant_id: TenantId, action_id: str, *, for_update: bool = False,
+    ) -> ReplyWorkRecord | None: ...
+
+    async def change_status(
+        self, tenant_id: TenantId, action_id: str,
+        expected: ReplyWorkStatus, status: ReplyWorkStatus,
+    ) -> None: ...
+
+    async def list_updates(
+        self, tenant_id: TenantId, action_id: str,
+    ) -> list[ReplyWorkUpdateRecord]: ...
+
+    async def add_update(self, record: ReplyWorkUpdateRecord) -> None: ...
 
 
 @runtime_checkable

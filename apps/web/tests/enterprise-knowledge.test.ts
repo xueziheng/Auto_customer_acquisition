@@ -122,14 +122,24 @@ describe("企业共享资料库", () => {
     expect(uploads[0]!.headers.get("Content-Type")).toBe("text/plain");
     expect(await uploads[0]!.text()).toBe("Material steel");
   });
+  it("允许25MiB以内完整原件，选择文件不自动上传", async () => {
+    const posts: Request[] = []; const { root } = mount(transport(documentFixture, posts));
+    for (const size of [19531502, 25 * 1024 * 1024]) {
+      select(root, new File([new Uint8Array(size)], "quote.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+      await nextTick();
+      expect(button(root, "上传并整理").disabled).toBe(false);
+    }
+    expect(posts).toHaveLength(0);
+  });
+
 
   it("拒绝不支持格式和大文件，不发起上传", async () => {
     const posts: Request[] = []; const { root } = mount(transport(documentFixture, posts));
     select(root, new File(["image"], "scan.heic", { type: "image/heic" })); await nextTick();
     expect(root.textContent).toContain("请选择 TXT");
     expect(button(root, "上传并整理").disabled).toBe(true);
-    select(root, new File([new Uint8Array(10 * 1024 * 1024 + 1)], "large.txt", { type: "text/plain" })); await nextTick();
-    expect(root.textContent).toContain("不能超过 10 MiB");
+    select(root, new File([new Uint8Array(25 * 1024 * 1024 + 1)], "large.txt", { type: "text/plain" })); await nextTick();
+    expect(root.textContent).toContain("不能超过 25 MiB");
     expect(posts).toHaveLength(0);
   });
 

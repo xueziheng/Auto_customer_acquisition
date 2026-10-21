@@ -18,12 +18,14 @@ from connectors.web_search.transport import (
 )
 from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import RunId, TenantId, UserId
+from shared.schemas.page_failure import PageReadFailure
 from tool_gateway.checks.web_discovery import WebResearchPreflight
 from tool_gateway.errors import ToolCallStatus, ToolErrorCategory, ToolGatewayError
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.web_search import map_web_provider_error
 from tool_gateway.handlers.web_slots import (
     SearchResultBatch,
+    WebPageFailureSlot,
     WebPageSnapshotSlot,
     WebSearchResultSlot,
 )
@@ -149,6 +151,7 @@ class WebReadPageHandler:
         search_slot: WebSearchResultSlot,
         page_slot: WebPageSnapshotSlot,
         fingerprints: HmacFingerprintProvider,
+        *, failure_slot: WebPageFailureSlot | None = None,
     ) -> None:
         if (
             not isinstance(reader, _ProviderPageReader)
@@ -157,6 +160,7 @@ class WebReadPageHandler:
             or not isinstance(fingerprints, HmacFingerprintProvider)
         ):
             raise ValidationError("公开页面 handler 依赖无效")
+        self._failure_slot = failure_slot
         self._reader = reader
         self._search_slot = search_slot
         self._page_slot = page_slot
@@ -234,6 +238,10 @@ class WebReadPageHandler:
                     snapshot = await self._reader.read_page(
                         tenant_id, payload.url, payload.uploaded_by,
                     )
+                except PageReadFailure as failure:
+                    if self._failure_slot is not None and payload.run_id is not None:
+                        self._failure_slot.put((tenant_id, payload.run_id, payload.uploaded_by, payload.url), failure)
+                    raise map_web_provider_error(failure) from None
                 except (
                     ToolGatewayError,
                     WebSearchAuthRequiredError,
@@ -271,6 +279,7 @@ class ToolGatewayWebPageReader:
         gateway: _ToolGatewayInvoker,
         page_slot: WebPageSnapshotSlot,
         user_id: UserId,
+        *, failure_slot: WebPageFailureSlot | None = None,
     ) -> None:
         if (
             not isinstance(gateway, _ToolGatewayInvoker)
@@ -279,6 +288,7 @@ class ToolGatewayWebPageReader:
             or not user_id
         ):
             raise ValidationError("公开页面 adapter 依赖无效")
+        self._failure_slot = failure_slot
         self._gateway = gateway
         self._page_slot = page_slot
         self._user_id = user_id
@@ -293,6 +303,10 @@ class ToolGatewayWebPageReader:
         try:
             if not isinstance(batch, SearchResultBatch) or batch.tenant_id != tenant_id:
                 raise ValidationError("公开页面搜索批次无效")
+            key = None
+            if self._failure_slot is not None and type(result_index) is int and 0 <= result_index < len(batch.results):
+                key = (tenant_id, run_id, self._user_id, batch.results[result_index].url)
+                self._failure_slot.begin(key)
             result = await self._gateway.invoke(
                 ToolCallContext(
                     tenant_id,
@@ -308,6 +322,11 @@ class ToolGatewayWebPageReader:
             if not isinstance(result, ToolCallResult):
                 raise ValidationError("公开页面工具结果无效")
             if result.status is not ToolCallStatus.SUCCEEDED:
+                failure = self._failure_slot.take(key) if self._failure_slot is not None and key is not None else None
+                if (failure is not None and result.status in {
+                    ToolCallStatus.FAILED_TRANSIENT, ToolCallStatus.FAILED_PERMANENT
+                } and result.error_category is map_web_provider_error(failure).category):
+                    raise failure
                 raise ToolGatewayError(
                     result.error_category or ToolErrorCategory.UNEXPECTED,
                     retry_after_seconds=result.retry_after_seconds,
@@ -323,6 +342,9 @@ class ToolGatewayWebPageReader:
             self._page_slot.discard_all()
             _discard_page_reuse()
             raise
+        finally:
+            if self._failure_slot is not None:
+                self._failure_slot.clear()
 
 
 __all__ = (

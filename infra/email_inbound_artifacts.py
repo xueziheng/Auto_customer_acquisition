@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Awaitable, Callable
 
 from artifact_store.store import (
     BoundedRawArtifactStore,
@@ -17,10 +18,12 @@ class InboundRawArtifactArchiver:
     """put后必须有界读取实际bytes；去重metadata不证明原件存在。"""
 
     def __init__(
-        self, store: RawArtifactStore, bounded: BoundedRawArtifactStore
+        self, store: RawArtifactStore, bounded: BoundedRawArtifactStore,
+        *, before_archive: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._store = store
         self._bounded = bounded
+        self._before_archive = before_archive
 
     async def archive(
         self, tenant_id: TenantId, raw_mime: bytes, *, maximum_bytes: int
@@ -32,6 +35,8 @@ class InboundRawArtifactArchiver:
                 or not 0 < len(raw_mime) <= maximum_bytes
             ):
                 raise InboundError()
+            if self._before_archive is not None:
+                await self._before_archive()
             meta = await self._store.put(
                 tenant_id,
                 RawArtifactKind.EMAIL_RAW,
@@ -47,6 +52,8 @@ class InboundRawArtifactArchiver:
                 or meta.content_hash != hashlib.sha256(raw_mime).hexdigest()
             ):
                 raise InboundError()
+            if self._before_archive is not None:
+                await self._before_archive()
             actual, content = await self._bounded.get_bounded(
                 tenant_id, meta.artifact_id, maximum_bytes=maximum_bytes
             )

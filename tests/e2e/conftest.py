@@ -826,6 +826,8 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
             runtime_database_scope(database_url)
         )
         runtime_database_url = await provision(str(tenant_id))
+        control_tenant_id = TenantId(new_id("tn"))
+        control_database_url = await provision(str(control_tenant_id))
         runtime_engine = create_engine_from(runtime_database_url)
         runtime_resources.push_async_callback(runtime_engine.dispose)
         runtime_factory = async_sessionmaker(
@@ -905,6 +907,10 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
         api_port = int(listener.getsockname()[1])
         api_origin = f"http://127.0.0.1:{api_port}"
         runtime_env = _runtime_process_env(runtime_database_url, tenant_id, web_origin)
+        runtime_env.update({
+            "E2E_CONTROL_TENANT_ID": str(control_tenant_id),
+            "E2E_CONTROL_DATABASE_URL": control_database_url,
+        })
         runtime_settings = Phase1RuntimeSettings.from_environ(runtime_env)
 
         for name in ("api.stdout", "api.stderr", "vite.stdout", "vite.stderr"):
@@ -916,7 +922,7 @@ async def e2e_stack_lifecycle() -> AsyncIterator[E2EStack]:
                 sys.executable,
                 "-m",
                 "uvicorn",
-                "apps.api.runtime:create_runtime_app",
+                "tests.e2e.runtime_app:create_e2e_runtime_app",
                 "--factory",
                 "--fd",
                 str(listener.fileno()),

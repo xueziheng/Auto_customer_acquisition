@@ -1172,6 +1172,10 @@ class OutreachEnrollmentRow(Base):
 
     __tablename__ = "outreach_enrollments"
     __table_args__ = (
+        CheckConstraint(
+            "execution_mode IN ('automatic','manual')",
+            name="ck_outreach_enrollment_execution_mode",
+        ),
         PrimaryKeyConstraint(
             "tenant_id", "enrollment_id", name="pk_outreach_enrollments"
         ),
@@ -1256,6 +1260,9 @@ class OutreachEnrollmentRow(Base):
     contact_point_id: Mapped[str] = mapped_column(String(32))
     sending_identity_id: Mapped[str] = mapped_column(String(32))
     state: Mapped[str] = mapped_column(String(40))
+    execution_mode: Mapped[str] = mapped_column(
+        String(16), server_default=text("'automatic'")
+    )
     current_step: Mapped[int] = mapped_column(Integer)
     next_send_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     enrolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -3082,12 +3089,16 @@ class ConversationClassificationRow(Base):
             "category IN ('clear_interest','willing_to_continue','requests_materials',"
             "'requests_quote','requests_sample','provides_specification',"
             "'no_current_need','future_need_possible','refers_other_contact',"
-            "'rejection','unsubscribe','bounce','auto_reply','complaint')",
+            "'rejection','unsubscribe','bounce','auto_reply','complaint','needs_review')",
             name="ck_conversation_classifications_category",
         ),
         CheckConstraint(
             "jsonb_typeof(candidate_fields) = 'array'",
             name="ck_conversation_classifications_candidate_fields",
+        ),
+        CheckConstraint(
+            "category <> 'needs_review' OR candidate_fields = '[]'::jsonb",
+            name="ck_conversation_classifications_review_fields",
         ),
         CheckConstraint(
             "(category = 'unsubscribe' AND suppress_scope IN ('contact','account')) "
@@ -3136,7 +3147,7 @@ class ConversationReplyWorkRow(Base):
         ),
         CheckConstraint(
             "action IN ('start_qualification','mark_future_restart',"
-            "'create_follow_up','intake_new_contact')",
+            "'create_follow_up','intake_new_contact','review_reply')",
             name="ck_conversation_reply_work_action",
         ),
         CheckConstraint(
@@ -3148,7 +3159,8 @@ class ConversationReplyWorkRow(Base):
             "(action = 'mark_future_restart' AND owner_queue = 'future_restart_review') OR "
             "(action = 'create_follow_up' AND owner_queue = 'follow_up') OR "
             "(action = 'intake_new_contact' AND "
-            "owner_queue = 'verified_contact_intake_review')",
+            "owner_queue = 'verified_contact_intake_review') OR "
+            "(action = 'review_reply' AND owner_queue = 'reply_review')",
             name="ck_conversation_reply_work_queue",
         ),
         Index(
@@ -3173,6 +3185,40 @@ class ConversationReplyWorkRow(Base):
     status: Mapped[str] = mapped_column(String(20))
     idempotency_key: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ConversationReplyWorkUpdateRow(Base):
+    """追加人员处理记录，与原工作项同事务；不能覆盖历史。"""
+
+    __tablename__ = "conversation_reply_work_updates"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "action_id", "sequence", name="pk_reply_work_updates"),
+        UniqueConstraint("tenant_id", "action_id", "request_id", name="uq_reply_work_update_request"),
+        ForeignKeyConstraint(
+            ["tenant_id", "action_id"],
+            ["conversation_reply_work.tenant_id", "conversation_reply_work.action_id"],
+            ondelete="RESTRICT", name="fk_reply_work_update_action",
+        ),
+        CheckConstraint("sequence >= 1", name="ck_reply_work_update_sequence"),
+        CheckConstraint(
+            "expected_status IN ('pending','in_progress') AND "
+            "((disposition = 'started' AND expected_status = 'pending' AND status = 'in_progress' AND note = '') OR "
+            "(disposition = 'waiting_customer' AND status = 'in_progress' AND length(trim(note)) > 0) OR "
+            "(disposition = 'handled' AND status = 'completed' AND length(trim(note)) > 0) OR "
+            "(disposition = 'cancelled' AND status = 'cancelled' AND length(trim(note)) > 0))",
+            name="ck_reply_work_update_result",
+        ),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(32))
+    action_id: Mapped[str] = mapped_column(String(32))
+    sequence: Mapped[int] = mapped_column(Integer)
+    request_id: Mapped[str] = mapped_column(String(100))
+    expected_status: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20))
+    disposition: Mapped[str] = mapped_column(String(24))
+    note: Mapped[str] = mapped_column(String(2000))
+    handled_by: Mapped[str] = mapped_column(String(40))
+    handled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class ConversationClassificationCorrectionRow(Base):
@@ -3203,7 +3249,7 @@ class ConversationClassificationCorrectionRow(Base):
             "'requests_materials','requests_quote','requests_sample',"
             "'provides_specification','no_current_need','future_need_possible',"
             "'refers_other_contact','rejection','unsubscribe','bounce',"
-            "'auto_reply','complaint')",
+            "'auto_reply','complaint','needs_review')",
             name="ck_conversation_classification_corrections_category",
         ),
     )
@@ -6216,3 +6262,29 @@ class EnterpriseKnowledgeRequestRow(Base):
     key_hash: Mapped[str] = mapped_column(String(64))
     request_hash: Mapped[str] = mapped_column(String(64))
     document_id: Mapped[str] = mapped_column(String(40))
+
+# 注册独立文件定义的候选库存表；维持统一Base metadata。
+from infra.db import (
+    prospect_inventory_tables as _prospect_inventory_tables,  # noqa: F401
+)
+
+
+class PrivateReplyTestRow(Base):
+    """受限私有测试来源；无第二套消息、待办或发送状态机。"""
+    __tablename__ = "private_reply_tests"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "account_id", name="pk_private_reply_tests"),
+        UniqueConstraint("tenant_id", "contact_point_id", name="uq_private_reply_test_contact"),
+        ForeignKeyConstraint(["tenant_id", "account_id"], ["prospect_accounts.tenant_id", "prospect_accounts.account_id"], name="fk_private_reply_test_account"),
+        ForeignKeyConstraint(["tenant_id", "contact_point_id"], ["contact_points.tenant_id", "contact_points.contact_point_id"], name="fk_private_reply_test_contact"),
+        ForeignKeyConstraint(["tenant_id", "sending_identity_id"], ["sending_identities.tenant_id", "sending_identities.identity_id"], name="fk_private_reply_test_sender"),
+        ForeignKeyConstraint(["tenant_id", "owner_id"], ["employees.tenant_id", "employees.employee_id"], name="fk_private_reply_test_owner"),
+        ForeignKeyConstraint(["tenant_id", "created_by"], ["employees.tenant_id", "employees.employee_id"], name="fk_private_reply_test_creator"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40))
+    account_id: Mapped[str] = mapped_column(String(40))
+    contact_point_id: Mapped[str] = mapped_column(String(40))
+    sending_identity_id: Mapped[str] = mapped_column(String(40))
+    owner_id: Mapped[str] = mapped_column(String(40))
+    created_by: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

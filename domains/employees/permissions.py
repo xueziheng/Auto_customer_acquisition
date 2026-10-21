@@ -38,6 +38,7 @@ class EmployeeAction(str, Enum):
     ASSIGNMENT_LIST = "assignment:list"
 
 
+    ACCOUNT_CREATE = "employee:account_create"
 class EmployeeScope(str, Enum):
     """ABAC 作用域。最小权限：worker/system 只做系统动作。"""
 
@@ -125,6 +126,7 @@ _EMPLOYEE_SYSTEM_ACTIONS = frozenset(
 )
 _EMPLOYEE_BOSS_ACTIONS = frozenset(
     {
+        EmployeeAction.ACCOUNT_CREATE,
         EmployeeAction.OWNERSHIP_READ,
         EmployeeAction.OWNERSHIP_LOCK,
         EmployeeAction.OWNERSHIP_TRANSFER,

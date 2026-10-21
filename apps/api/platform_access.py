@@ -5,6 +5,7 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Request
@@ -13,8 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from domains.organization.data_sources import (
+    DataSourceAdministrationService,
+    DataSourceConflict,
+    DataSourceInputInvalid,
+    DataSourceUnavailable,
+)
 from domains.organization.platform_access import PlatformAccessService, PlatformOverview
 from infra.authentication.service import PostgresAuthentication
+from infra.data_source_credentials import FileDataSourceConfigurationRepository
+from infra.data_source_notes import FileDataSourceNotesRepository
 from infra.db.platform_access import (
     EnterpriseReaderBinding,
     PostgresEnterpriseOverviewReader,
@@ -22,6 +31,8 @@ from infra.db.platform_access import (
 )
 from infra.db.schema import assert_database_schema_current
 from infra.db.tenant_security import assert_tenant_database_isolation
+from infra.model_api import FileModelApiRepository
+from infra.standalone.settings import StandaloneModelSettings
 from shared.authentication import (
     AuthenticationDenied,
     AuthPrincipal,
@@ -29,6 +40,7 @@ from shared.authentication import (
 )
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import TenantId
+from tool_gateway.fingerprint import HmacFingerprintProvider
 
 from .authentication import (
     AuthenticationCookieSettings,
@@ -38,7 +50,13 @@ from .authentication import (
     validate_authentication_configuration,
 )
 from .middleware import ApiSettings, _error_response
+from .platform_browser_probe import PlatformBrowserProbe
+from .platform_data_source_usage import PlatformDataSourceUsage
+from .platform_model_api import PlatformModelApi
 from .routers.authentication import install_authentication_errors
+from .routers.platform_data_sources import create_data_sources_router, data_source_error
+from .routers.platform_model_api import create_model_api_router
+from .routers.platform_inventory import create_inventory_quota_router
 
 
 class PlatformSessionResponse(BaseModel):
@@ -134,6 +152,11 @@ class _PlatformBoundary:
 def create_platform_app(
     *, control_tenant: TenantId, engine: AsyncEngine, origin: str,
     readers: tuple[EnterpriseReaderBinding, ...],
+    data_sources_directory: Path | None = None,
+    data_sources_fingerprints: HmacFingerprintProvider | None = None,
+    ungm_browser_probe: bool = False,
+    model_api_directory: Path | None = None,
+    model_catalog_settings: StandaloneModelSettings | None = None,
 ) -> FastAPI:
     """受信配置独立控制租户及固定业务读取器；本应用持有并释放控制引擎。"""
     settings = ApiSettings(
@@ -193,6 +216,37 @@ def create_platform_app(
     app.state.authentication_origin = origin
     app.state.runtime_engine = engine
     app.state.platform_access = access
+    app.state.model_api = PlatformModelApi(control_tenant, access, FileModelApiRepository(model_api_directory, control_tenant), factory, data_sources_fingerprints) if model_api_directory is not None else None
+    from connectors.codex.client import CodexRunnerSettings
+    from infra.model_catalog import FileModelCatalog
+
+    from .platform_model_catalog import PlatformModelCatalog
+    from .routers.platform_model_catalog import create_model_catalog_router
+    app.state.model_catalog = None
+    if model_catalog_settings is not None and model_catalog_settings.model_catalog_directory is not None:
+        config = model_catalog_settings
+        runner = CodexRunnerSettings(config.codex_binary, Path("/usr/bin/bwrap"), Path("/usr/bin/python3"), config.codex_job_root, 90, 1024*1024, 1024*1024)
+        app.state.model_catalog = PlatformModelCatalog(control_tenant, access,
+            FileModelCatalog(config.model_catalog_directory, control_tenant), factory, data_sources_fingerprints, runner)
+        app.state.model_api = None
+    app.include_router(create_model_catalog_router())
+    app.include_router(create_model_api_router())
+    app.state.data_sources = None
+    if data_sources_directory is not None:
+        credentials = FileDataSourceConfigurationRepository(data_sources_directory, control_tenant)
+        usage = PlatformDataSourceUsage(
+            control_tenant, access, credentials, data_sources_directory, factory, data_sources_fingerprints,
+        ) if data_sources_fingerprints is not None else None
+        app.state.data_sources = DataSourceAdministrationService(
+            control_tenant, access, credentials, usage,
+            notes=FileDataSourceNotesRepository(data_sources_directory, control_tenant),
+            browser=PlatformBrowserProbe(control_tenant, access, data_sources_directory, factory, data_sources_fingerprints)
+            if ungm_browser_probe and data_sources_fingerprints is not None else None,
+        )
+    app.include_router(create_data_sources_router(access))
+    app.include_router(create_inventory_quota_router(access))
+    for error_type in (DataSourceConflict, DataSourceInputInvalid, DataSourceUnavailable):
+        app.add_exception_handler(error_type, data_source_error)
     install_authentication_errors(app)
 
     async def permission_denied(request: Request, error: Exception) -> Response:
