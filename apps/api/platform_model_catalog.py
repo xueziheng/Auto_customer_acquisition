@@ -27,7 +27,7 @@ class PlatformModelCatalog:
     def __init__(self, tenant: TenantId, access: PlatformAccessService, store: FileModelCatalog, sessions: async_sessionmaker | None, fingerprints: HmacFingerprintProvider | None, runner_settings: CodexRunnerSettings | None = None) -> None:
         self.tenant, self.access, self.store = tenant, access, store
         self.sessions, self.fingerprints, self.runner = sessions, fingerprints, runner_settings
-        self._probes = {}
+        self._probes: dict[str, PlatformModelApi] = {}
 
     async def get(self, principal: AuthPrincipal) -> ModelCatalogView:
         overview = await self.access.overview(principal)

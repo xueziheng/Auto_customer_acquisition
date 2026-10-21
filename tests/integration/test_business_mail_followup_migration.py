@@ -1,13 +1,17 @@
 """0086空库往返与非空保护。"""
 
 from sqlalchemy import inspect
-from tests.integration.test_need_units import migrate, unit_engine as unit_engine
-from tests.integration.test_business_mail_followup import prepared
+
 from domains.conversations.business_mail_followup import BusinessMailHandlingCommand
 from infra.db.business_mail_followup_tables import (
+    BusinessMailFollowupEventRow,
     BusinessMailFollowupRow,
     BusinessMailReplyDraftRow,
-    BusinessMailFollowupEventRow,
+)
+from tests.integration.test_business_mail_followup import prepared
+from tests.integration.test_need_units import migrate
+from tests.integration.test_need_units import (
+    unit_engine as unit_engine,  # noqa: PLC0414 -- pytest fixture 导入注册
 )
 
 

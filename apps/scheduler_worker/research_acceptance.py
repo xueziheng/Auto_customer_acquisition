@@ -163,7 +163,7 @@ async def run_source_acceptance(
         signed=True,
     )
     async with factory() as lock_session, lock_session.begin():
-        acquired = (
+        acquired: bool = (
             await lock_session.execute(select(func.pg_try_advisory_xact_lock(lock_key)))
         ).scalar_one()
         if not acquired:

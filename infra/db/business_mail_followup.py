@@ -82,12 +82,12 @@ class SqlBusinessMailFollowupRepository:
                     BusinessMailReplyDraftRow.draft_id == current.draft_id,
                 )
             )
-        return BusinessMailFollowupView(
-            message_id=message.message_id,
-            revision=current.revision if current else 0,
-            owner_id=box.owner_id,
-            status=current.status if current else "pending",
-            draft=BusinessMailReplyDraftView(
+        return BusinessMailFollowupView.model_validate({
+            "message_id": message.message_id,
+            "revision": current.revision if current else 0,
+            "owner_id": box.owner_id,
+            "status": current.status if current else "pending",
+            "draft": BusinessMailReplyDraftView(
                 **{
                     k: getattr(draft, k)
                     for k in BusinessMailReplyDraftView.model_fields
@@ -95,13 +95,13 @@ class SqlBusinessMailFollowupRepository:
             )
             if draft
             else None,
-            history=[
+            "history": [
                 BusinessMailFollowupEvent(
                     **{k: getattr(h, k) for k in BusinessMailFollowupEvent.model_fields}
                 )
                 for h in history
             ],
-        )
+        })
 
     async def get(
         self, actor: BusinessMailActor, message_id: str
@@ -205,7 +205,7 @@ class SqlBusinessMailFollowupRepository:
             state.revision += 1
             if draft_id:
                 state.draft_id = draft_id
-            else:
+            elif isinstance(command, BusinessMailHandlingCommand):
                 state.status = command.status
             db.add(
                 BusinessMailFollowupEventRow(
@@ -215,7 +215,7 @@ class SqlBusinessMailFollowupRepository:
                     kind=kind,
                     revision=state.revision,
                     status=state.status,
-                    note="保存未发送回复草稿" if draft_id else command.note,
+                    note="保存未发送回复草稿" if isinstance(command, BusinessMailDraftCommand) else command.note,
                     actor_id=actor.employee_id,
                     created_at=now,
                     draft_id=draft_id,

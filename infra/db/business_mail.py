@@ -322,20 +322,20 @@ class SqlBusinessMailRepository:
         return row, box
 
     def _item(self, row: BusinessMailRow, box: BusinessMailboxRow) -> BusinessMailItem:
-        return BusinessMailItem(
-            message_id=row.message_id,
-            mailbox_id=row.mailbox_id,
-            mailbox_address=box.address,
-            owner_id=box.owner_id,
-            sender=row.sender,
-            subject=row.subject,
-            snippet=row.body_text[:240],
-            received_at=row.received_at,
-            category=row.category,
-            classification_status=row.classification_status,
-            revision=row.revision,
-            failure_code=row.failure_code,
-        )
+        return BusinessMailItem.model_validate({
+            "message_id": row.message_id,
+            "mailbox_id": row.mailbox_id,
+            "mailbox_address": box.address,
+            "owner_id": box.owner_id,
+            "sender": row.sender,
+            "subject": row.subject,
+            "snippet": row.body_text[:240],
+            "received_at": row.received_at,
+            "category": row.category,
+            "classification_status": row.classification_status,
+            "revision": row.revision,
+            "failure_code": row.failure_code,
+        })
 
     async def list(
         self, actor: BusinessMailActor, *, bucket: MailBucket, offset: int, limit: int
@@ -398,15 +398,15 @@ class SqlBusinessMailRepository:
         return BusinessMailDetail(
             **self._item(row, box).model_dump(),
             body_text=row.body_text,
-            source=BusinessMailSource(
-                uidvalidity=row.uidvalidity,
-                uid=row.uid,
-                mime_sha256=row.mime_sha256,
-                source_sha256=row.source_sha256,
-                source_kind=row.source_kind,
-                artifact_id=row.artifact_id,
-                received_at=row.received_at,
-            ),
+            source=BusinessMailSource.model_validate({
+                "uidvalidity": row.uidvalidity,
+                "uid": row.uid,
+                "mime_sha256": row.mime_sha256,
+                "source_sha256": row.source_sha256,
+                "source_kind": row.source_kind,
+                "artifact_id": row.artifact_id,
+                "received_at": row.received_at,
+            }),
             classification_history=[
                 BusinessMailClassification(
                     **{
@@ -696,13 +696,13 @@ class SqlBusinessMailRepository:
         self, actor: BusinessMailActor, row: BusinessMailRow, sequence: int
     ) -> str:
         """与既有model.generate规范身份键一致；不含正文、凭证或可变模型判断。"""
-        identity = InvocationIdentity(
+        identity = InvocationIdentity.model_validate(dict(
             **actor.model_dump(),
             run_id=row.run_id,
             capability="business_mail_triage",
             configuration_version=row.configuration_version,
             sequence=sequence,
-        )
+        ))
         return (
             "model:" + hashlib.sha256(identity.model_dump_json().encode()).hexdigest()
         )

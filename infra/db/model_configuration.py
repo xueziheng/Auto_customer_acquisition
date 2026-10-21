@@ -48,7 +48,7 @@ class SqlModelConfigurationRepository:
         *,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         deployment_verification: tuple[str, str, datetime] | None = None,
-        deployment_provider: str = "deepseek",
+        deployment_provider: Literal["deepseek", "compatible"] = "deepseek",
     ) -> None:
         self._factory, self._fingerprints, self._now = factory, fingerprints, now
         self._deployment_verification = deployment_verification

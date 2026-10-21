@@ -21,7 +21,7 @@ from domains.prospecting.projection_diagnostic import (
     inspect_candidate_shape,
 )
 from domains.prospecting.public_evidence import ProjectionRejected, project_candidate
-from domains.prospecting.service import AcquisitionJob
+from domains.prospecting.service import AcquisitionJob, PublicCandidate
 from shared.schemas.discovery_diagnostic import (
     DiscoveryDiagnostic,
     DiscoveryDiagnosticError,
@@ -74,7 +74,7 @@ class CodexInventoryCollector:
     ) -> CollectionResult:
         upstream_guard = guard
 
-        async def guard() -> None:
+        async def current_guard() -> None:
             await upstream_guard()
             if job.query.confirmed_refs:
                 if self.context_reader is None:
@@ -85,12 +85,12 @@ class CodexInventoryCollector:
                     job.tenant_id, job.employee_id, job.query.confirmed_refs
                 )
 
-        await guard()
+        await current_guard()
         scope = (str(job.tenant_id), str(job.id), job.lease_token)
         if self._failure_scope != scope:
             self._failure_scope, self._failed_hosts = scope, set()
         failed_hosts = self._failed_hosts
-        tools = await self.tools(job, source_id, guard)
+        tools = await self.tools(job, source_id, current_guard)
         pages: dict[str, tuple[SearchResultBatch, int]] = {}
         snapshots: dict[str, PageSnapshot] = {}
         run_id = RunId(str(job.id))
@@ -113,7 +113,7 @@ class CodexInventoryCollector:
 
         async def execute(name: str, arguments: dict) -> dict:
             nonlocal searches, discovery_read
-            await guard()
+            await current_guard()
             if name == "source_search":
                 if set(arguments) != {"source_id", "query"} or arguments[
                     "source_id"
@@ -222,7 +222,7 @@ class CodexInventoryCollector:
                 snapshot = await reader.read_page(job.tenant_id, run_id, batch, index)
             except PageReadFailure as error:
                 failed_hosts.add(host)
-                await guard()
+                await current_guard()
                 if error.recoverable:
                     raise DiscoveryToolFailure("page_unavailable") from None
                 raise DiscoveryDiagnosticError(error.diagnostic) from None
@@ -236,12 +236,12 @@ class CodexInventoryCollector:
                     ToolErrorCategory.PROVIDER_PERMANENT,
                 }:
                     raise
-                await guard()
+                await current_guard()
                 raise DiscoveryToolFailure("page_unavailable") from None
             except BaseException:
                 failed_hosts.add(host)
                 raise
-            await guard()
+            await current_guard()
             snapshots[page_id] = snapshot
             if page_id not in official_pages:
                 discovery_read = True
@@ -262,7 +262,7 @@ class CodexInventoryCollector:
             timeout_seconds=140,
             max_result_bytes=100000,
         ) as session:
-            await guard()
+            await current_guard()
             try:
                 result = await self.generate(
                     job,
@@ -305,10 +305,10 @@ class CodexInventoryCollector:
                         }
                     )
                 ) from None
-            await guard()
+            await current_guard()
         if searches == 0:
             raise ValueError("来源未实际搜索，不能记录完成")
-        candidates = []
+        candidates: list[PublicCandidate] = []
         shape = inspect_candidate_shape(result)
         counts: dict[str, int] = {}
 
@@ -331,7 +331,10 @@ class CodexInventoryCollector:
 
         if shape.input_shape != "valid":
             raise ProjectionDiagnosticError(summary())
-        for value in result["candidates"]:
+        raw_candidates = result.get("candidates")
+        if not isinstance(raw_candidates, list):
+            raise ProjectionDiagnosticError(summary())
+        for value in raw_candidates:
             reason = None
             if not isinstance(value, dict):
                 reason = "item_not_object"

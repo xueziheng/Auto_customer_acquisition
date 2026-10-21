@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from domains.organization.data_sources import DataSourceConflict, DataSourceUnavailable
 from domains.organization.model_api import ModelApiUpdate, ModelApiView
@@ -92,7 +93,7 @@ class FileModelCatalog:
                 if update.expected_revision != 0 or len(data["entries"]) >= 100:
                     raise DataSourceConflict("模型数量或版本不允许新增")
                 entry_id = new_id("mc")
-                item = {"name": update.name, "versions": {}}
+                item: dict[str, Any] = {"name": update.name, "versions": {}}
             else:
                 item = self._entry(data, entry_id)
             view = self.model_store(entry_id).save(tenant, actor, ModelApiUpdate.model_validate(update.model_dump(exclude={"name"})))

@@ -4,10 +4,13 @@ import json
 from collections.abc import Callable
 
 from openai import APIStatusError, AsyncOpenAI, DefaultAsyncHttpxClient
+from openai.types.chat import ChatCompletionContentPartParam
+from openai.types.responses import ResponseInputContentParam
 
 from connectors.deepseek.client import (
     DeepSeekClient,
     DeepSeekFailure,
+    FailureCode,
     ModelSecretResolver,
     decode_response,
 )
@@ -35,25 +38,25 @@ class CompatibleModelClient(DeepSeekClient):
         try:
             with private_sdk_logs():
                 if self._protocol == "responses":
-                    content = [{"type": "input_text", "text": payload}]
+                    responses_content: list[ResponseInputContentParam] = [{"type": "input_text", "text": payload}]
                     for image in request.images:
-                        content.append({"type": "input_image", "image_url": f"data:{image.mime_type};base64,{base64.b64encode(image.data).decode('ascii')}"})
-                    result = await sdk.responses.create(model=request.model, instructions=request.system_prompt,
-                        input=[{"role": "user", "content": content}], max_output_tokens=request.max_output_tokens,
+                        responses_content.append({"type": "input_image", "detail": "auto", "image_url": f"data:{image.mime_type};base64,{base64.b64encode(image.data).decode('ascii')}"})
+                    response_result = await sdk.responses.create(model=request.model, instructions=request.system_prompt,
+                        input=[{"role": "user", "content": responses_content}], max_output_tokens=request.max_output_tokens,
                         store=False, text={"format": {"type": "json_object"}})
-                    body = result.model_dump()
+                    body = response_result.model_dump()
                     if not isinstance(body.get("model"), str) or not body["model"]:
                         raise DeepSeekFailure("invalid_response")
                     # 供应商允许别名解析为版本模型；账本记录请求的部署模型名。
                     body["model"] = request.model
                     return decode_response(body, request.model)
-                content = [{"type": "text", "text": payload}]
+                chat_content: list[ChatCompletionContentPartParam] = [{"type": "text", "text": payload}]
                 for image in request.images:
-                    content.append({"type": "image_url", "image_url": {"url": f"data:{image.mime_type};base64,{base64.b64encode(image.data).decode('ascii')}"}})
-                result = await sdk.chat.completions.create(model=request.model,
-                    messages=[{"role": "system", "content": request.system_prompt}, {"role": "user", "content": content}],
+                    chat_content.append({"type": "image_url", "image_url": {"url": f"data:{image.mime_type};base64,{base64.b64encode(image.data).decode('ascii')}"}})
+                chat_result = await sdk.chat.completions.create(model=request.model,
+                    messages=[{"role": "system", "content": request.system_prompt}, {"role": "user", "content": chat_content}],
                     max_tokens=request.max_output_tokens, response_format={"type": "json_object"}, stream=False)
-            body = result.model_dump()
+            body = chat_result.model_dump()
             choices = body.get("choices")
             if not isinstance(choices, list) or len(choices) != 1:
                 raise DeepSeekFailure("invalid_response")
@@ -69,7 +72,8 @@ class CompatibleModelClient(DeepSeekClient):
         except DeepSeekFailure:
             raise
         except APIStatusError as exc:
-            code = {401: "authentication", 403: "authentication", 402: "insufficient_balance", 429: "rate_limit"}.get(exc.status_code, "provider_error" if exc.status_code >= 500 else "invalid_request")
+            codes: dict[int, FailureCode] = {401: "authentication", 403: "authentication", 402: "insufficient_balance", 429: "rate_limit"}
+            code = codes.get(exc.status_code, "provider_error" if exc.status_code >= 500 else "invalid_request")
             raise DeepSeekFailure(code) from None
         except Exception:  # noqa: BLE001 -- 只返回固定安全错误，禁止凭证和 SDK 原文泄漏
             raise DeepSeekFailure("unknown") from None

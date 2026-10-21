@@ -589,7 +589,7 @@ class PilotProfile:
                 engine = create_engine_from(self.config.database_url.get_secret_value())
                 try:
                     async with engine.connect() as connection:
-                        versions = (
+                        versions: Sequence[str] = (
                             (
                                 await connection.execute(
                                     text("SELECT version_num FROM alembic_version")

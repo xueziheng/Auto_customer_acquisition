@@ -169,7 +169,7 @@ class OpportunityRepositoryImpl(TenantScopedRepository):
         super().__init__(tenant_id)
         self._session = session
 
-    def _scoped(self) -> Select[tuple[OpportunityRow]]:
+    def _scoped(self) -> Select[OpportunityRow]:
         return self.scoped_query(OpportunityRow)
 
     async def add(self, opportunity: Opportunity) -> None:
@@ -473,7 +473,7 @@ class ScoreSnapshotRepositoryImpl(TenantScopedRepository):
         super().__init__(tenant_id)
         self._session = session
 
-    def _scoped(self) -> Select[tuple[ScoreSnapshotRow]]:
+    def _scoped(self) -> Select[ScoreSnapshotRow]:
         return self.scoped_query(ScoreSnapshotRow)
 
     async def add(self, tenant_id: TenantId, snapshot: ScoreSnapshot) -> None:
@@ -581,7 +581,7 @@ class HandoffRepositoryImpl(TenantScopedRepository):
         super().__init__(tenant_id)
         self._session = session
 
-    def _scoped(self) -> Select[tuple[HandoffRow]]:
+    def _scoped(self) -> Select[HandoffRow]:
         return self.scoped_query(HandoffRow)
 
     async def add(self, packet: HandoffPacket) -> None:
@@ -902,7 +902,7 @@ class FieldProvenanceRepositoryImpl(TenantScopedRepository):
         super().__init__(tenant_id)
         self._session = session
 
-    def _scoped(self) -> Select[tuple[ProvenanceRecordRow]]:
+    def _scoped(self) -> Select[ProvenanceRecordRow]:
         return self.scoped_query(ProvenanceRecordRow)
 
     async def save(

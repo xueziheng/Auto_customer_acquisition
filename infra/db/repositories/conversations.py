@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 
-from sqlalchemy import func, select, update
+from sqlalchemy import SQLColumnExpression, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -313,7 +313,7 @@ class ReplyWorkRepositoryImpl(_ConversationsRepository, ReplyWorkRepository):
         status: ReplyWorkStatus, limit: int, account_id: ProspectAccountId | None = None,
     ) -> list[ReplyWorkRecord]:
         self._require_tenant(tenant_id, "conversation_reply_work_owned")
-        order = (ConversationReplyWorkRow.created_at, ConversationReplyWorkRow.action_id)
+        order: tuple[SQLColumnExpression[Any], ...] = (ConversationReplyWorkRow.created_at, ConversationReplyWorkRow.action_id)
         if status in (ReplyWorkStatus.COMPLETED, ReplyWorkStatus.CANCELLED):
             latest = select(func.max(ConversationReplyWorkUpdateRow.handled_at)).where(
                 ConversationReplyWorkUpdateRow.tenant_id == tenant_id,
@@ -362,7 +362,7 @@ class ReplyWorkRepositoryImpl(_ConversationsRepository, ReplyWorkRepository):
             ConversationReplyWorkRow.action_id == action_id,
             ConversationReplyWorkRow.status == expected.value,
         ).values(status=status.value))
-        if result.rowcount != 1:
+        if cast(CursorResult, result).rowcount != 1:
             raise ValidationError("回复工作状态已变化，请刷新")
 
     async def list_updates(

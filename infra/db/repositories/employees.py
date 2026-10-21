@@ -148,7 +148,7 @@ class EmployeeRepositoryImpl(TenantScopedRepository):
         super().__init__(tenant_id)
         self._session = session
 
-    def _scoped(self) -> Select[tuple[EmployeeRow]]:
+    def _scoped(self) -> Select[EmployeeRow]:
         return self.scoped_query(EmployeeRow)
 
     async def add(self, employee: models.Employee) -> None:
@@ -231,7 +231,7 @@ class TerritoryRepositoryImpl(TenantScopedRepository):
         super().__init__(tenant_id)
         self._session = session
 
-    def _scoped(self) -> Select[tuple[TerritoryAssignmentRow]]:
+    def _scoped(self) -> Select[TerritoryAssignmentRow]:
         return self.scoped_query(TerritoryAssignmentRow)
 
     async def add(self, assignment: models.TerritoryAssignment) -> None:
@@ -299,7 +299,7 @@ class OwnershipRepositoryImpl(TenantScopedRepository):
         super().__init__(tenant_id)
         self._session = session
 
-    def _scoped(self) -> Select[tuple[OwnershipLockRow]]:
+    def _scoped(self) -> Select[OwnershipLockRow]:
         return self.scoped_query(OwnershipLockRow)
 
     async def try_lock(self, lock: models.OwnershipLock) -> bool:

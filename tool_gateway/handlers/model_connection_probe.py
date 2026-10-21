@@ -6,7 +6,7 @@ from shared.errors import ValidationError
 from shared.schemas.identifiers import TenantId
 from shared.schemas.model_invocation import ModelRequest
 from tool_gateway.fingerprint import HmacFingerprintProvider
-from tool_gateway.handlers.model_generate import ModelProvider
+from tool_gateway.handlers.model_generate import ModelProvider, PreparedModelProvider
 from tool_gateway.manifest import (
     CostClass,
     IdempotencyRequirement,
@@ -31,7 +31,7 @@ class ModelConnectionProbe:
         model: str, fingerprints: HmacFingerprintProvider) -> None:
         self._tenant, self._actor, self._version, self._key = tenant, actor, version, key
         self._authorize, self._factory, self._model, self._fingerprints = authorize, factory, model, fingerprints
-        self._prepared = None
+        self._prepared: PreparedToolCall | None = None
         self._started = False
         self.result: tuple[str, str | None] | None = None
 
@@ -50,6 +50,8 @@ class ModelConnectionProbe:
         await self._authorize()
         provider = self._factory()
         try:
+            if not isinstance(provider, PreparedModelProvider):
+                raise ValidationError("模型连接测试不支持准备接口")
             await provider.prepare()
             response = await provider.generate(ModelRequest(model=self._model,
                 system_prompt='Return only this JSON object: {"ok":true}.',

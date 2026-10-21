@@ -50,7 +50,7 @@ class SqlAlchemyQuoteEvidenceContextReader:
         if type(statement_timeout_ms) is not int or statement_timeout_ms <= 0:
             raise QuoteEvidenceError("invalid_input")
 
-    async def _one(self, statement: Select[Any]) -> RowMapping | None:
+    async def _one(self, statement: Select[*tuple[Any, ...]]) -> RowMapping | None:
         """事务在投影返回前结束，超时必填，不加任何业务锁。"""
         try:
             async with self._factory() as session:

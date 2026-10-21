@@ -13,7 +13,7 @@ from domains.conversations.business_mail import (
     BusinessMailService,
     MailBucket,
 )
-from shared.errors import TransientError, ValidationError
+from shared.errors import PermissionDenied, TransientError, ValidationError
 
 from ..dependencies import get_request_identity
 from ..identity import RequestIdentity
@@ -29,6 +29,8 @@ def _service(request: Request) -> BusinessMailService:
 
 
 def _actor(identity: RequestIdentity) -> BusinessMailActor:
+    if identity.employee.user_id is None:
+        raise PermissionDenied("普通来信需要当前员工用户身份")
     return BusinessMailActor(
         tenant_id=identity.tenant_id,
         employee_id=identity.employee.employee_id,

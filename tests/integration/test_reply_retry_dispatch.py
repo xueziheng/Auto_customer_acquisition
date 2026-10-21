@@ -1,11 +1,11 @@
 """恢复必须能被原持久引擎实际领取，不能只测试分类器直调。"""
 import pytest
+from sqlalchemy import select
+
 from infra.db.tables import WorkflowRunRow, WorkflowStepRow
 from infra.db.workflow_engine import PostgresWorkflowEngine
-from sqlalchemy import select
-from workflows.engine.runner import StepDefinition, WorkflowDefinition
-
 from tests.integration.test_reply_retry import seed
+from workflows.engine.runner import StepDefinition, WorkflowDefinition
 
 
 @pytest.mark.parametrize('legacy_pending',[False,True])

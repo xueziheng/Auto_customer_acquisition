@@ -302,7 +302,7 @@ class SendingDomainRepositoryImpl(_SendingRepository):
 class SendingIdentityRepositoryImpl(_SendingRepository):
     """身份 repository；scope/auth/state 过滤全部发生在 SQL LIMIT 之前。"""
 
-    def _joined(self) -> Select[tuple[SendingIdentityRow, str]]:
+    def _joined(self) -> Select[SendingIdentityRow, str]:
         return (
             select(SendingIdentityRow, SendingDomainRow.role)
             .join(

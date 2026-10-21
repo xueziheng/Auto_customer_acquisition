@@ -6,10 +6,12 @@ import hashlib
 import re
 from datetime import UTC, datetime
 from email import policy
+from email.message import MIMEPart
 from email.parser import BytesParser
 from email.utils import getaddresses, parsedate_to_datetime
 from html.parser import HTMLParser
 
+from connectors.qq_mail.inbound import QQInboundTransport
 from connectors.qq_mail.inbound_transport import _Session, _thread_call
 from connectors.qq_mail.mime_structure import _Wire
 from shared.business_mail import BusinessFetchPage, RawBusinessMail
@@ -73,7 +75,7 @@ def _parse_business_body(result: object, uid: int) -> tuple[bytes, int | None]:
             )
         ):
             raise InboundError()
-        return raw, reported
+        return raw, reported if type(reported) is int else None
     except QQTrialStopped:
         raise InboundError() from None
 
@@ -139,7 +141,7 @@ def parse_business_mime(
                 failure = "invalid_date"
         plain: list[str] = []
         html: list[str] = []
-        parts = [message]
+        parts: list[MIMEPart] = [message]
         while parts:
             part = parts.pop()
             # walk()会继续进入被跳过的附件容器；必须在遍历前剪枝整棵附件子树。
@@ -198,7 +200,7 @@ def content_hash(message: RawBusinessMail) -> str:
 
 class QQBusinessInboundConnector:
     def __init__(
-        self, transport: object, *, initial_uid_window: int = 500, page_size: int = 20
+        self, transport: QQInboundTransport, *, initial_uid_window: int = 500, page_size: int = 20
     ) -> None:
         if not 1 <= initial_uid_window <= 2000 or not 1 <= page_size <= 50:
             raise ValueError("普通来信读取范围无效")
@@ -241,7 +243,7 @@ class QQBusinessInboundConnector:
                 connection.budget = HEADER_BYTES
                 connection.literal_limit = HEADER_BYTES
                 status, data = connection.uid(
-                    "SEARCH", None, "UID", f"{after + 1}:{upper}"
+                    "SEARCH", None, "UID", f"{after + 1}:{upper}"  # type: ignore[arg-type]  # imaplib允许None省略charset
                 )
                 require_protocol_ok(status)
                 if (

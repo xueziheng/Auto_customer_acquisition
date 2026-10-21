@@ -72,7 +72,7 @@ class PostgresRunAuditRepository:
         )
 
     @staticmethod
-    def _summary_statement(tenant_id: TenantId) -> Select[Any]:
+    def _summary_statement(tenant_id: TenantId) -> Select[*tuple[Any, ...]]:
         last_activity = (
             select(func.max(WorkflowStepRow.updated_at))
             .where(
