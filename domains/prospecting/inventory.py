@@ -35,6 +35,14 @@ from .projection_diagnostic import SaveSummary, SourceDiagnostic
 Region = Literal["africa", "asia", "europe", "americas", "oceania"]
 
 
+class InventoryFollowupScope(BaseModel):
+    """客户端只引用既有批准版本，不能自报负责人或依据。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+    campaign_id: str = Field(pattern=r"^cmp_[0-7][0-9A-HJKMNP-TV-Z]{25}$")
+    campaign_version: int = Field(ge=1)
+
+
 class ConfirmedKnowledgeRef(BaseModel):
     """精确引用本企业人工确认的资料版本，不表示正式产品发布。"""
 
@@ -504,6 +512,8 @@ class InventoryService(Protocol):
         query: InventoryQuery,
         count: int,
         request_key: str,
+        *,
+        followup_scope: InventoryFollowupScope | None = None,
     ) -> InventoryResult:
         """优先库存，原子分配与排队；幂等参数不同拒绝。"""
         ...

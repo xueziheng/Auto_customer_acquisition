@@ -53,3 +53,12 @@ def test_policy_rejects_claimed_confirmation_and_personal_mailbox_scope():
     ):
         with pytest.raises(ValidationError):
             policy_type(**(base | extra))
+
+
+def test_policy_accepts_json_array_refs_and_freezes_them():
+    policy = schemas.CustomerAgentPolicyInput.model_validate({
+        "owner_employee_id": new_id("emp"), "assessment_ref": "lia:corporate",
+        "confirmed_refs": [{"document_id": "doc:test", "revision_id": "rev:test"}],
+    })
+    assert isinstance(policy.confirmed_refs, tuple)
+    assert policy.confirmed_refs[0].revision_id == "rev:test"

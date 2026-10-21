@@ -3,6 +3,7 @@
 from datetime import date, datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -166,3 +167,39 @@ class AcquisitionAttemptRow(Base):
         JSONB(none_as_null=True), nullable=True
     )
     attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class InventoryFollowupRequestRow(Base):
+    """原搜索请求事务内保存的私有委托，不扫描历史取得记录补造授权。"""
+    __tablename__ = "inventory_followup_requests"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "key_hash"], ["inventory_requests.tenant_id", "inventory_requests.key_hash"], name="fk_followup_request"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    authorization: Mapped[dict] = mapped_column(JSONB)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class CustomerPreparationItemRow(Base):
+    """每次授权交付唯一准备项；仅存安全引用、租约和固定状态。"""
+    __tablename__ = "customer_preparation_items"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "key_hash"], ["inventory_followup_requests.tenant_id", "inventory_followup_requests.key_hash"], name="fk_preparation_request"),
+        ForeignKeyConstraint(["tenant_id", "allocation_id"], ["candidate_allocations.tenant_id", "candidate_allocations.allocation_id"], name="fk_preparation_allocation"),
+        CheckConstraint("state IN ('queued','processing','blocked','enrolled')", name="ck_preparation_state"),
+        CheckConstraint("version >= 0", name="ck_preparation_version"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    allocation_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    key_hash: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(20), default="queued")
+    stage: Mapped[str] = mapped_column(String(30), default="authorize")
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    lease_token: Mapped[str | None] = mapped_column(String(40))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    external_started: Mapped[bool] = mapped_column(Boolean, default=False)
+    blocked_reason: Mapped[str | None] = mapped_column(String(60))
+    result_refs: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

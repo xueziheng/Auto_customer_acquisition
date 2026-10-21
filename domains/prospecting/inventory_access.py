@@ -20,6 +20,7 @@ from .inventory import (
     InventoryStatus,
     InventoryTransferRequest,
 )
+from .inventory_followup import InventoryFollowupScope
 
 
 @dataclass(frozen=True)
@@ -91,10 +92,17 @@ class ScopedInventory:
         query: InventoryQuery,
         count: int,
         request_key: str,
+        *,
+        followup_scope: InventoryFollowupScope | None = None,
     ) -> InventoryResult:
         await self._boss(tenant_id)
         if employee_id != self._employee:
             raise PermissionDenied("不能冒用其他员工领取")
+        if followup_scope is not None:
+            return await self._repository.request(
+                tenant_id, employee_id, query, count, request_key,
+                followup_scope=followup_scope,
+            )
         return await self._repository.request(
             tenant_id, employee_id, query, count, request_key
         )

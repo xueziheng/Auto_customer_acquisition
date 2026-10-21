@@ -25,6 +25,20 @@ async def test_policy_migration_roundtrip(lifecycle_engine):
                 c.name: c.nullable for c in Base.metadata.tables["outreach_campaign_versions"].columns
             }
             assert await conn.scalar(text("SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE relname='outreach_campaign_versions'"))
+        _run_alembic(url, "upgrade", "0090")
+        async with engine.connect() as conn:
+            for name in ("inventory_followup_requests", "customer_preparation_items"):
+                columns = await conn.run_sync(lambda c, table=name: inspect(c).get_columns(table))
+                assert {c["name"]: c["nullable"] for c in columns} == {
+                    c.name: c.nullable for c in Base.metadata.tables[name].columns
+                }
+                assert await conn.scalar(text("SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE relname=:name"), {"name": name})
+        _run_alembic(url, "downgrade", "0089")
+        async with engine.connect() as conn:
+            names = await conn.run_sync(lambda c: inspect(c).get_table_names())
+            assert "inventory_followup_requests" not in names
+            assert "customer_preparation_items" not in names
+        _run_alembic(url, "upgrade", "0090")
         _run_alembic(url, "downgrade", "0088")
         async with engine.connect() as conn:
             columns = await conn.run_sync(lambda c: inspect(c).get_columns("outreach_campaign_versions"))

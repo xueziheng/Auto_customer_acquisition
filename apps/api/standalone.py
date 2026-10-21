@@ -48,7 +48,7 @@ from .composition.aliyun_web import AliyunOutboundConnectors, AliyunWebService
 from .composition.assistant import build_api_assistant
 from .composition.customer_assignment import CustomerAssignmentBridge
 from .composition.employee_mail import EmployeeMailConnectors
-from .composition.inventory import bind_inventory
+from .composition.inventory import CurrentCustomerAgentAuthority, bind_inventory
 from .composition.qq_web import QQWebService, qq_connector
 from .composition.standalone_contacts import build_standalone_customer_verification
 from .pilot import UnconfiguredModelClient, mount_web, runtime_settings
@@ -166,9 +166,11 @@ def create_standalone_app(
     if qq is not None:
         business.state.qq_web = qq
         from domains.conversations.business_mail import BusinessMailService
+        from domains.conversations.business_mail_followup import (
+            BusinessMailFollowupService,
+        )
         from infra.business_mail_binding import CurrentBusinessMailboxBinding
         from infra.db.business_mail import SqlBusinessMailRepository
-        from domains.conversations.business_mail_followup import BusinessMailFollowupService
         from infra.db.business_mail_followup import SqlBusinessMailFollowupRepository
         business_mail_repository = SqlBusinessMailRepository(
             sessions, CurrentBusinessMailboxBinding(qq.store))
@@ -207,7 +209,8 @@ def create_standalone_app(
             TenantId(current_platform.control_tenant_id),
         )
         inventory = PostgresInventoryService(sessions, TenantId(profile.tenant_id), catalog,
-            assignment_bridge=CustomerAssignmentBridge())
+            assignment_bridge=CustomerAssignmentBridge(),
+            followup_authority=CurrentCustomerAgentAuthority(business.state.dependencies))
         business.state.prospect_inventory_factory = lambda identity: bind_inventory(
             inventory, business.state.dependencies, identity,
         )

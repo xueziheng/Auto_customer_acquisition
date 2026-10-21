@@ -7,6 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from shared.schemas.identifiers import EmployeeId
 
 
+class CustomerAgentKnowledgeRef(BaseModel):
+    """本企业人工确认的精确资料版本，仅供内部适配。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+    document_id: str = Field(min_length=1, max_length=40)
+    revision_id: str = Field(min_length=1, max_length=40)
+
+
 class CustomerAgentPolicyInput(BaseModel):
     """由真人提交的企业法人职务邮箱范围；确认身份与时间只能由服务补充。"""
 
@@ -15,6 +23,7 @@ class CustomerAgentPolicyInput(BaseModel):
     prepare_and_enroll: Literal[True] = True
     owner_employee_id: EmployeeId
     assessment_ref: str = Field(min_length=1, max_length=512)
+    confirmed_refs: tuple[CustomerAgentKnowledgeRef, ...] = Field(default=(), max_length=5, strict=False)
     basis: Literal["legitimate_interest"] = "legitimate_interest"
     subject_type: Literal["legal_entity"] = "legal_entity"
     contact_type: Literal["role_based"] = "role_based"

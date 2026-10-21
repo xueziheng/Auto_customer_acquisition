@@ -5123,6 +5123,16 @@ export interface components {
             role: "boss" | "manager" | "sales";
         };
         /**
+         * CustomerAgentKnowledgeRef
+         * @description 本企业人工确认的精确资料版本，仅供内部适配。
+         */
+        CustomerAgentKnowledgeRef: {
+            /** Document Id */
+            document_id: string;
+            /** Revision Id */
+            revision_id: string;
+        };
+        /**
          * CustomerAgentPolicy
          * @description 当前认证员工确认的范围事实，随不可变 Campaign 版本存储。
          */
@@ -5142,6 +5152,11 @@ export interface components {
             confirmed_at: string;
             /** Confirmed By */
             confirmed_by: string;
+            /**
+             * Confirmed Refs
+             * @default []
+             */
+            confirmed_refs: components["schemas"]["CustomerAgentKnowledgeRef"][];
             /**
              * Contact Type
              * @default role_based
@@ -5176,6 +5191,11 @@ export interface components {
              * @constant
              */
             basis: "legitimate_interest";
+            /**
+             * Confirmed Refs
+             * @default []
+             */
+            confirmed_refs: components["schemas"]["CustomerAgentKnowledgeRef"][];
             /**
              * Contact Type
              * @default role_based
@@ -6585,6 +6605,16 @@ export interface components {
             employee_id: string;
         };
         /**
+         * InventoryFollowupScope
+         * @description 客户端只引用既有批准版本，不能自报负责人或依据。
+         */
+        InventoryFollowupScope: {
+            /** Campaign Id */
+            campaign_id: string;
+            /** Campaign Version */
+            campaign_version: number;
+        };
+        /**
          * InventoryJobView
          * @description 任务租约、并发令牌和底层异常永不进入HTTP。
          */
@@ -6642,6 +6672,7 @@ export interface components {
         InventoryRequestBody: {
             /** Count */
             count: number;
+            followup_scope?: components["schemas"]["InventoryFollowupScope"] | null;
             query: components["schemas"]["InventoryQuery"];
         };
         /** InventoryRequestView */

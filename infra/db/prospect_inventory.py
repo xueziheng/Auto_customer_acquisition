@@ -41,6 +41,12 @@ from domains.prospecting.inventory_fit import (
     fit_query_fingerprint,
     selected_fit_candidates,
 )
+from domains.prospecting.inventory_followup import (
+    InventoryFollowupAuthority,
+    InventoryFollowupAuthorization,
+    InventoryFollowupScope,
+    PreparationClaim,
+)
 from domains.prospecting.projection_diagnostic import SaveSummary, SourceDiagnostic
 from infra.db.base import TenantScopedRepository
 from infra.db.prospect_inventory_tables import (
@@ -48,6 +54,8 @@ from infra.db.prospect_inventory_tables import (
     AcquisitionJobRow,
     AllocationEmailRow,
     CandidateAllocationRow,
+    CustomerPreparationItemRow,
+    InventoryFollowupRequestRow,
     InventoryQuotaRow,
     InventoryRequestRow,
     PublicCandidateRow,
@@ -222,12 +230,14 @@ class PostgresInventoryService(TenantScopedRepository):
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         timezone: str = "Asia/Shanghai",
         assignment_bridge: InventoryAssignmentBridge | None = None,
+        followup_authority: InventoryFollowupAuthority | None = None,
     ) -> None:
         super().__init__(business_tenant)
         self.factory, self.catalog, self.now = factory, catalog, now
         self.zone = ZoneInfo(timezone)
         self.tenant_id = business_tenant
         self.assignment_bridge = assignment_bridge
+        self.followup_authority = followup_authority
 
     def _check(self, tenant_id: TenantId) -> None:
         """显式拒绝调用方与绑定租户不一致。"""
@@ -305,6 +315,12 @@ class PostgresInventoryService(TenantScopedRepository):
                 )
             ).all()
         )
+        followup = (await session.scalars(
+            self.scoped_query(InventoryFollowupRequestRow).where(
+                InventoryFollowupRequestRow.key_hash == key,
+                InventoryFollowupRequestRow.revoked.is_(False),
+            )
+        )).one_or_none()
         delivered = 0
         now = self.now()
         # 同一个交付时间样本确定额度日与allocated_at，持锁期间也可能跨午夜。
@@ -334,6 +350,11 @@ class PostgresInventoryService(TenantScopedRepository):
                 )
             )
             await session.flush()
+            if followup is not None:
+                session.add(CustomerPreparationItemRow(
+                    tenant_id=self._tenant_id, allocation_id=allocation.id,
+                    key_hash=key, created_at=now, updated_at=now,
+                ))
             for email in candidate.public_emails:
                 session.add(
                     AllocationEmailRow(
@@ -410,6 +431,8 @@ class PostgresInventoryService(TenantScopedRepository):
         query: InventoryQuery,
         count: int,
         request_key: str,
+        *,
+        followup_scope: InventoryFollowupScope | None = None,
     ) -> InventoryResult:
         """公共池优先，公司原子分配与不足排队；参数冲突不可静默重放。"""
         self._check(tenant_id)
@@ -417,6 +440,18 @@ class PostgresInventoryService(TenantScopedRepository):
         if not employee_id.strip() or not request_key.strip() or len(request_key) > 200:
             raise ValueError("员工与请求键必须有效")
         query = InventoryQuery.model_validate(query.model_dump())
+        authorization: InventoryFollowupAuthorization | None = None
+        if followup_scope is not None:
+            if self.followup_authority is None:
+                raise PermissionDenied("自动准备授权服务未配置")
+            authorization = await self.followup_authority.authorize(
+                tenant_id, employee_id, followup_scope, query
+            )
+            if (authorization.tenant_id != tenant_id
+                or authorization.actor_employee_id != employee_id
+                or authorization.scope != followup_scope
+                or authorization.query != query):
+                raise PermissionDenied("自动准备授权引用不一致")
         key = _digest(request_key)
         fingerprint = _digest(
             json.dumps(
@@ -430,6 +465,7 @@ class PostgresInventoryService(TenantScopedRepository):
                         or value
                     },
                     count,
+                    *([followup_scope.model_dump(mode="json")] if followup_scope is not None else []),
                 ],
                 sort_keys=True,
             )
@@ -469,6 +505,12 @@ class PostgresInventoryService(TenantScopedRepository):
             )
             session.add(req)
             await session.flush()
+            if authorization is not None:
+                session.add(InventoryFollowupRequestRow(
+                    tenant_id=tenant_id, key_hash=key,
+                    authorization=authorization.model_dump(mode="json"), revoked=False,
+                ))
+                await session.flush()
             delivered = await self._allocate(
                 session, quota, employee_id, key, fresh, count, now
             )
@@ -491,6 +533,89 @@ class PostgresInventoryService(TenantScopedRepository):
                 session.add(job)
                 await session.flush()
             return await self._result(session, key, job)
+
+    async def claim_preparation(
+        self, tenant_id: TenantId, lease_duration: timedelta = timedelta(minutes=10),
+    ) -> PreparationClaim | None:
+        """独立任务逐项领取；过期外部调用只能核对，不能因恢复再次派发。"""
+        self._check(tenant_id)
+        if not timedelta(0) < lease_duration <= timedelta(minutes=30):
+            raise ValueError("准备任务租约无效")
+        now = self.now()
+        async with self.factory() as session, session.begin():
+            rows = (await session.scalars(
+                self.scoped_query(CustomerPreparationItemRow).where(
+                    or_(CustomerPreparationItemRow.state == "queued",
+                        (CustomerPreparationItemRow.state == "processing") &
+                        (CustomerPreparationItemRow.lease_until <= now)),
+                ).order_by(CustomerPreparationItemRow.created_at, CustomerPreparationItemRow.allocation_id)
+                .with_for_update(skip_locked=True).limit(100)
+            )).all()
+            for row in rows:
+                request = (await session.scalars(self.scoped_query(InventoryFollowupRequestRow).where(
+                    InventoryFollowupRequestRow.key_hash == row.key_hash,
+                ))).one()
+                if request.revoked or row.external_started:
+                    row.state = "blocked"
+                    row.blocked_reason = "authorization_revoked" if request.revoked else "external_reconciliation_required"
+                    row.lease_until = None
+                    row.lease_token = None
+                    row.version += 1
+                    row.updated_at = now
+                    continue
+                row.state = "processing"
+                row.lease_token = new_id("cpl")
+                row.lease_until = now + lease_duration
+                row.version += 1
+                row.updated_at = now
+                return PreparationClaim(
+                    tenant_id=tenant_id, allocation_id=row.allocation_id,
+                    request_key_hash=row.key_hash, lease_token=row.lease_token,
+                    version=row.version, stage=row.stage,
+                    authorization=InventoryFollowupAuthorization.model_validate(request.authorization),
+                    result_refs=row.result_refs,
+                )
+        return None
+
+    async def checkpoint_preparation(
+        self, tenant_id: TenantId, claim: PreparationClaim, *, stage: str,
+        result_refs: dict[str, str] | None = None, external_started: bool = False,
+    ) -> PreparationClaim:
+        """同事务比较租约和CAS；外部未知标记仅由持有者明确完成时消除。"""
+        self._check(tenant_id)
+        if claim.tenant_id != tenant_id or stage not in {
+            "authorize", "assign", "evidence", "contact", "verify", "enroll", "completed",
+        }:
+            raise PermissionDenied("准备任务检查点无效")
+        refs = result_refs or {}
+        prefixes = {"account_id": "acc", "signal_id": "sig", "hypothesis_id": "hyp",
+                    "contact_point_id": "cp", "enrollment_id": "enr"}
+        import re
+        if any(k not in prefixes or re.fullmatch(rf"{prefixes[k]}_[0-7][0-9A-HJKMNP-TV-Z]{{25}}", v) is None for k, v in refs.items()):
+            raise ValueError("准备任务只允许安全实体引用")
+        now = self.now()
+        async with self.factory() as session, session.begin():
+            row = (await session.scalars(self.scoped_query(CustomerPreparationItemRow).where(
+                CustomerPreparationItemRow.allocation_id == claim.allocation_id,
+            ).with_for_update())).one_or_none()
+            if row is None or row.state != "processing" or row.lease_token != claim.lease_token or row.version != claim.version or row.lease_until is None or row.lease_until <= now:
+                raise PermissionDenied("准备任务租约已失效")
+            request = (await session.scalars(self.scoped_query(InventoryFollowupRequestRow).where(
+                InventoryFollowupRequestRow.key_hash == row.key_hash,
+            ))).one()
+            if request.revoked:
+                raise PermissionDenied("准备任务授权已撤销")
+            if any(k in row.result_refs and row.result_refs[k] != v for k, v in refs.items()):
+                raise PermissionDenied("准备任务引用不可改写")
+            merged = row.result_refs | refs
+            if stage == "completed" and (external_started or "enrollment_id" not in merged):
+                raise PermissionDenied("没有实际入组不能完成准备任务")
+            row.result_refs, row.stage, row.external_started = merged, stage, external_started
+            row.version += 1
+            row.updated_at = now
+            if stage == "completed":
+                row.state = "enrolled"
+            return claim.model_copy(update={"version": row.version, "stage": stage, "result_refs": merged})
 
     async def list_allocations(
         self,

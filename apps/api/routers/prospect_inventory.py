@@ -13,6 +13,7 @@ from domains.prospecting.inventory import (
     InventoryAssignmentRequest,
     InventoryTransferRequest,
 )
+from domains.prospecting.inventory_followup import InventoryFollowupScope
 from domains.prospecting.service import (
     AcquisitionJob,
     CandidateAllocation,
@@ -49,6 +50,7 @@ class InventoryRequestBody(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     query: InventoryQuery
     count: int = Field(strict=True, ge=1, le=100)
+    followup_scope: InventoryFollowupScope | None = None
 
 
 class InventoryAllocationView(BaseModel):
@@ -184,6 +186,7 @@ async def request_candidates(
             body.query,
             body.count,
             raw_idempotency_key(request),
+            **({"followup_scope": body.followup_scope} if body.followup_scope is not None else {}),
         )
     except IdempotencyConflict:
         raise HTTPException(status_code=409) from None
