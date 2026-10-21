@@ -3946,9 +3946,9 @@ export interface components {
             context_hash: string;
             /** Cost Sheet Id */
             cost_sheet_id: string;
-            displayed_total: components["schemas"]["Money"];
-            displayed_unit_price: components["schemas"]["Money"];
-            effective_unit_revenue: components["schemas"]["Money"];
+            displayed_total: components["schemas"]["Money-Output"];
+            displayed_unit_price: components["schemas"]["Money-Output"];
+            effective_unit_revenue: components["schemas"]["Money-Output"];
             /** Inputs Hash */
             inputs_hash: string;
             metrics: components["schemas"]["ProfitMetrics"];
@@ -4453,6 +4453,16 @@ export interface components {
             /** Verbatim */
             verbatim: string;
         };
+        /**
+         * ConfirmedKnowledgeRef
+         * @description 精确引用本企业人工确认的资料版本，不表示正式产品发布。
+         */
+        ConfirmedKnowledgeRef: {
+            /** Document Id */
+            document_id: string;
+            /** Revision Id */
+            revision_id: string;
+        };
         /** ContactEnrichmentReadiness */
         ContactEnrichmentReadiness: {
             /** Reason Code */
@@ -4601,7 +4611,7 @@ export interface components {
             /** Quote Fx Ref */
             quote_fx_ref: string | null;
             rounding: components["schemas"]["RoundingPolicy"];
-            unit_price: components["schemas"]["Money"] | null;
+            unit_price: components["schemas"]["Money-Input"] | null;
         };
         /**
          * CostCoverageCreate
@@ -4669,7 +4679,7 @@ export interface components {
          * @description 无可信usage和费率时未知；费用只允许原Money/Decimal契约。
          */
         CostInputObservation: {
-            cost_per_qualified_opportunity?: components["schemas"]["Money"] | null;
+            cost_per_qualified_opportunity?: components["schemas"]["Money-Output"] | null;
             /** Human Work Seconds */
             human_work_seconds?: number | null;
             /**
@@ -4686,7 +4696,7 @@ export interface components {
             model_input_tokens?: number | null;
             /** Model Output Tokens */
             model_output_tokens?: number | null;
-            total_cost?: components["schemas"]["Money"] | null;
+            total_cost?: components["schemas"]["Money-Output"] | null;
         };
         /**
          * CostItemBinding
@@ -4724,7 +4734,7 @@ export interface components {
         };
         /** CostItemView */
         CostItemView: {
-            amount: components["schemas"]["Money"];
+            amount: components["schemas"]["Money-Output"];
             /** Entered By Id */
             entered_by_id?: string | null;
             /** Entered By Name */
@@ -4888,7 +4898,7 @@ export interface components {
             items: components["schemas"]["CostItemView"][];
             /** Margin Rate */
             margin_rate?: string | null;
-            minimum_sellable_price?: components["schemas"]["Money"] | null;
+            minimum_sellable_price?: components["schemas"]["Money-Output"] | null;
             /** Opportunity Id */
             opportunity_id: string;
             /** Quantity */
@@ -4909,7 +4919,7 @@ export interface components {
             source_tier_minimum_quantity?: number | null;
             /** Source Unit */
             source_unit?: string | null;
-            unit_full_cost?: components["schemas"]["Money"] | null;
+            unit_full_cost?: components["schemas"]["Money-Output"] | null;
             /** Version Number */
             version_number: number;
             /** Version Type */
@@ -6533,15 +6543,23 @@ export interface components {
         };
         /**
          * InventoryQuery
-         * @description 只接受公开市场与产品标签；不承载企业私有原件。
+         * @description 企业任务含私有意图与版本引用；跨公共边界必须调用 public_projection。
          */
         InventoryQuery: {
+            /** Confirmed Refs */
+            confirmed_refs?: components["schemas"]["ConfirmedKnowledgeRef"][];
+            /** Countries */
+            countries?: string[];
             /** Country */
             country?: string | null;
+            /** Intent */
+            intent?: string | null;
             /** Product Tags */
             product_tags: string[];
             /** Region */
-            region?: "africa" | null;
+            region?: ("africa" | "asia" | "europe" | "americas" | "oceania") | null;
+            /** Regions */
+            regions?: ("africa" | "asia" | "europe" | "americas" | "oceania")[];
         };
         /** InventoryRequestBody */
         InventoryRequestBody: {
@@ -7136,6 +7154,52 @@ export interface components {
             currency: string;
         };
         /**
+         * Money
+         * @description 金额。不可变。
+         *
+         *     字段：
+         *         amount:   金额，必须是 ``Decimal``
+         *         currency: 币种
+         *
+         *     实现要求：
+         *     - ``__post_init__`` 校验 ``amount`` 是 ``Decimal``，传入 ``float``
+         *       直接抛错。不要"友好地"自动转换——静默转换会让错误留到生产。
+         *     - 算术运算（加减）要求币种一致，不一致抛错，**不自动换算**。
+         *       自动换算会隐藏"用了哪个时点的汇率"这个关键信息。
+         *     - 乘除只允许乘 ``Decimal`` 或 ``int``（数量、比例），不允许
+         *       两个 Money 相乘。
+         *     - 舍入必须显式指定策略和精度，不依赖默认值。
+         */
+        "Money-Input": {
+            /** Amount */
+            amount: string;
+            /** Currency */
+            currency: string;
+        };
+        /**
+         * Money
+         * @description 金额。不可变。
+         *
+         *     字段：
+         *         amount:   金额，必须是 ``Decimal``
+         *         currency: 币种
+         *
+         *     实现要求：
+         *     - ``__post_init__`` 校验 ``amount`` 是 ``Decimal``，传入 ``float``
+         *       直接抛错。不要"友好地"自动转换——静默转换会让错误留到生产。
+         *     - 算术运算（加减）要求币种一致，不一致抛错，**不自动换算**。
+         *       自动换算会隐藏"用了哪个时点的汇率"这个关键信息。
+         *     - 乘除只允许乘 ``Decimal`` 或 ``int``（数量、比例），不允许
+         *       两个 Money 相乘。
+         *     - 舍入必须显式指定策略和精度，不依赖默认值。
+         */
+        "Money-Output": {
+            /** Amount */
+            amount: string;
+            /** Currency */
+            currency: string;
+        };
+        /**
          * NearestThresholdView
          * @description 最接近阈值的确定性值与距离。
          */
@@ -7511,8 +7575,8 @@ export interface components {
             destination?: string | null;
             /** Died At State */
             died_at_state?: string | null;
-            estimated_cost?: components["schemas"]["Money"] | null;
-            estimated_profit?: components["schemas"]["Money"] | null;
+            estimated_cost?: components["schemas"]["Money-Output"] | null;
+            estimated_profit?: components["schemas"]["Money-Output"] | null;
             /**
              * Has Pending Handoff
              * @default false
@@ -7545,7 +7609,7 @@ export interface components {
             spec_summary?: string | null;
             /** State */
             state: string;
-            target_price?: components["schemas"]["Money"] | null;
+            target_price?: components["schemas"]["Money-Output"] | null;
         };
         /**
          * PlanReferenceBody
@@ -7892,7 +7956,7 @@ export interface components {
             candidate_status?: string | null;
             /** Category */
             category: string;
-            internal_cost: components["schemas"]["Money"] | null;
+            internal_cost: components["schemas"]["Money-Output"] | null;
             /** Internal Cost Basis */
             internal_cost_basis: string | null;
             /** Internal Cost Source Ref */
@@ -7923,8 +7987,8 @@ export interface components {
          * @description 销售视图。没有供应商、没有成本字段——不是隐藏，是不存在。
          */
         ProductSalesView: {
-            allowed_price_max: components["schemas"]["Money"] | null;
-            allowed_price_min: components["schemas"]["Money"] | null;
+            allowed_price_max: components["schemas"]["Money-Output"] | null;
+            allowed_price_min: components["schemas"]["Money-Output"] | null;
             /** Category */
             category: string;
             /** Faq */
@@ -8360,9 +8424,9 @@ export interface components {
             context_hash: string;
             /** Cost Sheet Id */
             cost_sheet_id: string;
-            displayed_total: components["schemas"]["Money"];
-            displayed_unit_price: components["schemas"]["Money"];
-            effective_unit_revenue: components["schemas"]["Money"];
+            displayed_total: components["schemas"]["Money-Output"];
+            displayed_unit_price: components["schemas"]["Money-Output"];
+            effective_unit_revenue: components["schemas"]["Money-Output"];
             /** Inputs Hash */
             inputs_hash: string;
             metrics: components["schemas"]["QuoteProfitMetrics"];
@@ -8382,7 +8446,7 @@ export interface components {
             description: string;
             /** Line Number */
             line_number: number;
-            line_total: components["schemas"]["Money"];
+            line_total: components["schemas"]["Money-Output"];
             /** Quantity */
             quantity: number;
             rounding: components["schemas"]["QuoteRoundingInput"];
@@ -8390,7 +8454,7 @@ export interface components {
             specification: string;
             /** Unit */
             unit: string;
-            unit_price: components["schemas"]["Money"];
+            unit_price: components["schemas"]["Money-Output"];
         };
         /**
          * QuoteCustomerFileEntry
@@ -8469,7 +8533,7 @@ export interface components {
             scope_confirmation_id: string;
             /** Terms */
             terms: components["schemas"]["QuoteTerm"][];
-            unit_price: components["schemas"]["Money"];
+            unit_price: components["schemas"]["Money-Input"];
             /**
              * Valid Until
              * Format: date-time
@@ -8764,7 +8828,7 @@ export interface components {
             size_spec: string | null;
             /** Status */
             status: string;
-            target_price: components["schemas"]["Money"] | null;
+            target_price: components["schemas"]["Money-Output"] | null;
             /** Unit */
             unit: string | null;
             /** Unit Confirmation Id */
@@ -10733,7 +10797,7 @@ export interface components {
             required_by?: string | null;
             /** Status */
             status: string;
-            target_price?: components["schemas"]["Money"] | null;
+            target_price?: components["schemas"]["Money-Output"] | null;
         };
         /** ValidationError */
         ValidationError: {

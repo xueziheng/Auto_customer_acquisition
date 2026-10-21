@@ -67,6 +67,7 @@ async function mount(size = 2, options: { post?: (request: Request) => Promise<R
         reads.push(r.clone());
         const result = options.read?.(r); if (result) return result;
         if (failed) return new Response("{}", { status: 403 });
+        if (p === "/knowledge/documents") return new Response(JSON.stringify({items: []}), {status: 200});
         return new Response(
           JSON.stringify(
             p.endsWith("/status")

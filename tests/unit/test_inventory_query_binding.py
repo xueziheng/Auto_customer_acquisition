@@ -125,35 +125,9 @@ def test_fixed_words_over_limit_and_contradictory_region_are_rejected():
         )
 
 
-async def test_invalid_scope_is_local_fixed_failure_with_no_search_dispatch():
-    from apps.scheduler_worker.inventory_collector import CodexInventoryCollector
-    from shared.schemas.discovery_diagnostic import DiscoveryDiagnosticError
-
-    async def search(*args, **kwargs):
-        raise AssertionError("不得派发")
-
-    async def factory(*args):
-        return SimpleNamespace(searcher=SimpleNamespace(search=search))
-
-    async def generate(job, source, session, payload):
-        await session.call("source_search", {"source_id": source, "query": "PRIVATE"})
-
-    async def guard():
-        pass
-
-    job = JOB.model_copy(
-        update={
-            "query": InventoryQuery(
-                region="africa", country="FR", product_tags=("三轮车",)
-            )
-        }
-    )
-    with pytest.raises(DiscoveryDiagnosticError) as error:
-        await CodexInventoryCollector(factory, generate).collect(
-            job, "company_websites", guard
-        )
-    assert error.value.diagnostic.outcome == "failed:source_scope:req:0"
-    assert "PRIVATE" not in str(error.value)
+def test_invalid_scope_is_rejected_before_job_or_search_dispatch():
+    with pytest.raises(ValueError, match="国家与目标地区矛盾"):
+        InventoryQuery(region="africa", country="FR", product_tags=("三轮车",))
 
 
 def test_whitespace_unicode_and_only_first_existing_alias_are_preserved():

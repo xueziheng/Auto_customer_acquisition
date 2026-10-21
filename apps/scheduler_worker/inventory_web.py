@@ -83,10 +83,14 @@ class InventoryWebGate:
         user_id: UserId,
         country: str,
         category: str,
+        countries: tuple[str, ...] = (),
+        search_slot: WebSearchResultSlot | None = None,
         guard: Callable[[], Awaitable[None]],
     ) -> None:
         self.tenant_id, self.run_id, self.user_id = tenant_id, run_id, user_id
         self.country, self.category, self.guard = country, category, guard
+        self.countries = countries or (country,)
+        self.search_slot = search_slot
 
     async def check(
         self, ctx: ToolCallContext, state: ToolInvocationState
@@ -98,13 +102,21 @@ class InventoryWebGate:
         ):
             return CheckRejection(self.name, "tenant:inventory", "库存采集身份不匹配")
         await self.guard()
+        selected_country = ctx.params.get("country", self.country)
+        if self.search_slot is not None and "search_result_handle" in ctx.params:
+            batch = self.search_slot.get_batch(ctx.params["search_result_handle"])
+            if batch.tenant_id != self.tenant_id:
+                return CheckRejection(
+                    self.name, "tenant:inventory_query", "库存查询不匹配"
+                )
+            selected_country = batch.country
         if (
-            ctx.params.get("country", self.country) != self.country
+            selected_country not in self.countries
             or ctx.params.get("category", self.category) != self.category
         ):
             return CheckRejection(self.name, "tenant:inventory_query", "库存查询不匹配")
         state.preflight = WebResearchPreflight(
-            self.tenant_id, self.country, self.category
+            self.tenant_id, selected_country, self.category
         )
         return None
 
@@ -165,6 +177,7 @@ def build_inventory_web(
     artifacts: RawArtifactStore,
     now: Callable[[], datetime],
     browser: bool = False,
+    countries: tuple[str, ...] = (),
 ) -> InventoryWebTools:
     """每job/source独立Gateway和槽；只接受公开读取，与联系策略保持分离。"""
     search_slot, page_slot = (
@@ -209,7 +222,9 @@ def build_inventory_web(
             version="v1.inventory.browser" if browser else "v1.inventory",
             checks=("tenant", "permission", "rate_limit"),
         ),
-        WebReadPageHandler(reader, search_slot, page_slot, fingerprints, failure_slot=page_failures),
+        WebReadPageHandler(
+            reader, search_slot, page_slot, fingerprints, failure_slot=page_failures
+        ),
     )
     registry.register(
         replace(
@@ -219,7 +234,11 @@ def build_inventory_web(
             checks=("tenant", "permission", "rate_limit"),
         ),
         WebReadPageHandler(
-            BrowserPublicPageReader(artifacts), search_slot, page_slot, fingerprints, failure_slot=browser_failures
+            BrowserPublicPageReader(artifacts),
+            search_slot,
+            page_slot,
+            fingerprints,
+            failure_slot=browser_failures,
         ),
     )
 
@@ -239,6 +258,8 @@ def build_inventory_web(
                 run_id=run_id,
                 user_id=user_id,
                 country=country,
+                countries=countries,
+                search_slot=search_slot,
                 category=category,
                 guard=guard,
             ),
@@ -268,7 +289,11 @@ def build_inventory_web(
         FreeSearchGatewaySearcher(
             ToolGatewayWebSearcher(gateway, search_slot, user_id), free.quota, tenant_id
         ),
-        ToolGatewayWebPageReader(gateway, page_slot, user_id, failure_slot=page_failures),
-        ToolGatewayWebPageReader(BrowserGateway(gateway), page_slot, user_id, failure_slot=browser_failures),
+        ToolGatewayWebPageReader(
+            gateway, page_slot, user_id, failure_slot=page_failures
+        ),
+        ToolGatewayWebPageReader(
+            BrowserGateway(gateway), page_slot, user_id, failure_slot=browser_failures
+        ),
         observe_usage,
     )

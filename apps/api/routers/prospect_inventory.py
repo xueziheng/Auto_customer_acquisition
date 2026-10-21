@@ -31,9 +31,11 @@ from shared.schemas.identifiers import (
     ProspectAccountId,
     TenantId,
 )
+from workflows.enterprise_knowledge.confirmed_context import ConfirmedContextReader
 
 from ..dependencies import (
     document_idempotency_header,
+    get_api_dependencies,
     get_request_identity,
     raw_idempotency_key,
 )
@@ -168,6 +170,13 @@ async def request_candidates(
     _key: Annotated[None, Depends(document_idempotency_header)],
 ) -> InventoryRequestView:
     require_boss(identity)
+    if body.query.confirmed_refs:
+        knowledge = get_api_dependencies(request).enterprise_knowledge
+        if knowledge is None:
+            raise TransientError("企业资料服务尚未配置")
+        await ConfirmedContextReader(knowledge.service).read(
+            identity.tenant_id, identity.employee.employee_id, body.query.confirmed_refs
+        )
     try:
         result = await _service(request, identity).request(
             identity.tenant_id,

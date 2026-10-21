@@ -19,8 +19,13 @@ function parsePending(raw: string, owner: string): PendingInventoryClaim | null 
         !Number.isInteger(value.body?.count) || value.body.count < 1 || value.body.count > 100 ||
         !query || !Array.isArray(query.product_tags) || !query.product_tags.length ||
         !query.product_tags.every((tag: unknown) => typeof tag === "string" && tag.length > 0 && tag.length <= 500) ||
-        ![null, "africa"].includes(query.region) || !(query.country === null || typeof query.country === "string" && /^[A-Z]{2}$/.test(query.country))) return null;
-    return { key: value.key, body: { count: value.body.count, query: { product_tags: query.product_tags, region: query.region, country: query.country } } };
+        ![null, "africa", "asia", "europe", "americas", "oceania"].includes(query.region) || !(query.country === null || typeof query.country === "string" && /^[A-Z]{2}$/.test(query.country))) return null;
+    if (query.intent != null && (typeof query.intent !== "string" || query.intent.length > 2000)) return null;
+    if (query.regions && (!Array.isArray(query.regions) || query.regions.length > 5 || !query.regions.every((v: unknown) => ["africa", "asia", "europe", "americas", "oceania"].includes(String(v))))) return null;
+    if (query.countries && (!Array.isArray(query.countries) || query.countries.length > 50 || !query.countries.every((v: unknown) => typeof v === "string" && /^[A-Z]{2}$/.test(v)))) return null;
+    if (query.confirmed_refs && (!Array.isArray(query.confirmed_refs) || query.confirmed_refs.length > 5 || !query.confirmed_refs.every((v: {document_id?: unknown; revision_id?: unknown}) => v && typeof v.document_id === "string" && typeof v.revision_id === "string" && v.document_id.length <= 40 && v.revision_id.length <= 40))) return null;
+    return { key: value.key, body: { count: value.body.count, query: { product_tags: query.product_tags, region: query.region, country: query.country,
+      ...(query.intent ? {intent: query.intent} : {}), ...(query.regions ? {regions: query.regions} : {}), ...(query.countries ? {countries: query.countries} : {}), ...(query.confirmed_refs ? {confirmed_refs: query.confirmed_refs} : {}) } } };
   } catch { return null; }
 }
 

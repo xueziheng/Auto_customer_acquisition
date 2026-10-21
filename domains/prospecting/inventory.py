@@ -31,14 +31,73 @@ from shared.schemas.provenance import Provenance, SourceType
 
 from .projection_diagnostic import SaveSummary, SourceDiagnostic
 
+Region = Literal["africa", "asia", "europe", "americas", "oceania"]
 
-class InventoryQuery(BaseModel):
-    """只接受公开市场与产品标签；不承载企业私有原件。"""
+
+class ConfirmedKnowledgeRef(BaseModel):
+    """精确引用本企业人工确认的资料版本，不表示正式产品发布。"""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-    region: Literal["africa"] | None = None
+    document_id: str = Field(min_length=1, max_length=40)
+    revision_id: str = Field(min_length=1, max_length=40)
+
+
+class InventoryQuery(BaseModel):
+    """企业任务含私有意图与版本引用；跨公共边界必须调用 public_projection。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    region: Region | None = None
     country: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
     product_tags: tuple[str, ...] = Field(min_length=1, max_length=20)
+
+    regions: tuple[Region, ...] = Field(default_factory=tuple, max_length=5)
+    countries: tuple[str, ...] = Field(default_factory=tuple, max_length=50)
+    intent: str | None = Field(default=None, min_length=1, max_length=2000)
+    confirmed_refs: tuple[ConfirmedKnowledgeRef, ...] = Field(
+        default_factory=tuple, max_length=5
+    )
+
+    @field_validator("countries")
+    @classmethod
+    def valid_countries(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        """国家列表使用明确 ISO 两位代码，排序去重保证任务身份稳定。"""
+        if any(
+            not re.fullmatch(r"[A-Z]{2}", value) or value not in ISO_COUNTRIES
+            for value in values
+        ):
+            raise ValueError("国家代码无效")
+        return tuple(sorted(set(values)))
+
+    @model_validator(mode="after")
+    def geography(self) -> InventoryQuery:
+        """多地区为并集，国家为进一步限制；矛盾输入失败关闭。"""
+        regions = set(self.regions) | ({self.region} if self.region else set())
+        countries = set(self.countries) | ({self.country} if self.country else set())
+        if regions and any(
+            not any(code in REGION_COUNTRIES[r] for r in regions) for code in countries
+        ):
+            raise ValueError("国家与目标地区矛盾")
+        if len({ref.document_id for ref in self.confirmed_refs}) != len(
+            self.confirmed_refs
+        ):
+            raise ValueError("资料引用重复")
+        return self
+
+    @property
+    def target_countries(self) -> tuple[str, ...]:
+        """同时供确定性筛选与 Gateway 国家政策使用。"""
+        explicit = set(self.countries) | ({self.country} if self.country else set())
+        regions = set(self.regions) | ({self.region} if self.region else set())
+        return tuple(
+            sorted(
+                explicit
+                or {code for region in regions for code in REGION_COUNTRIES[region]}
+            )
+        )
+
+    def public_projection(self) -> InventoryQuery:
+        """公共库只见用户明确提供的公开产品检索锚点与市场。"""
+        return self.model_copy(update={"intent": None, "confirmed_refs": ()})
 
     @field_validator("product_tags")
     @classmethod
@@ -565,13 +624,221 @@ AFRICA_COUNTRIES = frozenset(
 )
 
 
+# UN M49 大区仅用于地理筛选；不推导需求、触达权或经营地址。
+REGION_COUNTRIES = {
+    "africa": AFRICA_COUNTRIES,
+    "asia": frozenset(
+        [
+            "AF",
+            "AM",
+            "AZ",
+            "BH",
+            "BD",
+            "BT",
+            "BN",
+            "KH",
+            "CN",
+            "CY",
+            "GE",
+            "IN",
+            "ID",
+            "IR",
+            "IQ",
+            "IL",
+            "JP",
+            "JO",
+            "KZ",
+            "KP",
+            "KR",
+            "KW",
+            "KG",
+            "LA",
+            "LB",
+            "MY",
+            "MV",
+            "MN",
+            "MM",
+            "NP",
+            "OM",
+            "PK",
+            "PS",
+            "PH",
+            "QA",
+            "SA",
+            "SG",
+            "LK",
+            "SY",
+            "TW",
+            "TJ",
+            "TH",
+            "TL",
+            "TR",
+            "TM",
+            "AE",
+            "UZ",
+            "VN",
+            "YE",
+            "HK",
+            "MO",
+        ]
+    ),
+    "europe": frozenset(
+        [
+            "AL",
+            "AD",
+            "AT",
+            "BY",
+            "BE",
+            "BA",
+            "BG",
+            "HR",
+            "CZ",
+            "DK",
+            "EE",
+            "FO",
+            "FI",
+            "FR",
+            "DE",
+            "GI",
+            "GR",
+            "GG",
+            "VA",
+            "HU",
+            "IS",
+            "IE",
+            "IM",
+            "IT",
+            "JE",
+            "LV",
+            "LI",
+            "LT",
+            "LU",
+            "MT",
+            "MD",
+            "MC",
+            "ME",
+            "NL",
+            "MK",
+            "NO",
+            "PL",
+            "PT",
+            "RO",
+            "RU",
+            "SM",
+            "RS",
+            "SK",
+            "SI",
+            "ES",
+            "SJ",
+            "SE",
+            "CH",
+            "UA",
+            "GB",
+            "AX",
+        ]
+    ),
+    "americas": frozenset(
+        [
+            "AI",
+            "AG",
+            "AR",
+            "AW",
+            "BS",
+            "BB",
+            "BZ",
+            "BM",
+            "BO",
+            "BQ",
+            "BR",
+            "CA",
+            "KY",
+            "CL",
+            "CO",
+            "CR",
+            "CU",
+            "CW",
+            "DM",
+            "DO",
+            "EC",
+            "SV",
+            "FK",
+            "GF",
+            "GL",
+            "GD",
+            "GP",
+            "GT",
+            "GY",
+            "HT",
+            "HN",
+            "JM",
+            "MQ",
+            "MX",
+            "MS",
+            "NI",
+            "PA",
+            "PY",
+            "PE",
+            "PR",
+            "BL",
+            "KN",
+            "LC",
+            "MF",
+            "PM",
+            "VC",
+            "SX",
+            "SR",
+            "TT",
+            "TC",
+            "US",
+            "UY",
+            "VE",
+            "VG",
+            "VI",
+        ]
+    ),
+    "oceania": frozenset(
+        [
+            "AS",
+            "AU",
+            "CX",
+            "CC",
+            "CK",
+            "FJ",
+            "PF",
+            "GU",
+            "KI",
+            "MH",
+            "FM",
+            "NR",
+            "NC",
+            "NZ",
+            "NU",
+            "NF",
+            "MP",
+            "PW",
+            "PG",
+            "PN",
+            "WS",
+            "SB",
+            "TK",
+            "TO",
+            "TV",
+            "UM",
+            "VU",
+            "WF",
+        ]
+    ),
+}
+ISO_COUNTRIES = frozenset().union(
+    *REGION_COUNTRIES.values(), {"AQ", "BV", "GS", "HM", "IO", "TF"}
+)
+
+
 def matches_query(candidate: PublicCandidate, query: InventoryQuery) -> bool:
     """按产品标签与地理相交匹配；匹配不是客户需求确认。"""
     return (
-        (query.country is None or candidate.country == query.country)
-        and (query.region is None or candidate.country in AFRICA_COUNTRIES)
-        and bool(set(query.product_tags).intersection(candidate.product_tags))
-    )
+        not query.target_countries or candidate.country in query.target_countries
+    ) and bool(set(query.product_tags).intersection(candidate.product_tags))
 
 
 class AcquisitionWorker(Protocol):

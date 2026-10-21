@@ -404,11 +404,22 @@ class PostgresInventoryService(TenantScopedRepository):
         key = _digest(request_key)
         fingerprint = _digest(
             json.dumps(
-                [employee_id, query.model_dump(mode="json"), count], sort_keys=True
+                [
+                    employee_id,
+                    {
+                        key: value
+                        for key, value in query.model_dump(mode="json").items()
+                        if key
+                        not in {"regions", "countries", "intent", "confirmed_refs"}
+                        or value
+                    },
+                    count,
+                ],
+                sort_keys=True,
             )
         )
         now = self.now()
-        fresh = await self.catalog.fresh(query, now)
+        fresh = await self.catalog.fresh(query.public_projection(), now)
         async with self.factory() as session, session.begin():
             quota = await self._quota(session, now)
             existing = (
@@ -785,7 +796,7 @@ class PostgresInventoryService(TenantScopedRepository):
         async with self.factory() as session, session.begin():
             job = await self._leased(session, job_id, lease_token, self.now())
             return await self.catalog.save_public_report(
-                candidates, InventoryQuery.model_validate(job.query)
+                candidates, InventoryQuery.model_validate(job.query).public_projection()
             )
 
     async def record_source_attempt(
@@ -848,7 +859,7 @@ class PostgresInventoryService(TenantScopedRepository):
         if job is None:
             raise ValueError("任务不存在")
         now = self.now()
-        fresh = await self.catalog.fresh(job.query, now)
+        fresh = await self.catalog.fresh(job.query.public_projection(), now)
         async with self.factory() as session, session.begin():
             quota = await self._quota(session, now)
             row = await self._leased(session, job_id, lease_token, now)

@@ -30,6 +30,11 @@ const assignableEmployees = computed(() =>
       ["boss", "manager", "sales"].includes(e.role),
   ),
 );
+type Knowledge = components["schemas"]["KnowledgeDocumentView"];
+const knowledge = ref<Knowledge[]>([]), documentIds = ref<string[]>([]);
+const intent = ref("");
+const knowledgeLoading = ref(false), knowledgeError = ref("");
+const regions = ref<NonNullable<components["schemas"]["InventoryQuery"]["regions"]>>([]);
 const keywords = ref(""),
   market = ref("all"),
   country = ref(""),
@@ -49,6 +54,10 @@ if (pending) {
   market.value = pending.body.query.region ?? "all";
   country.value = pending.body.query.country ?? "";
   count.value = pending.body.count;
+  intent.value = pending.body.query.intent ?? "";
+  regions.value = pending.body.query.regions ?? [];
+  country.value = pending.body.query.countries?.join(",") || country.value;
+  documentIds.value = pending.body.query.confirmed_refs?.map(ref => ref.document_id) ?? [];
   error.value = recovery.durable()
     ? "请求结果暂未确认，请重试原搜索请求。"
     : "请求结果暂未确认，请重试原搜索请求。浏览器存储不可用，刷新页面无法恢复原请求。";
@@ -98,6 +107,10 @@ function stopLabel(reason: string | null | undefined): string {
   );
 }
 function clearProtectedData() {
+  knowledgeLoading.value = false;
+  knowledgeError.value = "";
+  knowledge.value = [];
+  documentIds.value = [];
   nextCursor.value = null;
   loadingMore.value = false;
   status.value = null;
@@ -119,6 +132,8 @@ function invalidateProtectedState() {
   clearProtectedData();
   loading.value = false;
   claiming.value = false;
+  intent.value = "";
+  regions.value = [];
   keywords.value = "";
   market.value = "all";
   country.value = "";
@@ -279,7 +294,8 @@ async function loadMore() {
   }
 }
 async function claim() {
-  if (claiming.value || !status.value) return;
+  if (claiming.value || !status.value || knowledgeLoading.value || knowledgeError.value) return;
+  if (!pending && documentIds.value.length > 5) { error.value = "最多选择5份企业资料"; return; }
   if (!pending) {
     const tags = keywords.value
       .split(/[,，]/)
@@ -289,8 +305,9 @@ async function claim() {
       error.value = "请输入产品关键词";
       return;
     }
-    const code = country.value.trim().toUpperCase();
-    if (code && !/^[A-Z]{2}$/.test(code)) {
+    const codes = country.value.split(/[,，\s]+/).filter(Boolean).map(code => code.toUpperCase());
+    const code = codes.length === 1 ? codes[0] : "";
+    if (codes.some(code => !/^[A-Z]{2}$/.test(code))) {
       error.value = "国家请填写两位代码，如 KE、NG、ZA";
       return;
     }
@@ -301,6 +318,10 @@ async function claim() {
           product_tags: tags,
           region: market.value === "africa" ? "africa" : null,
           country: code || null,
+          ...(codes.length > 1 ? {countries: codes} : {}),
+          ...(regions.value.length ? {regions: regions.value} : {}),
+          ...(intent.value.trim() ? {intent: intent.value.trim()} : {}),
+          ...(documentIds.value.length ? {confirmed_refs: knowledge.value.filter(doc => documentIds.value.includes(doc.document_id)).map(doc => ({document_id: doc.document_id, revision_id: doc.current_revision_id!}))} : {}),
         },
         count: count.value,
       },
@@ -445,8 +466,23 @@ const unsubscribe = client.subscribeIdentity(() => {
   invalidateProtectedState();
   error.value = "";
 });
+async function loadKnowledge() {
+  knowledgeLoading.value = true;
+  knowledgeError.value = "";
+  const epoch = identityEpoch, generation = client.identitySnapshot().generation;
+  try {
+    const {data, response} = await client.GET("/knowledge/documents", {params: {query: {limit: 100}}});
+    if (disposed || epoch !== identityEpoch || generation !== client.identitySnapshot().generation) return;
+    if (response.status === 403) { forbidden(); return; }
+    if (!response.ok || !Array.isArray(data?.items)) { knowledgeError.value = "企业资料列表暂不可用，请刷新重试"; return; }
+    knowledge.value = response.ok && Array.isArray(data?.items) ? data.items.filter(doc => doc.tenant_id === client.identitySnapshot().identity?.tenantId && doc.status === "confirmed" && doc.current_revision_id) : [];
+    if (!pending) documentIds.value = knowledge.value.slice(0,5).map(doc => doc.document_id);
+  } catch { if (!disposed && epoch === identityEpoch) { knowledge.value = []; knowledgeError.value = "企业资料列表暂不可用，请刷新重试"; } }
+  finally { if (!disposed && epoch === identityEpoch && generation === client.identitySnapshot().generation) knowledgeLoading.value = false; }
+}
+function refreshAll() { void loadKnowledge(); void refresh(); }
 onMounted(() => {
-  void refresh();
+  refreshAll();
   timer = setInterval(() => {
     if (
       inProgress.value &&
@@ -481,7 +517,7 @@ onUnmounted(() => {
       <button
         type="button"
         :disabled="loading || claiming"
-        @click="refresh"
+        @click="refreshAll"
       >
         {{ loading ? "刷新中…" : "刷新列表" }}
       </button>
@@ -519,11 +555,38 @@ onUnmounted(() => {
         <option value="all">不限地区</option>
         <option value="africa">非洲</option>
       </select></label>
-      <label>国家代码（可选）<input
+      <label>更多目标地区<select
+        v-model="regions"
+        aria-label="更多目标地区"
+        multiple
+        :disabled="claiming || retrying"
+      >
+        <option value="africa">非洲</option><option value="asia">亚洲</option><option value="europe">欧洲</option><option value="americas">美洲</option><option value="oceania">大洋洲</option>
+      </select></label>
+      <label>已确认企业资料<select
+        v-model="documentIds"
+        aria-label="已确认企业资料"
+        multiple
+        :disabled="claiming || retrying"
+      >
+        <option
+          v-for="doc in knowledge"
+          :key="doc.document_id"
+          :value="doc.document_id"
+        >{{ doc.source.filename }}</option>
+      </select><small>最多5份，仅作为内部匹配上下文；确认不代表正式产品发布。未选择时按公开关键词搜索。</small></label>
+      <label>搜索要求<textarea
+        v-model="intent"
+        aria-label="搜索要求"
+        maxlength="2000"
+        placeholder="例如：优先寻找有维修网络的经销商"
+        :disabled="claiming || retrying"
+      /></label>
+      <label>国家代码（可选，多国用逗号）<input
         v-model="country"
         aria-label="国家代码"
         placeholder="如 KE / NG / ZA"
-        maxlength="2"
+        maxlength="149"
         :disabled="claiming || retrying"
       ></label>
       <label>搜索数量<input
@@ -538,12 +601,21 @@ onUnmounted(() => {
       <button
         type="submit"
         :disabled="
-          claiming || !status || (!retrying && status.remaining_today < 1)
+          claiming || knowledgeLoading || !!knowledgeError || !status || (!retrying && status.remaining_today < 1)
         "
       >
         {{ claiming ? "提交中…" : retrying ? "重试原搜索请求" : "开始搜索" }}
       </button>
     </form>
+    <p
+      v-if="knowledgeError"
+      role="alert"
+    >
+      {{ knowledgeError }}
+    </p>
+    <p v-if="!knowledgeLoading && !knowledgeError && !knowledge.length">
+      当前没有已确认资料，本次按公开关键词搜索；可先在产品资料页上传并确认。
+    </p>
     <p
       v-if="error"
       class="inventory-error"
@@ -780,7 +852,8 @@ onUnmounted(() => {
   min-width: 0;
 }
 .inventory-form input,
-.inventory-form select {
+.inventory-form select,
+.inventory-form textarea {
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 6px;

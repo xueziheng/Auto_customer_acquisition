@@ -8,13 +8,16 @@ from agent_runtime.assistant.reads import CurrentEmployeeIdentity
 from artifact_store.service_impl import RawArtifactStoreImpl
 from domains.assistant.service_impl import ModelConfigurationServiceImpl
 from domains.employees.permissions import Actor, EmployeeScope
+from domains.products.service import EnterpriseKnowledgeServiceImpl
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
+from infra.db.enterprise_knowledge import SqlAlchemyKnowledgeUnitOfWork
 from infra.db.inventory_sources import InventorySources
 from infra.db.model_configuration import SqlModelConfigurationRepository
 from infra.db.prospect_inventory import PostgresInventoryService, PostgresPublicCatalog
 from infra.db.search_quota import PostgresSearchQuotaRepository
 from infra.standalone.settings import deployment_verification
 from shared.schemas.identifiers import RunId, TenantId, new_id
+from workflows.enterprise_knowledge.confirmed_context import ConfirmedContextReader
 
 from .inventory_acquisition import InventoryAcquisitionDriver
 from .inventory_collector import CodexInventoryCollector
@@ -52,6 +55,11 @@ def build_inventory_driver(
         CurrentEmployeeIdentity(core.employee_scope, lookup),
         now=now,
     )
+    context_reader = ConfirmedContextReader(
+        EnterpriseKnowledgeServiceImpl(
+            lambda tenant: SqlAlchemyKnowledgeUnitOfWork(sessions, tenant)
+        )
+    )
     model = InventoryDiscoveryModel(
         tenant_id=tenant_id,
         backend=backend,
@@ -62,6 +70,7 @@ def build_inventory_driver(
         sessions=sessions,
         fingerprints=fingerprints,
         lease_owner=owner,
+        context_reader=context_reader,
     )
     artifacts = RawArtifactStoreImpl(
         lambda tenant: SqlAlchemyArtifactUnitOfWork(sessions, tenant),  # type: ignore[arg-type]
@@ -78,7 +87,20 @@ def build_inventory_driver(
             tenant_id=tenant_id,
             run_id=RunId(str(job.id)),
             user_id=actor.user_id,
-            country=job.query.country or "ZZ",
+            country=(job.query.target_countries or ("ZZ",))[0]
+            if (
+                job.query.regions
+                or job.query.countries
+                or job.query.region not in {None, "africa"}
+            )
+            else job.query.country or "ZZ",
+            countries=job.query.target_countries
+            if (
+                job.query.regions
+                or job.query.countries
+                or job.query.region not in {None, "africa"}
+            )
+            else (),
             category=job.query.product_tags[0],
             guard=guard,
             fingerprints=fingerprints,
@@ -107,6 +129,8 @@ def build_inventory_driver(
         catalog=catalog,
         authority=authority,
         sources=sources,
-        collector=CodexInventoryCollector(tools, model.generate),
+        collector=CodexInventoryCollector(
+            tools, model.generate, context_reader=context_reader
+        ),
         now=now,
     )

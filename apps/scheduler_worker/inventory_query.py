@@ -17,7 +17,11 @@ def _plain_spacing(value: str) -> str:
 
 
 def compose_inventory_query(
-    query: InventoryQuery, strategy: str, supplement: str
+    query: InventoryQuery,
+    strategy: str,
+    supplement: str,
+    *,
+    public_domains: tuple[str, ...] = (),
 ) -> str:
     """完整保留任务首产品/地域/受信策略，仅补充普通词；不扩大查询或证据范围。"""
     if (
@@ -32,8 +36,16 @@ def compose_inventory_query(
     place = (
         COUNTRY_NAMES.get(query.country, query.country)
         if query.country
-        else ("Africa" if query.region == "africa" else "")
+        else (query.region.title() if query.region else "")
     )
+    if query.regions or query.countries:
+        place = (
+            " ".join(COUNTRY_NAMES.get(code, code) for code in query.target_countries)
+            if query.countries
+            else " ".join(
+                sorted(set(query.regions) | ({query.region} if query.region else set()))
+            )
+        )
     fixed = " ".join(
         part
         for part in (
@@ -46,6 +58,26 @@ def compose_inventory_query(
     if not fixed or len(fixed) > 400 or len(fixed.split()) > 50:
         raise ValueError("采集检索条件无效")
     text = _plain_spacing(supplement)
+    if query.confirmed_refs or query.intent:
+        # 私有上下文进入模型后，补充词只能选用户公开锚点、固定策略或本轮已观察域名。
+        allowed = {
+            word.casefold()
+            for word in (" ".join(query.product_tags) + " " + strategy).split()
+        }
+        text = " ".join(
+            word
+            for word in text.split()
+            if word.casefold() in allowed or word.lower() in public_domains
+        )
+        # 保留完整公开域名供官网跟进，拒绝任意字符串拼接外泄。
+        domains = [
+            word.lower() for word in text.split() if word.lower() in public_domains
+        ]
+        text = " ".join(
+            word for word in text.split() if word.lower() not in public_domains
+        )
+    else:
+        domains = []
     words = "".join(
         character if character.isalnum() else " " for character in text
     ).split()
@@ -63,4 +95,8 @@ def compose_inventory_query(
         result += " " + word
         seen.add(normalized)
         count += 1
+    for domain in dict.fromkeys(domains):
+        if count < 50 and len(result) + len(domain) + 1 <= 400:
+            result += " " + domain
+            count += 1
     return result

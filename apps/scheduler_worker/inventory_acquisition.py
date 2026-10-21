@@ -144,7 +144,7 @@ class InventoryAcquisitionDriver:
                 completed_sources = 0
                 for source_id in plan:
                     await guard()
-                    fresh_count = len(await self.catalog.fresh(job.query, self.now()))
+                    fresh_count = len(await self.catalog.fresh(job.query.public_projection(), self.now()))
                     if fresh_count >= target and source_id != plan[-1]:
                         continue
                     try:
@@ -178,7 +178,7 @@ class InventoryAcquisitionDriver:
                         diagnostic=SourceDiagnostic(projection=collected.summary, save=saved),
                     )
                 await guard()
-                if completed_sources == 0 and not await self.catalog.fresh(job.query, self.now()):
+                if completed_sources == 0 and not await self.catalog.fresh(job.query.public_projection(), self.now()):
                     await self.backend.fail_job(self.tenant_id, job.id, token, "collector_failed")
                     return 1
                 await self.backend.deliver_job(self.tenant_id, job.id, token)
