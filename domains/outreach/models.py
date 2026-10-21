@@ -14,6 +14,10 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from domains.outreach.customer_agent_policy import CustomerAgentPolicy
+from domains.outreach.ordinary_dialogue_policy import (
+    OrdinaryDialoguePolicy,
+    OrdinaryDialoguePolicyInput,
+)
 from shared.errors import InvalidStateTransition, ValidationError
 from shared.schemas.identifiers import (
     CampaignId,
@@ -355,6 +359,7 @@ class CampaignBoundary:
     daily_total_message_limit: int
     handoff_triggers: tuple[str, ...]
     stop_on_reply: bool = True
+    ordinary_dialogue_policy: OrdinaryDialoguePolicy | None = None
     customer_agent_policy: CustomerAgentPolicy | None = None
 
     def __post_init__(self) -> None:

@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from domains.approvals.service import ApprovalType, BlastRadius
+from domains.outreach.ordinary_dialogue_policy import OrdinaryDialoguePolicyInput
 from domains.outreach.permissions import (
     Actor as OutreachActor,
 )
@@ -95,6 +96,7 @@ class CampaignBoundaryBody(BaseModel):
     daily_total_message_limit: int = Field(ge=1)
     handoff_triggers: list[str]
     stop_on_reply: bool = True
+    ordinary_dialogue_policy: OrdinaryDialoguePolicyInput | None = None
     customer_agent_policy: CustomerAgentPolicyInput | None = None
 
 
@@ -138,6 +140,7 @@ def _campaign_request(body: CampaignBoundaryBody) -> CampaignCreateRequest:
         daily_total_message_limit=body.daily_total_message_limit,
         handoff_triggers=tuple(body.handoff_triggers),
         stop_on_reply=body.stop_on_reply,
+        ordinary_dialogue_policy=body.ordinary_dialogue_policy,
         customer_agent_policy=body.customer_agent_policy,
     )
 
@@ -164,6 +167,8 @@ def _approval_change(campaign: CampaignView) -> dict[str, object]:
         "daily_total_message_limit": boundary.daily_total_message_limit,
         "handoff_triggers": list(boundary.handoff_triggers),
         "stop_on_reply": boundary.stop_on_reply,
+        **({"ordinary_dialogue_policy": boundary.ordinary_dialogue_policy.model_dump(mode="json")}
+           if boundary.ordinary_dialogue_policy is not None else {}),
         **({"customer_agent_policy": boundary.customer_agent_policy.model_dump(mode="json")}
            if boundary.customer_agent_policy is not None else {}),
     }

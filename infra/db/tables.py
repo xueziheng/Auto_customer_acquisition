@@ -1124,6 +1124,7 @@ class OutreachCampaignVersionRow(Base):
     daily_new_contact_limit: Mapped[int] = mapped_column(Integer)
     daily_total_message_limit: Mapped[int] = mapped_column(Integer)
     handoff_triggers: Mapped[list[str]] = mapped_column(postgresql.JSONB)
+    ordinary_dialogue_policy: Mapped[dict[str, object] | None] = mapped_column(postgresql.JSONB, nullable=True)
     customer_agent_policy: Mapped[dict[str, object] | None] = mapped_column(postgresql.JSONB, nullable=True)
     stop_on_reply: Mapped[bool] = mapped_column(Boolean)
     created_by: Mapped[str] = mapped_column(String(32))

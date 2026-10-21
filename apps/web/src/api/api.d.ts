@@ -3977,6 +3977,7 @@ export interface components {
             markets: string[];
             /** Name */
             name: string;
+            ordinary_dialogue_policy?: components["schemas"]["OrdinaryDialoguePolicyInput"] | null;
             /** Sender Identity Ids */
             sender_identity_ids: string[];
             /** Steps */
@@ -4002,6 +4003,7 @@ export interface components {
             handoff_triggers: string[];
             /** Markets */
             markets: string[];
+            ordinary_dialogue_policy?: components["schemas"]["OrdinaryDialoguePolicy"] | null;
             /** Sender Identity Ids */
             sender_identity_ids: string[];
             /** Steps */
@@ -5529,6 +5531,16 @@ export interface components {
             source_url: string | null;
             /** Status */
             status: string;
+        };
+        /**
+         * DialogueProductRef
+         * @description 须重读客户视图和当前版本的已确认产品引用。
+         */
+        DialogueProductRef: {
+            /** Customer View Sha256 */
+            customer_view_sha256: string;
+            /** Product Id */
+            product_id: string;
         };
         /** DiscoveryConfirmationResponse */
         DiscoveryConfirmationResponse: {
@@ -7741,6 +7753,67 @@ export interface components {
             /** State */
             state: string;
             target_price?: components["schemas"]["Money-Output"] | null;
+        };
+        /**
+         * OrdinaryDialoguePolicy
+         * @description 服务根据实际认证人和时钟补充确认事实，随批准版本不可变保存。
+         */
+        OrdinaryDialoguePolicy: {
+            /** Assessment Ref */
+            assessment_ref: string;
+            /**
+             * Confirmed At
+             * Format: date-time
+             */
+            confirmed_at: string;
+            /** Confirmed By */
+            confirmed_by: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Max Input Bytes */
+            max_input_bytes: number;
+            /** Max Model Calls */
+            max_model_calls: number;
+            /** Max No Progress Rounds */
+            max_no_progress_rounds: number;
+            /** Max Output Tokens */
+            max_output_tokens: number;
+            /** Max Rounds */
+            max_rounds: number;
+            /** Owner Employee Id */
+            owner_employee_id: string;
+            /** Product Refs */
+            product_refs: components["schemas"]["DialogueProductRef"][];
+        };
+        /**
+         * OrdinaryDialoguePolicyInput
+         * @description 真人选择的有界范围；模型调用额度与 token 上限均为独立硬上限。
+         */
+        OrdinaryDialoguePolicyInput: {
+            /** Assessment Ref */
+            assessment_ref: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Max Input Bytes */
+            max_input_bytes: number;
+            /** Max Model Calls */
+            max_model_calls: number;
+            /** Max No Progress Rounds */
+            max_no_progress_rounds: number;
+            /** Max Output Tokens */
+            max_output_tokens: number;
+            /** Max Rounds */
+            max_rounds: number;
+            /** Owner Employee Id */
+            owner_employee_id: string;
+            /** Product Refs */
+            product_refs: components["schemas"]["DialogueProductRef"][];
         };
         /**
          * PlanReferenceBody

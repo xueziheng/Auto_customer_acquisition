@@ -38,6 +38,9 @@ from domains.outreach.models import (
     SuppressionEntry,
     SuppressionReason,
 )
+from domains.outreach.ordinary_dialogue_policy import (
+    OrdinaryDialoguePolicy,
+)
 from domains.outreach.permissions import (
     Actor,
     AuditLogger,
@@ -251,6 +254,8 @@ class OutreachServiceImpl:
     def _boundary(request: CampaignCreateRequest, actor: Actor, now: datetime) -> CampaignBoundary:
         if not isinstance(request, CampaignCreateRequest):
             raise ValidationError("Campaign request 无效")
+        if request.ordinary_dialogue_policy is not None and request.ordinary_dialogue_policy.expires_at <= now:
+            raise ValidationError("普通对话批准范围已过期")
         return CampaignBoundary(
             markets=request.markets,
             target_entity_types=request.target_entity_types,
@@ -264,6 +269,11 @@ class OutreachServiceImpl:
             daily_total_message_limit=request.daily_total_message_limit,
             handoff_triggers=request.handoff_triggers,
             stop_on_reply=request.stop_on_reply,
+            ordinary_dialogue_policy=(
+                OrdinaryDialoguePolicy(**request.ordinary_dialogue_policy.model_dump(),
+                    confirmed_by=EmployeeId(actor.actor_id), confirmed_at=now)
+                if request.ordinary_dialogue_policy is not None else None
+            ),
             customer_agent_policy=(
                 CustomerAgentPolicy(**request.customer_agent_policy.model_dump(),
                     confirmed_by=EmployeeId(actor.actor_id), confirmed_at=now)
@@ -339,6 +349,7 @@ class OutreachServiceImpl:
                 daily_total_message_limit=boundary.daily_total_message_limit,
                 handoff_triggers=tuple(boundary.handoff_triggers),
                 stop_on_reply=boundary.stop_on_reply,
+                ordinary_dialogue_policy=boundary.ordinary_dialogue_policy,
                 customer_agent_policy=boundary.customer_agent_policy,
             ),
             approval_id=(

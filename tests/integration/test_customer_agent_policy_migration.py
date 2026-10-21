@@ -22,7 +22,7 @@ async def test_policy_migration_roundtrip(lifecycle_engine):
         async with engine.connect() as conn:
             columns = await conn.run_sync(lambda c: inspect(c).get_columns("outreach_campaign_versions"))
             assert {c["name"]: c["nullable"] for c in columns} == {
-                c.name: c.nullable for c in Base.metadata.tables["outreach_campaign_versions"].columns
+                c.name: c.nullable for c in Base.metadata.tables["outreach_campaign_versions"].columns if c.name != "ordinary_dialogue_policy"
             }
             assert await conn.scalar(text("SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE relname='outreach_campaign_versions'"))
         _run_alembic(url, "upgrade", "0090")
@@ -43,9 +43,18 @@ async def test_policy_migration_roundtrip(lifecycle_engine):
         async with engine.connect() as conn:
             columns = await conn.run_sync(lambda c: inspect(c).get_columns("outreach_campaign_versions"))
             assert "customer_agent_policy" not in {c["name"] for c in columns}
-        _run_alembic(url, "upgrade", "0089")
+        _run_alembic(url, "upgrade", "0093")
         async with engine.connect() as conn:
             columns = await conn.run_sync(lambda c: inspect(c).get_columns("outreach_campaign_versions"))
+            assert "ordinary_dialogue_policy" in {c["name"] for c in columns}
+        _run_alembic(url, "downgrade", "0092")
+        async with engine.connect() as conn:
+            columns = await conn.run_sync(lambda c: inspect(c).get_columns("outreach_campaign_versions"))
+            assert "ordinary_dialogue_policy" not in {c["name"] for c in columns}
+        _run_alembic(url, "upgrade", "0093")
+        async with engine.connect() as conn:
+            columns = await conn.run_sync(lambda c: inspect(c).get_columns("outreach_campaign_versions"))
+            assert "ordinary_dialogue_policy" in {c["name"] for c in columns}
             assert "customer_agent_policy" in {c["name"] for c in columns}
     finally:
         await engine.dispose()
