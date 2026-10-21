@@ -23,6 +23,7 @@ from connectors.object_store.config import S3ObjectStoreSettings
 from infra.authentication.account_creation import PostgresAccountCreation
 from infra.authentication.service import PostgresAuthentication
 from infra.browser_probe import ungm_probe_enabled
+from infra.db.inventory_search_readiness import InventorySearchReadinessReader
 from infra.db.inventory_sources import InventorySources
 from infra.db.model_configuration import SqlModelConfigurationRepository
 from infra.db.platform_access import EnterpriseReaderBinding
@@ -226,6 +227,7 @@ def create_standalone_app(
                 sessions, TenantId(profile.tenant_id), now=lambda: datetime.now(UTC),
             ),
             search_policy=settings.inventory_search,
+            search_readiness=InventorySearchReadinessReader(sessions, TenantId(profile.tenant_id), settings).read,
             configured=(settings.research is not None
                         and settings.research.exclusive_account_confirmed),
         )

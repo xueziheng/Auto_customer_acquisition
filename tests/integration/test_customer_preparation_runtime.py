@@ -247,6 +247,9 @@ async def test_actual_request_and_singleton_prepare_with_sending_disabled(integr
             external.pages += 1
             return PublicPageResponse(url,b"<p>Acme Ltd. We distribute hinges.</p><p>Address: United States</p><p>Sales sales@acme.com.</p>")
         external.fetch = fetch
+    if deepseek_search:
+        from infra.db.inventory_search_readiness import InventorySearchReadinessReader
+        assert (await InventorySearchReadinessReader(sessions, tenant, settings).read(tenant, settings.inventory_search)).connection_status == "passed"
     repository = SqlModelConfigurationRepository(sessions,fingerprints)
     await repository.initialize(tenant,settings.configuration_version,settings.model,settings.limits,True)
     for process in ("api","scheduler"):

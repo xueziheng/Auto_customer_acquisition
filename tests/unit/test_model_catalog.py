@@ -70,3 +70,26 @@ def test_edit_does_not_replace_running_binding_or_inherit_agent_test(tmp_path):
     assert store.for_run("company-a", "run-1", "actor", "policy").model == "alpha"
     with pytest.raises(DataSourceConflict):
         store.bind(TenantId("platform"), "admin", "company-b", a.id, changed.revision, 0)
+
+
+def test_bound_view_is_read_only_without_run_pin_or_key_read(tmp_path, monkeypatch):
+    store = catalog(tmp_path)
+    assert store.bound_view(TenantId("platform"), TenantId("company-a")) is None
+    assert not store.directory.exists()
+    item = verify(store, create(store))
+    store.bind(TenantId("platform"), "admin", "company-a", item.id, item.revision, 0)
+    before = {str(p.relative_to(store.directory)): p.read_bytes() for p in store.directory.rglob("*") if p.is_file()}
+    from infra import model_catalog
+    original = model_catalog.private_read
+    def metadata_only(path):
+        assert path.name == "catalog.json"
+        return original(path)
+    monkeypatch.setattr(model_catalog, "private_read", metadata_only)
+    monkeypatch.setattr(store, "for_run", lambda *a: pytest.fail("GET不能创建run pin"))
+    assert store.bound_view(TenantId("platform"), TenantId("company-a")).configuration_version == item.configuration_version
+    assert store.bound_view(TenantId("platform"), TenantId("company-b")) is None
+    with pytest.raises(DataSourceUnavailable):
+        store.bound_view(TenantId("other"), TenantId("company-a"))
+    after = {str(p.relative_to(store.directory)): p.read_bytes() for p in store.directory.rglob("*") if p.is_file()}
+    assert after == before
+    assert not (store.directory / "runs").exists()

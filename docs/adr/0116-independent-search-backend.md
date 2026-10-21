@@ -27,3 +27,8 @@ Codex CLI 负责选择公开搜索与页面工具，但模型生成的链接不�
 `scripts/diagnose_free_sources.py` 是具名 SYSTEM 来源样本诊断，固定工具与公开查询，通过原 Gateway 和真实 HMAC/免费额度服务。一次性本地 journal 在请求前落盘，最多6次供应商 HTTP，最多各一次搜索，零页面、模型、联系人或 Campaign 写入。DeepSeek 只有新鲜 CNY 赠金额足够一次请求，且全部币种均无充值、金额一致有效时才可搜索；混合余额、未知币种和资格不明只报告 metadata/not_run。Tavily 沿原账户独占与免费 quota；TED 为匿名公开通知 API。技术账本与免费 quota 正常累计，不为诊断放宽通用 authorizer。
 
 该诊断只证明来源连通或样本，不证明完整客户获取、需求验证或部署完成。合成 API/worker/数据库闭环、真实来源样本与未运行项须分别记录；不得把合成模型、页面或联系人传输当成真实供应商验收。
+
+
+## 只读来源状态投影（评审修复）
+
+API与worker使用同一只读连接/执行状态reader。只读取当前企业平台绑定的归档非秘密元数据，不调用for_run、不创建目录或pin、不解析Key、不请求供应商。`availability=available`只表示当前官方已验证连接及明确政策可调度；不表示搜索已经实测。`search_backend.search_execution_state`单独报告not_run/running/succeeded/failed/unknown，running要求原调用租约仍有效，过期在途为unknown。当前连接或完整政策变化不继承旧执行结果；历史failed/unknown不构成企业全局授权锁，原job的未知禁止重派仍由原预算/started边界负责。该投影不新增健康监测或探针。

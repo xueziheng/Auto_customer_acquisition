@@ -31,3 +31,13 @@ class SearchBackendPin(BaseModel):
     backend_id: Literal["deepseek", "tavily"]
     connection_version: str = Field(min_length=1, max_length=128)
     policy_version: str = Field(min_length=1, max_length=128)
+
+
+class SearchBackendReadiness(BaseModel):
+    """可调度资格和实际搜索执行分开；版本只是安全元数据，不是Key引用。"""
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    backend_id: Literal["deepseek"] = "deepseek"
+    connection_version: str | None = None
+    policy_version: str
+    connection_status: Literal["not_configured", "not_run", "passed", "failed"] = "not_configured"
+    search_execution_state: Literal["not_run", "running", "succeeded", "failed", "unknown"] = "not_run"

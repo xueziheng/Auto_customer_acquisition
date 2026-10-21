@@ -28,6 +28,7 @@ from shared.schemas.identifiers import (
     TenantId,
 )
 from shared.schemas.provenance import Provenance, SourceType
+from shared.schemas.search_backend import SearchBackendReadiness
 
 from .inventory_fit import InventoryFitBatch
 from .projection_diagnostic import SaveSummary, SourceDiagnostic
@@ -378,6 +379,7 @@ class SourceState(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     source_id: str
+    search_backend: SearchBackendReadiness | None = None
     availability: Literal[
         "available",
         "not_configured",

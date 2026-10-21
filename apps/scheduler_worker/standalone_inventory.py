@@ -1,5 +1,6 @@
 """独立后台库存机械装配；显式注入控制库、公司库和研究端口。"""
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -11,10 +12,12 @@ from connectors.deepseek_search.transport import DeepSeekSearchApiTransport
 from domains.assistant.service_impl import ModelConfigurationServiceImpl
 from domains.employees.permissions import Actor, EmployeeScope
 from domains.products.service import EnterpriseKnowledgeServiceImpl
+from domains.prospecting.service import AcquisitionJob
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.customer_assignment import CustomerAssignmentBridge
 from infra.db.enterprise_knowledge import SqlAlchemyKnowledgeUnitOfWork
 from infra.db.inventory_search_budget import InventorySearchBudget
+from infra.db.inventory_search_readiness import InventorySearchReadinessReader
 from infra.db.inventory_sources import InventorySources
 from infra.db.model_configuration import SqlModelConfigurationRepository
 from infra.db.prospect_inventory import PostgresInventoryService, PostgresPublicCatalog
@@ -35,7 +38,7 @@ from .inventory_model import (
     InventoryModelAuthority,
 )
 from .inventory_ports import InventoryRuntimePorts
-from .inventory_web import build_inventory_web
+from .inventory_web import InventoryWebTools, build_inventory_web
 
 
 def build_inventory_driver(
@@ -98,9 +101,11 @@ def build_inventory_driver(
         new_id,
     )
 
-    async def deepseek(job, source, guard):
+    async def deepseek(job: AcquisitionJob, source: str, guard: Callable[[], Awaitable[None]]) -> DeepSeekSearchReaderFactory:
         if policy is None or policy.backend_id != "deepseek" or not policy.paid_search_enabled:
             raise ValueError("独立搜索付费许可未开启")
+        if job.lease_token is None:
+            raise ValueError("搜索任务缺少租约")
         auth = InventoryModelAuthority(job=job, source_id=source,
             configuration_version=settings.configuration_version, backend=backend,
             employees=core.employee_scope, configuration=configuration, context_reader=context_reader)
@@ -116,7 +121,7 @@ def build_inventory_driver(
             policy_version=policy.version)
         budget = InventorySearchBudget(sessions, tenant_id, job.id, job.lease_token, pin, policy, now=now)
         await budget.bind()
-        async def current_guard():
+        async def current_guard() -> None:
             await guard()
             await auth.check(identity)
             current = resolve_task_model(settings, identity)
@@ -127,14 +132,16 @@ def build_inventory_driver(
             base_url=selected.api_base_url)
         return DeepSeekSearchReaderFactory(tenant_id, RunId(str(job.id)), source, connector, budget, current_guard)
 
-    async def tavily_budget(job):
+    async def tavily_budget(job: AcquisitionJob) -> InventorySearchBudget:
+        if job.lease_token is None:
+            raise ValueError("搜索任务缺少租约")
         effective = policy or InventorySearchPolicy(version=settings.configuration_version, backend_id="tavily",maximum_requests=24)
         pin = SearchBackendPin(backend_id="tavily",connection_version=settings.configuration_version,policy_version=effective.version)
         budget = InventorySearchBudget(sessions,tenant_id,job.id,job.lease_token,pin,effective,now=now)
         await budget.bind()
         return budget
 
-    async def tools(job, source, guard):
+    async def tools(job: AcquisitionJob, source: str, guard: Callable[[], Awaitable[None]]) -> InventoryWebTools:
         actor = await authority.actor(tenant_id, job.employee_id)
         bound = await deepseek(job, source, guard) if policy is not None and policy.backend_id == "deepseek" else None
         if bound is None and research is None:
@@ -171,7 +178,7 @@ def build_inventory_driver(
             now=now,
         )
 
-    async def probe(job, guard):
+    async def probe(job: AcquisitionJob, guard: Callable[[], Awaitable[None]]) -> None:
         if policy is not None and policy.backend_id == "deepseek":
             await deepseek(job, "company_websites", guard)
         else:
@@ -185,6 +192,7 @@ def build_inventory_driver(
         quota=PostgresSearchQuotaRepository(sessions, tenant_id, now=now),
         configured=research is not None and research.exclusive_account_confirmed,
         search_policy=policy,
+        search_readiness=InventorySearchReadinessReader(sessions, tenant_id, settings).read,
         bind_search=tavily_budget if research is not None and (policy is None or policy.backend_id == "tavily") else None,
         probe=probe,
     )

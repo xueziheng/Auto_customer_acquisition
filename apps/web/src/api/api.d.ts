@@ -9955,6 +9955,34 @@ export interface components {
             sort_key: components["schemas"]["SortKey"];
         };
         /**
+         * SearchBackendReadiness
+         * @description 可调度资格和实际搜索执行分开；版本只是安全元数据，不是Key引用。
+         */
+        SearchBackendReadiness: {
+            /**
+             * Backend Id
+             * @default deepseek
+             * @constant
+             */
+            backend_id: "deepseek";
+            /**
+             * Connection Status
+             * @default not_configured
+             * @enum {string}
+             */
+            connection_status: "not_configured" | "not_run" | "passed" | "failed";
+            /** Connection Version */
+            connection_version?: string | null;
+            /** Policy Version */
+            policy_version: string;
+            /**
+             * Search Execution State
+             * @default not_run
+             * @enum {string}
+             */
+            search_execution_state: "not_run" | "running" | "succeeded" | "failed" | "unknown";
+        };
+        /**
          * SendFailureCategory
          * @enum {string}
          */
@@ -10050,6 +10078,7 @@ export interface components {
             last_used_at?: string | null;
             /** Relevant */
             relevant: boolean;
+            search_backend?: components["schemas"]["SearchBackendReadiness"] | null;
             /** Source Id */
             source_id: string;
             /**
