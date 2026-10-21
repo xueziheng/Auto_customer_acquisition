@@ -56,10 +56,10 @@ async function submit(resume=false) {
   const failed = !resume && view.value?.requires_cost_confirmation;
   if(failed && (!acknowledgeCost.value || view.value?.expected_sequence == null))return;
   if(failed && !failedSubmission.value){
-    failedSubmission.value={key:crypto.randomUUID(),expected_sequence:view.value!.expected_sequence!,acknowledge_cost:true};
+    failedSubmission.value={key:globalThis.crypto.randomUUID(),expected_sequence:view.value!.expected_sequence!,acknowledge_cost:true};
   }
   const requestKey=resume ? resumeKey : key;
-  if(!requestKey.value)requestKey.value=crypto.randomUUID();
+  if(!requestKey.value)requestKey.value=globalThis.crypto.randomUUID();
   pending.value=true; message.value="正在提交重新识别";
   try {
     const result = failed && failedSubmission.value

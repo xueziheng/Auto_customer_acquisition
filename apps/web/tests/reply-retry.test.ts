@@ -1,6 +1,9 @@
 import { createApp, nextTick } from "vue";
 import { describe, it, expect, vi } from "vitest";
+import type { components } from "../src/api/api";
 import ReplyRetry from "../src/views/inbox/ReplyRetry.vue";
+
+type RetryResult = { data: Partial<components["schemas"]["ReplyRetryView"]> | undefined; response: Response };
 
 async function flush() { for(let i=0;i<8;i++) { await nextTick(); await Promise.resolve(); } }
 function fixture(unknown=false) {
@@ -9,7 +12,7 @@ function fixture(unknown=false) {
   const client={
     identitySnapshot:()=>({identity:{tenantId:"tenant",employeeId:"owner",mode:"fixed-dev"},generation}),
     subscribeIdentity:(fn:()=>void)=>{listener=fn;return ()=>{};},
-    GET:vi.fn(async()=>({data:{message_id:"msg_test",state:"eligible",reason:"not_dispatched",can_retry:true},response:new Response()})),
+    GET:vi.fn(async(): Promise<RetryResult>=>({data:{message_id:"msg_test",state:"eligible",reason:"not_dispatched",can_retry:true},response:new Response()})),
     POST:vi.fn(async()=>{if(unknown)throw new Error("unknown");return {data:{message_id:"msg_test",state:"queued",reason:"manual_recovery",can_retry:false},response:new Response()};}),
   };
   const root=document.createElement("div");document.body.append(root);
@@ -42,7 +45,7 @@ describe("reply classification recovery",()=>{
  it("legacy test expiry can be continued once; normal requests show no continuation",async()=>{
     const f=fixture(true);try {
       await flush();expect(f.root.textContent).not.toContain("继续未开始的识别");
-      f.client.GET.mockResolvedValue({data:{message_id:"msg_test",state:"expired",reason:"manual_recovery",can_retry:false,can_resume:true,resumed:false} as any,response:new Response()});
+      f.client.GET.mockResolvedValue({data:{message_id:"msg_test",state:"expired",reason:"manual_recovery",can_retry:false,can_resume:true,resumed:false},response:new Response()});
       Array.from(f.root.querySelectorAll("button")).find(b=>b.textContent==="刷新识别状态")!.click();await flush();
       const button=Array.from(f.root.querySelectorAll("button")).find(b=>b.textContent==="继续未开始的识别")!;
       expect(button).toBeDefined();button.click();button.click();await flush();
@@ -59,7 +62,7 @@ describe("reply classification recovery",()=>{
  it("stopped failure requires cost confirmation and submits the observed attempt",async()=>{
    const f=fixture();try {
      await flush();
-     f.client.GET.mockResolvedValue({data:{message_id:"msg_test",state:"failed",reason:"manual_recovery",can_retry:true,expected_sequence:1,requires_cost_confirmation:true} as any,response:new Response()});
+     f.client.GET.mockResolvedValue({data:{message_id:"msg_test",state:"failed",reason:"manual_recovery",can_retry:true,expected_sequence:1,requires_cost_confirmation:true},response:new Response()});
      Array.from(f.root.querySelectorAll("button")).find(b=>b.textContent==="刷新识别状态")!.click();await flush();
      const checkbox=f.root.querySelector<HTMLInputElement>('input[type="checkbox"]');
      expect(checkbox).not.toBeNull();
@@ -77,7 +80,7 @@ describe("reply classification recovery",()=>{
  it("a newer failed attempt resets consent while same-attempt uncertainty keeps its key",async()=>{
    const f=fixture(true);try {
      await flush();
-     const observed=(sequence:number)=>({data:{message_id:"msg_test",state:"failed",reason:"manual_recovery",can_retry:true,expected_sequence:sequence,requires_cost_confirmation:true} as any,response:new Response()});
+     const observed=(sequence:number): RetryResult=>({data:{message_id:"msg_test",state:"failed",reason:"manual_recovery",can_retry:true,expected_sequence:sequence,requires_cost_confirmation:true},response:new Response()});
      const refresh=async()=>{Array.from(f.root.querySelectorAll("button")).find(b=>b.textContent==="刷新识别状态")!.click();await flush();};
      const consent=async()=>{const c=f.root.querySelector<HTMLInputElement>('input[type="checkbox"]')!;c.checked=true;c.dispatchEvent(new Event("change",{bubbles:true}));await flush();};
      f.client.GET.mockResolvedValue(observed(1));await refresh();await consent();
@@ -102,10 +105,10 @@ describe("reply classification recovery",()=>{
    const f=fixture();try {
      await flush();
      const refresh=async()=>{Array.from(f.root.querySelectorAll("button")).find(b=>b.textContent==="刷新识别状态")!.click();await flush();};
-     f.client.GET.mockResolvedValue({data:{message_id:"msg_test",state:"failed",can_retry:true,expected_sequence:1,requires_cost_confirmation:true} as any,response:new Response()});await refresh();
+     f.client.GET.mockResolvedValue({data:{message_id:"msg_test",state:"failed",can_retry:true,expected_sequence:1,requires_cost_confirmation:true},response:new Response()});await refresh();
      const c=f.root.querySelector<HTMLInputElement>('input[type="checkbox"]')!;c.checked=true;c.dispatchEvent(new Event("change",{bubbles:true}));await flush();
-     f.client.GET.mockResolvedValue({data: mode === "running" ? {message_id:"msg_test",state:"running",can_retry:false,expected_sequence:null} as any : undefined,response:new Response(null,{status:mode === "running" ? 200 : 503})} as any);await refresh();
-     f.client.GET.mockResolvedValue({data:{message_id:"msg_test",state:"failed",can_retry:true,expected_sequence:2,requires_cost_confirmation:true} as any,response:new Response()});await refresh();
+     f.client.GET.mockResolvedValue({data: mode === "running" ? {message_id:"msg_test",state:"running",can_retry:false,expected_sequence:null} : undefined,response:new Response(null,{status:mode === "running" ? 200 : 503})});await refresh();
+     f.client.GET.mockResolvedValue({data:{message_id:"msg_test",state:"failed",can_retry:true,expected_sequence:2,requires_cost_confirmation:true},response:new Response()});await refresh();
      expect(f.root.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(false);
      expect(f.client.POST).not.toHaveBeenCalled();
    }finally{f.close();}
