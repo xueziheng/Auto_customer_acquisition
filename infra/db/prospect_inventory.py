@@ -1134,7 +1134,9 @@ class PostgresInventoryService(TenantScopedRepository):
                 row.remaining_count,
                 now,
             )
-            exhausted = False
+            exhausted = (
+                row.collection_deadline is not None and row.collection_deadline <= now
+            )
             if row.source_plan:
                 attempts = (
                     await session.scalars(
@@ -1143,7 +1145,9 @@ class PostgresInventoryService(TenantScopedRepository):
                         )
                     )
                 ).all()
-                exhausted = set(row.source_plan) <= {a.source_id for a in attempts}
+                exhausted = exhausted or set(row.source_plan) <= {
+                    a.source_id for a in attempts
+                }
             row.updated_at = now
             row.remaining_count -= count
             row.status = (

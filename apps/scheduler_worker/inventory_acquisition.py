@@ -130,6 +130,10 @@ class LeaseLost(ValueError):
     """旧任务不再具有任何写权限。"""
 
 
+class CollectionDeadlineReached(Exception):
+    """来源恢复期限已到，仅允许复用持久结果交付。"""
+
+
 class InventoryAcquisitionDriver:
     def __init__(
         self,
@@ -158,9 +162,10 @@ class InventoryAcquisitionDriver:
         """每天额度耗尽只读持久状态等待重置；崩溃后的未知调用禁止再次派发。"""
         if (await self.backend.status(self.tenant_id)).remaining_today == 0:
             return 0
-        job = await self.backend.claim_job(self.tenant_id, timedelta(minutes=10))
-        if job is None:
+        claimed = await self.backend.claim_job(self.tenant_id, timedelta(minutes=10))
+        if claimed is None:
             return 0
+        job: AcquisitionJob = claimed
         token = job.lease_token
         if token is None:
             raise LeaseLost("采集租约缺失")
@@ -197,6 +202,14 @@ class InventoryAcquisitionDriver:
                 )
             ):
                 raise PermissionDenied("采集员工权限已失效")
+
+        async def external_guard() -> None:
+            await guard()
+            if (
+                job.collection_deadline is not None
+                and job.collection_deadline <= self.now()
+            ):
+                raise CollectionDeadlineReached
 
         async def fit_candidates() -> tuple[PublicCandidate, ...]:
             if self.fit_model is None:
@@ -242,12 +255,12 @@ class InventoryAcquisitionDriver:
                         break
                 if not batch_candidates:
                     return selected
-                await guard()
+                await external_guard()
                 batch = await self.backend.reserve_fit_batch(
                     self.tenant_id, job.id, token, batch_candidates
                 )
                 decisions = await self.fit_model.evaluate(
-                    job, batch, batch_candidates, guard
+                    job, batch, batch_candidates, external_guard
                 )
                 await guard()
                 await self.backend.complete_fit_batch(
@@ -260,7 +273,7 @@ class InventoryAcquisitionDriver:
             return selected_fit_candidates(fresh, current.fit_batches, job.query)
 
         try:
-            await guard()
+            await external_guard()
             private = job.query.requires_private_fit
             selected = await fit_candidates() if private else ()
             if private and len(selected) >= job.remaining_count and not job.source_plan:
@@ -276,7 +289,8 @@ class InventoryAcquisitionDriver:
             if not plan:
                 prepare = getattr(self.sources, "prepare", None)
                 if prepare is not None:
-                    await prepare(job, guard)
+                    await external_guard()
+                    await prepare(job, external_guard)
                 plan = tuple(
                     select_sources(
                         list(await self.sources.list_sources(self.tenant_id)), 3
@@ -287,15 +301,7 @@ class InventoryAcquisitionDriver:
                     job = await self.backend.initialize_source_plan(
                         self.tenant_id, job.id, token, plan
                     )
-            if (
-                job.collection_deadline is not None
-                and job.collection_deadline <= self.now()
-            ):
-                await guard()
-                await self.backend.fail_job(
-                    self.tenant_id, job.id, token, "budget_exhausted"
-                )
-                return 1
+            await external_guard()
             progress = await self.backend.source_progress(self.tenant_id, job.id, token)
             if not plan and private and selected:
                 await guard()
@@ -332,12 +338,7 @@ class InventoryAcquisitionDriver:
                         continue
 
                     async def source_guard(source_id: str = source_id) -> None:
-                        await guard()
-                        if (
-                            job.collection_deadline is None
-                            or self.now() >= job.collection_deadline
-                        ):
-                            raise PermissionDenied("采集恢复期限已到")
+                        await external_guard()
                         available = await self.sources.list_sources(self.tenant_id)
                         if not any(
                             s.source_id == source_id
@@ -361,7 +362,7 @@ class InventoryAcquisitionDriver:
                             )
                     except asyncio.CancelledError:
                         raise
-                    except (LeaseLost, PermissionDenied):
+                    except (LeaseLost, PermissionDenied, CollectionDeadlineReached):
                         raise
                     except Exception as error:  # noqa: BLE001 -- 一站失败不取消预留探索，但未知调用绝不重试。
                         await guard()
@@ -410,6 +411,9 @@ class InventoryAcquisitionDriver:
                 await self.backend.deliver_job(self.tenant_id, job.id, token)
         except asyncio.CancelledError:
             raise
+        except CollectionDeadlineReached:
+            await guard()
+            await self.backend.deliver_job(self.tenant_id, job.id, token)
         except LeaseLost:
             return 1
         except PermissionDenied:
