@@ -3,6 +3,7 @@ import asyncio
 import json
 import ssl
 import subprocess
+import sys
 import threading
 from dataclasses import replace
 from time import monotonic
@@ -15,6 +16,9 @@ from shared.schemas.qq_trial import QQTrialStopped
 from tests.unit.qq_p1_imap import p1_mailbox
 from tests.unit.test_qq_sent_collect import SyntheticSecret, allowed, headers, request
 
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux", reason="需 Linux prctl 父进程保护；独立 Linux 容器验收"
+)
 
 def assert_reaped(mailbox):
     assert mailbox["processes"]

@@ -1,4 +1,6 @@
 """收件方原件保留真实来源；固定自有邮箱、逐次授权、单 UID，无正文读取。"""
+import sys
+
 import pytest
 
 from connectors.qq_mail.sent_alias import verify_sent_alias
@@ -7,6 +9,9 @@ from shared.schemas.qq_trial import QQTrialScope, QQTrialStopped
 from tests.unit.test_qq_alias_folding import CANONICAL, MARKER, PROVIDER, header
 from tests.unit.test_qq_bounded_trial import trial_scope
 
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux", reason="需 Linux prctl 父进程保护；独立 Linux 容器验收"
+)
 
 def delivery():
     return {'employee_id':'emp_receipt','user_id':'usr_receipt',

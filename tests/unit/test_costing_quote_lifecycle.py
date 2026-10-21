@@ -622,3 +622,17 @@ def fixture_main(scenario, artifacts):
 if __name__ == "__main__":
     assert sys.argv[1] == "--fixture"
     raise SystemExit(fixture_main(sys.argv[2], Path(sys.argv[3])))
+
+
+@pytest.mark.parametrize("has_unreaped", [False, True])
+async def test_process_tree_inspection_timeout_never_proves_cleanup(monkeypatch, has_unreaped):
+    tree = lifecycle.ProcessTree(42)
+    if has_unreaped:
+        tree.unreaped = {42: {"state": "Z"}}
+
+    async def timed_out(deadline):
+        raise TimeoutError
+
+    monkeypatch.setattr(tree, "refresh", timed_out)
+    assert not await tree.wait_reaped(time.monotonic() + 1)
+    assert bool(tree.unreaped) is has_unreaped

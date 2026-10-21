@@ -122,7 +122,11 @@ class ProcessTree:
     async def wait_reaped(self, deadline):
         """等已观察子孙退出且PID回收；不抢asyncio或其他父进程的waitpid。"""
         while time.monotonic() < deadline - .05:
-            await self.refresh(deadline)
+            try:
+                await self.refresh(deadline)
+            except TimeoutError:
+                # 超时没有得到新进程快照，不能把旧空状态当作回收证明。
+                return False
             if not self.live and not self.unreaped:
                 return True
             await asyncio.sleep(min(.02, max(0, deadline - time.monotonic() - .05)))
