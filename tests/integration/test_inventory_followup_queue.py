@@ -95,9 +95,9 @@ async def test_allocation_atomic_queue_and_replay(inventory, immediate):
     assert recovered.lease_token != claim.lease_token
     with pytest.raises(PermissionDenied):
         await service.checkpoint_preparation(tenant, claim, stage="assign")
-    await service.checkpoint_preparation(
-        tenant, recovered, stage="verify", external_started=True
-    )
+    recovered = await service.checkpoint_preparation(tenant, recovered, stage="assign")
+    recovered = await service.checkpoint_preparation(tenant, recovered, stage="evidence", result_refs={"account_id": new_id("acc")}, ownership_locked_at=NOW)
+    await service.checkpoint_preparation(tenant, recovered, stage="evidence", external_started=True)
     service.now = lambda: NOW + timedelta(minutes=22)
     assert await service.claim_preparation(tenant) is None
     async with factory() as session:

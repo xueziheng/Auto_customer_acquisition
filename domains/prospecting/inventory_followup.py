@@ -34,15 +34,30 @@ class InventoryFollowupAuthority(Protocol):
         ...
 
 
-class PreparationClaim(BaseModel):
+class PreparationBinding(BaseModel):
     """持久任务租约，旧令牌或版本不能推进；result_refs仅容纳安全实体标识。"""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     tenant_id: TenantId
     allocation_id: str
     request_key_hash: str
+    authorization: InventoryFollowupAuthorization
+    result_refs: dict[str, str]
+    ownership_locked_at: AwareDatetime | None = None
+
+
+class PreparationClaim(PreparationBinding):
+    """正在执行的租约；发送检查只读取Binding，不伪造processing授权。"""
     lease_token: str
     version: int
     stage: str
-    authorization: InventoryFollowupAuthorization
-    result_refs: dict[str, str]
+
+
+PREPARATION_BLOCK_REASONS = frozenset({
+    "authorization_revoked", "authorization_changed", "ownership_changed",
+    "evidence_unavailable", "evidence_invalid", "product_fit_missing",
+    "contact_basis_missing", "country_policy_denied", "country_policy_unavailable",
+    "country_policy_requirement_unsupported", "verification_unavailable",
+    "verification_failed", "privacy_requested", "sender_unavailable",
+    "enrollment_denied", "external_reconciliation_required", "preparation_failed",
+})

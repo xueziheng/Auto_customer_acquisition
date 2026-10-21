@@ -573,49 +573,43 @@ class PostgresInventoryService(TenantScopedRepository):
                     request_key_hash=row.key_hash, lease_token=row.lease_token,
                     version=row.version, stage=row.stage,
                     authorization=InventoryFollowupAuthorization.model_validate(request.authorization),
-                    result_refs=row.result_refs,
+                    result_refs=row.result_refs, ownership_locked_at=row.ownership_locked_at,
                 )
         return None
+
+    async def require_preparation_claim(self, tenant_id: TenantId, claim: PreparationClaim) -> None:
+        """外部动作前重新核对同租户当前租约及撤销标记。"""
+        from infra.db.customer_preparation_state import lock_claim
+        self._check(tenant_id)
+        async with self.factory() as session, session.begin():
+            await lock_claim(session, tenant_id, claim, self.now())
+
+    async def block_preparation(self, tenant_id: TenantId, claim: PreparationClaim, *, reason: str) -> None:
+        """仅保存固定原因，不保存外部响应、客户原文或异常消息。"""
+        from domains.prospecting.inventory_followup import PREPARATION_BLOCK_REASONS
+        from infra.db.customer_preparation_state import lock_claim
+        self._check(tenant_id)
+        if reason not in PREPARATION_BLOCK_REASONS:
+            raise ValueError("准备阻断原因无效")
+        async with self.factory() as session, session.begin():
+            row = await lock_claim(session, tenant_id, claim, self.now(), allow_revoked=True)
+            row.state, row.blocked_reason = "blocked", reason
+            row.lease_until, row.lease_token = None, None
+            row.version += 1
+            row.updated_at = self.now()
 
     async def checkpoint_preparation(
         self, tenant_id: TenantId, claim: PreparationClaim, *, stage: str,
         result_refs: dict[str, str] | None = None, external_started: bool = False,
+        ownership_locked_at: datetime | None = None,
     ) -> PreparationClaim:
-        """同事务比较租约和CAS；外部未知标记仅由持有者明确完成时消除。"""
+        """同事务比较租约、阶段和CAS；已有归属版本或引用不可覆盖。"""
+        from infra.db.customer_preparation_state import checkpoint, lock_claim
         self._check(tenant_id)
-        if claim.tenant_id != tenant_id or stage not in {
-            "authorize", "assign", "evidence", "contact", "verify", "enroll", "completed",
-        }:
-            raise PermissionDenied("准备任务检查点无效")
-        refs = result_refs or {}
-        prefixes = {"account_id": "acc", "signal_id": "sig", "hypothesis_id": "hyp",
-                    "contact_point_id": "cp", "enrollment_id": "enr"}
-        import re
-        if any(k not in prefixes or re.fullmatch(rf"{prefixes[k]}_[0-7][0-9A-HJKMNP-TV-Z]{{25}}", v) is None for k, v in refs.items()):
-            raise ValueError("准备任务只允许安全实体引用")
-        now = self.now()
         async with self.factory() as session, session.begin():
-            row = (await session.scalars(self.scoped_query(CustomerPreparationItemRow).where(
-                CustomerPreparationItemRow.allocation_id == claim.allocation_id,
-            ).with_for_update())).one_or_none()
-            if row is None or row.state != "processing" or row.lease_token != claim.lease_token or row.version != claim.version or row.lease_until is None or row.lease_until <= now:
-                raise PermissionDenied("准备任务租约已失效")
-            request = (await session.scalars(self.scoped_query(InventoryFollowupRequestRow).where(
-                InventoryFollowupRequestRow.key_hash == row.key_hash,
-            ))).one()
-            if request.revoked:
-                raise PermissionDenied("准备任务授权已撤销")
-            if any(k in row.result_refs and row.result_refs[k] != v for k, v in refs.items()):
-                raise PermissionDenied("准备任务引用不可改写")
-            merged = row.result_refs | refs
-            if stage == "completed" and (external_started or "enrollment_id" not in merged):
-                raise PermissionDenied("没有实际入组不能完成准备任务")
-            row.result_refs, row.stage, row.external_started = merged, stage, external_started
-            row.version += 1
-            row.updated_at = now
-            if stage == "completed":
-                row.state = "enrolled"
-            return claim.model_copy(update={"version": row.version, "stage": stage, "result_refs": merged})
+            row = await lock_claim(session, tenant_id, claim, self.now())
+            return checkpoint(row, claim, stage=stage, now=self.now(), result_refs=result_refs,
+                              external_started=external_started, ownership_locked_at=ownership_locked_at)
 
     async def list_allocations(
         self,
@@ -690,80 +684,106 @@ class PostgresInventoryService(TenantScopedRepository):
         self._check(tenant_id)
         validate_assignment_ids(allocation_ids)
         async with self.factory() as session, session.begin():
-            await self._quota(session, self.now())
-            employees = (
-                await session.scalars(
-                    self.scoped_query(EmployeeRow)
-                    .where(
-                        EmployeeRow.employee_id.in_({employee_id, acting_employee_id})
-                    )
-                    .order_by(EmployeeRow.employee_id)
-                    # NO KEY UPDATE仍阻止角色/在职更改，兼容归属外键的KEY SHARE。
-                    .with_for_update(key_share=True)
+            return await self._assign_locked(session, tenant_id, allocation_ids, employee_id, acting_employee_id)
+
+    async def _assign_locked(self, session: AsyncSession, tenant_id: TenantId,
+                             allocation_ids: tuple[CandidateAllocationId, ...], employee_id: EmployeeId,
+                             acting_employee_id: EmployeeId) -> tuple[CandidateAllocation, ...]:
+        """人工与受托分配共用相同锁序、领域桥与冲突拒绝。"""
+        await self._quota(session, self.now())
+        employees = (
+            await session.scalars(
+                self.scoped_query(EmployeeRow)
+                .where(
+                    EmployeeRow.employee_id.in_({employee_id, acting_employee_id})
                 )
-            ).all()
-            current = {row.employee_id: row for row in employees}
-            actor, target = current.get(acting_employee_id), current.get(employee_id)
-            if (
-                actor is None
-                or not actor.is_active
-                or actor.role != "boss"
-                or target is None
-                or not target.is_active
-                or target.role not in {"boss", "manager", "sales"}
-            ):
-                raise PermissionDenied("分配必须由当前管理员面向同公司在职员工")
-            rows = (
-                await session.scalars(
-                    self.scoped_query(CandidateAllocationRow)
-                    .where(CandidateAllocationRow.allocation_id.in_(allocation_ids))
-                    .order_by(CandidateAllocationRow.allocation_id)
-                    .with_for_update()
-                )
-            ).all()
-            if len(rows) != len(allocation_ids):
-                raise PermissionDenied("分配记录不存在或不属于当前公司")
-            if any(row.employee_id not in (None, employee_id) for row in rows):
-                raise IdempotencyConflict("客户已有其他负责人")
-            # 私有客户已存在时还必须锁其归属，不能让库存产生第二位负责人。
-            accounts = (
-                await session.scalars(
-                    self.scoped_query(ProspectAccountRow)
-                    .where(
-                        ProspectAccountRow.website_domain.in_(
-                            r.canonical_domain for r in rows
-                        )
+                .order_by(EmployeeRow.employee_id)
+                # NO KEY UPDATE仍阻止角色/在职更改，兼容归属外键的KEY SHARE。
+                .with_for_update(key_share=True)
+            )
+        ).all()
+        current = {row.employee_id: row for row in employees}
+        actor, target = current.get(acting_employee_id), current.get(employee_id)
+        if (
+            actor is None
+            or not actor.is_active
+            or actor.role != "boss"
+            or target is None
+            or not target.is_active
+            or target.role not in {"boss", "manager", "sales"}
+        ):
+            raise PermissionDenied("分配必须由当前管理员面向同公司在职员工")
+        rows = (
+            await session.scalars(
+                self.scoped_query(CandidateAllocationRow)
+                .where(CandidateAllocationRow.allocation_id.in_(allocation_ids))
+                .order_by(CandidateAllocationRow.allocation_id)
+                .with_for_update()
+            )
+        ).all()
+        if len(rows) != len(allocation_ids):
+            raise PermissionDenied("分配记录不存在或不属于当前公司")
+        if any(row.employee_id not in (None, employee_id) for row in rows):
+            raise IdempotencyConflict("客户已有其他负责人")
+        # 私有客户已存在时还必须锁其归属，不能让库存产生第二位负责人。
+        accounts = (
+            await session.scalars(
+                self.scoped_query(ProspectAccountRow)
+                .where(
+                    ProspectAccountRow.website_domain.in_(
+                        r.canonical_domain for r in rows
                     )
-                    .order_by(ProspectAccountRow.account_id)
-                    .with_for_update()
                 )
-            ).all()
-            locks = (
-                await session.scalars(
-                    self.scoped_query(OwnershipLockRow)
-                    .where(
-                        OwnershipLockRow.account_id.in_(a.account_id for a in accounts)
-                    )
-                    .order_by(OwnershipLockRow.account_id)
-                    .with_for_update()
+                .order_by(ProspectAccountRow.account_id)
+                .with_for_update()
+            )
+        ).all()
+        locks = (
+            await session.scalars(
+                self.scoped_query(OwnershipLockRow)
+                .where(
+                    OwnershipLockRow.account_id.in_(a.account_id for a in accounts)
                 )
-            ).all()
-            if any(lock.owner != employee_id for lock in locks):
-                raise IdempotencyConflict("客户已有其他负责人")
-            now = self.now()
-            for row in rows:
-                value = self._allocation(row)
-                if row.account_id is None and self.assignment_bridge is not None:
-                    row.account_id = await self.assignment_bridge.bind(
-                        session, tenant_id, value, employee_id, acting_employee_id
-                    )
-                if row.employee_id is None:
-                    row.employee_id = employee_id
-                    row.assigned_at, row.assigned_by = now, acting_employee_id
-                row.payload = self._allocation(row).model_dump(mode="json")
-            await session.flush()
-            result = {row.allocation_id: self._allocation(row) for row in rows}
-            return tuple(result[value] for value in allocation_ids)
+                .order_by(OwnershipLockRow.account_id)
+                .with_for_update()
+            )
+        ).all()
+        if any(lock.owner != employee_id for lock in locks):
+            raise IdempotencyConflict("客户已有其他负责人")
+        now = self.now()
+        for row in rows:
+            value = self._allocation(row)
+            if row.account_id is None and self.assignment_bridge is not None:
+                row.account_id = await self.assignment_bridge.bind(
+                    session, tenant_id, value, employee_id, acting_employee_id
+                )
+            if row.employee_id is None:
+                row.employee_id = employee_id
+                row.assigned_at, row.assigned_by = now, acting_employee_id
+            row.payload = self._allocation(row).model_dump(mode="json")
+        await session.flush()
+        result = {row.allocation_id: self._allocation(row) for row in rows}
+        return tuple(result[value] for value in allocation_ids)
+
+    async def assign_preparation(self, tenant_id: TenantId, claim: PreparationClaim) -> PreparationClaim:
+        """首次分配、真实归属版本与准备检查点原子提交，不存在恢复补造窗口。"""
+        from infra.db.customer_preparation_state import checkpoint, lock_claim
+        self._check(tenant_id)
+        if self.assignment_bridge is None or claim.stage != "assign":
+            raise PermissionDenied("准备分配未配置或阶段无效")
+        auth = claim.authorization
+        async with self.factory() as session, session.begin():
+            row = await lock_claim(session, tenant_id, claim, self.now())
+            assigned = (await self._assign_locked(session, tenant_id, (CandidateAllocationId(claim.allocation_id),),
+                auth.owner_employee_id, auth.actor_employee_id))[0]
+            actor = (await session.scalars(self.scoped_query(EmployeeRow).where(EmployeeRow.employee_id == auth.actor_employee_id))).one()
+            if actor.user_id != auth.actor_user_id or assigned.account_id is None:
+                raise PermissionDenied("准备分配身份已改变")
+            ownership = (await session.scalars(self.scoped_query(OwnershipLockRow).where(OwnershipLockRow.account_id == assigned.account_id))).one()
+            if ownership.owner != auth.owner_employee_id:
+                raise PermissionDenied("准备分配归属已改变")
+            return checkpoint(row, claim, stage="evidence", now=self.now(),
+                result_refs={"account_id": str(assigned.account_id)}, ownership_locked_at=ownership.locked_at)
 
     async def transfer(
         self,

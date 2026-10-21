@@ -201,5 +201,6 @@ class CustomerPreparationItemRow(Base):
     external_started: Mapped[bool] = mapped_column(Boolean, default=False)
     blocked_reason: Mapped[str | None] = mapped_column(String(60))
     result_refs: Mapped[dict] = mapped_column(JSONB, default=dict)
+    ownership_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

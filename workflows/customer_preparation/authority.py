@@ -4,6 +4,7 @@ from contextlib import AbstractAsyncContextManager
 
 from domains.employees.permissions import Actor as EmployeeActor
 from domains.employees.service import EmployeeService
+from domains.outreach.schemas import CampaignView
 from domains.outreach.service import CampaignApprovalProvider, OutreachService
 from domains.products.service import EnterpriseKnowledgeService
 from domains.prospecting.inventory import InventoryFollowupScope, InventoryQuery
@@ -130,3 +131,21 @@ class CustomerAgentScopeAuthority:
             authorized_at=datetime.now(UTC),
             query=query,
         )
+
+    async def check(self, expected: InventoryFollowupAuthorization) -> tuple[CampaignView, list[dict[str, object]]]:
+        """历史范围只有仍等于当前批准快照时有效，不通过换用户或新版本续权。"""
+        from domains.outreach.permissions import Actor, OutreachScope, ScopeLevel
+        from shared.schemas.identifiers import CampaignId
+        from workflows.enterprise_knowledge.confirmed_context import (
+            ConfirmedContextReader,
+        )
+        current = await self.authorize(expected.tenant_id, expected.actor_employee_id, expected.scope, expected.query)
+        if current.model_dump(exclude={"authorized_at"}) != expected.model_dump(exclude={"authorized_at"}):
+            raise PermissionDenied("自动准备授权快照已改变")
+        campaign = await self._outreach.get_campaign(expected.tenant_id, CampaignId(expected.scope.campaign_id),
+            actor=Actor(str(expected.actor_employee_id), OutreachScope(level=ScopeLevel.TENANT), "boss"))
+        policy = campaign.boundary.customer_agent_policy
+        if policy is None or self._knowledge is None or campaign.version != expected.scope.campaign_version:
+            raise PermissionDenied("自动准备范围已改变")
+        context = await ConfirmedContextReader(self._knowledge).read(expected.tenant_id, expected.actor_employee_id, policy.confirmed_refs)
+        return campaign, context
