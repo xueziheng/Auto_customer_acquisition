@@ -62,6 +62,22 @@ _SALES_READ_GATE = Depends(
     )
 )
 _EXPECTED_API_PATHS = {
+    "/inbox/business-mail",
+    "/inbox/business-mail/{message_id}",
+    "/inbox/business-mail/{message_id}/correct-classification",
+    "/inbox/business-mail/{message_id}/followup",
+    "/inbox/business-mail/{message_id}/handling",
+    "/inbox/business-mail/{message_id}/reply-draft",
+    "/inbox/messages/{message_id}/content",
+    "/inbox/messages/{message_id}/retry-classification",
+    "/inbox/messages/{message_id}/retry-classification/failed",
+    "/inbox/messages/{message_id}/retry-classification/resume",
+    "/inbox/private-reply-test/options",
+    "/inbox/private-reply-test/prepare",
+    "/inbox/reply-work",
+    "/inbox/reply-work/{action_id}",
+    "/prospects/customers/{allocation_id}/preparation",
+    "/prospects/customers/{allocation_id}/verification",
     "/prospects/customers/access",
     "/prospects/customers",
     "/prospects/customers/{allocation_id}",

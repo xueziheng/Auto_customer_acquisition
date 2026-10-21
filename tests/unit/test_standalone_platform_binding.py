@@ -87,14 +87,15 @@ async def test_platform_uses_current_storage_port_with_independent_identity(
         for engine in (*platform_engines, business_engine):
             await engine.dispose()
 
-@pytest.mark.parametrize("reply_enabled", [False, True])
-def test_api_and_scheduler_agree_on_explicit_automatic_followup_binding(tmp_path, monkeypatch, reply_enabled):
+@pytest.mark.parametrize("reply_enabled,send_enabled", [(False, False), (True, False), (True, True)])
+def test_api_and_scheduler_agree_on_explicit_automatic_followup_binding(tmp_path, monkeypatch, reply_enabled, send_enabled):
     from apps.scheduler_worker.standalone import _reply_ports
     from infra.pilot.config import PilotGmailConfig
     base = make_config(tmp_path).model_copy(update={"object_port": 44553})
     profile = base.model_copy(update={"gmail": PilotGmailConfig(address="controlled@example.test", credentials_file=tmp_path / "unread-test-credentials.json", employee_id=new_id("emp"))})
     configured = settings()
     configured["reply_enabled"] = reply_enabled
+    configured["automatic_send_enabled"] = send_enabled
     configured["limits"]["max_output_tokens"] = 128
     model = StandaloneModelSettings.model_validate(configured)
     business = FastAPI()
@@ -107,7 +108,7 @@ def test_api_and_scheduler_agree_on_explicit_automatic_followup_binding(tmp_path
     monkeypatch.setattr(standalone, "mount_web", lambda business, *args, **kwargs: business)
     standalone.create_standalone_app(profile, model, tmp_path)
     ports = _reply_ports(profile, model, None)
-    assert captured["automatic_followup_enabled"] is reply_enabled
+    assert captured["automatic_followup_enabled"] is send_enabled
     assert (ports is not None) is reply_enabled
     assert captured["gmail_transport"] is not None  # 手动发件组存在不能代替自动配置。
 

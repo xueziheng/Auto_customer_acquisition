@@ -189,6 +189,8 @@ async def test_quota_resets_company_midnight_and_fresh_matching(inventory):
 
 
 async def test_0073_roundtrip_matches_metadata(integration_engine):
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
     from sqlalchemy import inspect, text
 
     from infra.db.session import create_engine_from
@@ -250,7 +252,7 @@ async def test_0073_roundtrip_matches_metadata(integration_engine):
         async with engine.connect() as conn:
             assert (
                 await conn.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0075"
+                == ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
             )
     finally:
         await engine.dispose()
