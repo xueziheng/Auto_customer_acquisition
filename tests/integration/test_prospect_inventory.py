@@ -231,6 +231,22 @@ async def test_0073_roundtrip_matches_metadata(integration_engine):
                 )
                 == 7
             )
+        _run_alembic(url, "downgrade", "0087")
+        async with engine.connect() as conn:
+            cols = await conn.run_sync(
+                lambda c: inspect(c).get_columns("acquisition_jobs")
+            )
+            assert "source_plan" not in {c["name"] for c in cols}
+        _run_alembic(url, "upgrade", "0088")
+        async with engine.connect() as conn:
+            cols = await conn.run_sync(
+                lambda c: inspect(c).get_columns("acquisition_jobs")
+            )
+            assert {
+                "source_plan",
+                "collection_deadline",
+                "collection_reserved_seconds",
+            } <= {c["name"] for c in cols}
         _run_alembic(url, "downgrade", "0086")
         async with engine.connect() as conn:
             cols = await conn.run_sync(
@@ -593,7 +609,6 @@ async def test_inventory_driver_retains_surplus_and_finishes_empty_jobs(inventor
         1,
         "empty",
     )
-    assert await driver.scan() == 1
     assert await driver.scan() == 1
     assert (await s.get_job(tenant, result.job.id)).status == "failed"
     calls = collector.calls

@@ -111,6 +111,10 @@ class AcquisitionJobRow(Base):
             name="ck_acquisition_status",
         ),
         CheckConstraint(
+            "collection_reserved_seconds BETWEEN 0 AND 480",
+            name="ck_acquisition_collection_budget",
+        ),
+        CheckConstraint(
             "remaining_count >= 0 AND requested_count >= remaining_count AND attempts >= 0",
             name="ck_acquisition_counts",
         ),
@@ -122,6 +126,15 @@ class AcquisitionJobRow(Base):
     query: Mapped[dict] = mapped_column(JSONB)
     fit_batches: Mapped[list] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    source_plan: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    collection_deadline: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    collection_reserved_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
     )
     requested_count: Mapped[int] = mapped_column(Integer)
     remaining_count: Mapped[int] = mapped_column(Integer)

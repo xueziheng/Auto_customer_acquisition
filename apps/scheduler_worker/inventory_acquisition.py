@@ -44,6 +44,29 @@ from workflows.enterprise_knowledge.confirmed_context import ConfirmedContextRea
 class InventoryBackend(AcquisitionWorker, InventoryService, Protocol):
     """同一绑定企业的后台与只读状态端口。"""
 
+    async def initialize_source_plan(
+        self,
+        tenant_id: TenantId,
+        job_id: AcquisitionJobId,
+        lease_token: str,
+        plan: tuple[str, ...],
+    ) -> AcquisitionJob: ...
+
+    async def source_progress(
+        self,
+        tenant_id: TenantId,
+        job_id: AcquisitionJobId,
+        lease_token: str,
+    ) -> dict[str, str]: ...
+
+    async def reserve_source(
+        self,
+        tenant_id: TenantId,
+        job_id: AcquisitionJobId,
+        lease_token: str,
+        source_id: str,
+    ) -> int: ...
+
     async def save_collected(
         self,
         tenant_id: TenantId,
@@ -240,21 +263,40 @@ class InventoryAcquisitionDriver:
             await guard()
             private = job.query.requires_private_fit
             selected = await fit_candidates() if private else ()
-            if private and (len(selected) >= job.remaining_count or job.attempts > 1):
+            if private and len(selected) >= job.remaining_count and not job.source_plan:
                 await guard()
                 await self.backend.deliver_job(self.tenant_id, job.id, token)
                 return 1
-            if job.attempts > 1:
+            if job.attempts > 1 and not job.source_plan:
                 await self.backend.fail_job(
                     self.tenant_id, job.id, token, "budget_exhausted"
                 )
                 return 1
-            prepare = getattr(self.sources, "prepare", None)
-            if prepare is not None:
-                await prepare(job, guard)
-            plan = select_sources(
-                list(await self.sources.list_sources(self.tenant_id)), 3
-            )
+            plan = job.source_plan
+            if not plan:
+                prepare = getattr(self.sources, "prepare", None)
+                if prepare is not None:
+                    await prepare(job, guard)
+                plan = tuple(
+                    select_sources(
+                        list(await self.sources.list_sources(self.tenant_id)), 3
+                    )
+                )
+                if plan:
+                    await guard()
+                    job = await self.backend.initialize_source_plan(
+                        self.tenant_id, job.id, token, plan
+                    )
+            if (
+                job.collection_deadline is not None
+                and job.collection_deadline <= self.now()
+            ):
+                await guard()
+                await self.backend.fail_job(
+                    self.tenant_id, job.id, token, "budget_exhausted"
+                )
+                return 1
+            progress = await self.backend.source_progress(self.tenant_id, job.id, token)
             if not plan and private and selected:
                 await guard()
                 await self.backend.deliver_job(self.tenant_id, job.id, token)
@@ -264,14 +306,18 @@ class InventoryAcquisitionDriver:
                     self.tenant_id, job.id, token, "sources_unavailable"
                 )
                 return 1
-            async with asyncio.timeout(480):
+            if plan:
                 target = (
                     job.remaining_count
                     if private
                     else replenishment_target(job.requested_count)
                 )
-                completed_sources = 0
+                completed_sources = sum(
+                    outcome == "complete" for outcome in progress.values()
+                )
                 for source_id in plan:
+                    if source_id in progress:
+                        continue
                     await guard()
                     fresh_count = (
                         len(selected)
@@ -284,13 +330,35 @@ class InventoryAcquisitionDriver:
                     )
                     if fresh_count >= target and source_id != plan[-1]:
                         continue
+
+                    async def source_guard(source_id: str = source_id) -> None:
+                        await guard()
+                        if (
+                            job.collection_deadline is None
+                            or self.now() >= job.collection_deadline
+                        ):
+                            raise PermissionDenied("采集恢复期限已到")
+                        available = await self.sources.list_sources(self.tenant_id)
+                        if not any(
+                            s.source_id == source_id
+                            and s.availability == "available"
+                            and s.cost_class != "unknown"
+                            for s in available
+                        ):
+                            raise PermissionDenied("来源当前不可用")
+
+                    await source_guard()
+                    seconds = await self.backend.reserve_source(
+                        self.tenant_id, job.id, token, source_id
+                    )
                     try:
-                        collected = await self.collector.collect(
-                            job,
-                            source_id,
-                            guard,
-                            target_count=max(0, target - fresh_count),
-                        )
+                        async with asyncio.timeout(seconds):
+                            collected = await self.collector.collect(
+                                job,
+                                source_id,
+                                source_guard,
+                                target_count=max(0, target - fresh_count),
+                            )
                     except asyncio.CancelledError:
                         raise
                     except (LeaseLost, PermissionDenied):
@@ -318,8 +386,6 @@ class InventoryAcquisitionDriver:
                         self.tenant_id, job.id, token, collected.candidates
                     )
                     await guard()
-                    if private:
-                        selected = await fit_candidates()
                     await self.backend.record_source_attempt(
                         self.tenant_id,
                         job.id,
@@ -331,6 +397,8 @@ class InventoryAcquisitionDriver:
                             projection=collected.summary, save=saved
                         ),
                     )
+                    if private:
+                        selected = await fit_candidates()
                 await guard()
                 if completed_sources == 0 and not await self.catalog.fresh(
                     job.query.public_projection(), self.now()

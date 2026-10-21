@@ -44,6 +44,21 @@ class Backend:
         self.calls = []
         self.remaining = 50
 
+    async def initialize_source_plan(self, tenant, job, token, plan):
+        self.job = self.job.model_copy(
+            update={
+                "source_plan": plan,
+                "collection_deadline": NOW + timedelta(hours=24),
+            }
+        )
+        return self.job
+
+    async def source_progress(self, *args):
+        return {}
+
+    async def reserve_source(self, *args):
+        return 480 // len(self.job.source_plan)
+
     async def status(self, tenant):
         return SimpleNamespace(remaining_today=self.remaining)
 

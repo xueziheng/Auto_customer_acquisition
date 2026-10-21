@@ -388,6 +388,9 @@ class PostgresInventoryService(TenantScopedRepository):
                 "employee_id": row.employee_id,
                 "query": row.query,
                 "fit_batches": row.fit_batches or [],
+                "source_plan": row.source_plan or [],
+                "collection_deadline": row.collection_deadline,
+                "collection_reserved_seconds": row.collection_reserved_seconds,
                 "requested_count": row.requested_count,
                 "remaining_count": row.remaining_count,
                 "status": row.status,
@@ -816,6 +819,92 @@ class PostgresInventoryService(TenantScopedRepository):
                 candidates, InventoryQuery.model_validate(job.query).public_projection()
             )
 
+    async def initialize_source_plan(
+        self,
+        tenant_id: TenantId,
+        job_id: AcquisitionJobId,
+        lease_token: str,
+        plan: tuple[str, ...],
+    ) -> AcquisitionJob:
+        """首次派发前固定计划与恢复期限；旧无计划重领任务保守拒绝。"""
+        self._check(tenant_id)
+        if (
+            not 1 <= len(plan) <= 3
+            or len(set(plan)) != len(plan)
+            or any(get_discovery_source(source) is None for source in plan)
+        ):
+            raise ValueError("来源计划无效")
+        async with self.factory() as session, session.begin():
+            row = await self._leased(session, job_id, lease_token, self.now())
+            if not row.source_plan:
+                if row.attempts > 1:
+                    raise ValueError("旧任务无法证明尚未派发")
+                row.source_plan = list(plan)
+                row.collection_deadline = self.now() + timedelta(hours=24)
+            return self._job(row)
+
+    async def source_progress(
+        self,
+        tenant_id: TenantId,
+        job_id: AcquisitionJobId,
+        lease_token: str,
+    ) -> dict[str, str]:
+        """读取同一任务现有尝试账本，started 永远视为未知已消耗。"""
+        self._check(tenant_id)
+        async with self.factory() as session, session.begin():
+            await self._leased(session, job_id, lease_token, self.now())
+            rows = (
+                await session.scalars(
+                    self.scoped_query(AcquisitionAttemptRow).where(
+                        AcquisitionAttemptRow.job_id == job_id
+                    )
+                )
+            ).all()
+            return {row.source_id: row.outcome for row in rows}
+
+    async def reserve_source(
+        self,
+        tenant_id: TenantId,
+        job_id: AcquisitionJobId,
+        lease_token: str,
+        source_id: str,
+    ) -> int:
+        """先持锁扣留时间和started，再允许外部IO；取消或未知结果不退款。"""
+        self._check(tenant_id)
+        async with self.factory() as session, session.begin():
+            row = await self._leased(session, job_id, lease_token, self.now())
+            if (
+                source_id not in row.source_plan
+                or row.collection_deadline is None
+                or row.collection_deadline <= self.now()
+            ):
+                raise ValueError("来源计划已失效")
+            prior = (
+                await session.scalars(
+                    self.scoped_query(AcquisitionAttemptRow).where(
+                        AcquisitionAttemptRow.job_id == job_id,
+                        AcquisitionAttemptRow.source_id == source_id,
+                    )
+                )
+            ).first()
+            seconds = 480 // len(row.source_plan)
+            if prior is not None or row.collection_reserved_seconds + seconds > 480:
+                raise ValueError("来源已派发或预算耗尽")
+            row.collection_reserved_seconds += seconds
+            session.add(
+                AcquisitionAttemptRow(
+                    tenant_id=tenant_id,
+                    attempt_id=new_id("aca"),
+                    job_id=job_id,
+                    source_id=source_id,
+                    outcome="started",
+                    valid_new_count=0,
+                    diagnostic=None,
+                    attempted_at=self.now(),
+                )
+            )
+            return seconds
+
     async def record_source_attempt(
         self,
         tenant_id: TenantId,
@@ -853,7 +942,22 @@ class PostgresInventoryService(TenantScopedRepository):
             safe = checked.model_dump(mode="json")
         now = self.now()
         async with self.factory() as session, session.begin():
-            await self._leased(session, job_id, lease_token, now)
+            job = await self._leased(session, job_id, lease_token, now)
+            if job.source_plan:
+                attempt = (
+                    await session.scalars(
+                        self.scoped_query(AcquisitionAttemptRow).where(
+                            AcquisitionAttemptRow.job_id == job_id,
+                            AcquisitionAttemptRow.source_id == source_id,
+                        )
+                    )
+                ).one_or_none()
+                if attempt is None or attempt.outcome != "started":
+                    raise ValueError("来源未预留或已结束")
+                attempt.outcome = outcome
+                attempt.valid_new_count = valid_new_count
+                attempt.diagnostic = safe
+                return
             session.add(
                 AcquisitionAttemptRow(
                     tenant_id=tenant_id,
@@ -1030,13 +1134,23 @@ class PostgresInventoryService(TenantScopedRepository):
                 row.remaining_count,
                 now,
             )
+            exhausted = False
+            if row.source_plan:
+                attempts = (
+                    await session.scalars(
+                        self.scoped_query(AcquisitionAttemptRow).where(
+                            AcquisitionAttemptRow.job_id == job_id,
+                        )
+                    )
+                ).all()
+                exhausted = set(row.source_plan) <= {a.source_id for a in attempts}
             row.updated_at = now
             row.remaining_count -= count
             row.status = (
                 "complete"
                 if row.remaining_count == 0
                 else "failed"
-                if job.query.requires_private_fit
+                if job.query.requires_private_fit or exhausted
                 else "queued"
             )
             if row.status == "failed":

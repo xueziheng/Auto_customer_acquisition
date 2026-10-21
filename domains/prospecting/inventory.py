@@ -331,6 +331,9 @@ class AcquisitionJob(BaseModel):
     employee_id: EmployeeId
     query: InventoryQuery
     fit_batches: tuple[InventoryFitBatch, ...] = Field(default_factory=tuple)
+    source_plan: tuple[str, ...] = Field(default=(), max_length=3)
+    collection_deadline: AwareDatetime | None = None
+    collection_reserved_seconds: int = Field(default=0, ge=0, le=480)
     requested_count: int
     remaining_count: int
     status: Literal["queued", "processing", "complete", "failed"]
