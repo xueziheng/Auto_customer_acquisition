@@ -33,7 +33,7 @@ from tool_gateway.handlers.free_search import FreeSearchGatewaySearcher
 from tool_gateway.handlers.web_slots import SearchResultBatch
 from workflows.enterprise_knowledge.confirmed_context import ConfirmedContextReader
 
-from .inventory_query import compose_inventory_query
+from .inventory_query import choose_inventory_country, compose_inventory_query
 from .inventory_web import InventoryWebTools
 
 ToolFactory = Callable[
@@ -134,9 +134,8 @@ class CodexInventoryCollector:
                     or job.query.countries
                     or job.query.region not in {None, "africa"}
                 ):
-                    targets = job.query.target_countries
-                    search_country = (
-                        targets[(searches - 1) % len(targets)] if targets else "ZZ"
+                    search_country = choose_inventory_country(
+                        job.query, arguments["query"], searches - 1
                     )
                     search_query = job.query.model_copy(
                         update={

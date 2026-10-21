@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 from domains.prospecting.inventory import AFRICA_COUNTRIES, InventoryQuery
@@ -14,6 +15,21 @@ def _plain_spacing(value: str) -> str:
     ):
         raise ValueError("采集检索条件无效")
     return " ".join(value.split())
+
+
+def choose_inventory_country(
+    query: InventoryQuery, supplement: str, sequence: int
+) -> str:
+    """模型可选已批准范围内的公开国家名称；未选时轮转，不接受任意地域词。"""
+    text = _plain_spacing(supplement).casefold()
+    targets = query.target_countries
+    for country in targets:
+        if any(
+            re.search(r"(?<!\w)" + re.escape(name.casefold()) + r"(?!\w)", text)
+            for name in (country, COUNTRY_NAMES.get(country, country))
+        ):
+            return country
+    return targets[sequence % len(targets)] if targets else "ZZ"
 
 
 def compose_inventory_query(
@@ -62,7 +78,12 @@ def compose_inventory_query(
         # 私有上下文进入模型后，补充词只能选用户公开锚点、固定策略或本轮已观察域名。
         allowed = {
             word.casefold()
-            for word in (" ".join(query.product_tags) + " " + strategy).split()
+            for word in (
+                " ".join(query.product_tags)
+                + " "
+                + strategy
+                + " manufacturer distributor wholesaler dealer retailer importer exporter repair service procurement supplier"
+            ).split()
         }
         text = " ".join(
             word

@@ -328,3 +328,19 @@ async def test_http_rejects_stale_reference_before_catalog_allocation(monkeypatc
         )
         assert response.status_code == 403
         assert not inventory.calls
+
+
+def test_model_can_narrow_only_to_selected_public_country_and_known_business_strategy():
+    from apps.scheduler_worker.inventory_query import choose_inventory_country
+
+    query = InventoryQuery(
+        product_tags=("hinges",), countries=("DE", "KE"), intent="内部客户画像"
+    )
+    assert choose_inventory_country(query, "Kenya distributor SECRET", 0) == "KE"
+    assert choose_inventory_country(query, "China SECRET", 0) == "DE"
+    text = compose_inventory_query(
+        query.model_copy(update={"countries": (), "country": "KE"}),
+        "official company website contact",
+        "distributor SECRET",
+    )
+    assert "distributor" in text and "SECRET" not in text
