@@ -134,95 +134,224 @@ class CustomerPreparationConsumer:
                 raise PreparationBlocked("evidence_unavailable")
             sender_ready = False
             for identity in campaign.boundary.sender_identity_ids:
-                sender_snapshot = await self.senders.get_sending_identity_eligibility(self.tenant, identity)
-                if sender_snapshot.tenant_id == self.tenant and sender_snapshot.identity_id == identity and sender_snapshot.authentication_passed and sender_snapshot.sendable:
+                sender_snapshot = await self.senders.get_sending_identity_eligibility(
+                    self.tenant, identity
+                )
+                if (
+                    sender_snapshot.tenant_id == self.tenant
+                    and sender_snapshot.identity_id == identity
+                    and sender_snapshot.authentication_passed
+                    and sender_snapshot.sendable
+                ):
                     sender_ready = True
+                    break
             if not sender_ready:
                 raise PreparationBlocked("sender_unavailable")
             if claim.stage == "authorize":
-                claim = await self.queue.checkpoint_preparation(self.tenant, claim, stage="assign")
+                claim = await self.queue.checkpoint_preparation(
+                    self.tenant, claim, stage="assign"
+                )
             if claim.stage == "assign":
                 await self.guard(claim)
                 claim = await self.queue.assign_preparation(self.tenant, claim)
-            allocation = await self.queue.get_allocation(self.tenant, CandidateAllocationId(claim.allocation_id))
-            if allocation is None or allocation.tenant_id != self.tenant or str(allocation.account_id) != claim.result_refs.get("account_id"):
+            allocation = await self.queue.get_allocation(
+                self.tenant, CandidateAllocationId(claim.allocation_id)
+            )
+            if (
+                allocation is None
+                or allocation.tenant_id != self.tenant
+                or str(allocation.account_id) != claim.result_refs.get("account_id")
+            ):
                 raise PreparationBlocked("ownership_changed")
             await self.policy(claim, allocation.candidate.country)
             if claim.stage == "evidence":
                 campaign, context = await self.guard(claim)
-                claim = await self.queue.checkpoint_preparation(self.tenant, claim, stage="evidence", external_started=True)
+                claim = await self.queue.checkpoint_preparation(
+                    self.tenant, claim, stage="evidence", external_started=True
+                )
                 external = True
+
                 async def external_guard() -> None:
                     await self.guard(claim)
                     await self.policy(claim, allocation.candidate.country)
-                extracted = await self.extractor.extract(claim, allocation, context, external_guard, target_entity_types=campaign.boundary.target_entity_types)
+
+                extracted = await self.extractor.extract(
+                    claim,
+                    allocation,
+                    context,
+                    external_guard,
+                    target_entity_types=campaign.boundary.target_entity_types,
+                )
                 await external_guard()
                 observation, snapshot = extracted.observation, extracted.snapshot
                 if not observation.matched:
                     raise PreparationBlocked("product_fit_missing")
-                observation.require_evidence(snapshot.text, allocation.candidate.canonical_domain, campaign.boundary.allowed_categories)
-                if snapshot.tenant_id != self.tenant or observation.entity_type.value not in campaign.boundary.target_entity_types:
+                observation.require_evidence(
+                    snapshot.text,
+                    allocation.candidate.canonical_domain,
+                    campaign.boundary.allowed_categories,
+                )
+                if (
+                    snapshot.tenant_id != self.tenant
+                    or observation.entity_type.value
+                    not in campaign.boundary.target_entity_types
+                ):
                     raise PreparationBlocked("evidence_invalid")
                 policy = campaign.boundary.customer_agent_policy
                 if policy is None or not policy.assessment_ref:
                     raise PreparationBlocked("contact_basis_missing")
-                async def persist(prospecting: ProspectingService, demand: DemandService) -> dict[str, str]:
+
+                async def persist(
+                    prospecting: ProspectingService, demand: DemandService
+                ) -> dict[str, str]:
                     await self.authority.check(claim.authorization)
-                    account = await prospecting.fill_account_profile_from_evidence(self.tenant, ProspectAccountId(claim.result_refs["account_id"]),
-                        AgentAccountProfilePatch(entity_type=observation.entity_type, industry=observation.industry,
-                            artifact_id=snapshot.artifact_id, source_url=snapshot.source_url, page_hash=snapshot.page_hash,
-                            extracted_by=extracted.extracted_by, extracted_at=extracted.extracted_at), evidence=extracted.evidence)
-                    signal = await demand.capture_signal(self.tenant, SignalCaptureRequest(signal_type="complementary_category", entity_name=account.name,
-                        raw_observation=observation.fit_quote, observed_at=snapshot.observed_at, source_type="web_page",
-                        source_id=snapshot.page_hash, extracted_by=extracted.extracted_by, source_url=snapshot.source_url,
-                        page_hash=snapshot.page_hash, snapshot_artifact_ref=str(snapshot.artifact_id)))
-                    hypothesis = await demand.create_hypothesis(self.tenant, account.account_id, observation.category, [signal], observation.fit_reasoning, extracted.extracted_by)
-                    contact = await prospecting.record_discovered_contact(self.tenant, DiscoveredContactRequest(account_id=account.account_id,
-                        kind=ContactPointKind.EMAIL, value=observation.public_email,
-                        legal_basis=LegalBasisInput(basis=LegalBasisType.LEGITIMATE_INTEREST, subject_type=SubjectType.LEGAL_ENTITY,
-                            contact_type=ContactType.ROLE_BASED, source=f"campaign:{campaign.campaign_id}:v{campaign.version}",
-                            collected_at=snapshot.observed_at, source_url=snapshot.source_url, assessment_ref=policy.assessment_ref)))
+                    account = await prospecting.fill_account_profile_from_evidence(
+                        self.tenant,
+                        ProspectAccountId(claim.result_refs["account_id"]),
+                        AgentAccountProfilePatch(
+                            entity_type=observation.entity_type,
+                            industry=observation.industry,
+                            artifact_id=snapshot.artifact_id,
+                            source_url=snapshot.source_url,
+                            page_hash=snapshot.page_hash,
+                            extracted_by=extracted.extracted_by,
+                            extracted_at=extracted.extracted_at,
+                        ),
+                        evidence=extracted.evidence,
+                    )
+                    signal = await demand.capture_signal(
+                        self.tenant,
+                        SignalCaptureRequest(
+                            signal_type="complementary_category",
+                            entity_name=account.name,
+                            raw_observation=observation.fit_quote,
+                            observed_at=snapshot.observed_at,
+                            source_type="web_page",
+                            source_id=snapshot.page_hash,
+                            extracted_by=extracted.extracted_by,
+                            source_url=snapshot.source_url,
+                            page_hash=snapshot.page_hash,
+                            snapshot_artifact_ref=str(snapshot.artifact_id),
+                        ),
+                    )
+                    hypothesis = await demand.create_hypothesis(
+                        self.tenant,
+                        account.account_id,
+                        observation.category,
+                        [signal],
+                        observation.fit_reasoning,
+                        extracted.extracted_by,
+                    )
+                    contact = await prospecting.record_discovered_contact(
+                        self.tenant,
+                        DiscoveredContactRequest(
+                            account_id=account.account_id,
+                            kind=ContactPointKind.EMAIL,
+                            value=observation.public_email,
+                            legal_basis=LegalBasisInput(
+                                basis=LegalBasisType.LEGITIMATE_INTEREST,
+                                subject_type=SubjectType.LEGAL_ENTITY,
+                                contact_type=ContactType.ROLE_BASED,
+                                source=f"campaign:{campaign.campaign_id}:v{campaign.version}",
+                                collected_at=snapshot.observed_at,
+                                source_url=snapshot.source_url,
+                                assessment_ref=policy.assessment_ref,
+                            ),
+                        ),
+                    )
                     await self.authority.check(claim.authorization)
-                    return {"signal_id": str(signal), "hypothesis_id": str(hypothesis), "contact_point_id": str(contact.contact_point_id)}
+                    return {
+                        "signal_id": str(signal),
+                        "hypothesis_id": str(hypothesis),
+                        "contact_point_id": str(contact.contact_point_id),
+                    }
+
                 claim = await self.transactions.apply(claim, persist)
                 external = False
             if claim.stage == "verify":
                 await self.guard(claim)
                 await self.policy(claim, allocation.candidate.country)
-                claim = await self.queue.checkpoint_preparation(self.tenant, claim, stage="verify", external_started=True)
+                claim = await self.queue.checkpoint_preparation(
+                    self.tenant, claim, stage="verify", external_started=True
+                )
                 external = True
                 point_id = ContactPointId(claim.result_refs["contact_point_id"])
                 result = await self.verifier.verify(self.tenant, point_id)
-                await self.prospecting.record_verification(self.tenant, VerificationRecordRequest(contact_point_id=point_id,
-                    result=VerificationStatus(result.outcome.value), provider=result.provider, checked_at=result.checked_at, cost_note=result.cost_note.value))
+                await self.prospecting.record_verification(
+                    self.tenant,
+                    VerificationRecordRequest(
+                        contact_point_id=point_id,
+                        result=VerificationStatus(result.outcome.value),
+                        provider=result.provider,
+                        checked_at=result.checked_at,
+                        cost_note=result.cost_note.value,
+                    ),
+                )
                 if result.privacy_claimed:
-                    point = await self.prospecting.get_contact_point(self.tenant, point_id)
-                    await self.prospecting.handle_erasure_request(self.tenant, point.value)
+                    point = await self.prospecting.get_contact_point(
+                        self.tenant, point_id
+                    )
+                    await self.prospecting.handle_erasure_request(
+                        self.tenant, point.value
+                    )
                     raise PreparationBlocked("privacy_requested")
                 if result.outcome.value != "verified":
                     raise PreparationBlocked("verification_failed")
                 await self.guard(claim)
-                claim = await self.queue.checkpoint_preparation(self.tenant, claim, stage="enroll")
+                claim = await self.queue.checkpoint_preparation(
+                    self.tenant, claim, stage="enroll"
+                )
                 external = False
             if claim.stage == "enroll":
                 await self.guard(claim)
                 await self.policy(claim, allocation.candidate.country)
                 assert claim.ownership_locked_at is not None
-                request = EnrollmentCreateRequest(account_id=ProspectAccountId(claim.result_refs["account_id"]),
-                    contact_point_id=ContactPointId(claim.result_refs["contact_point_id"]),
-                    source_hypothesis_id=NeedHypothesisId(claim.result_refs["hypothesis_id"]), campaign_version=claim.authorization.scope.campaign_version,
-                    ownership=EnrollmentOwnershipBinding(claim.authorization.owner_employee_id, claim.ownership_locked_at),
-                    idempotency_key=IdempotencyKey(f"customer-preparation:{claim.allocation_id}:{claim.request_key_hash}"))
-                enrollment = await self.outreach.enroll(self.tenant, CampaignId(claim.authorization.scope.campaign_id), request, actor=preparation_actor(claim))
-                claim = await self.queue.checkpoint_preparation(self.tenant, claim, stage="completed", result_refs={"enrollment_id": str(enrollment.enrollment_id)})
+                request = EnrollmentCreateRequest(
+                    account_id=ProspectAccountId(claim.result_refs["account_id"]),
+                    contact_point_id=ContactPointId(
+                        claim.result_refs["contact_point_id"]
+                    ),
+                    source_hypothesis_id=NeedHypothesisId(
+                        claim.result_refs["hypothesis_id"]
+                    ),
+                    campaign_version=claim.authorization.scope.campaign_version,
+                    ownership=EnrollmentOwnershipBinding(
+                        claim.authorization.owner_employee_id, claim.ownership_locked_at
+                    ),
+                    idempotency_key=IdempotencyKey(
+                        f"customer-preparation:{claim.allocation_id}:{claim.request_key_hash}"
+                    ),
+                )
+                enrollment = await self.outreach.enroll(
+                    self.tenant,
+                    CampaignId(claim.authorization.scope.campaign_id),
+                    request,
+                    actor=preparation_actor(claim),
+                )
+                claim = await self.queue.checkpoint_preparation(
+                    self.tenant,
+                    claim,
+                    stage="completed",
+                    result_refs={"enrollment_id": str(enrollment.enrollment_id)},
+                )
         except PreparationBlocked as error:
             await self.queue.block_preparation(self.tenant, claim, reason=error.reason)
         except PermissionDenied:
-            await self.queue.block_preparation(self.tenant, claim, reason="authorization_changed")
+            await self.queue.block_preparation(
+                self.tenant, claim, reason="authorization_changed"
+            )
         except ValidationError:
-            await self.queue.block_preparation(self.tenant, claim, reason="evidence_invalid" if claim.stage == "evidence" else "enrollment_denied")
+            await self.queue.block_preparation(
+                self.tenant,
+                claim,
+                reason="evidence_invalid"
+                if claim.stage == "evidence"
+                else "enrollment_denied",
+            )
         except Exception:  # noqa: BLE001 -- 未知外部结果只能人工核对，其他故障也留固定状态
-            reason = "external_reconciliation_required" if external else "preparation_failed"
+            reason = (
+                "external_reconciliation_required" if external else "preparation_failed"
+            )
             # Gateway可包装外部调用后的撤权；重读当前事实只细化阻断原因，绝不重派。
             try:
                 await self.guard(claim)

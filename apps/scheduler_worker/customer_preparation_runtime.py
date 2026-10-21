@@ -106,51 +106,129 @@ def build_preparation_send_guard(core: SchedulerCoreServices, sessions: async_se
         preparation_authority(core, sessions, tenant, outreach, now), core.employee_scope, core.prospecting, core.compliance, outreach)
 
 
-async def build_customer_preparation(*, core: SchedulerCoreServices,
-    sessions: async_sessionmaker[AsyncSession], control_sessions: async_sessionmaker[AsyncSession],
-    control_tenant: TenantId, tenant_id: TenantId, outreach: OutreachService,
-    existing_verifier: ContactVerifier | None, settings: StandaloneModelSettings,
-    resolver: SecretResolver, fingerprints: HmacFingerprintProvider,
-    research: ResearchRuntimePorts | None, owner: str,
-    hunter: HunterCustomerSettings | None = None) -> PreparationRuntime:
+async def build_customer_preparation(
+    *,
+    core: SchedulerCoreServices,
+    sessions: async_sessionmaker[AsyncSession],
+    control_sessions: async_sessionmaker[AsyncSession],
+    control_tenant: TenantId,
+    tenant_id: TenantId,
+    outreach: OutreachService,
+    existing_verifier: ContactVerifier | None,
+    settings: StandaloneModelSettings,
+    resolver: SecretResolver,
+    fingerprints: HmacFingerprintProvider,
+    research: ResearchRuntimePorts | None,
+    owner: str,
+    hunter: HunterCustomerSettings | None = None,
+) -> PreparationRuntime:
     """只读取已有配置/验证事实；真实双工具装配完成后等待原singleton激活。"""
     now = lambda: datetime.now(UTC)
     authority = preparation_authority(core, sessions, tenant_id, outreach, now)
-    backend = PostgresInventoryService(sessions, tenant_id, PostgresPublicCatalog(control_sessions, control_tenant),
-        assignment_bridge=CustomerAssignmentBridge())
-    repository = SqlModelConfigurationRepository(sessions, fingerprints, deployment_verification=deployment_verification(settings), deployment_provider=settings.provider)
-    configuration = ModelConfigurationServiceImpl(repository, CurrentEmployeeIdentity(core.employee_scope,
-        Actor("system:customer-preparation-model", EmployeeScope.SYSTEM, "system")), now=now)
+    backend = PostgresInventoryService(
+        sessions,
+        tenant_id,
+        PostgresPublicCatalog(control_sessions, control_tenant),
+        assignment_bridge=CustomerAssignmentBridge(),
+    )
+    repository = SqlModelConfigurationRepository(
+        sessions,
+        fingerprints,
+        deployment_verification=deployment_verification(settings),
+        deployment_provider=settings.provider,
+    )
+    configuration = ModelConfigurationServiceImpl(
+        repository,
+        CurrentEmployeeIdentity(
+            core.employee_scope,
+            Actor("system:customer-preparation-model", EmployeeScope.SYSTEM, "system"),
+        ),
+        now=now,
+    )
     extractor = None
     bounded = research.bounded_object_transport if research is not None else None
-    if bounded is None and research is not None and callable(getattr(research.object_transport, "get_bounded", None)):
+    if (
+        bounded is None
+        and research is not None
+        and callable(getattr(research.object_transport, "get_bounded", None))
+    ):
         bounded = cast(BoundedObjectBlobTransport, research.object_transport)
     if research is not None and bounded is not None:
-        artifacts = RawArtifactStoreImpl(lambda t: SqlAlchemyArtifactUnitOfWork(sessions, t), research.object_transport,  # type: ignore[arg-type]
+        artifacts = RawArtifactStoreImpl(
+            lambda t: SqlAlchemyArtifactUnitOfWork(sessions, t),  # type: ignore[arg-type]
+            research.object_transport,
+            research.maximum_artifact_bytes,
+            now,
+            new_id,
+            bounded_transport=bounded,
+        )
 
-            research.maximum_artifact_bytes, now, new_id, bounded_transport=bounded)
-        async def web(claim: PreparationClaim, allocation: CandidateAllocation, guard: Callable[[], Awaitable[None]]) -> InventoryWebTools:
-            return build_inventory_web(factory=sessions, tenant_id=tenant_id, run_id=preparation_run_id(claim),
-                user_id=UserId(claim.authorization.actor_user_id), country=allocation.candidate.country,
-                category=claim.authorization.query.product_tags[0], guard=guard, fingerprints=fingerprints,
-                search_transport=research.search_transport, page_transport=research.page_transport,
-                secret_resolver=research.secret_resolver, secret_ref=research.secret_ref, artifacts=artifacts, now=now,
-                candidate_url=allocation.candidate.source_url)
-        extractor = CustomerPreparationExtractor(web=web, artifacts=artifacts, configuration=configuration, settings=settings,
-            resolver=resolver, sessions=sessions, fingerprints=fingerprints, lease_owner=owner, now=now)
+        async def web(
+            claim: PreparationClaim,
+            allocation: CandidateAllocation,
+            guard: Callable[[], Awaitable[None]],
+        ) -> InventoryWebTools:
+            return build_inventory_web(
+                factory=sessions,
+                tenant_id=tenant_id,
+                run_id=preparation_run_id(claim),
+                user_id=UserId(claim.authorization.actor_user_id),
+                country=allocation.candidate.country,
+                category=claim.authorization.query.product_tags[0],
+                guard=guard,
+                fingerprints=fingerprints,
+                search_transport=research.search_transport,
+                page_transport=research.page_transport,
+                secret_resolver=research.secret_resolver,
+                secret_ref=research.secret_ref,
+                artifacts=artifacts,
+                now=now,
+                candidate_url=allocation.candidate.source_url,
+            )
+
+        extractor = CustomerPreparationExtractor(
+            web=web,
+            artifacts=artifacts,
+            configuration=configuration,
+            settings=settings,
+            resolver=resolver,
+            sessions=sessions,
+            fingerprints=fingerprints,
+            lease_owner=owner,
+            now=now,
+        )
     verifier = existing_verifier
+
     async def activate() -> None:
         return None
+
     if verifier is None and hunter is not None and hunter.enabled:
         if hunter.business_tenant_id != tenant_id:
             raise PermissionDenied("准备验证企业配置不一致")
-        actor = ProviderReadinessActor("system:scheduler-customer-verification", tenant_id,
-            frozenset({ProviderReadinessPermission.READ, ProviderReadinessPermission.COMPOSE}))
-        readiness = ProviderReadinessServiceImpl(lambda t: SqlAlchemyProviderReadinessUnitOfWork(sessions, t, now=now), runtime_actor=actor, now=now)
-        expected = ProviderConfiguration.hunter_contacts(hunter.configuration_version, hunter.api_key_version)
-        snapshot = await readiness.get_snapshot(tenant_id, HUNTER_CONTACT_CAPABILITIES, actor=actor)
-        if snapshot.configuration == expected and snapshot.state in {ProviderReadinessState.READY, ProviderReadinessState.RUNTIME_NOT_COMPOSED}:
+        actor = ProviderReadinessActor(
+            "system:scheduler-customer-verification",
+            tenant_id,
+            frozenset(
+                {ProviderReadinessPermission.READ, ProviderReadinessPermission.COMPOSE}
+            ),
+        )
+        readiness = ProviderReadinessServiceImpl(
+            lambda t: SqlAlchemyProviderReadinessUnitOfWork(sessions, t, now=now),
+            runtime_actor=actor,
+            now=now,
+        )
+        expected = ProviderConfiguration.hunter_contacts(
+            hunter.configuration_version, hunter.api_key_version
+        )
+        snapshot = await readiness.get_snapshot(
+            tenant_id, HUNTER_CONTACT_CAPABILITIES, actor=actor
+        )
+        if snapshot.configuration == expected and snapshot.state in {
+            ProviderReadinessState.READY,
+            ProviderReadinessState.RUNTIME_NOT_COMPOSED,
+        }:
             from domains.compliance.permissions import ComplianceActor, ComplianceScope
+
             secret: PlatformHunterCustomerSecretResolver | HunterCustomerSecretResolver
             if hunter.credential_source == "platform":
                 secret = PlatformHunterCustomerSecretResolver(hunter)
@@ -158,21 +236,75 @@ async def build_customer_preparation(*, core: SchedulerCoreServices,
                 if hunter.secret_file is None:
                     raise PermissionDenied("验证凭证来源未配置")
                 secret = HunterCustomerSecretResolver(hunter.secret_file)
-            tools = build_hunter_contact_tools(factory=sessions, tenant_id=tenant_id, tool_user=UserId(new_id("usr")), fingerprints=fingerprints,
-                outreach=outreach, prospecting=core.prospecting,
-                country_policy=ComplianceCountryPolicyDecisionReader(core.compliance, ComplianceActor("system:customer-verification", tenant_id, ComplianceScope.SYSTEM, "system")),
-                composition=HunterContactComposition(DemandProspectingContactDiscoveryPolicy(core.demand, core.prospecting),
-                    PostgresHunterCustomerQuota(sessions, tenant_id, maximum_daily_verifications=hunter.maximum_daily_verifications, now=now)),
-                secret_resolver=secret, secret_ref=HUNTER_CUSTOMER_KEY, transport=HunterApiHttpTransport(), snapshot=snapshot,
-                readiness_guard=readiness, lease_duration=timedelta(seconds=60), now=now)
-            if tools.manifest_ids != ("contact.enrich", "contact.verify") or tools.registered_configuration_hash != expected.configuration_hash:
+            tools = build_hunter_contact_tools(
+                factory=sessions,
+                tenant_id=tenant_id,
+                tool_user=UserId(new_id("usr")),
+                fingerprints=fingerprints,
+                outreach=outreach,
+                prospecting=core.prospecting,
+                country_policy=ComplianceCountryPolicyDecisionReader(
+                    core.compliance,
+                    ComplianceActor(
+                        "system:customer-verification",
+                        tenant_id,
+                        ComplianceScope.SYSTEM,
+                        "system",
+                    ),
+                ),
+                composition=HunterContactComposition(
+                    DemandProspectingContactDiscoveryPolicy(
+                        core.demand, core.prospecting
+                    ),
+                    PostgresHunterCustomerQuota(
+                        sessions,
+                        tenant_id,
+                        maximum_daily_verifications=hunter.maximum_daily_verifications,
+                        now=now,
+                    ),
+                ),
+                secret_resolver=secret,
+                secret_ref=HUNTER_CUSTOMER_KEY,
+                transport=HunterApiHttpTransport(),
+                snapshot=snapshot,
+                readiness_guard=readiness,
+                lease_duration=timedelta(seconds=60),
+                now=now,
+            )
+            if (
+                tools.manifest_ids != ("contact.enrich", "contact.verify")
+                or tools.registered_configuration_hash != expected.configuration_hash
+            ):
                 raise PermissionDenied("准备验证实际组合不完整")
             verifier = tools.verifier
+
             async def activate() -> None:
-                await readiness.mark_runtime_composed(tenant_id, expected.configuration_hash, actor=actor,
-                    idempotency_key=IdempotencyKey("scheduler-customer-verification:" + expected.configuration_hash))
+                await readiness.mark_runtime_composed(
+                    tenant_id,
+                    expected.configuration_hash,
+                    actor=actor,
+                    idempotency_key=IdempotencyKey(
+                        "scheduler-customer-verification:" + expected.configuration_hash
+                    ),
+                )
+
     # 与canonical Prospecting共用同一个运行时hasher；由组合显式提供，不读取服务私有属性。
-    return PreparationRuntime(CustomerPreparationConsumer(tenant_id=tenant_id, queue=backend, authority=authority,
-        employees=core.employee_scope, prospecting=core.prospecting, outreach=outreach, compliance=core.compliance,
-        senders=CurrentSendingIdentityReader(tenant_id, core.sending, now=now),
-        transactions=PostgresAgentPreparationTransactions(sessions, DomainSeparatedContactValueHasher(fingerprints), now=now), extractor=extractor, verifier=verifier, now=now), activate)
+    return PreparationRuntime(
+        CustomerPreparationConsumer(
+            tenant_id=tenant_id,
+            queue=backend,
+            authority=authority,
+            employees=core.employee_scope,
+            prospecting=core.prospecting,
+            outreach=outreach,
+            compliance=core.compliance,
+            senders=CurrentSendingIdentityReader(tenant_id, core.sending, now=now),
+            transactions=PostgresAgentPreparationTransactions(
+                sessions, DomainSeparatedContactValueHasher(fingerprints), now=now
+            ),
+            extractor=extractor,
+            verifier=verifier,
+            now=now,
+        ),
+        activate,
+    )

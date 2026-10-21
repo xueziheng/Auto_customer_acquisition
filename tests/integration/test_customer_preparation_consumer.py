@@ -88,7 +88,7 @@ from workflows.customer_preparation.service import CustomerPreparationConsumer
 pytest_plugins = ("tests.integration.test_customer_assignment_bridge",)
 
 
-async def setup_consumer(bridge_inventory, failure=None):
+async def setup_consumer(bridge_inventory, failure=None, *, multiple_senders=False):
     queue, catalog, factory, tenant, boss, sales, _ = bridge_inventory
     user = new_id("usr")
     async with factory() as session, session.begin():
@@ -103,7 +103,8 @@ async def setup_consumer(bridge_inventory, failure=None):
     prospecting = ProspectingServiceImpl(lambda t: SqlAlchemyProspectingUnitOfWork(factory, t), TestHasher(), now=lambda: NOW)
     demand = DemandServiceImpl(lambda t: SqlAlchemyDemandUnitOfWork(factory, t, now=lambda: NOW), now=lambda: NOW, account_names=_PreparationAccountNames(prospecting))
     trace, sender_id = Trace(), SendingIdentityId(new_id("sid"))
-    senders = FakeSenders({sender_id: SendingIdentityEligibilitySnapshot(tenant, sender_id, OutreachSenderRole.COLD_OUTREACH, True, True, 10, NOW)}, trace)
+    sender_ids = tuple(sorted((sender_id, SendingIdentityId(new_id("sid"))))) if multiple_senders else (sender_id,)
+    senders = FakeSenders({identity: SendingIdentityEligibilitySnapshot(tenant, identity, OutreachSenderRole.COLD_OUTREACH, True, True, 10, NOW) for identity in sender_ids}, trace)
     approvals = FakeApprovals(trace)
     class Replies:
         async def get_reply_status(self, t, point, account):
@@ -112,7 +113,7 @@ async def setup_consumer(bridge_inventory, failure=None):
         CurrentContactEligibilityReader(tenant, prospecting, demand, now=lambda: NOW), senders, approvals, Replies(), Phase1OutreachAuthorizer(tenant), FakeAudit(trace), now=lambda: NOW)
     actor = Actor(str(boss), OutreachScope(level=ScopeLevel.TENANT), "boss")
     campaign = await outreach.create_campaign(tenant, CampaignCreateRequest(name="合成准备", markets=("US",), target_entity_types=("distributor",),
-        allowed_categories=("hinges",), sender_identity_ids=(sender_id,), steps=(SequenceStepRequest(1, StepIntent.DISCOVERY, 0),),
+        allowed_categories=("hinges",), sender_identity_ids=sender_ids, steps=(SequenceStepRequest(1, StepIntent.DISCOVERY, 0),),
         daily_new_contact_limit=5, daily_total_message_limit=5, handoff_triggers=(),
         customer_agent_policy=CustomerAgentPolicyInput(owner_employee_id=sales, assessment_ref="lia:explicit-test",
             confirmed_refs=(CustomerAgentKnowledgeRef(document_id="doc-test", revision_id="rev-test"),))), actor=actor)
@@ -284,3 +285,49 @@ async def test_real_enrollment_send_guard_rechecks_current_country_policy(bridge
     guard.compliance = Denied()
     with pytest.raises(PreparationBlocked, match="country_policy_denied"):
         await guard.require(tenant, enrollment.enrollment_id)
+
+
+@pytest.mark.parametrize("required_reader_fails", [False, True])
+async def test_preparation_stops_reading_senders_after_first_eligible(
+    bridge_inventory, monkeypatch, required_reader_fails,
+):
+    consumer, _, extractor, verifier, _ = await setup_consumer(
+        bridge_inventory, multiple_senders=True,
+    )
+    _, _, factory, tenant, *_ = bridge_inventory
+    first, second = sorted(consumer.senders.snapshots)
+    original = consumer.senders.get_sending_identity_eligibility
+    reads = []
+
+    async def current_eligibility(requested_tenant, identity):
+        reads.append(identity)
+        if identity == second or required_reader_fails:
+            raise RuntimeError("synthetic unavailable sender fact")
+        return await original(requested_tenant, identity)
+
+    monkeypatch.setattr(consumer.senders, "get_sending_identity_eligibility", current_eligibility)
+    await consumer.scan()
+    before_restart = tuple(reads)
+    await consumer.scan()
+    assert tuple(reads) == before_restart
+    assert reads and set(reads) == {first}
+    async with factory() as session:
+        item = (await session.scalars(select(CustomerPreparationItemRow).where(
+            CustomerPreparationItemRow.tenant_id == tenant,
+        ))).one()
+        enrollments = (await session.scalars(select(OutreachEnrollmentRow).where(
+            OutreachEnrollmentRow.tenant_id == tenant,
+        ))).all()
+        if required_reader_fails:
+            assert item.state == "blocked" and item.blocked_reason == "preparation_failed"
+            assert not enrollments and extractor.calls == verifier.calls == 0
+            assert len(reads) == 1
+            assert await session.scalar(select(func.count()).select_from(ContactPointRow).where(
+                ContactPointRow.tenant_id == tenant,
+            )) == 0
+        else:
+            assert item.state == "enrolled", item.blocked_reason
+            assert len(enrollments) == 1
+            assert enrollments[0].sending_identity_id == first
+            assert extractor.calls == verifier.calls == 1
+            assert len(reads) >= 2  # 最终仍由原Outreach再次读取并选择身份。
