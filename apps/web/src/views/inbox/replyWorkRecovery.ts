@@ -1,6 +1,7 @@
 import { ref } from "vue";
 import type { components } from "../../api/api";
 import type { ApiIdentityReader } from "../../api/client";
+import { sameIdentitySnapshot } from "../costing-quotes/quote-request-scope";
 
 type Command = components["schemas"]["ReplyWorkUpdate"];
 const sessions = new WeakMap<ApiIdentityReader, ReturnType<typeof createRecovery>>();
@@ -8,9 +9,26 @@ const sessions = new WeakMap<ApiIdentityReader, ReturnType<typeof createRecovery
 function createRecovery(client: ApiIdentityReader) {
   const records = ref<Record<string, Command>>({});
   const clear = () => { records.value = {}; };
-  client.subscribeIdentity(clear);
+  let identity = client.identitySnapshot();
+  let consumers = 0;
+  let unsubscribe: (() => void) | undefined;
+  const refreshIdentity = () => {
+    const current = client.identitySnapshot();
+    if (!sameIdentitySnapshot(identity, current)) clear();
+    identity = current;
+  };
   return {
     records, clear,
+    attach() {
+      refreshIdentity();
+      if (consumers++ === 0) unsubscribe = client.subscribeIdentity(refreshIdentity);
+      let disposed = false;
+      return () => {
+        if (disposed) return;
+        disposed = true;
+        if (--consumers === 0) { unsubscribe?.(); unsubscribe = undefined; }
+      };
+    },
     save(actionId: string, command: Command) {
       if (records.value[actionId]) throw new Error("handling_request_unresolved");
       records.value[actionId] = { ...command };
@@ -28,5 +46,5 @@ export function replyWorkRecovery(client: ApiIdentityReader) {
     recovery = createRecovery(client);
     sessions.set(client, recovery);
   }
-  return recovery;
+  return { ...recovery, dispose: recovery.attach() };
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import { useRoute } from "vue-router";
 import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
@@ -27,6 +27,7 @@ type ReplyWork = components["schemas"]["ReplyWorkActionView"];
 const replyWork = ref<ReplyWork[]>([]);
 const workNotes = ref<Record<string, string>>({});
 const workRecovery = replyWorkRecovery(client);
+onBeforeUnmount(workRecovery.dispose);
 const workRequests = workRecovery.records;
 const expandedEvidence = ref<Record<string, boolean>>({});
 const workSections = computed(() => [

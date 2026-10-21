@@ -102,3 +102,20 @@ it("does not offer a response draft for headers-only mail", async () => {
  expect(root.textContent).toContain("正文未完整读取");
  expect(button("使用询盘模板").disabled).toBe(true); expect(button("保存草稿").disabled).toBe(true);
 });
+
+it("refreshes an untouched handling selector after another operator completes the mail", async () => {
+ let current: Record<string, unknown> = initial;
+ await mount(async () => json(current));
+ current = { ...initial, revision: 1, status: "completed" };
+ button("刷新处理记录").click(); await flush();
+ expect(root.querySelector<HTMLSelectElement>('[aria-label="处理状态"]')!.value).toBe("completed");
+});
+
+it("preserves an explicitly edited handling selector across a read refresh", async () => {
+ let current: Record<string, unknown> = initial;
+ await mount(async () => json(current));
+ field("处理状态", "waiting_customer"); await nextTick();
+ current = { ...initial, revision: 1, status: "completed" };
+ button("刷新处理记录").click(); await flush();
+ expect(root.querySelector<HTMLSelectElement>('[aria-label="处理状态"]')!.value).toBe("waiting_customer");
+});

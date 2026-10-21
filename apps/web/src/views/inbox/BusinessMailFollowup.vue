@@ -19,6 +19,7 @@ const notice = ref("");
 const draftSubject = ref("");
 const bodyText = ref("");
 const status = ref<HandlingCommand["status"]>("in_progress");
+const handlingBaseline = ref<HandlingCommand["status"]>("in_progress");
 const note = ref("");
 const unresolved = ref<Intent | null>(null);
 const labels: Record<View["status"], string> = { pending: "待处理", in_progress: "处理中", waiting_customer: "等待客户回复", completed: "处理完成" };
@@ -27,7 +28,7 @@ const draftDisabled = computed(() => disabled.value || props.sourceKind !== "ful
 const draftDirty = computed(() => draftSubject.value !== (view.value?.draft?.subject ?? "") || bodyText.value !== (view.value?.draft?.body_text ?? ""));
 function reset(): void {
   view.value = null; draftSubject.value = ""; bodyText.value = ""; note.value = "";
-  status.value = "in_progress"; error.value = ""; notice.value = ""; unresolved.value = null;
+  status.value = handlingBaseline.value = "in_progress"; error.value = ""; notice.value = ""; unresolved.value = null;
   loading.value = false; saving.value = false;
 }
 const gate = useQuoteRequestScope(client, () => [props.messageId], reset);
@@ -48,6 +49,7 @@ function validView(data: View | undefined): data is View {
 }
 function apply(data: View, mode: "initial" | "read" | "draft" | "handling"): void {
   const wasDirty = draftDirty.value;
+  const handlingDirty = status.value !== handlingBaseline.value;
   const receipt = unresolved.value && data.history.find(entry => entry.request_key === unresolved.value?.key);
   const completedKind = receipt ? unresolved.value?.kind : null;
   view.value = data;
@@ -55,7 +57,9 @@ function apply(data: View, mode: "initial" | "read" | "draft" | "handling"): voi
     draftSubject.value = data.draft?.subject ?? ""; bodyText.value = data.draft?.body_text ?? "";
   }
   if (mode === "handling" || completedKind === "handling") note.value = "";
-  if (mode === "initial") status.value = data.status === "pending" ? "in_progress" : data.status;
+  const nextStatus = data.status === "pending" ? "in_progress" : data.status;
+  if (mode === "initial" || mode === "handling" || completedKind === "handling" || !handlingDirty) status.value = nextStatus;
+  handlingBaseline.value = nextStatus;
   if (receipt) unresolved.value = null;
   if (mode === "draft" || completedKind === "draft") notice.value = "草稿已保存，尚未发送";
   else if (mode === "handling" || completedKind === "handling") notice.value = "处理记录已保存";
