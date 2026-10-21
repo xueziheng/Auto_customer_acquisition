@@ -361,8 +361,8 @@ async def test_unknown_page_is_atomic_replay_safe_and_has_real_raw(page_runtime)
         )[1] == mime(message_id="<unknown-one@example.test>")
 
 
-async def prepare_sent(runtime, *, reply_source=False, initialized_staff=None, ordinary_policy=None, sending_employee_id=None):
-    """真实公开登记/认证/验证/审批/发送；不插Attempt结果态。"""
+async def prepare_sent(runtime, *, reply_source=False, initialized_staff=None, ordinary_policy=None, sending_employee_id=None, prepare_only=False):
+    """真实公开登记/认证/验证/审批；首询可仅准备范围，其余经真实发送，不插Attempt结果态。"""
     from httpx import ASGITransport, AsyncClient
 
     from apps.api.controlled import initialize_identities
@@ -551,6 +551,16 @@ async def prepare_sent(runtime, *, reply_source=False, initialized_staff=None, o
     )
     await deps.approvals.decide(tenant, approval, True, EmployeeId(boss_id))
     await deps.outreach.activate_campaign(tenant, campaign.campaign_id, actor=boss)
+    if sending_employee_id is not None:
+        from infra.db.tables import OwnershipLockRow
+        async with runtime['factory'].begin() as db:
+            db.add(OwnershipLockRow(tenant_id=tenant, lock_id=new_id('own'), account_id=account,
+                owner=sending_employee_id, locked_at=stamp, locked_by_rule='controlled-dialogue'))
+    if prepare_only:
+        runtime['source_account_id'] = account
+        runtime['source_contact_point_id'] = point
+        runtime['source_campaign_id'] = campaign.campaign_id
+        return None
     enrollment = await deps.outreach.enroll(
         tenant,
         campaign.campaign_id,
@@ -562,11 +572,6 @@ async def prepare_sent(runtime, *, reply_source=False, initialized_staff=None, o
         ),
         actor=boss,
     )
-    if sending_employee_id is not None:
-        from infra.db.tables import OwnershipLockRow
-        async with runtime['factory'].begin() as db:
-            db.add(OwnershipLockRow(tenant_id=tenant, lock_id=new_id('own'), account_id=account,
-                owner=sending_employee_id, locked_at=stamp, locked_by_rule='controlled-dialogue'))
     system = OA(
         "system:inbound-test",
         OutreachScope(

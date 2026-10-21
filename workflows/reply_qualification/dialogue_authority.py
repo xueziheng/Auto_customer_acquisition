@@ -53,7 +53,8 @@ class CurrentOrdinaryDialogueAccess:
         source = owner.source
         if (source.tenant_id != tenant_id or source.owner_employee_id != employee_id
             or owner.actor.employee_id != employee_id or owner.actor.tenant_id != tenant_id
-            or owner.latest_message_id != message_id or owner.binding_state != "active"):
+            or owner.latest_message_id != message_id or owner.binding_state != "active"
+            or owner.pending_inbound):
             raise PermissionDenied("当前普通对话范围拒绝")
         try:
             campaign = await self.outreach.get_ordinary_dialogue_scope(

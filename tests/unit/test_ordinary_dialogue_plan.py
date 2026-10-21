@@ -44,3 +44,61 @@ async def test_public_english_specs_accept_units_punctuation_but_not_hidden_cont
     for text in ['Hidden \u202e text', '价格保证', 'Price € 10', 'Guaranteed stock']:
         with pytest.raises(ValidationError):
             render_dialogue(plan, (replace(view, spec_display=text),), allowed_questions=())
+
+
+@pytest.mark.parametrize('field', ['product_id', 'name_en', 'category', 'spec_display', 'variant_options', 'description_en'])
+@pytest.mark.parametrize('response', [
+    '{"kind":"ordinary","question_topics":["quantity"]}',
+    '{"kind":"review","review_reason":"insufficient_evidence"}',
+])
+async def test_all_product_model_inputs_are_guarded_before_any_generation(field, response):
+    from agent_runtime.qualification_agent.dialogue_plan import OrdinaryDialoguePlanner
+    from shared.schemas.model_invocation import (
+        InvocationIdentity,
+        ModelResponse,
+        ModelUsage,
+    )
+    product = _formal_product('prd_controlled')
+    service, _, _ = _service(products=_Products([product]))
+    view = await service.get_ordinary_dialogue_view(TENANT, product.product_id,
+        actor=ProductActor('system:test', ProductRole.SYSTEM, TENANT))
+    synthetic = 'password: synthetic-value-not-a-real-secret'
+    view = replace(view, **{field: [synthetic] if field == 'variant_options' else synthetic})
+    calls = []
+    class Generator:
+        async def generate(self, identity, request):
+            calls.append(request)
+            return ModelResponse(model='synthetic', text=response,
+                usage=ModelUsage(input_tokens=1,cached_input_tokens=0,output_tokens=1))
+    with pytest.raises(ValidationError):
+        await OrdinaryDialoguePlanner(Generator()).plan(
+            InvocationIdentity(tenant_id=TENANT,employee_id='employee',user_id='user',run_id='run',
+                capability='ordinary_dialogue',configuration_version='v1',sequence=0),
+            model='synthetic',customer_subject='Product inquiry',customer_text='Please tell me more.',
+            products=(view,),allowed_questions=('quantity',),max_output_tokens=128)
+    assert calls == []
+
+
+async def test_model_product_projection_omits_unused_image_and_ui_fields():
+    from agent_runtime.qualification_agent.dialogue_plan import OrdinaryDialoguePlanner
+    from shared.schemas.model_invocation import (
+        InvocationIdentity,
+        ModelResponse,
+        ModelUsage,
+    )
+    product = _formal_product('prd_controlled')
+    service, _, _ = _service(products=_Products([product]))
+    view = await service.get_ordinary_dialogue_view(TENANT, product.product_id,
+        actor=ProductActor('system:test', ProductRole.SYSTEM, TENANT))
+    view = replace(view, image_refs=['password: synthetic-omitted-reference'])
+    class Generator:
+        async def generate(self, identity, request):
+            projected=request.payload['customer_visible_products'][0]
+            assert set(projected)=={'product_id','name_en','category','spec_display','variant_options','description_en'}
+            assert 'synthetic-omitted-reference' not in str(request.payload)
+            return ModelResponse(model='synthetic',text='{"kind":"review","review_reason":"insufficient_evidence"}',
+                usage=ModelUsage(input_tokens=1,cached_input_tokens=0,output_tokens=1))
+    result = await OrdinaryDialoguePlanner(Generator()).plan(
+        InvocationIdentity(tenant_id=TENANT,employee_id='employee',user_id='user',run_id='run',capability='ordinary_dialogue',configuration_version='v1',sequence=0),
+        model='synthetic',customer_subject='Product inquiry',customer_text='Please tell me more.',products=(view,),allowed_questions=('quantity',),max_output_tokens=128)
+    assert result.kind=='review'

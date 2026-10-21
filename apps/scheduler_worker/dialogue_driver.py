@@ -165,7 +165,9 @@ class OrdinaryDialogueDriver:
             except Exception as error:  # noqa: BLE001 -- 外调未知不会重试；当前身份失败只落固定原因。
                 latest = await self.store.read(claim.source_message_id)
                 if latest and latest.lease_token==claim.lease_token:
-                    if latest.state is State.MODEL_STARTED:
+                    if await self._cancel_superseded(latest):
+                        pass
+                    elif latest.state is State.MODEL_STARTED:
                         if isinstance(error, (PlanValidationError, ValidationError)):
                             await self._review(latest, 'invalid_plan')
                         elif isinstance(error, (PermissionDenied, ModelGenerationError)) and getattr(error, 'code', None) in {'permission', 'configuration', 'quota', 'invalid_request'}:
@@ -197,6 +199,22 @@ class OrdinaryDialogueDriver:
                 _logger.info("普通回复投递结果仍待核对")
         return handled
 
+    async def _cancel_superseded(self, claim: DialogueExecutionClaim) -> bool:
+        """新入站只废弃尚未派发的旧执行；保留预算，让新消息继续原canonical处理。"""
+        if claim.state not in {State.CLAIMED, State.MODEL_STARTED, State.PLANNED}:
+            return False
+        source = await self.sources.for_message(self.tenant, claim.source_message_id)
+        if source is None:
+            return False
+        try:
+            owner = await self.access.owners.require(self.tenant, claim.source_message_id, source.owner_employee_id)
+        except PermissionDenied:
+            return False
+        if owner.pending_inbound or owner.latest_message_id != claim.source_message_id:
+            await self.store.advance(claim, State.CANCELLED)
+            return True
+        return False
+
     async def _process(self, claim: DialogueExecutionClaim) -> None:
         source = await self.sources.for_message(self.tenant, claim.source_message_id)
         if source is None:
@@ -227,6 +245,7 @@ class OrdinaryDialogueDriver:
             plan = await OrdinaryDialoguePlanner(generator).plan(identity, model=model,
                 customer_subject=content.subject or '', customer_text=content.body, products=current.products,
                 allowed_questions=topics, max_output_tokens=current.policy.max_output_tokens)
+            await self.access.require(self.tenant, claim.source_message_id, source.owner_employee_id)
             if plan.kind=='review':
                 await self._review(claim, 'insufficient_evidence' if plan.review_reason=='unsupported_product' else plan.review_reason or 'insufficient_evidence')
                 return
@@ -259,5 +278,5 @@ class OrdinaryDialogueDriver:
             latest = await self.store.read(claim.source_message_id)
             if latest and latest.state is State.SENDING:
                 await self.store.advance(latest, State.UNKNOWN)
-            elif latest and latest.state is State.PLANNED:
+            elif latest and latest.state is State.PLANNED and not await self._cancel_superseded(latest):
                 await self._review(latest, 'scope_changed')

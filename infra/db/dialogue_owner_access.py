@@ -1,5 +1,5 @@
 """普通对话当前owner投影；原邮箱授权仍调用原仓储同事务实现。"""
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from domains.conversations.business_mail import BusinessMailActor
@@ -7,9 +7,20 @@ from domains.conversations.dialogue_access import DialogueOwnerSnapshot
 from domains.conversations.inbox_access import InboxActor, InboxScope
 from infra.db.business_mail import SqlBusinessMailRepository
 from infra.db.business_mail_tables import BusinessMailboxRow, BusinessMailRow
-from infra.db.dialogue_execution_tables import DialogueBindingRow
+from infra.db.dialogue_execution_tables import (
+    DialogueBindingRow,
+    DialogueBusinessReceiptRow,
+    DialogueExecutionRow,
+)
 from infra.db.dialogue_source import read_dialogue_source
-from infra.db.tables import EmployeeRow, OwnershipLockRow, SendingIdentityRow
+from infra.db.tables import (
+    ContactPointRow,
+    EmployeeRow,
+    OutreachMessageAttemptRow,
+    OwnershipLockRow,
+    RawArtifactRow,
+    SendingIdentityRow,
+)
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import EmployeeId, MessageId, TenantId, UserId
 
@@ -59,6 +70,31 @@ class SqlDialogueOwnerAccess:
             binding = await db.get(DialogueBindingRow, (str(tenant_id), source.binding_id))
             if binding is None:
                 raise PermissionDenied("普通对话原件权限拒绝")
+            contact = await db.get(ContactPointRow, (str(tenant_id), source.contact_point_id))
+            if contact is None:
+                raise PermissionDenied("普通对话联系人关联拒绝")
+            # 独立收件提交后立即可见；不等bridge批次/模型分类，不读取客户正文。
+            pending = await db.scalar(select(BusinessMailRow.message_id)
+                .join(RawArtifactRow, (RawArtifactRow.tenant_id == BusinessMailRow.tenant_id)
+                    & (RawArtifactRow.artifact_id == BusinessMailRow.artifact_id))
+                .where(BusinessMailRow.tenant_id == tenant_id, RawArtifactRow.tenant_id == tenant_id,
+                    BusinessMailRow.mailbox_id == box.mailbox_id, BusinessMailRow.source_kind == 'full_mime',
+                    BusinessMailRow.sender == contact.value, BusinessMailRow.reply_recipient == box.address,
+                    BusinessMailRow.message_header.is_not(None), BusinessMailRow.dialogue_feedback.is_(None),
+                    RawArtifactRow.kind == 'email_raw', RawArtifactRow.content_hash == BusinessMailRow.source_sha256,
+                    BusinessMailRow.mime_sha256 == BusinessMailRow.source_sha256,
+                    or_(exists(select(DialogueExecutionRow.source_message_id).where(
+                        DialogueExecutionRow.tenant_id == tenant_id, DialogueExecutionRow.binding_id == source.binding_id,
+                        DialogueExecutionRow.state == 'sent', DialogueExecutionRow.deterministic_message_id == BusinessMailRow.in_reply_to)),
+                        exists(select(OutreachMessageAttemptRow.attempt_id).where(
+                            OutreachMessageAttemptRow.tenant_id == tenant_id,
+                            OutreachMessageAttemptRow.enrollment_id == source.enrollment_id,
+                            OutreachMessageAttemptRow.state == 'sent',
+                            OutreachMessageAttemptRow.deterministic_message_id == BusinessMailRow.in_reply_to))),
+                    ~exists(select(DialogueBusinessReceiptRow.business_message_id).where(
+                        DialogueBusinessReceiptRow.tenant_id == tenant_id,
+                        DialogueBusinessReceiptRow.business_message_id == BusinessMailRow.message_id)))
+                .limit(1))
             await self.mailbox.binding.check(actor, box.address, box.binding_operation_id)
             return DialogueOwnerSnapshot(source=source,
                 actor=InboxActor(tenant_id, employee_id, employee.role,
@@ -66,7 +102,7 @@ class SqlDialogueOwnerAccess:
                     frozenset({employee_id})), user_id=UserId(employee.user_id),
                 latest_message_id=MessageId(binding.latest_message_id), binding_state=binding.state,
                 rounds_sent=binding.rounds_sent, model_calls=binding.model_calls,
-                no_progress_rounds=binding.no_progress_rounds)
+                no_progress_rounds=binding.no_progress_rounds, pending_inbound=pending is not None)
 
 
 class DialogueOriginalAccess:

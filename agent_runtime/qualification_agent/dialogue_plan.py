@@ -2,8 +2,7 @@
 import json
 import re
 import unicodedata
-from dataclasses import asdict
-from typing import Literal
+from typing import Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -94,6 +93,30 @@ def render_dialogue(plan: DialoguePlan, products: tuple[ProductCustomerView, ...
     return '\n\n'.join(paragraphs)
 
 
+class ModelProduct(TypedDict):
+    product_id: str
+    name_en: str
+    category: str
+    spec_display: str | None
+    description_en: str | None
+    variant_options: list[str]
+
+
+def _model_product(product: ProductCustomerView) -> ModelProduct:
+    """仅传规划所需公开文字；任何字段含凭证均在模型边界前拒绝，不依赖输出选择。"""
+    projected = ModelProduct(product_id=product.product_id, name_en=product.name_en,
+        category=product.category, spec_display=product.spec_display,
+        description_en=product.description_en, variant_options=list(product.variant_options))
+    for value in projected.values():
+        texts = value if isinstance(value, list) else [value]
+        for text in texts:
+            if isinstance(text, str):
+                CredentialMarkerGuard().check(subject=None, body=text)
+            elif text is not None:
+                raise ValidationError('普通回复产品输入类型无效')
+    return projected
+
+
 class OrdinaryDialoguePlanner:
     def __init__(self, generator: ModelGenerationPort) -> None:
         self.generator = generator
@@ -104,7 +127,7 @@ class OrdinaryDialoguePlanner:
         """当前原文仅作不可信输入；模型不读内部资料，不写Need，也不能选择发件对象。"""
         CredentialMarkerGuard().check(subject=customer_subject, body=customer_text)
         payload = {'customer': {'subject':customer_subject, 'text':customer_text},
-            'customer_visible_products':[asdict(p) for p in products],
+            'customer_visible_products':[_model_product(p) for p in products],
             'allowed_question_topics':list(allowed_questions[:2]),
             'response_schema':DialoguePlan.model_json_schema()}
         result = await self.generator.generate(identity, ModelRequest(model=model,

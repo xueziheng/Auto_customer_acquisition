@@ -25,8 +25,9 @@ from tests.integration.test_email_inbound_page import (  # noqa: F401
 )
 
 
-@pytest.mark.parametrize("mode", ["normal", "invalid_plan", "unknown_model", "off", "budget", "stop", "repeat"])
+@pytest.mark.parametrize("mode", ["normal", "invalid_plan", "unknown_model", "off", "budget", "stop", "repeat", "pending_during_model", "pending_after_plan", "inquiry"])
 async def test_actual_factory_qq_cold_materials_to_sales_dialogue_same_need(page_runtime, tmp_path, monkeypatch, mode):
+    """cold从原API首封开始；inquiry从未准入本人邮件POST开始，两者均经真实factory消费。"""
     from apps.api.composition.aliyun_web import AliyunOutboundConnectors
     from apps.api.composition.runtime import build_phase1_dependencies
     from apps.api.controlled import initialize_identities
@@ -115,19 +116,24 @@ async def test_actual_factory_qq_cold_materials_to_sales_dialogue_same_need(page
     scope = OrdinaryDialoguePolicyInput(owner_employee_id=sales.employee_id,assessment_ref='approved-inquiry',
         reply_sender_identity_ids=(sid,),product_refs=({'product_id':product.product_id,'customer_view_sha256':canonical_fact_hash(asdict(visible))},),
         expires_at=NOW+timedelta(days=5),max_rounds=6,max_model_calls=2 if mode=="budget" else 10,max_no_progress_rounds=2,max_input_bytes=16000,max_output_tokens=1000)
-    await prepare_sent(runtime, reply_source=True, initialized_staff=staff, ordinary_policy=scope, sending_employee_id=sales.employee_id)
-    assert len(server.sent)==1
-    cold = BytesParser(policy=email_policy.default).parsebytes(server.sent[0])
-    assert cold['From']=='sales@qq.com' and cold['In-Reply-To'] is None
-    assert cold['Message-ID']==runtime['outbound']
+    await prepare_sent(runtime, reply_source=True, initialized_staff=staff, ordinary_policy=scope, sending_employee_id=sales.employee_id, prepare_only=mode=='inquiry')
+    offset = 0 if mode == 'inquiry' else 1
+    assert len(server.sent) == offset
+    cold = BytesParser(policy=email_policy.default).parsebytes(server.sent[0]) if offset else None
+    if cold:
+        assert cold['From']=='sales@qq.com' and cold['In-Reply-To'] is None
+        assert cold['Message-ID']==runtime['outbound']
+    buyer_address = str(cold['To']) if cold else (await deps.prospecting.get_contact_point(tenant,runtime['source_contact_point_id'])).value
     mailboxes=SqlBusinessMailRepository(sessions,CurrentBusinessMailboxBinding(AliyunMailStore(root)))
     actor=BusinessMailActor(**mailbox_actor.model_dump())
     mailbox=await mailboxes.register(actor,address='sales@qq.com',operation=operation)
     objects=S3ObjectBlobTransport(S3ObjectStoreSettings.from_environ(env),config)
     artifacts=RawArtifactStoreImpl(lambda t:SqlAlchemyArtifactUnitOfWork(sessions,t),objects,4*1024*1024,lambda:NOW,new_id)
     async def receive(uid, body, header):
-        message=EmailMessage();message['From']=str(cold['To']);message['To']='sales@qq.com'
-        message['Message-ID']=f'<customer-{uid}@buyer.test>';message['In-Reply-To']=header
+        message=EmailMessage();message['From']=buyer_address;message['To']='sales@qq.com'
+        message['Message-ID']=f'<customer-{uid}@buyer.test>'
+        if header is not None:
+            message['In-Reply-To']=header
         message['Subject']='Product enquiry';message.set_content(body)
         raw=message.as_bytes(policy=email_policy.SMTP)
         parsed=parse_business_mime(raw,uid=uid,uidvalidity=8,received_at=NOW)
@@ -153,6 +159,8 @@ async def test_actual_factory_qq_cold_materials_to_sales_dialogue_same_need(page
                 await self.budget.run({'model':request.model,'max_output_tokens':request.max_output_tokens,'messages':[request.system_prompt,request.payload]},dispatch)
             else: await dispatch({})
             if 'allowed_question_topics' in request.payload:
+                if mode == 'pending_during_model' and request.payload['customer']['text'].strip() == 'We need hinges.':
+                    await receive(3, 'We need hinges for cabinet doors, 5000 units.', str(ordinary['Message-ID']))
                 if mode == 'unknown_model':
                     from shared.schemas.model_invocation import ModelGenerationError
                     raise ModelGenerationError('unknown')
@@ -189,7 +197,32 @@ async def test_actual_factory_qq_cold_materials_to_sales_dialogue_same_need(page
         HandoffPolicy(3600,10),reply_factory=reply),
         reply_artifact_ports=DialogueArtifactPorts(S3ObjectStoreSettings.from_environ(env),config),now=lambda:NOW)
     try:
-        await receive(1,'Please introduce this product.',str(cold['Message-ID']))
+        await receive(1,'Please introduce this product.',str(cold['Message-ID']) if cold else None)
+        if mode == 'inquiry':
+            from httpx import ASGITransport, AsyncClient
+
+            from apps.api.main import create_app
+            from apps.api.middleware import ApiSettings
+            from domains.conversations.business_mail import BusinessMailService
+            from infra.db.business_mail_tables import BusinessMailRow
+            from infra.db.inquiry_admission import SqlInquiryAdmissionTransaction
+            from workflows.reply_qualification.inquiry_admission import InquiryAdmission
+            async with sessions() as db:
+                assert await db.scalar(select(DialogueBindingRow).where(DialogueBindingRow.tenant_id==tenant)) is None
+                assert await db.scalar(select(OutreachEnrollmentRow).where(OutreachEnrollmentRow.tenant_id==tenant)) is None
+                initial_mail=await db.scalar(select(BusinessMailRow).where(BusinessMailRow.tenant_id==tenant))
+            app=create_app(settings=ApiSettings(tenant_id=tenant,dev_mode=True,retry_after_seconds=2),dependencies=deps)
+            app.state.business_mail=BusinessMailService(mailboxes)
+            app.state.ordinary_inquiry_admission=InquiryAdmission(
+                lambda t:SqlInquiryAdmissionTransaction(sessions,t,mailboxes,now=lambda:NOW),deps.outreach,products,deps.prospecting)
+            async with AsyncClient(transport=ASGITransport(app=app),base_url='http://controlled.test') as client:
+                admitted=await client.post(f'/inbox/business-mail/{initial_mail.message_id}/ordinary-dialogue',
+                    headers={'X-Tenant-Id':tenant,'X-Employee-Id':sales.employee_id},
+                    json={'account_id':runtime['source_account_id'],'contact_point_id':runtime['source_contact_point_id'],
+                        'campaign_id':runtime['source_campaign_id'],'campaign_version':1,'product_id':product.product_id,
+                        'customer_quote':'Please introduce this product.'})
+                assert admitted.status_code==200,admitted.text
+
         async with factory() as worker:
             driver=captured[0].dialogue_driver
             assert driver is not None
@@ -232,14 +265,25 @@ async def test_actual_factory_qq_cold_materials_to_sales_dialogue_same_need(page
                     assert len(server.sent) == 1
                     return
                 assert execution is not None and execution.state=='sent', (reviews, execution.state if execution else None, failures)
-                enrollment=await db.get(OutreachEnrollmentRow,(tenant,runtime['source_enrollment_id']))
-                assert enrollment.state=='replied'
+                if mode == 'inquiry':
+                    assert binding.enrollment_id is None
+                    assert await db.scalar(select(OutreachEnrollmentRow).where(OutreachEnrollmentRow.tenant_id==tenant)) is None
+                else:
+                    enrollment=await db.get(OutreachEnrollmentRow,(tenant,runtime['source_enrollment_id']))
+                    assert enrollment.state=='replied'
                 assert binding.owner_employee_id==sales.employee_id
-            assert len(server.sent)==2
-            ordinary=BytesParser(policy=email_policy.default).parsebytes(server.sent[1])
-            assert ordinary['From']==cold['From'] and ordinary['In-Reply-To']=='<customer-1@buyer.test>'
+            assert len(server.sent)==offset+1
+            ordinary=BytesParser(policy=email_policy.default).parsebytes(server.sent[offset])
+            assert ordinary['From']=='sales@qq.com' and ordinary['In-Reply-To']=='<customer-1@buyer.test>'
             assert 'Hinges for cabinet doors.' in ordinary.get_content()
             first_hypothesis = binding.hypothesis_id
+            if mode == 'pending_after_plan':
+                original_put = driver.plans.put
+                async def receive_after_plan(*args, **kwargs):
+                    result = await original_put(*args, **kwargs)
+                    await receive(3, 'We need hinges for cabinet doors, 5000 units.', str(ordinary['Message-ID']))
+                    return result
+                driver.plans.put = receive_after_plan
             await receive(2, 'Please stop contacting me.' if mode=='stop' else 'We need hinges.', str(ordinary['Message-ID']))
             await pump()
             if mode in {'budget','stop'}:
@@ -255,7 +299,19 @@ async def test_actual_factory_qq_cold_materials_to_sales_dialogue_same_need(page
                 await pump(3)
                 assert len(calls)==call_count and len(server.sent)==2
                 return
-            assert len(server.sent) == 3, failures
+            if mode in {'pending_during_model', 'pending_after_plan'}:
+                assert len(server.sent) == 2, failures
+                from infra.db.tables import MessageRow, ValidatedNeedRow
+                async with sessions() as db:
+                    current_binding=await db.scalar(select(DialogueBindingRow).where(DialogueBindingRow.tenant_id==tenant))
+                    needs=(await db.scalars(select(ValidatedNeedRow).where(ValidatedNeedRow.tenant_id==tenant))).all()
+                    assert current_binding.hypothesis_id == first_hypothesis
+                    assert len(needs)==1 and needs[0].quantity['value']==5000
+                    second_id=await db.scalar(select(MessageRow.message_id).where(MessageRow.tenant_id==tenant,MessageRow.external_message_id=='<customer-2@buyer.test>'))
+                    abandoned=await db.get(DialogueExecutionRow,(tenant,second_id))
+                    assert abandoned.state=='cancelled'
+                return
+            assert len(server.sent) == offset+2, failures
             async with sessions() as db:
                 from infra.db.tables import ValidatedNeedRow
                 current_binding = await db.scalar(select(DialogueBindingRow).where(DialogueBindingRow.tenant_id==tenant))
@@ -282,7 +338,7 @@ async def test_actual_factory_qq_cold_materials_to_sales_dialogue_same_need(page
                     reasons=(await db.scalars(select(ConversationReplyWorkRow.review_reason).where(ConversationReplyWorkRow.tenant_id==tenant))).all()
                     assert 'no_progress' in reasons, reasons
                 return
-            third = BytesParser(policy=email_policy.default).parsebytes(server.sent[2])
+            third = BytesParser(policy=email_policy.default).parsebytes(server.sent[offset+1])
             await receive(3, 'We need hinges for cabinet doors, 5000 units.', str(third['Message-ID']))
             await pump()
             async with sessions() as db:
@@ -290,13 +346,13 @@ async def test_actual_factory_qq_cold_materials_to_sales_dialogue_same_need(page
                 assert len(needs)==1 and needs[0].need_id==first_need and needs[0].quantity['value']==5000
                 reviews=(await db.execute(select(ConversationReplyWorkRow.action,ConversationReplyWorkRow.review_reason).where(ConversationReplyWorkRow.tenant_id==tenant))).all()
                 assert ('review_reply','need_validated_intake_permission_required') in reviews, reviews
-            assert len(server.sent)==3
+            assert len(server.sent)==offset+2
             call_count=len(calls)
             await pump(3)
-            assert len(calls)==call_count and len(server.sent)==3
+            assert len(calls)==call_count and len(server.sent)==offset+2
         # 重建真实factory/resources、重新取得singleton；稳定源/attempt不会再次规划或发送。
         async with factory() as worker:
             await pump(3)
-            assert len(calls)==call_count and len(server.sent)==3
+            assert len(calls)==call_count and len(server.sent)==offset+2
     finally:
         await objects.aclose()

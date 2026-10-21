@@ -17,6 +17,7 @@ class DialogueOwnerSnapshot:
     rounds_sent: int
     model_calls: int
     no_progress_rounds: int
+    pending_inbound: bool = False
 
 
 class DialogueOwnerAccess(Protocol):
