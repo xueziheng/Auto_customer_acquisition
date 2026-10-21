@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from artifact_store.store import RawArtifactStore
 from connectors.playwright.public_page import BrowserPublicPageReader
 from connectors.tavily.transport import TavilySearchTransport
-from connectors.web_search.client import WebSearchConnector, WebSearchSecretResolver
+from connectors.web_search.client import (
+    PageSnapshot,
+    WebSearchConnector,
+    WebSearchResult,
+    WebSearchSecretResolver,
+)
 from connectors.web_search.transport import PublicPageTransport
 from infra.db.search_quota import PostgresSearchQuotaRepository
 from infra.db.tables import ToolCallRow
@@ -60,6 +65,7 @@ class InventoryWebTools:
     page_reader: WebDiscoveryPageReader
     browser_reader: WebDiscoveryPageReader
     observe_usage: Callable[[], Awaitable[None]]
+    archive_candidate: Callable[[], Awaitable[PageSnapshot]] | None = None
 
 
 class BrowserGateway:
@@ -178,6 +184,7 @@ def build_inventory_web(
     now: Callable[[], datetime],
     browser: bool = False,
     countries: tuple[str, ...] = (),
+    candidate_url: str | None = None,
 ) -> InventoryWebTools:
     """每job/source独立Gateway和槽；只接受公开读取，与联系策略保持分离。"""
     search_slot, page_slot = (
@@ -285,6 +292,18 @@ def build_inventory_web(
         if result.status is not ToolCallStatus.SUCCEEDED:
             raise ValueError("免费搜索用量无法核实")
 
+    page_reader = ToolGatewayWebPageReader(gateway, page_slot, user_id, failure_slot=page_failures)
+
+    async def archive_candidate() -> PageSnapshot:
+        # 仅受信准备工厂传入已分配候选URL，不向模型提供任意URL读取工具。
+        if candidate_url is None:
+            raise ValueError("准备任务未绑定来源页面")
+        await guard()
+        batch = search_slot.put(tenant_id, country, category, (WebSearchResult("已取得企业来源", candidate_url, ""),))
+        result = await page_reader.read_page(tenant_id, run_id, batch, 0)
+        await guard()
+        return result
+
     return InventoryWebTools(
         FreeSearchGatewaySearcher(
             ToolGatewayWebSearcher(gateway, search_slot, user_id), free.quota, tenant_id
@@ -296,4 +315,5 @@ def build_inventory_web(
             BrowserGateway(gateway), page_slot, user_id, failure_slot=browser_failures
         ),
         observe_usage,
+        archive_candidate if candidate_url is not None else None,
     )

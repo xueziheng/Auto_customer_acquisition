@@ -103,7 +103,7 @@ from domains.outreach.service import (
     SendingIdentityEligibilityProvider,
 )
 from domains.outreach.service_impl import OutreachServiceImpl
-from domains.prospecting.service import ContactValueHasher, ProspectingService
+from domains.prospecting.service import ProspectingService
 from domains.prospecting.service_impl import ProspectingServiceImpl
 from domains.sending_identity.permissions import (
     Phase1SendingIdentityAuthorizer,
@@ -320,6 +320,9 @@ from .catalog_product_runtime import (
 )
 from .config import SchedulerWorkerConfig
 from .contact_binding import ContactRuntimeResources
+from .contact_hashing import (
+    DomainSeparatedContactValueHasher as _DomainSeparatedContactValueHasher,
+)
 from .directive_reader import (
     DirectiveSourcingAdmissionPolicyReader,
     SchedulerDirectiveEmployeeReader,
@@ -375,19 +378,6 @@ class CompleteOutboxRegistry(Protocol):
 
 _HEALTH_CHECKPOINTS = frozenset({"config", "schema", "database", "registry"})
 _SOURCING_ADMISSION_LEASE_DURATION = timedelta(minutes=5)
-
-
-class _DomainSeparatedContactValueHasher(ContactValueHasher):
-    """复用 scheduler HMAC key，但以固定域标签隔离联系方式指纹。"""
-
-    def __init__(self, provider: HmacFingerprintProvider) -> None:
-        self._provider = provider
-
-    def fingerprint(self, canonical_value: str) -> str:
-        digest, _version = self._provider.fingerprint(
-            (b"contact-value-v1", canonical_value.encode("utf-8"))
-        )
-        return digest
 
 
 class _NoSignalUvicornServer(uvicorn.Server):
@@ -1669,6 +1659,7 @@ class SchedulerRuntimeFactory:
                     secrets,
                     tool_user,
                     archive=sent_archive,
+                    preparation_core=core,
                 )
             if self._bootstrap is not None:
                 if campaign_outreach is not None:
@@ -1737,6 +1728,7 @@ class SchedulerRuntimeFactory:
                     classification_access=reply_composition.classification_access,
                 )
             account_handlers: dict[str, StepHandler] = {}
+            current_contact_verifier: ContactVerifier | None = None
             runtime_activation: RuntimeActivation | None = None
             if dependencies.account_discovery is not None:
                 if campaign_outreach is None:
@@ -1794,6 +1786,7 @@ class SchedulerRuntimeFactory:
                         raise ValidationError("scheduler 联系人发现实现未配置")
                     enricher = account.enricher
                     verifier = account.verifier
+                current_contact_verifier = verifier if account.hunter is None or hunter_validated else None
                 account_handlers = build_account_discovery_handlers(
                     task_reader=account.task_reader,
                     capability=account.capability,
@@ -1892,6 +1885,16 @@ class SchedulerRuntimeFactory:
                 build_inventory = getattr(self._bootstrap, "build_inventory", None)
                 if build_inventory is not None:
                     inventory_driver = build_inventory(core, factory)
+                build_preparation = getattr(self._bootstrap, "build_customer_preparation", None)
+                if build_preparation is not None:
+                    preparation = await build_preparation(core, factory, campaign_outreach, current_contact_verifier)
+                    if preparation is not None:
+                        from .customer_preparation_runtime import (
+                            InventoryWithCustomerPreparation,
+                        )
+                        inventory_driver = InventoryWithCustomerPreparation(inventory_driver, preparation.driver)
+                        runtime_activation = _InboundRuntimeActivation(runtime_activation, preparation.activate)
+
             knowledge_driver = None
             if self._bootstrap is not None:
                 build_knowledge = getattr(self._bootstrap, "build_knowledge", None)
@@ -2240,6 +2243,7 @@ class SchedulerRuntimeFactory:
         tool_user: UserId,
         *,
         archive: OutboundMailArchive | None = None,
+        preparation_core: SchedulerCoreServices | None = None,
     ) -> tuple[dict[str, StepHandler], OutreachService]:
         """装配 Campaign 发送链路：outreach 服务、退订链接、email.send 网关。
 
@@ -2358,6 +2362,16 @@ class SchedulerRuntimeFactory:
         ):
             raise ValidationError("scheduler Campaign registry 无效")
         permission = SchedulerCampaignPermissionCheck(factory, tenant)
+        from tool_gateway.checks.customer_preparation import (
+            CustomerPreparationPermissionCheck,
+        )
+
+        from .customer_preparation_runtime import build_preparation_send_guard
+        permission_stage: CheckStage = PermissionCheck(permission.authorize)
+        if preparation_core is not None:
+            permission_stage = CustomerPreparationPermissionCheck(permission_stage,
+                build_preparation_send_guard(preparation_core, factory, tenant, outreach, now))
+
         rate_limit = RateLimitCheck(
             outreach, sending, outreach_actor_for, sending_actor_for
         )
@@ -2365,7 +2379,7 @@ class SchedulerRuntimeFactory:
             campaign_registry,  # type: ignore[arg-type]
             {
                 "tenant": TenantCheck(),
-                "permission": PermissionCheck(permission.authorize),
+                "permission": permission_stage,
                 "suppression": SuppressionCheck(outreach, outreach_actor_for),
                 "approval": ApprovalCheck(),
                 "idempotency": IdempotencyCheck(),

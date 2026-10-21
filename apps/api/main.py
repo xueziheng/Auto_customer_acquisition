@@ -27,7 +27,9 @@ from starlette.types import Lifespan
 from apps.api.routers.aliyun_web import router as aliyun_web_router
 from apps.api.routers.assistant import router as assistant_router
 from apps.api.routers.business_mail import router as business_mail_router
-from apps.api.routers.business_mail_followup import router as business_mail_followup_router
+from apps.api.routers.business_mail_followup import (
+    router as business_mail_followup_router,
+)
 from apps.api.routers.gmail_web import router as gmail_web_router
 from apps.api.routers.mailbox import router as mailbox_router
 from apps.api.routers.model_settings import router as model_settings_router

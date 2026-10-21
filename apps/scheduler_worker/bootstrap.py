@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
@@ -36,7 +36,7 @@ from apps.composition_support.outreach_fact_readers import (
     CurrentSendingIdentityReader,
 )
 from artifact_store.service_impl import RawArtifactStoreImpl
-from artifact_store.transport import ObjectBlobTransport
+from artifact_store.transport import BoundedObjectBlobTransport, ObjectBlobTransport
 from connectors.gmail.client import SecretResolver
 from connectors.gmail.transport import GmailHttpTransport
 from connectors.tavily.transport import TavilySearchTransport
@@ -84,6 +84,7 @@ from .account_discovery import (
 )
 from .config import SchedulerWorkerConfig
 from .contact_binding import ContactRuntimeResources
+from .customer_preparation_runtime import PreparationRuntime
 from .directive_reader import DirectiveDemandDiscoveryTaskReader
 from .main import EnterpriseKnowledgeDriverProtocol, InventoryDriverProtocol
 from .notification_projection import NotificationAudienceMember
@@ -191,6 +192,7 @@ class ResearchRuntimePorts:
     secret_resolver: SecretResolver
     exclusive_account_confirmed: bool
     capability: DemandIntelligenceCapability | None = None
+    bounded_object_transport: BoundedObjectBlobTransport | None = None
 
 
 @dataclass(frozen=True)
@@ -282,6 +284,15 @@ class CanonicalSchedulerBootstrap:
     ) = None
 
     inventory_factory: Callable[[SchedulerCoreServices, async_sessionmaker[AsyncSession]], InventoryDriverProtocol] | None = None
+    preparation_factory: Callable[[SchedulerCoreServices, async_sessionmaker[AsyncSession], OutreachService, ContactVerifier | None], Awaitable[PreparationRuntime]] | None = None
+
+    async def build_customer_preparation(self, core: SchedulerCoreServices, sessions: async_sessionmaker[AsyncSession], outreach: OutreachService | None, verifier: ContactVerifier | None) -> PreparationRuntime | None:
+        if self.preparation_factory is None:
+            return None
+        if outreach is None:
+            raise ValidationError("客户准备缺少规范Outreach服务")
+        return await self.preparation_factory(core, sessions, outreach, verifier)
+
 
     def build_inventory(self, core: SchedulerCoreServices, sessions: async_sessionmaker[AsyncSession]) -> InventoryDriverProtocol | None:
         """独立库存组合只在显式配置控制库与来源端口时构建。"""
@@ -461,7 +472,7 @@ class CanonicalSchedulerBootstrap:
                     CurrentCampaignApprovalReader(tenant, core.approvals, now=now),
                     CurrentReplyStatusReader(tenant, core.prospecting, core.conversations, now=now),
                 )
-                if self.reply_factory is not None and campaign is None else None
+                if (self.reply_factory is not None or self.preparation_factory is not None) and campaign is None else None
             ),
             account_discovery=account,
             demand_discovery=discovery,

@@ -188,6 +188,32 @@ onMounted(() => void load());
       {{ error }}
     </p>
     <template v-if="detail">
+      <section
+        v-if="detail.preparation"
+        class="detail-card"
+        aria-label="自动准备进度"
+      >
+        <h2>自动准备进度</h2>
+        <p>{{ ({queued: "等待处理", processing: "处理中", blocked: "已阻断，等待核对", enrolled: "已验证并入组"})[detail.preparation.state] }} · {{ ({authorize: "核验批准范围", assign: "关联客户归属", evidence: "整理证据与产品适配", verify: "验证邮箱", enroll: "核验入组条件", completed: "准备完成"})[detail.preparation.stage] }}</p>
+        <p>开发范围第 {{ detail.preparation.campaign_version }} 版。入组不代表已经发送；发送仍受当前批准、归属、国家政策及发信开关控制。</p>
+        <p
+          v-if="detail.preparation.blocked_reason"
+          role="status"
+        >
+          {{ blockingLabel(detail.preparation.blocked_reason) }}
+        </p>
+        <div class="preparation-links">
+          <RouterLink
+            v-if="access?.can_assign"
+            to="/campaigns"
+          >
+            核对批准范围
+          </RouterLink>
+          <RouterLink to="/knowledge">
+            核对企业资料
+          </RouterLink>
+        </div>
+      </section>
       <section class="detail-card">
         <h2>{{ detail.allocation.candidate.name }}</h2>
         <p>
@@ -381,6 +407,7 @@ onMounted(() => void load());
   </div>
 </template>
 <style scoped>
+.preparation-links { display: flex; flex-wrap: wrap; gap: 0.75rem; }
 .customer-detail-shell {
   overflow: auto;
   min-width: 0;

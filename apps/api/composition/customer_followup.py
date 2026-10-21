@@ -191,6 +191,7 @@ class CustomerFollowupApplication:
                 == context.employee_id
                 == allocation.employee_id,
                 blocking_reasons=reasons,
+                preparation=context.preparation,
             )
 
     async def options(

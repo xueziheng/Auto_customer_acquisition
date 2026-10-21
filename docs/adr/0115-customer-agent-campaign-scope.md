@@ -29,3 +29,13 @@ scope 引用与 query 引用分别复核，均经 ConfirmedContextReader。scope
 取得与归属的机械同事务桥接归属 infra/db/customer_assignment.py，API只保留兼容导出，scheduler使用同一实现。跨域授权编排归属 workflows/customer_preparation，经显式注入的员工、Outreach、审批与确认资料公共接口读取当前事实，不扩大composition_support白名单或引入反向进程依赖。
 
 Agent资料独立使用fill_account_profile_from_evidence：必须匹配当前租户原件、实际Gateway页URL、重新计算的原件hash与逐字引文，并核对客户官网；只补空字段、冲突拒绝、不写人工确认。模型适配仍是推断，不能因此制造ValidatedNeed。原人工入口保持原语义。搜索/分配保留ADR0093的在职老板权限，负责人可委托在职sales/manager。
+
+## 实际执行与发送前复核
+
+准备项与 InventoryRequest、分配在同一租户事务写入；即时公共库存与异步 private fit 共用同一入队点。原 singleton 库存阶段先处理一项准备，再执行原采集，不新增后台循环。租约 CAS、固定幂等键、真实 ownership_locked_at 与阶段检查点共同控制恢复；外部步骤已派发而结果未知只保留核对状态，重建进程也不能重派。
+
+消费者复用 canonical Prospecting、Demand、Outreach 和原联系人 Gateway。企业资料只作内部适配，网页事实、适配推断和真人范围确认分开保存；实际验证通过后才按原归属快照与 source_hypothesis 入组。缺真实 sender、验证配置、有界原件、处理依据或当前政策都显示固定阻断原因。全局发送关闭允许准备及入组，不允许发送。
+
+国家政策读取使用现 CountryPolicyDecisionReader 约定的具名 SYSTEM 只读事实身份；业务请求仍由当前真实老板、owner、精确 Campaign 审批和确认资料检查授权，SYSTEM 不替代业务命令权限。新授权路径在 API 与 scheduler 的原 email.send Gateway permission 阶段追加具名复核，不改变原六阶段次序；旧无准备绑定路径保留原检查。当前仅支持 retain.assessment_ref、honor_opt_out，未知 requirement 拒绝。
+
+scheduler 读取与 API 相同的 Hunter 元数据文件与惰性凭证解析器；只有当前配置与已验证 readiness 相符、双工具实际注册且持有原 singleton 时才提交 runtime_composed，不代跑验证探针。customer_preparation 模型能力沿现平台目录、员工/企业绑定、配置版本和 export 授权解析；不添加企业模型设置、不另存密钥。最小界面沿原 Campaign 编辑审批、老板搜索范围选择和客户详情安全进度，不把入组显示为已发送。

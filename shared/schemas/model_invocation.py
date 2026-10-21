@@ -23,6 +23,7 @@ ModelCapability = Literal[
     "business_mail_triage",
     "knowledge_ingest",
     "inventory_discovery",
+    "customer_preparation",
 ]
 
 

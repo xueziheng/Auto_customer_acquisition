@@ -965,6 +965,7 @@ def test_orm_metadata_parity_with_head() -> None:
         assert actual == cols, f"{table} 列集合不一致：{sorted(actual ^ cols)}"
 
     expected_indexes = {
+        "ix_business_mail_inbox": ("tenant_id", "mailbox_id", "received_at"),
         # 对照0043–0045迁移冻结预期，不从被测metadata生成。
         "ix_costing_coverage_sheet_hash": (
             "tenant_id", "cost_sheet_id", "sheet_hash", "confirmed_at", "coverage_id",

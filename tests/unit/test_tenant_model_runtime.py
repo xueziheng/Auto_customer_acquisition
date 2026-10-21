@@ -48,3 +48,24 @@ async def test_two_company_generators_resolve_independently_and_preserve_started
     with pytest.raises(ModelGenerationError):
         await ga.generate(identity('company-a','r3'),request)
     assert len(seen)==before
+
+
+async def test_customer_preparation_uses_existing_company_catalog_binding(tmp_path):
+    """新能力名不另建连接；仍需平台绑定、当前授权与精确配置版本。"""
+    from infra.tenant_model import resolve_task_model
+    store = catalog(tmp_path)
+    connection = verify(store, create(store, "Existing DeepSeek", "deepseek-v4-pro"))
+    store.bind("platform", "admin", "company-a", connection.id, 1, 0)
+    configured = StandaloneModelSettings.model_validate({**settings(),
+        "api_control_tenant": "platform", "api_business_tenant": "company-a",
+        "model_catalog_directory": store.directory, "codex_job_root": tmp_path / "jobs"})
+    identity = InvocationIdentity(tenant_id="company-a", user_id="u1", employee_id="e1",
+        run_id="run-preparation", configuration_version="explicit-v1", capability="customer_preparation", sequence=0)
+    selected = resolve_task_model(configured, identity)
+    assert selected.model == "deepseek-v4-pro"
+    assert selected.api_connection_version == connection.configuration_version
+    assert selected.configuration_version == configured.configuration_version
+    with pytest.raises(ModelGenerationError):
+        resolve_task_model(configured, identity.model_copy(update={"tenant_id": "unbound-company"}))
+    with pytest.raises(ModelGenerationError):
+        resolve_task_model(configured, identity.model_copy(update={"configuration_version": "stale"}))

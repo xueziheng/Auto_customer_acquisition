@@ -138,7 +138,7 @@ def test_platform_resolver_is_lazy_exact_and_rejects_rotation_without_fallback(
     def forbidden_file_read(*args, **kwargs):
         pytest.fail("平台来源不得读取或回退私有密钥文件")
 
-    monkeypatch.setattr(module, "private_read", forbidden_file_read)
+    monkeypatch.setattr("infra.hunter_customer_credentials.private_read", forbidden_file_read)
     resolver = module.PlatformHunterCustomerSecretResolver(
         settings, repository_factory=repository_factory
     )
@@ -239,8 +239,8 @@ def test_real_employee_actor_builder_has_explicit_tenant_and_zero_io(
     def forbidden_io(*args, **kwargs):
         pytest.fail("构造不得访问凭证、数据库或网络")
 
-    monkeypatch.setattr(module, "private_read", forbidden_io)
-    monkeypatch.setattr(module, "FileDataSourceConfigurationRepository", forbidden_io)
+    monkeypatch.setattr("infra.hunter_customer_credentials.private_read", forbidden_io)
+    monkeypatch.setattr("infra.hunter_customer_credentials.FileDataSourceConfigurationRepository", forbidden_io)
     dependencies = SimpleNamespace(
         employee_lookup_actor=Actor(
             UserId("usr_fixture"), EmployeeScope.SYSTEM, "system"

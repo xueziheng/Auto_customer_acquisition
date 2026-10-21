@@ -33,7 +33,8 @@ class ExtractedPreparation:
 
 class PreparationExtractor(Protocol):
     async def extract(self, claim: PreparationClaim, allocation: CandidateAllocation,
-                      context: list[dict[str, object]], guard: Callable[[], Awaitable[None]]) -> ExtractedPreparation:
+                      context: list[dict[str, object]], guard: Callable[[], Awaitable[None]],
+                      *, target_entity_types: tuple[str, ...]) -> ExtractedPreparation:
         """经当前租户Gateway重新归档后调用既有模型；不复用公共池的私有artifact。"""
         ...
 

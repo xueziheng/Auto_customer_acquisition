@@ -1,6 +1,7 @@
 """本次Gateway快照与本企业不可变原件的双重核验，不读取公共缓存原租户。"""
 import hashlib
 
+from artifact_store.errors import ArtifactIntegrityError
 from artifact_store.store import BoundedRawArtifactStore, RawArtifactKind
 from connectors.web_search.client import PageSnapshot, _VisibleTextParser
 from domains.prospecting.agent_profile import AgentProfileSnapshot
@@ -19,7 +20,10 @@ class ArchivedCustomerProfileEvidence:
         snapshot = self._snapshot
         if tenant_id != self._tenant or artifact_id != snapshot.snapshot_artifact_ref:
             raise PermissionDenied("准备任务来源不属于当前企业")
-        meta, content = await self._artifacts.get_bounded(tenant_id, artifact_id, maximum_bytes=2_097_152)
+        try:
+            meta, content = await self._artifacts.get_bounded(tenant_id, artifact_id, maximum_bytes=2_097_152)
+        except ArtifactIntegrityError:
+            raise ValidationError("准备任务来源原件不一致") from None
         if (meta.tenant_id != tenant_id or meta.artifact_id != artifact_id
             or meta.kind is not RawArtifactKind.WEB_SNAPSHOT
             or meta.content_hash != snapshot.content_hash

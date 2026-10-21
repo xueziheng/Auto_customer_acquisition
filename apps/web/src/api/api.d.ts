@@ -5286,6 +5286,7 @@ export interface components {
             enrollments: components["schemas"]["CustomerEnrollmentView"][];
             /** Owner */
             owner: string | null;
+            preparation?: components["schemas"]["CustomerPreparationStatus"] | null;
         };
         /** CustomerEnrollmentView */
         CustomerEnrollmentView: {
@@ -5407,6 +5408,28 @@ export interface components {
             snapshot_artifact_ref: string;
             /** Source Url */
             source_url: string;
+        };
+        /**
+         * CustomerPreparationStatus
+         * @description 只显示持久步骤；入组不代表发送，不公开租约、内部键或私有资料。
+         */
+        CustomerPreparationStatus: {
+            /** Blocked Reason */
+            blocked_reason?: string | null;
+            /** Campaign Id */
+            campaign_id: string;
+            /** Campaign Version */
+            campaign_version: number;
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "authorize" | "assign" | "evidence" | "verify" | "enroll" | "completed";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "processing" | "blocked" | "enrolled";
         };
         /** CustomerPreparationView */
         CustomerPreparationView: {

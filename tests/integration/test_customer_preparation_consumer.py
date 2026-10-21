@@ -136,7 +136,7 @@ async def setup_consumer(bridge_inventory, failure=None):
     store = RawArtifactStoreImpl(lambda t: SqlAlchemyArtifactUnitOfWork(factory, t), objects, 2097152, lambda: NOW, new_id, bounded_transport=objects)
     class Extractor:
         calls = 0
-        async def extract(self, claim, allocation, context, guard):
+        async def extract(self, claim, allocation, context, guard, *, target_entity_types):
             self.calls += 1
             await guard()
             text = "Acme Ltd. We distribute hinges. Sales sales@acme.com."

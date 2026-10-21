@@ -1,20 +1,25 @@
 """平台连接跟随存储当前端口，但不能借用企业数据库身份。"""
 
 import secrets
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from pydantic import SecretStr
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from apps.api import standalone
+from apps.api.composition.runtime import build_phase1_dependencies
+from apps.api.runtime_config import Phase1RuntimeSettings
 from infra.db.platform_access import EnterpriseReaderBinding
 from infra.db.session import create_engine_from
 from infra.db.tenant_security import tenant_database_role
+from infra.secrets import EnvironmentSecretResolver
 from infra.standalone.platform_settings import PlatformSettings
 from infra.standalone.settings import StandaloneModelSettings
 from shared.schemas.identifiers import TenantId, new_id
+from tests.integration.test_api_runtime import _runtime_env
 from tests.unit.test_pilot_profile import make_config
 from tests.unit.test_standalone_model_settings import settings
 
@@ -40,6 +45,12 @@ async def test_platform_uses_current_storage_port_with_independent_identity(
     business = FastAPI()
     business_engine = create_engine_from(profile.database_url.get_secret_value())
     business.state.runtime_engine = business_engine
+    runtime_env = _runtime_env(profile.database_url.get_secret_value())
+    runtime_env["TRADEOS_TENANT_ID"] = str(profile.tenant_id)
+    business.state.dependencies = build_phase1_dependencies(
+        Phase1RuntimeSettings.from_environ(runtime_env),
+        async_sessionmaker(business_engine, expire_on_commit=False), now=lambda: datetime.now(UTC), secret_resolver=EnvironmentSecretResolver(runtime_env),
+    )
     platform_engines: list[AsyncEngine] = []
     bindings: list[tuple[TenantId, tuple[EnterpriseReaderBinding, ...]]] = []
 

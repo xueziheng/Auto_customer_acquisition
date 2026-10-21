@@ -72,7 +72,7 @@ async def require_cold_preparation_policy(binding: PreparationBinding, country: 
     claim, tenant = binding, binding.tenant_id
     try:
         decision = await compliance.get_country_policy_decision(tenant, country, CountryPolicyAction.COLD_B2B_EMAIL,
-            actor=ComplianceActor(str(claim.authorization.actor_employee_id), tenant, ComplianceScope.TENANT, "boss"))
+            actor=ComplianceActor("system:customer-preparation-policy", tenant, ComplianceScope.SYSTEM, "system"))
     except Exception:  # noqa: BLE001 -- 脱敏固定阻断，不把故障当允许
         raise PreparationBlocked("country_policy_unavailable") from None
     if decision.country_key != normalize_country_key(country) or decision.action is not CountryPolicyAction.COLD_B2B_EMAIL:
@@ -155,7 +155,7 @@ class CustomerPreparationConsumer:
                 async def external_guard() -> None:
                     await self.guard(claim)
                     await self.policy(claim, allocation.candidate.country)
-                extracted = await self.extractor.extract(claim, allocation, context, external_guard)
+                extracted = await self.extractor.extract(claim, allocation, context, external_guard, target_entity_types=campaign.boundary.target_entity_types)
                 await external_guard()
                 observation, snapshot = extracted.observation, extracted.snapshot
                 if not observation.matched:
@@ -222,4 +222,14 @@ class CustomerPreparationConsumer:
         except ValidationError:
             await self.queue.block_preparation(self.tenant, claim, reason="evidence_invalid" if claim.stage == "evidence" else "enrollment_denied")
         except Exception:  # noqa: BLE001 -- 未知外部结果只能人工核对，其他故障也留固定状态
-            await self.queue.block_preparation(self.tenant, claim, reason="external_reconciliation_required" if external else "preparation_failed")
+            reason = "external_reconciliation_required" if external else "preparation_failed"
+            # Gateway可包装外部调用后的撤权；重读当前事实只细化阻断原因，绝不重派。
+            try:
+                await self.guard(claim)
+            except PreparationBlocked as error:
+                reason = error.reason
+            except PermissionDenied:
+                reason = "authorization_changed"
+            except Exception:  # noqa: BLE001, S110 -- 事实读取故障不能解除未知结果的持久围栏
+                pass
+            await self.queue.block_preparation(self.tenant, claim, reason=reason)

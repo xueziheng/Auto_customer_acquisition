@@ -88,12 +88,22 @@ class CustomerFollowupOptions(BaseModel):
     execution_mode: CustomerFollowupMode = "automatic"
 
 
+class CustomerPreparationStatus(BaseModel):
+    """只显示持久步骤；入组不代表发送，不公开租约、内部键或私有资料。"""
+    state: Literal["queued", "processing", "blocked", "enrolled"]
+    stage: Literal["authorize", "assign", "evidence", "verify", "enroll", "completed"]
+    blocked_reason: str | None = None
+    campaign_id: str
+    campaign_version: int
+
+
 class CustomerDetailView(BaseModel):
     allocation: CustomerAllocationView
     account: ProspectAccountView | None
     owner: EmployeeId | None
     contacts: tuple[ProspectContactDetailView, ...]
     enrollments: tuple[CustomerEnrollmentView, ...]
+    preparation: CustomerPreparationStatus | None = None
     can_stop: bool = False
     blocking_reasons: tuple[str, ...]
 
@@ -116,6 +126,7 @@ class CustomerContext:
     is_active: bool
     allocation: CandidateAllocation | None
     ownership_owner: EmployeeId | None
+    preparation: CustomerPreparationStatus | None = None
 
     def require_identity(
         self, tenant_id: TenantId, employee_id: EmployeeId, user_id: UserId | None

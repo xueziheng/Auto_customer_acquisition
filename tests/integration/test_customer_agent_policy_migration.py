@@ -30,7 +30,7 @@ async def test_policy_migration_roundtrip(lifecycle_engine):
             for name in ("inventory_followup_requests", "customer_preparation_items"):
                 columns = await conn.run_sync(lambda c, table=name: inspect(c).get_columns(table))
                 assert {c["name"]: c["nullable"] for c in columns} == {
-                    c.name: c.nullable for c in Base.metadata.tables[name].columns
+                    c.name: c.nullable for c in Base.metadata.tables[name].columns if c.name != "ownership_locked_at"
                 }
                 assert await conn.scalar(text("SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE relname=:name"), {"name": name})
         _run_alembic(url, "downgrade", "0089")

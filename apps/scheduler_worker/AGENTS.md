@@ -135,3 +135,12 @@ Demand的客户证据委托每runtime独立，仅允许绑定一次真实verifie
 ADR0066：canonical reply 必须注入当前分类资格端口，Raw 前/模型前/模型后重新核对受托员工。
 Raw 读取复用本进程独立 inbox.message.evidence.read Gateway；qualify 与原 Inbox 权限取交集，
 不扩 manager/sales 或技术 review 权限。分类写入传入当前 actor，由原领域事务持员工访问锁到提交。
+
+## 客户自动准备（ADR0115）
+
+客户准备复用原库存 singleton phase，先消费一项持久准备再调用原采集，不创建第二循环。
+同事务授权引用/分配/准备项与租约由 infra 显式端口提供；每步重读真实 actor、owner、
+精确批准版本与确认资料。CountryPolicy 的 SYSTEM 身份只读取当前事实，不替代业务授权。
+有界原件重读、现平台模型、真实 sender 和原联系人 Gateway 齐备后才能入组；发送关闭仍可准备。
+Hunter 使用 API 相同元数据文件和惰性 resolver，缺验证配置只能 blocked；未知外部结果
+不得因重启、重新构造 resolver 或 driver 重派。API/scheduler 的 email.send 都必须接入当前准备绑定复核。

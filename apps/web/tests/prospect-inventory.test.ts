@@ -5,7 +5,7 @@ import InventoryPanel from "../src/views/customer-discovery/InventoryPanel.vue";
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach((f) => f()); clearAuthenticatedIdentity(); vi.restoreAllMocks(); sessionStorage.clear(); });
 async function settle() { for (let i = 0; i < 8; i++) { await nextTick(); await new Promise((r) => setTimeout(r, 0)); } }
-async function mount(failFirst = false, options: { populated?: boolean; postStatus?: number; delayedPost?: Promise<Response>; delayedGet?: Promise<Response>; history?: boolean; delayedPage?: Promise<Response>; sources?: unknown[]; knowledge?: unknown[]; delayedKnowledge?: Promise<Response> } = {}) {
+async function mount(failFirst = false, options: { scopes?: unknown[]; populated?: boolean; postStatus?: number; delayedPost?: Promise<Response>; delayedGet?: Promise<Response>; history?: boolean; delayedPage?: Promise<Response>; sources?: unknown[]; knowledge?: unknown[]; delayedKnowledge?: Promise<Response> } = {}) {
   configureAuthenticatedIdentity("tenant_a", "employee_a");
   let failure: number | "network" | null = null;
   let postStatus = options.postStatus;
@@ -23,6 +23,7 @@ async function mount(failFirst = false, options: { populated?: boolean; postStat
     reads.push(req.clone());
     if (path === "/knowledge/documents" && options.delayedKnowledge) return options.delayedKnowledge;
     if (path === "/knowledge/documents") return new Response(JSON.stringify({items: options.knowledge ?? []}), {status: 200});
+    if (path === "/crm/campaigns") return new Response(JSON.stringify(options.scopes ?? []), {status: 200});
     if (path === "/team/employees") return new Response("[]", { status: 200 });
     if (failure && options.delayedGet && path.endsWith("/jobs")) return options.delayedGet;
     if (failure === "network") throw new TypeError("network");
@@ -296,4 +297,20 @@ it("原搜索恢复严格保留资料引用和私有要求，不保存资料原�
   submit(root); await settle();
   expect(await claims[1]!.json()).toEqual(original);
   expect(claims[1]!.headers.get("Idempotency-Key")).toBe(claims[0]!.headers.get("Idempotency-Key"));
+});
+
+it("自动准备保留精确已批准版本，未知结果恢复同一scope，换身份清除", async () => {
+  const approved = {tenant_id: "tenant_a", campaign_id: "cmp_exact", version: 4, name: "已批准范围", state: "active", boundary: {customer_agent_policy: {confirmed_refs: [{document_id: "d1", revision_id: "r1"}]}}};
+  const {root, claims} = await mount(true, {scopes: [approved, {...approved, campaign_id: "cmp_draft", state: "draft"}]});
+  const picker = root.querySelector<HTMLSelectElement>('[aria-label="自动准备批准范围"]')!;
+  expect(picker.options.length).toBe(2);
+  picker.value = "cmp_exact:4"; picker.dispatchEvent(new Event("change"));
+  fill(root); submit(root); await settle(); submit(root); await settle();
+  expect(claims).toHaveLength(2);
+  const first = await claims[0]!.json();
+  expect(first.followup_scope).toEqual({campaign_id: "cmp_exact", campaign_version: 4});
+  expect(await claims[1]!.json()).toEqual(first);
+  expect(claims[1]!.headers.get("Idempotency-Key")).toBe(claims[0]!.headers.get("Idempotency-Key"));
+  configureAuthenticatedIdentity("tenant_b", "employee_b"); await settle();
+  expect(picker.value).toBe(""); expect(picker.options.length).toBe(1);
 });

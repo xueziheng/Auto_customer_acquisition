@@ -6,8 +6,19 @@ from contextlib import asynccontextmanager
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from domains.prospecting.customer_followup import CustomerContext
-from infra.db.prospect_inventory_tables import CandidateAllocationRow
+from domains.prospecting.customer_followup import (
+    CustomerContext,
+    CustomerPreparationStatus,
+)
+from domains.prospecting.inventory_followup import (
+    PREPARATION_BLOCK_REASONS,
+    InventoryFollowupAuthorization,
+)
+from infra.db.prospect_inventory_tables import (
+    CandidateAllocationRow,
+    CustomerPreparationItemRow,
+    InventoryFollowupRequestRow,
+)
 from infra.db.tables import EmployeeRow, OutreachCampaignRow, OwnershipLockRow
 from shared.errors import PermissionDenied, ValidationError
 from shared.schemas.identifiers import (
@@ -83,6 +94,26 @@ class PostgresCustomerContextReader:
                         )
                     ).one_or_none()
                     owner = EmployeeId(lock.owner) if lock else None
+            preparation = None
+            if row is not None:
+                item = (await session.execute(
+                    select(CustomerPreparationItemRow, InventoryFollowupRequestRow)
+                    .join(InventoryFollowupRequestRow,
+                        (InventoryFollowupRequestRow.tenant_id == CustomerPreparationItemRow.tenant_id) &
+                        (InventoryFollowupRequestRow.key_hash == CustomerPreparationItemRow.key_hash))
+                    .where(CustomerPreparationItemRow.tenant_id == tenant_id,
+                           InventoryFollowupRequestRow.tenant_id == tenant_id,
+                           CustomerPreparationItemRow.allocation_id == allocation_id)
+                )).one_or_none()
+                if item is not None:
+                    task, request = item
+                    authorization = InventoryFollowupAuthorization.model_validate(request.authorization)
+                    preparation = CustomerPreparationStatus.model_validate({
+                        "state": "blocked" if request.revoked else task.state, "stage": task.stage,
+                        "blocked_reason": "authorization_revoked" if request.revoked else (task.blocked_reason if task.blocked_reason in PREPARATION_BLOCK_REASONS else None),
+                        "campaign_id": authorization.scope.campaign_id,
+                        "campaign_version": authorization.scope.campaign_version,
+                    })
             yield CustomerContext(
                 tenant_id,
                 employee_id,
@@ -91,6 +122,7 @@ class PostgresCustomerContextReader:
                 employee.is_active,
                 allocation,
                 owner,
+                preparation,
             )
 
     async def active_campaign_ids(self, tenant_id: TenantId) -> tuple[str, ...]:
