@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,6 +59,11 @@ from .runtime import ReplyQualificationComposition, SchedulerCoreServices
 
 class ColdDialogueAdmission(Protocol):
     async def admit(self, message_id: MessageId, enrollment_id: str) -> DialogueSource: ...
+
+
+@runtime_checkable
+class DeferredColdDialogueAdmission(Protocol):
+    async def defer_completed_materials(self, message_id: MessageId, enrollment_id: str) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -245,6 +250,14 @@ class CurrentEmployeeReplyActions:
             except PermissionDenied:
                 # 未获独立范围仍保留原手工移交；绝不为资料请求隐式授权。
                 admitted = None
+                if isinstance(self.dialogue_admission, DeferredColdDialogueAdmission):
+                    try:
+                        deferred = await self.dialogue_admission.defer_completed_materials(context.message_id, str(context.enrollment_id))
+                    except PermissionDenied:
+                        deferred = False
+                    if deferred:
+                        method = "create_follow_up"
+                        key = f"reply:create_follow_up:{context.message_id}"
             if admitted is not None:
                 context = replace(context, dialogue_binding_id=admitted.binding_id)
         delegated = None

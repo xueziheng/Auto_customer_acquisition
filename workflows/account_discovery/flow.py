@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 from domains.employees.service import EmployeeService
 from domains.outreach.service import OutreachService
-from domains.prospecting.service import ProspectingService
+from domains.prospecting.service import ProspectingService, ProspectingServicePlanStore
 from workflows.account_discovery.ports import (
     AccountDiscoveryActorResolver,
     AccountDiscoveryCapability,
@@ -54,12 +54,16 @@ def build_legacy_account_discovery_definition() -> WorkflowDefinition:
                 "account_discovery.find_contacts",
                 max_retries=1,
                 retry_backoff=timedelta(minutes=5),
+                wait_event_type="ProspectScreeningReady",
+                run_on_entry=True,
             ),
             StepDefinition(
                 "verify_contacts",
                 "account_discovery.verify_contacts",
                 max_retries=1,
                 retry_backoff=timedelta(minutes=5),
+                wait_event_type="ProspectScreeningReady",
+                run_on_entry=True,
             ),
             StepDefinition("assign_owner", "account_discovery.assign_owner"),
             StepDefinition("enroll_campaign", "account_discovery.enroll_campaign"),
@@ -93,12 +97,16 @@ def build_account_discovery_definition() -> WorkflowDefinition:
                 "account_discovery.find_contacts",
                 max_retries=1,
                 retry_backoff=timedelta(minutes=5),
+                wait_event_type="ProspectScreeningReady",
+                run_on_entry=True,
             ),
             StepDefinition(
                 "verify_contacts",
                 "account_discovery.verify_contacts",
                 max_retries=1,
                 retry_backoff=timedelta(minutes=5),
+                wait_event_type="ProspectScreeningReady",
+                run_on_entry=True,
             ),
             StepDefinition("assign_owner", "account_discovery.assign_owner_v2"),
             StepDefinition(
@@ -133,7 +141,12 @@ def build_account_discovery_handlers(
     outreach: OutreachService,
     actor_resolver: AccountDiscoveryActorResolver,
     now: Callable[[], datetime],
+    service_plans: ProspectingServicePlanStore | None = None,
 ) -> dict[str, StepHandler]:
+    from workflows.account_discovery.service_tiers import (
+        ServiceTierFindContactsStep,
+        ServiceTierVerifyContactsStep,
+    )
     return {
         "account_discovery.assign_owner": LegacyAssignOwnerStep(
             employees, actor_resolver
@@ -150,10 +163,10 @@ def build_account_discovery_handlers(
         "account_discovery.resolve_account": ResolveAccountStep(prospecting),
         "account_discovery.find_contacts": FindContactsStep(
             prospecting, enricher, now=now
-        ),
+        ) if service_plans is None else ServiceTierFindContactsStep(prospecting, enricher, service_plans, now=now),
         "account_discovery.verify_contacts": VerifyContactsStep(
             prospecting, verifier
-        ),
+        ) if service_plans is None else ServiceTierVerifyContactsStep(prospecting, verifier, service_plans, now=now),
         "account_discovery.assign_owner_v2": AssignOwnerStep(
             employees, actor_resolver
         ),

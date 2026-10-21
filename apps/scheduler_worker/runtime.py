@@ -197,6 +197,8 @@ from tool_gateway.handlers.email_send import (
     DeliveryMaterialProvider,
     EmailSendHandler,
     OutboundMailArchive,
+    OutboundMailConnectors,
+    OutboundMailOwnerResolver,
     UnsubscribeLink,
     UnsubscribeLinkProvider,
 )
@@ -514,8 +516,10 @@ class CampaignMessagingComposition:
     campaign_approvals: CampaignApprovalProvider
     reply_status: ReplyStatusProvider
     delivery_materials: DeliveryMaterialProvider
-    secret_resolver: SecretResolver
-    gmail_transport: GmailHttpTransport
+    secret_resolver: SecretResolver | None
+    gmail_transport: GmailHttpTransport | None
+    outbound_mail_connectors: OutboundMailConnectors | None = None
+    mailbox_owner: OutboundMailOwnerResolver | None = None
 
     def __post_init__(self) -> None:
         providers = (
@@ -524,11 +528,14 @@ class CampaignMessagingComposition:
             (self.campaign_approvals, CampaignApprovalProvider),
             (self.reply_status, ReplyStatusProvider),
             (self.delivery_materials, DeliveryMaterialProvider),
-            (self.secret_resolver, SecretResolver),
-            (self.gmail_transport, GmailHttpTransport),
+
         )
         if any(not isinstance(value, contract) for value, contract in providers):
             raise ValidationError("scheduler Campaign 发送依赖未完整配置")
+        if self.outbound_mail_connectors is None and (not isinstance(self.secret_resolver, SecretResolver) or not isinstance(self.gmail_transport, GmailHttpTransport)):
+            raise ValidationError("scheduler Campaign 发送连接器未配置")
+        if self.outbound_mail_connectors is not None and self.mailbox_owner is None:
+            raise ValidationError("scheduler 本人发件身份映射未配置")
 
 
 @dataclass(frozen=True)
@@ -1126,7 +1133,7 @@ class SchedulerRuntimeFactory:
             or (getattr(bootstrap, "research_enabled", True) and not standalone_research)
             or getattr(bootstrap, "contacts_enabled", True)
             or (pilot_gmail and inbound_ports is None and not getattr(bootstrap, "campaign_enabled", False))
-            or (getattr(bootstrap, "campaign_enabled", False) and not pilot_gmail)
+            or (getattr(bootstrap, "campaign_enabled", False) and not pilot_gmail and getattr(bootstrap, "outbound_factory", None) is None)
             or (((inbound_ports is not None or reply_artifact_ports is not None)) != (getattr(bootstrap, "reply_factory", None) is not None))
         ):
             raise ValidationError("本机 scheduler 外部能力必须未配置")
@@ -1656,15 +1663,15 @@ class SchedulerRuntimeFactory:
             reply_raw = inbound.bounded_raw_store if inbound is not None else (dialogue_artifacts.raw if dialogue_artifacts else None)
             reply_generated = inbound.generated_store if inbound is not None else (dialogue_artifacts.generated if dialogue_artifacts else None)
             sent_archive = None
-            if inbound is not None:
+            if reply_raw is not None:
                 from infra.outbound_mail_archive import (
                     OutboundMailArchive as MailArchive,
                 )
                 sent_archive = MailArchive(
-                    factory, cast(RawArtifactStore, inbound.bounded_raw_store), core.conversations
+                    factory, cast(RawArtifactStore, reply_raw), core.conversations
                 )
             if dependencies.campaign_messaging is not None:
-                if config.gmail_oauth_token_ref is None:
+                if config.gmail_oauth_token_ref is None and dependencies.campaign_messaging.outbound_mail_connectors is None:
                     raise ValidationError("邮件发送未配置")
                 campaign_handlers, campaign_outreach = self._build_campaign_messaging(
                     factory,
@@ -1806,7 +1813,11 @@ class SchedulerRuntimeFactory:
                     enricher = account.enricher
                     verifier = account.verifier
                 current_contact_verifier = verifier if account.hunter is None or hunter_validated else None
+                from infra.db.prospecting_service_plans import (
+                    PostgresProspectingServicePlanStore,
+                )
                 account_handlers = build_account_discovery_handlers(
+                    service_plans=PostgresProspectingServicePlanStore(factory),
                     task_reader=account.task_reader,
                     capability=account.capability,
                     prospecting=account.prospecting,
@@ -2071,6 +2082,21 @@ class SchedulerRuntimeFactory:
                     account_campaign_events,
                 )
 
+            if dependencies.account_discovery is not None:
+                from infra.db.contact_screening_waits import (
+                    PostgresContactScreeningWaitReader,
+                )
+                from infra.db.prospecting_service_plans import (
+                    PostgresProspectingServicePlanStore,
+                )
+                from workflows.account_discovery.screening_wake import (
+                    ContactScreeningWakeDriver,
+                )
+
+                from .scheduled_inventory import InventoryWithScreeningWake
+                inventory_driver = InventoryWithScreeningWake(inventory_driver, ContactScreeningWakeDriver(
+                    tenant_id=config.tenant_id, waits=PostgresContactScreeningWaitReader(factory),
+                    service_plans=PostgresProspectingServicePlanStore(factory), engine=workflow, clock=self._now))
             if dependencies.demand_discovery is not None:
                 register_demand_discovery(workflow)
 
@@ -2278,7 +2304,7 @@ class SchedulerRuntimeFactory:
         from workflows.email_feedback.repository import FeedbackPageUnitOfWork
 
         gmail_reference = config.gmail_oauth_token_ref
-        if gmail_reference is None:
+        if gmail_reference is None and composition.outbound_mail_connectors is None:
             raise ValidationError("邮件发送未配置")
         tenant = config.tenant_id
         now = self._now
@@ -2365,11 +2391,9 @@ class SchedulerRuntimeFactory:
         unsubscribe_links: UnsubscribeLinkProvider = _SchedulerUnsubscribeLinkAdapter(
             unsubscribe_service
         )
-        gmail = _SchedulerLazyGmailConnector(
-            composition.gmail_transport,
-            composition.secret_resolver,
-            gmail_reference,
-        )
+        gmail = None
+        if composition.gmail_transport is not None and composition.secret_resolver is not None and gmail_reference is not None:
+            gmail = _SchedulerLazyGmailConnector(composition.gmail_transport, composition.secret_resolver, gmail_reference)
         handler = EmailSendHandler(
             gmail,
             composition.delivery_materials,
@@ -2379,6 +2403,9 @@ class SchedulerRuntimeFactory:
             outreach_actor_factory=_scheduler_delivery_binding_actor,
             route_id=config.email_feedback_route_id,
             archive=archive,
+            connectors=composition.outbound_mail_connectors,
+            owner_resolver=composition.mailbox_owner,
+            legacy_gmail_for_unmapped=True,
         )
         campaign_registry = ToolRegistry()
         campaign_registry.register(_email_send_manifest(), handler)

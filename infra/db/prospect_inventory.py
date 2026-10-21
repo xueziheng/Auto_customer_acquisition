@@ -49,6 +49,7 @@ from domains.prospecting.inventory_followup import (
 )
 from domains.prospecting.projection_diagnostic import SaveSummary, SourceDiagnostic
 from infra.db.base import TenantScopedRepository
+from infra.db.inventory_service_plan import InventoryServicePlanBudget
 from infra.db.prospect_inventory_tables import (
     AcquisitionAttemptRow,
     AcquisitionJobRow,
@@ -500,6 +501,14 @@ class PostgresInventoryService(TenantScopedRepository):
                     else None
                 )
                 return await self._result(session, key, job)
+            service_budget = InventoryServicePlanBudget(self.factory, tenant_id, now=self.now)
+            if await service_budget.store.get(tenant_id) is not None:
+                active = (await session.scalars(self.scoped_query(AcquisitionJobRow).where(
+                    AcquisitionJobRow.status.in_(("queued", "processing")),
+                ))).all()
+                if any(InventoryQuery.model_validate(item.query) == query for item in active):
+                    raise PermissionDenied("同一获客目标已有运行中的任务，请等待原任务")
+            await service_budget.reserve_request(key, count)
             req = InventoryRequestRow(
                 tenant_id=tenant_id, key_hash=key, request_hash=fingerprint
             )

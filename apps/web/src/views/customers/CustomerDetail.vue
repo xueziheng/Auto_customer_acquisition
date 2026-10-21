@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ProspectScreeningPanel from "../../components/ProspectScreeningPanel.vue";
 import { computed, inject, onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import type { components } from "../../api/api";
@@ -250,8 +251,9 @@ onMounted(() => void load());
         <p>
           公开邮箱：{{
             detail.allocation.candidate.public_emails.join("；") || "尚未发现"
-          }}<span class="unverified">（未验证可达性，不能用于自动跟进）</span>
+          }}<span class="unverified">（公开来源记录；实际可达性与入组状态见联系人验证状态）</span>
         </p>
+        <ProspectScreeningPanel v-if="access?.can_assign && detail.account" :account-id="detail.account.account_id" />
         <details>
           <summary>公开来源与证据</summary>
           <p>{{ detail.allocation.candidate.evidence_text }}</p>

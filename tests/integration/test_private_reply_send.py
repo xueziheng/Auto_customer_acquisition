@@ -98,7 +98,7 @@ async def test_private_prepare_and_original_manual_send_remain_idempotent(db_url
         root = tmp_path / "qq-private";root.mkdir(mode=0o700)
         actor = AliyunActor(tenant_id=tenant, employee_id=owner, user_id=user)
         AliyunMailStore(root).publish(AliyunBinding(actor=actor, email="1249583590@qq.com",
-            password=SecretStr("fixture-auth-only"), connected_at=_NOW, operation_id=new_id("aco")))
+            password=SecretStr('xxxxxxxxxxxxxxxxx'), connected_at=_NOW, operation_id=new_id("aco")))
         cfg = QQReplySettings(employee_id=owner, user_id=user, classifier_employee_id=boss, mailbox_directory=root)
         store = PrivateReplyTestStore(sessions, now=lambda: _NOW)
         app.state.private_reply_test = PrivateReplyTestApplication(cfg, tenant, store, deps.outreach)

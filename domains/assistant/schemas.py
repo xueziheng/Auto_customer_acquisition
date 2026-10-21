@@ -177,6 +177,9 @@ class ModelConfigurationSnapshot(AssistantDTO):
 
 
 class ModelSettingsView(AssistantDTO):
+    managed_by_platform: bool = True
+    can_edit: Literal[False] = False
+    platform_connection_version: str | None = None
     provider: Literal["deepseek", "compatible"] = "deepseek"
     model: str | None = None
     configuration_version: str | None = None

@@ -25,7 +25,7 @@ from tests.integration.test_email_inbound_page import (  # noqa: F401
 )
 
 
-@pytest.mark.parametrize("mode", ["normal", "invalid_plan", "unknown_model", "off", "budget", "stop", "repeat", "pending_during_model", "pending_after_plan", "inquiry"])
+@pytest.mark.parametrize("mode", ["normal", "invalid_plan", "unknown_model", "off", "budget", "stop", "repeat", "pending_during_model", "pending_after_plan", "inquiry", "spoof"])
 async def test_actual_factory_qq_cold_materials_to_sales_dialogue_same_need(page_runtime, tmp_path, monkeypatch, mode):
     """cold从原API首封开始；inquiry从未准入本人邮件POST开始，两者均经真实factory消费。"""
     from apps.api.composition.aliyun_web import AliyunOutboundConnectors
@@ -129,8 +129,8 @@ async def test_actual_factory_qq_cold_materials_to_sales_dialogue_same_need(page
     mailbox=await mailboxes.register(actor,address='sales@qq.com',operation=operation)
     objects=S3ObjectBlobTransport(S3ObjectStoreSettings.from_environ(env),config)
     artifacts=RawArtifactStoreImpl(lambda t:SqlAlchemyArtifactUnitOfWork(sessions,t),objects,4*1024*1024,lambda:NOW,new_id)
-    async def receive(uid, body, header):
-        message=EmailMessage();message['From']=buyer_address;message['To']='sales@qq.com'
+    async def receive(uid, body, header, sender=None):
+        message=EmailMessage();message['From']=sender or buyer_address;message['To']='sales@qq.com'
         message['Message-ID']=f'<customer-{uid}@buyer.test>'
         if header is not None:
             message['In-Reply-To']=header
@@ -276,6 +276,15 @@ async def test_actual_factory_qq_cold_materials_to_sales_dialogue_same_need(page
             ordinary=BytesParser(policy=email_policy.default).parsebytes(server.sent[offset])
             assert ordinary['From']=='sales@qq.com' and ordinary['In-Reply-To']=='<customer-1@buyer.test>'
             assert 'Hinges for cabinet doors.' in ordinary.get_content()
+            if mode == 'spoof':
+                before = (len(server.sent), len(calls))
+                await receive(2, 'Unrelated forged correlation', str(ordinary['Message-ID']), sender='unrelated@other.test')
+                await pump(3)
+                async with sessions() as db:
+                    current = await db.get(DialogueBindingRow, (tenant, binding.binding_id))
+                    assert current.state == 'active'
+                assert (len(server.sent), len(calls)) == before
+                return
             first_hypothesis = binding.hypothesis_id
             if mode == 'pending_after_plan':
                 original_put = driver.plans.put

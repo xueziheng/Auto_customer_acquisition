@@ -32,6 +32,7 @@ from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
 from tool_gateway.handlers.web_slots import SearchResultBatch
 from workflows.enterprise_knowledge.confirmed_context import ConfirmedContextReader
 
+from .inventory_acquisition import InventoryPlanBudget
 from .inventory_query import choose_inventory_country, compose_inventory_query
 from .inventory_web import InventoryWebTools
 
@@ -57,7 +58,9 @@ class CodexInventoryCollector:
         generate: InventoryModel,
         *,
         context_reader: ConfirmedContextReader | None = None,
+        service_budget: InventoryPlanBudget | None = None,
     ) -> None:
+        self.service_budget = service_budget
         self.context_reader = context_reader
         self.tools, self.generate = tools, generate
         self._failure_scope: tuple[str, str, str | None] | None = None
@@ -218,6 +221,11 @@ class CodexInventoryCollector:
                 if name == "browse_public_page"
                 else tools.page_reader
             )
+            if self.service_budget is not None:
+                from domains.prospecting.service import evidence_source_domain
+                await self.service_budget.reserve_execution(job, kind="pages",
+                    key=f"{source_id}:{name}:{batch.results[index].url}", amount=1,
+                    host=evidence_source_domain(batch.results[index].url))
             try:
                 snapshot = await reader.read_page(job.tenant_id, run_id, batch, index)
             except PageReadFailure as error:

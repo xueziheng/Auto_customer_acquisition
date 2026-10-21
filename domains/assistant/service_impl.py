@@ -29,6 +29,7 @@ from domains.assistant.service import (
     AssistantModelAdministration,
     AssistantTurnProjector,
 )
+from shared.errors import PermissionDenied
 from shared.schemas.identifiers import (
     AgentSessionId,
     AgentTurnId,
@@ -213,8 +214,10 @@ class ModelConfigurationServiceImpl:
         authority: AssistantModelAdministration,
         *,
         now: Callable[[], datetime],
+        public_summary: Callable[[TenantId, ModelSettingsView], ModelSettingsView] | None = None,
     ) -> None:
         self._repository, self._authority, self._now = repository, authority, now
+        self._public_summary = public_summary
 
     def view(self, snapshot: ModelConfigurationSnapshot | None) -> ModelSettingsView:
         if snapshot is None:
@@ -256,14 +259,14 @@ class ModelConfigurationServiceImpl:
 
     async def get_public(self, actor: AssistantActor) -> ModelSettingsView:
         await self._authority.require_admin(actor)
-        return self.view(await self._repository.get(actor.tenant_id))
+        view = self.view(await self._repository.get(actor.tenant_id))
+        return self._public_summary(actor.tenant_id, view) if self._public_summary else view
 
     async def save_nonsecret(
         self, actor: AssistantActor, input: ModelSettingsUpdate
     ) -> ModelSettingsView:
         await self._authority.require_admin(actor)
-        await self._repository.save(actor, input)
-        return await self.get_public(actor)
+        raise PermissionDenied("模型连接与调用限额仅由平台管理者配置")
 
     async def request_probe(
         self, actor: AssistantActor, idempotency_key: str

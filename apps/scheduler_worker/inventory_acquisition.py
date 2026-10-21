@@ -134,6 +134,17 @@ class CollectionDeadlineReached(Exception):
     """来源恢复期限已到，仅允许复用持久结果交付。"""
 
 
+class InventoryPlanBudget(Protocol):
+    async def remaining_candidates(self, job: AcquisitionJob) -> int | None: ...
+    async def admit_source_candidates(self, job: AcquisitionJob, source: str, candidates: tuple[PublicCandidate, ...]) -> None: ...
+    async def fit_candidates(self, job: AcquisitionJob, candidates: tuple[PublicCandidate, ...]) -> tuple[PublicCandidate, ...]: ...
+
+    async def limits(self, job: AcquisitionJob) -> dict[str, int] | None: ...
+
+    async def reserve_execution(self, job: AcquisitionJob, *, kind: str, key: str,
+                                amount: int, host: str | None = None) -> None: ...
+
+
 class InventoryAcquisitionDriver:
     def __init__(
         self,
@@ -146,8 +157,10 @@ class InventoryAcquisitionDriver:
         collector: InventoryCollector,
         fit_model: InventoryFitModel | None = None,
         context_reader: ConfirmedContextReader | None = None,
+        service_budget: InventoryPlanBudget | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        self.service_budget = service_budget
         self.context_reader = context_reader
         self.fit_model = fit_model
         self.tenant_id, self.backend, self.catalog = tenant_id, backend, catalog
@@ -186,6 +199,8 @@ class InventoryAcquisitionDriver:
 
         async def guard() -> None:
             await lease_guard()
+            if self.service_budget is not None:
+                await self.service_budget.limits(job)
             if job.query.confirmed_refs:
                 if self.context_reader is None:
                     raise PermissionDenied("企业资料上下文不可用")
@@ -220,6 +235,10 @@ class InventoryAcquisitionDriver:
                 if current is None:
                     raise LeaseLost("采集任务已失效")
                 fresh = await self.backend.fit_pool(self.tenant_id, job.id, token)
+                limits = await self.service_budget.limits(job) if self.service_budget else None
+                if limits is not None:
+                    assert self.service_budget is not None
+                    fresh = await self.service_budget.fit_candidates(job, fresh)
                 selected = selected_fit_candidates(
                     fresh, current.fit_batches, job.query
                 )
@@ -323,10 +342,13 @@ class InventoryAcquisitionDriver:
                     if private
                     else replenishment_target(job.requested_count)
                 )
+                limits = await self.service_budget.limits(job) if self.service_budget else None
+                if limits is not None:
+                    target = min(target, limits["candidates"])
                 completed_sources = sum(
                     outcome == "complete" for outcome in progress.values()
                 )
-                for source_id in plan:
+                for source_index, source_id in enumerate(plan):
                     if source_id in progress:
                         continue
                     await guard()
@@ -354,6 +376,16 @@ class InventoryAcquisitionDriver:
                             raise PermissionDenied("来源当前不可用")
 
                     await source_guard()
+                    source_target = max(0, target - fresh_count)
+                    if limits is not None:
+                        assert self.service_budget is not None
+                        remaining = await self.service_budget.remaining_candidates(job)
+                        source_target = min(source_target, remaining or 0, target // len(plan) + (source_index < target % len(plan)))
+                        if source_target == 0:
+                            await self.backend.record_source_attempt(self.tenant_id, job.id, token, source_id, "complete", 0)
+                            continue
+                        assert self.service_budget is not None
+                        await self.service_budget.reserve_execution(job, kind="candidates", key=source_id, amount=source_target)
                     seconds = await self.backend.reserve_source(
                         self.tenant_id, job.id, token, source_id
                     )
@@ -363,7 +395,7 @@ class InventoryAcquisitionDriver:
                                 job,
                                 source_id,
                                 source_guard,
-                                target_count=max(0, target - fresh_count),
+                                target_count=source_target,
                             )
                     except asyncio.CancelledError:
                         raise
@@ -388,6 +420,11 @@ class InventoryAcquisitionDriver:
                         continue
                     completed_sources += 1
                     await guard()
+                    if limits is not None and len(collected.candidates) > source_target:
+                        raise PermissionDenied("来源候选超过本轮预留")
+                    if limits is not None:
+                        assert self.service_budget is not None
+                        await self.service_budget.admit_source_candidates(job, source_id, collected.candidates)
                     saved = await self.backend.save_collected(
                         self.tenant_id, job.id, token, collected.candidates
                     )

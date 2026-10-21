@@ -63,6 +63,12 @@ _SALES_READ_GATE = Depends(
 )
 _EXPECTED_API_PATHS = {
     "/inbox/business-mail",
+    "/inbox/business-mail/{message_id}/ordinary-dialogue-options",
+    "/inbox/business-mail/{message_id}/ordinary-dialogue",
+    "/prospects/service-plan",
+    "/prospects/service-plan/schedule",
+    "/prospects/accounts/{account_id}/screening",
+    "/prospects/accounts/{account_id}/screening/evidence",
     "/inbox/business-mail/{message_id}",
     "/inbox/business-mail/{message_id}/correct-classification",
     "/inbox/business-mail/{message_id}/followup",

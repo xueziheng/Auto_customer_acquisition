@@ -123,6 +123,14 @@ class InventoryEmployeeAuthority:
             tenant_id=tenant_id, employee_id=employee_id, user_id=employee.user_id
         )
 
+    async def authorize_schedule(self, tenant_id: TenantId, employee_id: EmployeeId, user_id: str) -> None:
+        """排程仍属于原确认老板；用户换绑后旧周期不能继续启动。"""
+        async with self.employees(tenant_id) as service:
+            employee = await service.get_employee(tenant_id, employee_id, actor=self.lookup)
+        if (employee.tenant_id != tenant_id or employee.employee_id != employee_id
+            or not employee.is_active or employee.role != "boss" or employee.user_id != user_id):
+            raise PermissionDenied("周期获客原管理员授权已失效")
+
     async def current_scope(
         self, tenant_id: TenantId, employee_id: EmployeeId
     ) -> InventoryAccessScope:

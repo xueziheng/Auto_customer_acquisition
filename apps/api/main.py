@@ -79,6 +79,9 @@ from .routers.inbox import router as inbox_router
 from .routers.notifications import router as notifications_router
 from .routers.products import router as products_router
 from .routers.prospect_inventory import router as prospect_inventory_router
+from .routers.prospecting_service_plans import (
+    router as prospecting_service_plans_router,
+)
 from .routers.quotation_actions import router as quotation_actions_router
 from .routers.runs import router as runs_router
 from .routers.sending_identities import router as sending_identities_router
@@ -229,6 +232,7 @@ def create_app(
     app.include_router(campaigns_router, prefix="/crm")
     app.include_router(sending_identities_router, prefix="/crm")
     app.include_router(customer_discovery_router, prefix="/prospects")
+    app.include_router(prospecting_service_plans_router, prefix="/prospects")
     app.include_router(prospect_inventory_router, prefix="/prospects")
     app.include_router(customer_followup_router, prefix="/prospects")
     app.include_router(customer_preparation_router, prefix="/prospects")

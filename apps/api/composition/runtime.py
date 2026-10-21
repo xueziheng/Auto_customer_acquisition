@@ -1566,6 +1566,7 @@ def build_phase1_dependencies(
         now=now,
     )
     from infra.db.discovery_execution import PostgresDiscoveryExecutionReader
+    from infra.db.prospecting_service_plans import PostgresProspectingServicePlanStore
     from infra.db.research_evidence import PostgresResearchEvidenceReader
     from infra.db.search_quota import PostgresSearchQuotaRepository
 
@@ -1737,6 +1738,8 @@ def build_phase1_dependencies(
         research_access=research_access,
         research_execution=PostgresDiscoveryExecutionReader(factory),
         research_evidence=PostgresResearchEvidenceReader(factory),
+        screening_evidence=PostgresResearchEvidenceReader(factory),
+        prospecting_service_plans=PostgresProspectingServicePlanStore(factory),
         quotation=quotation,
         object_store_lifecycle=object_transport,
         sourcing=sourcing,

@@ -1,6 +1,6 @@
 # ADR 0117：普通邮件持续对话的独立授权与精确关联
 
-日期：2026-10-22。状态：已实施并完成合成验收，待统一代码评审；不代表生产发送获批。
+日期：2026-10-22。状态：已实施并通过Task5独立门禁；Task6装配与最终分支审查见验收记录；不代表生产发送获批。
 
 ## 决策
 
@@ -62,7 +62,7 @@ owner，同样不能读取该首询原件。不复制原件，不用 SYSTEM 代�
 
 正式首封可走现有 API 的本人 QQ connector 与原 email.send；BusinessMail 全 MIME 收取通过同企业/本人邮箱/原发送双方/精确 SENT attempt 到 canonical InboundMessageStored，再走原冷分类与停止序列。新的普通 Message-ID 则精确关联独立 SENT execution 和原 Need。私人 QQ 单目标 reader 不作为正式多轮入口。没有建立第二冷发送流程；自动冷首封 scheduler 对同一正式 QQ connector 的接线由 Task6 完成，不能把 API 首封能力写成已完成全自动首封。
 
-REQUESTS_MATERIALS 在精确独立批准范围中进入受限公开产品段落 planner；无范围保留旧人工移交。首次冷回复须在原分类和 REPLIED 后完成真实准入，不能通过预置 binding 绕开顺序。文件不支持/缺资料仍人工核对；报价、样品与其他具体商业承诺不因此取得授权。
+REQUESTS_MATERIALS 在精确独立批准范围中进入受限公开产品段落 planner；无范围保留旧人工移交。首次冷回复须在原分类流程完成后凭真实关联准入，不能通过预置binding绕开顺序。Task6按[ADR0118](0118-agent-upgrade-final-integration.md)补充严格完成门禁与正常耗尽COMPLETED接续；仍不改变Enrollment终态。文件不支持/缺资料仍人工核对；报价、样品与其他具体商业承诺不因此取得授权。
 
 无进展计数只依据 Need 业务值的规范化摘要，新来源/原文/确认人不算需求进展；原 Provenance 完整保留。发送前仍独立重查原件hash、最新客户消息和当前产品视图/许可，不能用语义摘要代替权限或来源验证。确定性 DSN/ARF 只接受唯一原始发送标识、幂等头和原始双方/报告recipient；缺证据留人工核对，不从主题或MAILER-DAEMON字符串推测。
 

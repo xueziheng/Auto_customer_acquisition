@@ -5,6 +5,7 @@ import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
 import { inventoryRecovery } from "./inventoryRecovery";
 
+const emit = defineEmits<{ scheduleQuery: [query: components["schemas"]["InventoryQuery"]] }>();
 type Status = components["schemas"]["InventoryStatus"];
 type Allocation = components["schemas"]["InventoryAllocationView"];
 type Job = components["schemas"]["InventoryJobView"];
@@ -353,6 +354,7 @@ async function claim() {
   const current = identityEpoch;
   const generation = client.identitySnapshot().generation;
   const request = pending;
+  emit("scheduleQuery", request.body.query);
   try {
     const { data, response } = await client.POST(
       "/prospects/inventory/requests",

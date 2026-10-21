@@ -90,7 +90,15 @@ class DialogueBusinessInboundBridge:
                 return
             mail.classification_status, mail.category, mail.failure_code = 'failed', 'review', 'ordinary_dialogue_admission_denied'
             binding = await db.get(DialogueBindingRow, (str(self.tenant), source.binding_id), with_for_update=True)
-            if binding is not None and binding.state == 'active':
+            contact = await db.get(ContactPointRow, (str(self.tenant), source.contact_point_id))
+            box = await db.get(BusinessMailboxRow, (str(self.tenant), mail.mailbox_id))
+            identity = await db.get(SendingIdentityRow, (str(self.tenant), source.sending_identity_id))
+            # 不可信来信引用真实 SENT header 不构成暂停原客户对话的权限。
+            correlated = (not mail.dialogue_feedback and contact is not None and box is not None
+                and identity is not None and mail.sender == contact.value
+                and mail.reply_recipient == box.address == identity.address
+                and box.owner_id == source.owner_employee_id)
+            if correlated and binding is not None and binding.state == 'active':
                 binding.state = 'review'
             if await db.get(DialogueBusinessReceiptRow, (str(self.tenant), business_id)) is None:
                 db.add(DialogueBusinessReceiptRow(tenant_id=self.tenant, business_message_id=business_id,

@@ -74,6 +74,10 @@ from shared.schemas.identifiers import (
     UserId,
     new_id,
 )
+from tool_gateway.handlers.email_send import (
+    OutboundMailConnectors,
+    OutboundMailOwnerResolver,
+)
 from workflows.account_discovery.ports import ContactEnricher, ContactVerifier
 from workflows.assistant.ports import AssistantRuntimePorts
 from workflows.demand_discovery.ports import DemandIntelligenceCapability
@@ -272,6 +276,7 @@ class CanonicalSchedulerBootstrap:
         ]
         | None
     ) = None
+    outbound_factory: Callable[[async_sessionmaker[AsyncSession]], tuple[OutboundMailConnectors, OutboundMailOwnerResolver]] | None = None
     campaign_enabled: bool = False
     gmail_transport: GmailHttpTransport | None = None
     secret_resolver: SecretResolver | None = None
@@ -333,7 +338,7 @@ class CanonicalSchedulerBootstrap:
             )
         ):
             raise ValidationError("scheduler Campaign 配置无效")
-        if self.campaign_enabled and (
+        if self.campaign_enabled and self.outbound_factory is None and (
             not isinstance(self.gmail_transport, GmailHttpTransport)
             or not isinstance(self.secret_resolver, SecretResolver)
         ):
@@ -370,8 +375,9 @@ class CanonicalSchedulerBootstrap:
         )
         campaign = None
         if self.campaign_enabled:
-            if self.secret_resolver is None or self.gmail_transport is None:
+            if self.outbound_factory is None and (self.secret_resolver is None or self.gmail_transport is None):
                 raise ValidationError("scheduler Campaign 发送依赖未完整配置")
+            connectors, mailbox_owner = self.outbound_factory(sessions) if self.outbound_factory else (None, None)
             campaign = CampaignMessagingComposition(
                 CurrentContactEligibilityReader(
                     tenant, core.prospecting, core.demand, now=now
@@ -384,6 +390,7 @@ class CanonicalSchedulerBootstrap:
                 CurrentDeliveryMaterialReader(tenant, core.prospecting, core.sending),
                 self.secret_resolver,
                 self.gmail_transport,
+                connectors, mailbox_owner,
             )
         account = None
         if self.contacts_enabled and self.contacts_factory is None:

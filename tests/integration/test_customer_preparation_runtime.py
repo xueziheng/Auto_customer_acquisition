@@ -154,9 +154,9 @@ async def seed_knowledge(factory, tenant, boss, store):
     return knowledge, {"document_id":doc.document_id,"revision_id":confirmed.revision.revision_id}
 
 
-async def seed_sender(service, tenant, boss, now):
+async def seed_sender(service, tenant, boss, now, address="sender@outreach.example"):
     actor = SendingActor(str(boss), SendingIdentityScope(level=SendingLevel.TENANT), "boss")
-    identity = await service.register(tenant, IdentityRegisterRequest("sender@outreach.example", "outreach.example", DomainRole.COLD_OUTREACH), actor=actor)
+    identity = await service.register(tenant, IdentityRegisterRequest(address, address.split("@")[1], DomainRole.COLD_OUTREACH), actor=actor)
     await service.begin_authentication(tenant, identity, actor=actor)
     await service.record_authentication_result(tenant, identity, AuthenticationResult(checked_at=now,spf_passed=True,dkim_passed=True,dmarc_passed=True,failures=(),check_ref="synthetic-dns"), actor=SendingActor("system:dns",SendingIdentityScope(level=SendingLevel.SYSTEM,allowed_identity_ids=frozenset({identity})),"system"))
     await service.start_warmup(tenant, identity, 5, actor=actor)
@@ -178,7 +178,7 @@ async def seed_country(service, tenant, boss, now, allowed=True):
 @pytest.mark.parametrize("configured,private,failure", [(False,False,None),(True,False,None),(True,True,None),
     (True,False,"no_policy"),(True,False,"policy_revoked"),(True,False,"scope_withdrawn"),
     (True,False,"owner_transfer"),(True,False,"artifact_mismatch"),(True,False,"suppressed"),(True,False,"sender_retired"),(True,False,"no_basis"),(True,False,"unknown_verifier"),(True,False,"legacy")])
-async def test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch, configured, private, failure, browser_width=0, page_only=False, deepseek_search=False):
+async def test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch, configured, private, failure, browser_width=0, page_only=False, deepseek_search=False, automatic_mail=None):
     browser_check = None
     if browser_width:
         from tests.customer_preparation_browser import PreparationBrowserCheck
@@ -250,6 +250,12 @@ async def test_actual_request_and_singleton_prepare_with_sending_disabled(integr
     if deepseek_search:
         from infra.db.inventory_search_readiness import InventorySearchReadinessReader
         assert (await InventorySearchReadinessReader(sessions, tenant, settings).read(tenant, settings.inventory_search)).connection_status == "passed"
+    if automatic_mail is not None:
+        await automatic_mail.setup(sessions=sessions,tenant=tenant,boss=boss,sales=sales,api=api,objects=objects,
+            artifacts=store,now=now,settings=settings,fingerprints=fingerprints,env=env,tmp_path=tmp_path,
+            monkeypatch=monkeypatch,enabled=automatic_mail.enabled)
+        settings=automatic_mail.settings
+        sender=automatic_mail.sender
     repository = SqlModelConfigurationRepository(sessions,fingerprints)
     await repository.initialize(tenant,settings.configuration_version,settings.model,settings.limits,True)
     for process in ("api","scheduler"):
@@ -260,7 +266,8 @@ async def test_actual_request_and_singleton_prepare_with_sending_disabled(integr
     send_guards = []
     async def prepare(core,factory,outreach,verifier):
         send_guards.append(build_preparation_send_guard(core, factory, tenant, outreach, lambda: datetime.now(UTC)))
-        return await build_customer_preparation(core=core,sessions=factory,control_sessions=sessions,control_tenant=control,tenant_id=tenant,outreach=outreach,existing_verifier=verifier,settings=settings,resolver=external,fingerprints=fingerprints,research=None if page_only else ports,owner="synthetic-preparation",hunter=hunter if configured else None, inventory_ports=__import__("apps.scheduler_worker.inventory_ports", fromlist=["InventoryRuntimePorts"]).InventoryRuntimePorts(external,objects,2097152,objects) if page_only else None)
+        prepared_runtime = await build_customer_preparation(core=core,sessions=factory,control_sessions=sessions,control_tenant=control,tenant_id=tenant,outreach=outreach,existing_verifier=verifier,settings=settings,resolver=external,fingerprints=fingerprints,research=None if page_only else ports,owner="synthetic-preparation",hunter=hunter if configured else None, inventory_ports=__import__("apps.scheduler_worker.inventory_ports", fromlist=["InventoryRuntimePorts"]).InventoryRuntimePorts(external,objects,2097152,objects) if page_only else None)
+        return prepared_runtime
     from apps.scheduler_worker.standalone_inventory import build_inventory_driver
     monkeypatch.setattr("apps.scheduler_worker.inventory_model.configured_codex_provider", lambda *_args, **_kwargs:external)
     if deepseek_search:
@@ -282,9 +289,12 @@ async def test_actual_request_and_singleton_prepare_with_sending_disabled(integr
         monkeypatch.setattr("apps.scheduler_worker.inventory_model.configured_codex_provider", lambda *a, discovery:DiscoveryProvider(discovery))
     def acquire(core,factory):
         return build_inventory_driver(core=core,sessions=factory,control_sessions=sessions,control_tenant=control,tenant_id=tenant,settings=settings,resolver=external,fingerprints=fingerprints,research=None if deepseek_search else ports,owner="synthetic-acquisition",inventory_ports=__import__("apps.scheduler_worker.inventory_ports",fromlist=["InventoryRuntimePorts"]).InventoryRuntimePorts(external,objects,2097152,objects) if deepseek_search else None)
-    bootstrap = CanonicalSchedulerBootstrap(phase.scoring_policy,phase.handoff_policy,preparation_factory=prepare,inventory_factory=acquire if private else None)
+    bootstrap = CanonicalSchedulerBootstrap(phase.scoring_policy,phase.handoff_policy,preparation_factory=prepare,inventory_factory=acquire if private else None,
+        campaign_enabled=automatic_mail.enabled if automatic_mail else False,
+        outbound_factory=automatic_mail.outbound if automatic_mail and automatic_mail.enabled else None,
+        reply_factory=automatic_mail.reply if automatic_mail else None)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url="http://test",headers={"X-Tenant-Id":tenant}) as client:
-        created = await client.post("/crm/campaigns",json={"name":"合成准备范围","markets":["US"],"target_entity_types":["distributor"],"allowed_categories":["hinges"],"sender_identity_ids":[sender],"steps":[{"step_number":1,"intent":"discovery","wait_days":0}],"daily_new_contact_limit":5,"daily_total_message_limit":5,"handoff_triggers":[],"stop_on_reply":True,"customer_agent_policy":{"owner_employee_id":sales,"assessment_ref":"lia:synthetic","confirmed_refs":[ref]}})
+        created = await client.post("/crm/campaigns",json={"name":"合成准备范围","markets":["US"],"target_entity_types":["distributor"],"allowed_categories":["hinges"],"sender_identity_ids":[sender],"steps":[{"step_number":1,"intent":"discovery","wait_days":0}]+([{ "step_number":2,"intent":"follow_up","wait_days":7}] if automatic_mail and not automatic_mail.completed else []),"daily_new_contact_limit":5,"daily_total_message_limit":5,"handoff_triggers":[],"stop_on_reply":True,**({"ordinary_dialogue_policy":automatic_mail.selection()} if automatic_mail else {}),"customer_agent_policy":{"owner_employee_id":sales,"assessment_ref":"lia:synthetic","confirmed_refs":[ref]}})
         assert created.status_code == 200, created.text
         campaign = created.json()["campaign_id"]
         started = await client.post(f"/crm/campaigns/{campaign}/start")
@@ -325,7 +335,11 @@ async def test_actual_request_and_singleton_prepare_with_sending_disabled(integr
                 allocated = (await inventory.list_allocations(tenant,None,10))[0]
                 await inventory.transfer(tenant, allocated.id, InventoryTransferRequest(employee_id=boss,expected_employee_id=sales,expected_assigned_at=allocated.assigned_at,reason="合成实际转交"),acting_employee_id=boss)
             external.before_model = transfer
-        async with SchedulerRuntimeFactory(_factory_environ(str(runtime_url),tenant,hunter_enabled=False),bootstrap=bootstrap,resolver_factory=_FactoryResolver,health_server_factory=_FactoryHealthServer)() as runtime:
+        async with SchedulerRuntimeFactory(_factory_environ(str(runtime_url),tenant,hunter_enabled=False),bootstrap=bootstrap,resolver_factory=_FactoryResolver,health_server_factory=_FactoryHealthServer,
+            reply_artifact_ports=automatic_mail.ports if automatic_mail else None)() as runtime:
+            if automatic_mail is not None:
+                await automatic_mail.verify(runtime)
+                return
             assert runtime.campaign_driver is None and settings.automatic_send_enabled is False
             assert runtime.inventory_driver is not None
             import asyncio
@@ -403,3 +417,33 @@ async def test_preparation_without_tavily_or_search_key(integration_engine, db_u
 
 async def test_deepseek_search_page_private_fit_allocation_without_tavily(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch):
     await test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch, True, True, None, page_only=True, deepseek_search=True)
+
+
+@pytest.mark.parametrize("enabled,completed", [(False,False),(True,False),(True,True)])
+async def test_automatic_preparation_qq_scheduler_mime_and_ordinary_continuation(integration_engine,db_url,runtime_database_url,tmp_path,monkeypatch,enabled,completed):
+    from tests.automatic_mail_scenario import AutomaticMailScenario
+    scenario=AutomaticMailScenario(); scenario.enabled=enabled; scenario.completed=completed
+    await test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine,db_url,runtime_database_url,tmp_path,monkeypatch,
+        configured=True,private=False,failure=None,automatic_mail=scenario)
+
+async def test_two_enterprises_complete_automatic_qq_chains_in_isolated_roles(integration_engine,db_url,runtime_database_url,tmp_path,monkeypatch):
+    from tests.automatic_mail_scenario import AutomaticMailScenario
+    scenarios = []
+    for index in range(2):
+        root = tmp_path / str(index); root.mkdir(mode=0o700)
+        scenario = AutomaticMailScenario(); scenario.enabled = True; scenario.completed = True
+        await test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine,db_url,runtime_database_url,root,monkeypatch,
+            configured=True,private=False,failure=None,automatic_mail=scenario)
+        scenarios.append(scenario)
+    assert scenarios[0].tenant != scenarios[1].tenant
+    assert scenarios[0].mailbox != scenarios[1].mailbox
+    assert all(len(s.server.sent) == 2 for s in scenarios)
+
+
+@pytest.mark.parametrize("phase,target", [("defer","contact_point_id"),("defer","account_id"),("admit","contact_point_id"),("admit","account_id")])
+async def test_automatic_qq_current_suppression_prevents_binding(integration_engine,db_url,runtime_database_url,tmp_path,monkeypatch,phase,target):
+    from tests.automatic_mail_scenario import AutomaticMailScenario
+    scenario=AutomaticMailScenario(); scenario.enabled=True; scenario.completed=True
+    scenario.suppression_phase=phase; scenario.suppression_target=target
+    await test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine,db_url,runtime_database_url,tmp_path,monkeypatch,
+        configured=True,private=False,failure=None,automatic_mail=scenario)

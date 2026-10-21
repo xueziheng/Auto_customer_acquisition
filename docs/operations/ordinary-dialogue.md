@@ -1,6 +1,6 @@
 # 普通邮件持续沟通运行边界
 
-本能力消费企业已有的获批范围与当前本人邮箱，保持冷开发 Enrollment 的 REPLIED 终态。工程验收使用合成资料、真实 Postgres/Gateway 和 SMTP 协议替身；没有真实客户邮件、真实模型供应商或部署验收。
+本能力消费企业已有的获批范围与当前本人邮箱，保持冷开发 Enrollment 的 REPLIED 或正常耗尽 COMPLETED 终态。工程验收使用合成资料、真实 Postgres/Gateway 和 SMTP 协议替身；没有真实客户邮件、真实模型供应商或部署验收。
 
 ## 已支持组合
 
@@ -36,3 +36,9 @@ Task6 仍须把已有 `EmployeeMailConnectors` 正式 QQ connector 接到原 Cam
 旧计划；系统保留旧调用预算并取消尚未派发的旧执行，让新来信走正常 canonical 消费。
 人工查看不因该等待状态失去权限。该检查针对实际已提交的完整客户邮件，不按邮件 Date
 排序；发起中的外部发送仍遵守原 unknown/只读核对规则。
+
+## Task6自动首封与末步回信接续
+
+原Campaign scheduler已复用正式QQ本人连接器进入原email.send，经过自动准备/verified/获批入组后发送；技术tool用户和分类boss都不代表真实邮箱owner。当前邮箱操作版本与身份指纹必须一致，执行/对账才经原连接器解析凭证。旧Gmail和private QQ配置权限保留。
+
+首封后的普通scope准入在admit自身核验真实SENT、完整MIME/canonical关联、持久分类、已完成reply_qualification与pending可继续工作。资料请求在running/apply_actions时只可排无binding的follow-up待办，原流程完成后才创建普通绑定/模型/发送；失败保留原review。正常最后一步后的Enrollment保持COMPLETED且无next_send_at，其他stopped状态不准入；不会为普通接续复活冷序列。客户可以回复该序列任一真实SENT邮件。详见[ADR0118](../adr/0118-agent-upgrade-final-integration.md)和[最终验收](agent-upgrade-verification.md)。

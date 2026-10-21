@@ -2,7 +2,7 @@
 from collections.abc import Callable
 from datetime import datetime
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
@@ -13,16 +13,23 @@ from domains.conversations.service import ConversationService
 from domains.outreach.permissions import Actor, OutreachScope, ScopeLevel
 from domains.outreach.service import OutreachService
 from infra.db.business_mail import SqlBusinessMailRepository
-from infra.db.business_mail_tables import BusinessMailboxRow
-from infra.db.dialogue_execution_tables import DialogueBindingRow, DialogueMessageRow
+from infra.db.business_mail_tables import BusinessMailboxRow, BusinessMailRow
+from infra.db.dialogue_execution_tables import (
+    DialogueBindingRow,
+    DialogueBusinessReceiptRow,
+    DialogueMessageRow,
+)
 from infra.db.dialogue_source import SqlDialogueSources, source_from_row
 from infra.db.tables import (
+    ContactPointRow,
+    ConversationClassificationRow,
     ConversationReplyWorkRow,
     EmployeeRow,
     MessageRow,
     OutreachCampaignVersionRow,
     OutreachEnrollmentRow,
     OutreachMessageAttemptRow,
+    OutreachSequenceStepRow,
     OwnershipLockRow,
     RawArtifactRow,
     SendingIdentityRow,
@@ -93,11 +100,63 @@ class ColdReplyDialogueAdmission:
                     action=ReplyWorkAction.REVIEW_REPLY, review_reason='scope_changed',
                     idempotency_key=IdempotencyKey(f'reply:review_reply:{work.message_id}')))
 
+    async def _require_completed_reply(self, db: AsyncSession, enrollment: OutreachEnrollmentRow,
+                                       message: MessageRow, sent: OutreachMessageAttemptRow, *, defer: bool = False) -> None:
+        """正常耗尽不复活；只接纳原真实回复流程已完成的可继续工作。"""
+        steps = await db.scalar(select(func.count()).select_from(OutreachSequenceStepRow).where(
+            OutreachSequenceStepRow.tenant_id == self.tenant,
+            OutreachSequenceStepRow.campaign_id == enrollment.campaign_id,
+            OutreachSequenceStepRow.version == enrollment.campaign_version))
+        classification = await db.get(ConversationClassificationRow, (str(self.tenant), message.message_id))
+        workflow = await db.scalar(select(WorkflowRunRow).where(WorkflowRunRow.tenant_id == self.tenant,
+            WorkflowRunRow.workflow_type == 'reply_qualification', WorkflowRunRow.subject_ref == message.message_id,
+            WorkflowRunRow.status == ('running' if defer else 'completed')))
+        work = await db.scalar(select(ConversationReplyWorkRow).where(ConversationReplyWorkRow.tenant_id == self.tenant,
+            ConversationReplyWorkRow.message_id == message.message_id, ConversationReplyWorkRow.enrollment_id == enrollment.enrollment_id,
+            ConversationReplyWorkRow.outbound_message_id == sent.deterministic_message_id,
+            ConversationReplyWorkRow.account_id == enrollment.account_id,
+            ConversationReplyWorkRow.contact_point_id == enrollment.contact_point_id,
+            ConversationReplyWorkRow.status == 'pending',
+            ConversationReplyWorkRow.action.in_(('start_qualification', 'create_follow_up'))))
+        review = await db.scalar(select(ConversationReplyWorkRow.action_id).where(ConversationReplyWorkRow.tenant_id == self.tenant,
+            ConversationReplyWorkRow.message_id == message.message_id, ConversationReplyWorkRow.action == 'review_reply'))
+        receipt = await db.scalar(select(DialogueBusinessReceiptRow).where(DialogueBusinessReceiptRow.tenant_id == self.tenant,
+            DialogueBusinessReceiptRow.canonical_message_id == message.message_id,
+            DialogueBusinessReceiptRow.cold_attempt_id == sent.attempt_id, DialogueBusinessReceiptRow.result == 'received'))
+        mail = await db.get(BusinessMailRow, (str(self.tenant), receipt.business_message_id)) if receipt else None
+        contact = await db.get(ContactPointRow, (str(self.tenant), enrollment.contact_point_id))
+        identity = await db.get(SendingIdentityRow, (str(self.tenant), enrollment.sending_identity_id))
+        raw = await db.get(RawArtifactRow, (str(self.tenant), message.raw_artifact_ref))
+        expected = {'message_id': message.message_id, 'outbound_message_id': sent.deterministic_message_id,
+            'enrollment_id': enrollment.enrollment_id, 'account_id': enrollment.account_id,
+            'contact_point_id': enrollment.contact_point_id}
+        if ((enrollment.state == 'completed' and (not steps or enrollment.current_step != steps or enrollment.next_send_at is not None))
+            or message.direction != 'inbound' or sent.campaign_version != enrollment.campaign_version
+            or classification is None or classification.category not in {'clear_interest', 'willing_to_continue', 'requests_materials', 'provides_specification'}
+            or workflow is None or (defer and workflow.current_step != 'apply_actions') or any(workflow.context.get(key) != value for key, value in expected.items())
+            or (not defer and work is None) or (defer and classification.category != 'requests_materials') or review is not None or mail is None or contact is None or identity is None or raw is None
+            or mail.source_kind != 'full_mime' or mail.dialogue_feedback or mail.sender != contact.value
+            or mail.reply_recipient != identity.address or mail.in_reply_to != sent.deterministic_message_id
+            or mail.message_header != message.external_message_id or mail.artifact_id != message.raw_artifact_ref
+            or mail.mime_sha256 != mail.source_sha256 or raw.content_hash != mail.source_sha256):
+            raise PermissionDenied('已完成序列缺少真实可继续回复证据')
+
+    async def defer_completed_materials(self, message_id: MessageId, enrollment_id: str) -> bool:
+        """只允许原流程排入待办；完成前不创建普通授权、模型任务或发送。"""
+        await self._admit(message_id, enrollment_id, defer=True)
+        return True
+
     async def admit(self, message_id: MessageId, enrollment_id: str) -> DialogueSource:
+        source = await self._admit(message_id, enrollment_id)
+        if source is None:
+            raise PermissionDenied('普通回复准入未完成')
+        return source
+
+    async def _admit(self, message_id: MessageId, enrollment_id: str, *, defer: bool = False) -> DialogueSource | None:
         async with self.sessions.begin() as db:
             enrollment = await db.get(OutreachEnrollmentRow, (str(self.tenant), enrollment_id), with_for_update=True)
             message = await db.get(MessageRow, (str(self.tenant), str(message_id)))
-            if enrollment is None or message is None or enrollment.state!='replied' or not enrollment.source_hypothesis_id:
+            if enrollment is None or message is None or enrollment.state not in {'replied', 'completed'} or not enrollment.source_hypothesis_id:
                 raise PermissionDenied('冷回复尚未完成真实停序列')
             sent = await db.scalar(select(OutreachMessageAttemptRow).where(OutreachMessageAttemptRow.tenant_id==self.tenant,
                 OutreachMessageAttemptRow.enrollment_id==enrollment_id,
@@ -107,6 +166,7 @@ class ColdReplyDialogueAdmission:
             policy = version.ordinary_dialogue_policy if version else None
             if sent is None or not isinstance(policy,dict) or not isinstance(policy.get('owner_employee_id'),str):
                 raise PermissionDenied('冷回复缺少独立普通对话范围')
+            await self._require_completed_reply(db, enrollment, message, sent, defer=defer)
             employee = await db.scalar(select(EmployeeRow).where(EmployeeRow.tenant_id==self.tenant,
                 EmployeeRow.employee_id==policy['owner_employee_id']))
             owner = await db.scalar(select(OwnershipLockRow).where(OwnershipLockRow.tenant_id==self.tenant,
@@ -128,6 +188,12 @@ class ColdReplyDialogueAdmission:
                     allowed_campaign_ids=frozenset({CampaignId(enrollment.campaign_id)})), employee.role))
             if not campaign.approval_id or campaign.boundary.ordinary_dialogue_policy is None:
                 raise PermissionDenied('普通回复精确批准缺失')
+            await self.access.require_business_facts(self.tenant, employee_id=actor.employee_id,
+                role=employee.role, campaign=campaign, account_id=ProspectAccountId(enrollment.account_id),
+                contact_point_id=ContactPointId(enrollment.contact_point_id),
+                sending_identity_id=SendingIdentityId(enrollment.sending_identity_id))
+            if defer:
+                return None
             existing = await db.scalar(select(DialogueBindingRow).where(DialogueBindingRow.tenant_id==self.tenant,
                 DialogueBindingRow.enrollment_id==enrollment_id))
             if existing is not None:

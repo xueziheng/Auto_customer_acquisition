@@ -288,6 +288,16 @@ def _create_standalone_factory(
             settings=settings, resolver=model_resolver, fingerprints=fingerprints, research=research_ports,
             owner=instance_id, hunter=hunter_customer_settings, inventory_ports=inventory_ports)
 
+    def formal_mail(sessions):
+        from connectors.qq_mail.client import QQMailConnector
+        from infra.aliyun_mail_store import AliyunMailStore
+        from infra.db.campaign_mail_owner import CampaignMailboxOwner
+        from infra.outbound_mail import AliyunOutboundConnectors, EmployeeMailConnectors
+        assert qq_mail_directory is not None
+        store = AliyunMailStore(qq_mail_directory)
+        return (EmployeeMailConnectors(None, None, AliyunOutboundConnectors(store, sessions,
+            connector_factory=QQMailConnector)), CampaignMailboxOwner(sessions, store))
+
     scoring, handoff = profile.policy.scoring_policy, profile.policy.handoff_policy
     return SchedulerRuntimeFactory(
         env,
@@ -327,7 +337,8 @@ def _create_standalone_factory(
             )
             if research_ports is not None
             else None,
-            campaign_enabled=settings.automatic_send_enabled and send_transport is not None,
+            campaign_enabled=settings.automatic_send_enabled and (send_transport is not None or (ordinary_enabled and reply_employee is not None)),
+            outbound_factory=formal_mail if ordinary_enabled and settings.automatic_send_enabled and reply_employee is not None else None,
             gmail_transport=send_transport,
             secret_resolver=inbound.secret_resolver if inbound is not None else None,
             reply_factory=(

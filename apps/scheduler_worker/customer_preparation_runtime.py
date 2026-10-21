@@ -289,9 +289,11 @@ async def build_customer_preparation(
                 )
 
     # 与canonical Prospecting共用同一个运行时hasher；由组合显式提供，不读取服务私有属性。
+    from infra.db.prospecting_service_plans import PostgresProspectingServicePlanStore
     return PreparationRuntime(
         CustomerPreparationConsumer(
             tenant_id=tenant_id,
+            service_plans=PostgresProspectingServicePlanStore(sessions),
             queue=backend,
             authority=authority,
             employees=core.employee_scope,

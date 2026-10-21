@@ -18,6 +18,7 @@ from infra.db.customer_assignment import CustomerAssignmentBridge
 from infra.db.enterprise_knowledge import SqlAlchemyKnowledgeUnitOfWork
 from infra.db.inventory_search_budget import InventorySearchBudget
 from infra.db.inventory_search_readiness import InventorySearchReadinessReader
+from infra.db.inventory_service_plan import InventoryServicePlanBudget
 from infra.db.inventory_sources import InventorySources
 from infra.db.model_configuration import SqlModelConfigurationRepository
 from infra.db.prospect_inventory import PostgresInventoryService, PostgresPublicCatalog
@@ -39,6 +40,7 @@ from .inventory_model import (
 )
 from .inventory_ports import InventoryRuntimePorts
 from .inventory_web import InventoryWebTools, build_inventory_web
+from .scheduled_inventory import ScheduledInventoryDriver
 
 
 def build_inventory_driver(
@@ -54,9 +56,10 @@ def build_inventory_driver(
     research,
     owner: str,
     inventory_ports: InventoryRuntimePorts | None = None,
-) -> InventoryAcquisitionDriver:
+) -> ScheduledInventoryDriver:
     """构造不访问外部；所有来源动作由job lease及Gateway再次授权。"""
     now = lambda: datetime.now(UTC)
+    service_budget = InventoryServicePlanBudget(sessions, tenant_id, now=now)
     catalog = PostgresPublicCatalog(control_sessions, control_tenant)
     backend = PostgresInventoryService(sessions, tenant_id, catalog, assignment_bridge=CustomerAssignmentBridge())
     authority = InventoryEmployeeAuthority(core.employee_scope)
@@ -101,6 +104,10 @@ def build_inventory_driver(
         new_id,
     )
 
+    async def current_cap(job: AcquisitionJob) -> int | None:
+        limits = await service_budget.limits(job)
+        return limits["searches"] if limits else None
+
     async def deepseek(job: AcquisitionJob, source: str, guard: Callable[[], Awaitable[None]]) -> DeepSeekSearchReaderFactory:
         if policy is None or policy.backend_id != "deepseek" or not policy.paid_search_enabled:
             raise ValueError("独立搜索付费许可未开启")
@@ -119,7 +126,10 @@ def build_inventory_driver(
             raise ValueError("未选择官方搜索连接")
         pin = SearchBackendPin(backend_id="deepseek", connection_version=selected.api_connection_version,
             policy_version=policy.version)
-        budget = InventorySearchBudget(sessions, tenant_id, job.id, job.lease_token, pin, policy, now=now)
+        limits = await service_budget.limits(job)
+        budget = InventorySearchBudget(sessions, tenant_id, job.id, job.lease_token, pin, policy, now=now,
+            trusted_maximum_requests=limits["searches"] if limits else None,
+            trusted_cap_reader=lambda: current_cap(job))
         await budget.bind()
         async def current_guard() -> None:
             await guard()
@@ -137,7 +147,10 @@ def build_inventory_driver(
             raise ValueError("搜索任务缺少租约")
         effective = policy or InventorySearchPolicy(version=settings.configuration_version, backend_id="tavily",maximum_requests=24)
         pin = SearchBackendPin(backend_id="tavily",connection_version=settings.configuration_version,policy_version=effective.version)
-        budget = InventorySearchBudget(sessions,tenant_id,job.id,job.lease_token,pin,effective,now=now)
+        limits = await service_budget.limits(job)
+        budget = InventorySearchBudget(sessions,tenant_id,job.id,job.lease_token,pin,effective,now=now,
+            trusted_maximum_requests=limits["searches"] if limits else None,
+            trusted_cap_reader=lambda: current_cap(job))
         await budget.bind()
         return budget
 
@@ -196,7 +209,7 @@ def build_inventory_driver(
         bind_search=tavily_budget if research is not None and (policy is None or policy.backend_id == "tavily") else None,
         probe=probe,
     )
-    return InventoryAcquisitionDriver(
+    driver = InventoryAcquisitionDriver(
         tenant_id=tenant_id,
         backend=backend,
         catalog=catalog,
@@ -204,8 +217,12 @@ def build_inventory_driver(
         sources=sources,
         fit_model=model,
         context_reader=context_reader,
+        service_budget=service_budget,
         collector=CodexInventoryCollector(
-            tools, model.generate, context_reader=context_reader
+            tools, model.generate, context_reader=context_reader, service_budget=service_budget
         ),
         now=now,
     )
+
+    return ScheduledInventoryDriver(driver, tenant_id=tenant_id, store=service_budget.store,
+        requests=backend, receipts=service_budget, authority=authority, context=context_reader, now=now)

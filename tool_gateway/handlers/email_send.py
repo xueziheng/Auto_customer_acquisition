@@ -113,11 +113,29 @@ class OutboundMailArchive(Protocol):
 
 
 @dataclass(frozen=True)
+class OutboundMailOwner:
+    tenant_id: TenantId
+    employee_id: EmployeeId
+    proof: tuple[str, ...] = field(repr=False)
+
+
+@runtime_checkable
+class BoundOutboundMailConnectors(Protocol):
+    async def resolve_owned(self, owner: OutboundMailOwner, from_address: str) -> OutboundMailConnector: ...
+
+
+class OutboundMailOwnerResolver(Protocol):
+    async def bind(self, preflight: MessageSendPreflight, from_address: str) -> OutboundMailOwner | None: ...
+    async def check(self, owner: OutboundMailOwner) -> None: ...
+
+
+@dataclass(frozen=True)
 class _EmailPayload:
     tenant_id: TenantId
     employee_id: EmployeeId
     attempt_id: MessageAttemptId
     request: GmailSendRequest = field(repr=False)
+    owner: OutboundMailOwner | None = None
 
 
 class EmailSendHandler:
@@ -136,11 +154,15 @@ class EmailSendHandler:
         connectors: OutboundMailConnectors | None = None,
         gmail_sender_address: str | None = None,
         archive: OutboundMailArchive | None = None,
+        owner_resolver: OutboundMailOwnerResolver | None = None,
+        legacy_gmail_for_unmapped: bool = False,
     ) -> None:
         if not isinstance(materials, DeliveryMaterialProvider):
             raise ValidationError("发送材料 provider 无效")
         if not isinstance(unsubscribe_links, UnsubscribeLinkProvider):
             raise ValidationError("退订链接 provider 无效")
+        self._owner_resolver = owner_resolver
+        self._legacy_gmail_for_unmapped = legacy_gmail_for_unmapped
         self._archive = archive
         self._gmail = gmail
         if gmail is None and connectors is None:
@@ -260,6 +282,7 @@ class EmailSendHandler:
             ),
             idempotency_header=binding.idempotency_header,
         )
+        owner = await self._owner_resolver.bind(preflight, request.from_address) if self._owner_resolver else None
         fingerprint, version = self._fingerprints.fingerprint(
             (
                 str(preflight.tenant_id).encode(),
@@ -283,6 +306,7 @@ class EmailSendHandler:
                 unsubscribe_link.policy_version.encode(),
                 self._route_id.encode(),
                 correlation_digest.encode(),
+                *((str(owner.employee_id).encode(), *(part.encode() for part in owner.proof)) if owner else ()),
             )
         )
         return PreparedToolCall(
@@ -294,11 +318,18 @@ class EmailSendHandler:
                 "body_bytes": len(body.encode()),
                 "has_unsubscribe": True,
             },
-            payload=_EmailPayload(ctx.tenant_id, EmployeeId(str(ctx.user_id)), preflight.attempt_id, request),
+            payload=_EmailPayload(ctx.tenant_id, owner.employee_id if owner else EmployeeId(str(ctx.user_id)), preflight.attempt_id, request, owner),
         )
 
     async def _connector(self, payload: _EmailPayload) -> OutboundMailConnector:
-        if self._gmail is not None and payload.request.from_address == self._gmail_sender_address:
+        if payload.owner is not None:
+            if self._owner_resolver is None:
+                raise ValidationError("发件身份映射未配置")
+            await self._owner_resolver.check(payload.owner)
+            if not isinstance(self._connectors, BoundOutboundMailConnectors):
+                raise ValidationError("本人邮箱绑定解析器未配置")
+            return await self._connectors.resolve_owned(payload.owner, payload.request.from_address)
+        if self._gmail is not None and (payload.request.from_address == self._gmail_sender_address or self._legacy_gmail_for_unmapped):
             return self._gmail
         if self._connectors is not None:
             return await self._connectors.resolve(

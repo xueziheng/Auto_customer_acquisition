@@ -2586,6 +2586,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/prospects/accounts/{account_id}/screening": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Screening */
+        get: operations["get_screening_prospects_accounts__account_id__screening_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/accounts/{account_id}/screening/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record Screening Evidence
+         * @description 人工仅归类已关联的原始信号；来源、摘录与确认身份都由服务端绑定。
+         */
+        post: operations["record_screening_evidence_prospects_accounts__account_id__screening_evidence_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/prospects/customers": {
         parameters: {
             query?: never;
@@ -2854,6 +2891,43 @@ export interface paths {
         /** Status */
         get: operations["status_prospects_inventory_status_get"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/service-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Service Plan */
+        get: operations["get_service_plan_prospects_service_plan_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/service-plan/schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Configure Service Schedule
+         * @description 经原授权入口配置已确认目标；实际周期仍由统一任务重核。
+         */
+        put: operations["configure_service_schedule_prospects_service_plan_schedule_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -7341,6 +7415,12 @@ export interface components {
         /** ModelSettingsView */
         ModelSettingsView: {
             /**
+             * Can Edit
+             * @default false
+             * @constant
+             */
+            can_edit: false;
+            /**
              * Can Probe
              * @default false
              */
@@ -7350,6 +7430,11 @@ export interface components {
             /** Failure Code */
             failure_code?: ("permission" | "configuration" | "quota" | "authentication" | "insufficient_balance" | "invalid_request" | "rate_limit" | "provider_error" | "invalid_response" | "output_limit" | "unknown") | null;
             limits?: components["schemas"]["ModelLimits"] | null;
+            /**
+             * Managed By Platform
+             * @default true
+             */
+            managed_by_platform: boolean;
             /** Model */
             model?: string | null;
             /**
@@ -7357,6 +7442,8 @@ export interface components {
              * @default false
              */
             model_data_export_enabled: boolean;
+            /** Platform Connection Version */
+            platform_connection_version?: string | null;
             /** Probe State */
             probe_state?: ("queued" | "running" | "awaiting_input" | "proposal_ready" | "completed" | "blocked" | "failed" | "unknown" | "cancelled") | null;
             /** Probe Turn Id */
@@ -10135,6 +10222,93 @@ export interface components {
             sort_key: components["schemas"]["SortKey"];
         };
         /**
+         * ScreeningAssessment
+         * @description 自动补全状态与可选来源摘要；不表示已验证需求或发送授权。
+         *
+         *     evidence_refs 保留全部已检查来源引用（含未满足时效的材料），去重并稳定排序。
+         *     旧状态仅为历史序列化兼容保留，v2 不产生待人工补证或审核状态。
+         */
+        ScreeningAssessment: {
+            /** Evidence Refs */
+            evidence_refs: string[];
+            /** Missing Requirements */
+            missing_requirements: ("business_match" | "recent_need" | "contact_role" | "independent_confirmation" | "human_review")[];
+            /**
+             * Policy Version
+             * @default 2026-10-10-v2
+             * @enum {string}
+             */
+            policy_version: "2026-10-10-v1" | "2026-10-10-v2";
+            /** Satisfied Requirements */
+            satisfied_requirements: ("business_match" | "recent_need" | "contact_role" | "independent_confirmation" | "human_review")[];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready_for_enrichment" | "ready_for_review" | "needs_evidence";
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "basic" | "standard" | "advanced";
+        };
+        /** ScreeningDetailView */
+        ScreeningDetailView: {
+            assessment: components["schemas"]["ScreeningAssessment"] | null;
+            /** Eligible Signals */
+            eligible_signals?: components["schemas"]["DemandSignalView"][];
+            /** Evidence */
+            evidence: components["schemas"]["ScreeningEvidence"][];
+        };
+        /**
+         * ScreeningEvidence
+         * @description 上游服务绑定 canonical 来源后提交的证据，不接受模型通过布尔值。
+         *
+         *     source_ref/source_url/source_quote 的绑定真实性由服务端核验；本契约只验证
+         *     形状，不能证明原文真实性。人工审核的身份与时间也必须由服务端写入。
+         *     occurred_at 是事件发生时间；未知时保留空值，不得用采集时间替代。
+         */
+        ScreeningEvidence: {
+            /** Account Id */
+            account_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "business_match" | "recent_need" | "contact_role" | "independent_confirmation" | "human_review";
+            /** Occurred At */
+            occurred_at?: string | null;
+            /**
+             * Recorded At
+             * Format: date-time
+             */
+            recorded_at: string;
+            /** Reviewed At */
+            reviewed_at?: string | null;
+            /** Reviewed By */
+            reviewed_by?: string | null;
+            /** Source Quote */
+            source_quote: string;
+            /** Source Ref */
+            source_ref: string;
+            /** Source Url */
+            source_url: string;
+            /** Tenant Id */
+            tenant_id: string;
+        };
+        /** ScreeningEvidenceBody */
+        ScreeningEvidenceBody: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "business_match" | "recent_need" | "contact_role" | "independent_confirmation" | "human_review";
+            /** Occurred At */
+            occurred_at?: string | null;
+            /** Signal Id */
+            signal_id: string;
+        };
+        /**
          * SearchBackendReadiness
          * @description 可调度资格和实际搜索执行分开；版本只是安全元数据，不是Key引用。
          */
@@ -10174,6 +10348,120 @@ export interface components {
             step_number: number;
             /** Wait Days */
             wait_days: number;
+        };
+        /** ServicePlanScheduleBody */
+        ServicePlanScheduleBody: {
+            /** Enabled */
+            enabled: boolean;
+            /** Expected Version */
+            expected_version: number;
+            /** Proposal Id */
+            proposal_id?: string | null;
+            query?: components["schemas"]["InventoryQuery"] | null;
+        };
+        /**
+         * ServicePlanState
+         * @description 当前服务期的保守预留；未决消耗不会因切档或重启清零。
+         */
+        ServicePlanState: {
+            /** Acting User Id */
+            acting_user_id?: string | null;
+            /** Candidates Reserved */
+            candidates_reserved: number;
+            /** Contacts Reserved */
+            contacts_reserved: number;
+            /** Employee Id */
+            employee_id?: string | null;
+            /** Last Run At */
+            last_run_at?: string | null;
+            /** Next Run At */
+            next_run_at?: string | null;
+            /**
+             * Period Ends At
+             * Format: date-time
+             */
+            period_ends_at: string;
+            /**
+             * Period Started At
+             * Format: date-time
+             */
+            period_started_at: string;
+            /** Proposal Id */
+            proposal_id?: string | null;
+            query?: components["schemas"]["InventoryQuery"] | null;
+            /** Schedule Enabled */
+            schedule_enabled: boolean;
+            /** Searches Reserved */
+            searches_reserved: number;
+            /**
+             * Target Kind
+             * @default legacy_research
+             * @enum {string}
+             */
+            target_kind: "legacy_research" | "inventory_request";
+            /** Tenant Id */
+            tenant_id: string;
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "basic" | "standard" | "advanced";
+            /** Version */
+            version: number;
+        };
+        /** ServicePlanStatusView */
+        ServicePlanStatusView: {
+            /** Catalog */
+            catalog: components["schemas"]["ServiceTierPolicy"][];
+            plan: components["schemas"]["ServicePlanState"] | null;
+        };
+        /**
+         * ServiceTierPolicy
+         * @description 每 30 天及单轮的处理上限；不表示候选质量、发送许可或收益保证。
+         */
+        ServiceTierPolicy: {
+            /** Cadence Hours */
+            cadence_hours: number;
+            /** Candidate Limit */
+            candidate_limit: number;
+            /** Contact Limit */
+            contact_limit: number;
+            /** Max Contacts Per Company */
+            max_contacts_per_company: number;
+            /** Max Pages Per Company */
+            max_pages_per_company: number;
+            /** Per Run Hypothesis Limit */
+            per_run_hypothesis_limit: number;
+            /** Per Run Page Limit */
+            per_run_page_limit: number;
+            /** Per Run Search Limit */
+            per_run_search_limit: number;
+            /** Per Run Signal Limit */
+            per_run_signal_limit: number;
+            /**
+             * Period Days
+             * @default 30
+             * @constant
+             */
+            period_days: 30;
+            /**
+             * Policy Version
+             * @default 2026-10-10-v2
+             * @enum {string}
+             */
+            policy_version: "2026-10-10-v1" | "2026-10-10-v2";
+            /**
+             * Required Requirements
+             * @default []
+             */
+            required_requirements: ("business_match" | "recent_need" | "contact_role" | "independent_confirmation" | "human_review")[];
+            /** Search Limit */
+            search_limit: number;
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "basic" | "standard" | "advanced";
         };
         /**
          * SessionResponse
@@ -19432,6 +19720,72 @@ export interface operations {
             };
         };
     };
+    get_screening_prospects_accounts__account_id__screening_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScreeningDetailView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    record_screening_evidence_prospects_accounts__account_id__screening_evidence_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScreeningEvidenceBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScreeningDetailView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
     customers_prospects_customers_get: {
         parameters: {
             query?: {
@@ -20034,6 +20388,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InventoryStatus"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_service_plan_prospects_service_plan_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServicePlanStatusView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    configure_service_schedule_prospects_service_plan_schedule_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServicePlanScheduleBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServicePlanStatusView"];
                 };
             };
             /** @description 请求参数无效 */

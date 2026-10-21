@@ -1091,6 +1091,17 @@ class PostgresWorkflowEngine:
             if step_def.wait_event_type != event_type:
                 return False
             ctx: dict[str, Any] = dict(run_row.context or {})
+            if event_type == "ProspectScreeningReady":
+                updated = step_row.updated_at
+                if updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=UTC)
+                generation = ctx.get("contact_screening_wait_generation", 0)
+                if (run_row.workflow_type != "account_discovery"
+                    or step_row.step_name not in {"find_contacts", "verify_contacts"}
+                    or payload.get("account_id") != ctx.get("account_id")
+                    or payload.get("step_name") != step_row.step_name
+                    or payload.get("wait_version") != f"{generation}:{updated.astimezone(UTC).isoformat()}"):
+                    return False
             # ``event`` 是瞬态键（handler 执行期可见，transition 后不持久化）；
             # 清除历史实现可能遗留的脏数据，避免其进入本投递的持久化 context。
             ctx.pop(_EVENT_KEY, None)

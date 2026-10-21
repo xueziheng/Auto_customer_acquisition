@@ -29,7 +29,12 @@ from domains.prospecting.schemas import (
     VerificationRecordRequest,
     VerificationStatus,
 )
-from domains.prospecting.service import ProspectingService
+from domains.prospecting.service import (
+    ProspectingService,
+    ProspectingServicePlanStore,
+    contact_mission_key,
+    tier_policy,
+)
 from shared.errors import PermissionDenied, ValidationError
 from shared.schemas.identifiers import (
     CampaignId,
@@ -97,11 +102,30 @@ class CustomerPreparationConsumer:
                  prospecting: ProspectingService, outreach: OutreachService,
                  compliance: ComplianceService, senders: SendingIdentityEligibilityProvider,
                  transactions: AgentPreparationTransactions, extractor: PreparationExtractor | None,
-                 verifier: ContactVerifier | None, now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None:
+                 verifier: ContactVerifier | None, service_plans: ProspectingServicePlanStore | None = None, now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None:
+        self.service_plans = service_plans
         self.tenant, self.queue, self.authority = tenant_id, queue, authority
         self.employees, self.prospecting, self.outreach = employees, prospecting, outreach
         self.compliance, self.senders = compliance, senders
         self.transactions, self.extractor, self.verifier, self.now = transactions, extractor, verifier, now
+
+    async def contact_budget(self, claim: PreparationClaim) -> None:
+        """公开邮箱也占同一联系人处理预留；验证重读回执，不二次扣额。"""
+        if self.service_plans is None:
+            return
+        state = await self.service_plans.get(self.tenant)
+        if state is None:
+            return
+        key = contact_mission_key(claim.authorization.scope.campaign_id, claim.result_refs["account_id"])
+        receipt = await self.service_plans.reservation(self.tenant, key=key, now=self.now())
+        if receipt is None:
+            await self.service_plans.reserve(self.tenant, key=key, candidates=0, searches=0,
+                contacts=1, now=self.now())
+            receipt = await self.service_plans.reservation(self.tenant, key=key, now=self.now())
+        if (receipt is None or not state.period_started_at <= self.now() < state.period_ends_at
+            or receipt.period_started_at != state.period_started_at or receipt.contacts < 1
+            or tier_policy(state.tier).max_contacts_per_company < 1):
+            raise PreparationBlocked("service_plan_inactive")
 
     async def guard(self, claim: PreparationClaim) -> tuple[CampaignView, list[dict[str, object]]]:
         await self.queue.require_preparation_claim(self.tenant, claim)
@@ -165,6 +189,7 @@ class CustomerPreparationConsumer:
                 raise PreparationBlocked("ownership_changed")
             await self.policy(claim, allocation.candidate.country)
             if claim.stage == "evidence":
+                await self.contact_budget(claim)
                 campaign, context = await self.guard(claim)
                 claim = await self.queue.checkpoint_preparation(
                     self.tenant, claim, stage="evidence", external_started=True
@@ -269,6 +294,7 @@ class CustomerPreparationConsumer:
                 claim = await self.transactions.apply(claim, persist)
                 external = False
             if claim.stage == "verify":
+                await self.contact_budget(claim)
                 await self.guard(claim)
                 await self.policy(claim, allocation.candidate.country)
                 claim = await self.queue.checkpoint_preparation(

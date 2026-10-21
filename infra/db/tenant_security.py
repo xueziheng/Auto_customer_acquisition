@@ -106,6 +106,7 @@ def _check_role(row: Mapping[str, Any], role: str, *, runtime: bool) -> None:
 
 def _tenant_table_names() -> set[str]:
     """完整注册分文件 ORM 映射，不能依赖进程恰好已加载某个业务入口。"""
+    from infra.db import prospecting_service_tables  # noqa: F401
     from infra.db.business_mail_followup_tables import (
         BusinessMailFollowupEventRow,
         BusinessMailFollowupRow,

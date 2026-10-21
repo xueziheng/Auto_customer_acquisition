@@ -124,7 +124,8 @@ class CurrentDialogueDelivery:
             raise PermissionDenied('普通回复仅执行或核对时建立连接')
         await self.access.require(delivery.tenant_id, delivery.message_id, delivery.employee_id)
         actor = BusinessMailActor(tenant_id=delivery.tenant_id, employee_id=delivery.employee_id, user_id=delivery.user_id)
-        password = self.mailbox.resolver(actor, delivery.request.from_address, source.mailbox_operation_id).resolve('BUSINESS_QQ_MAIL')
+        reference = 'BUSINESS_QQ_MAIL'
+        password = self.mailbox.resolver(actor, delivery.request.from_address, source.mailbox_operation_id).resolve(reference)
         return self.connector_factory(delivery.request.from_address, SecretStr(password))
 
     async def sent(self, delivery: DialogueDelivery, provider_ref: str) -> None:

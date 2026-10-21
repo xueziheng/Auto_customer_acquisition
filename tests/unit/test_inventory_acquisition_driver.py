@@ -406,3 +406,25 @@ async def test_revoked_knowledge_blocks_reusing_completed_fit_before_delivery():
     assert await driver.scan() == 1
     assert "deliver" not in backend.calls and not collector.sources
     assert "collector_failed" in backend.calls
+
+async def test_basic_plan_bounds_all_source_targets_instead_of_replenishing_fifty():
+    class Budget:
+        spent = 0
+        async def limits(self, job): return {'candidates':10,'searches':10,'pages':10,'pages_per_company':2}
+        async def remaining_candidates(self, job): return 10-self.spent
+        async def reserve_execution(self, job, *, kind, key, amount, host=None):
+            assert kind == 'candidates' and self.spent + amount <= 10
+            self.spent += amount
+        async def admit_source_candidates(self, job, source, candidates): pass
+        async def fit_candidates(self, job, candidates): return candidates[:10]
+    class BoundedCollector(Collector):
+        def __init__(self):
+            super().__init__()
+            self.targets = []
+        async def collect(self, job, source, guard, **kwargs):
+            self.targets.append(kwargs['target_count'])
+            return await super().collect(job,source,guard,**kwargs)
+    budget, collector = Budget(), BoundedCollector()
+    driver = driver_type()(tenant_id='tenant',backend=Backend(),catalog=Catalog(),authority=Authority(),sources=Sources(),collector=collector,service_budget=budget,now=lambda:NOW)
+    await driver.scan()
+    assert collector.targets == [5,5] and budget.spent == 10

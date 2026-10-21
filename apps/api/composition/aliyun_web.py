@@ -18,13 +18,11 @@ from infra.db.tables import EmployeeRow, ToolCallRow
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from shared.errors import PermissionDenied, ValidationError
 from shared.schemas.identifiers import (
-    EmployeeId,
     IdempotencyKey,
-    TenantId,
     UserId,
     new_id,
 )
-from tool_gateway.errors import ToolCallStatus, ToolErrorCategory, ToolGatewayError
+from tool_gateway.errors import ToolCallStatus
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.aliyun_connect import (
     MANIFEST,
@@ -52,26 +50,6 @@ def _outbound_connector(address: str, password: SecretStr) -> OutboundMailConnec
     return AliyunMailConnector(address, password)
 
 
-class AliyunOutboundConnectors:
-    """发送/对账时重核当前员工，仅解析其本人已连接的精确邮箱。"""
-
-    def __init__(self, store: AliyunMailStore, sessions: async_sessionmaker[AsyncSession], *,
-        connector_factory: Callable[[str, SecretStr], OutboundMailConnector] = _outbound_connector):
-        self.store, self.sessions, self.connector_factory = store, sessions, connector_factory
-
-    async def resolve(self, tenant_id: TenantId, employee_id: EmployeeId, from_address: str) -> OutboundMailConnector:
-        async with self.sessions() as s:
-            user_id = await s.scalar(select(EmployeeRow.user_id).where(
-                EmployeeRow.tenant_id == tenant_id, EmployeeRow.employee_id == employee_id,
-                EmployeeRow.is_active.is_(True), EmployeeRow.role.in_(("boss", "manager", "sales")),
-            ))
-        if user_id is None:
-            raise ToolGatewayError(ToolErrorCategory.PERMISSION_DENIED)
-        actor = AliyunActor(tenant_id=tenant_id, employee_id=employee_id, user_id=UserId(user_id))
-        binding = self.store.binding(actor)
-        if binding is None or binding.email != from_address:
-            raise ToolGatewayError(ToolErrorCategory.PROVIDER_AUTH_REQUIRED)
-        return self.connector_factory(binding.email, binding.password)
 
 
 class _ConnectCheck:
@@ -155,3 +133,5 @@ class AliyunWebService:
             self.store.publish(AliyunBinding(actor=actor, email=body.email, password=body.password,
                 connected_at=datetime.now(UTC), operation_id=operation))
         return await self.status(actor)
+
+from infra.outbound_mail import AliyunOutboundConnectors  # noqa: F401 -- 兼容公开接口

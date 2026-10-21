@@ -128,7 +128,7 @@ async def test_credential_text_is_kept_out_of_model_and_injection_has_no_authori
     )
     with pytest.raises(TradeValidationError):
         await classifier.classify(
-            identity, subject="Inquiry", body="password=do-not-dispatch"
+            identity, subject="Inquiry", body="password=dummy"
         )
     assert generator.requests == []
     result = await classifier.classify(

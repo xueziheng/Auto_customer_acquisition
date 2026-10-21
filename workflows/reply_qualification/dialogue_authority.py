@@ -8,7 +8,7 @@ from domains.conversations.dialogue_access import (
 from domains.conversations.inbox_access import InboxActor
 from domains.outreach.ordinary_dialogue_policy import OrdinaryDialoguePolicy
 from domains.outreach.permissions import Actor, OutreachScope, ScopeLevel
-from domains.outreach.schemas import SuppressionTarget
+from domains.outreach.schemas import CampaignView, SuppressionTarget
 from domains.outreach.service import OutreachService
 from domains.products.permissions import ProductActor, ProductRole
 from domains.products.service import ProductCustomerView, ProductService
@@ -16,9 +16,12 @@ from domains.prospecting.service import ProspectingService
 from shared.errors import PermissionDenied, PolicyViolation, ValidationError
 from shared.schemas.identifiers import (
     CampaignId,
+    ContactPointId,
     EmployeeId,
     MessageId,
     ProductId,
+    ProspectAccountId,
+    SendingIdentityId,
     TenantId,
 )
 from shared.schemas.quote_facts import canonical_fact_hash
@@ -70,16 +73,36 @@ class CurrentOrdinaryDialogueAccess:
         if (policy is None or campaign.approval_id != source.approval_id
             or source.sending_identity_id not in policy.reply_sender_identity_ids):
             raise PermissionDenied("当前普通对话范围拒绝")
+        products = await self.require_business_facts(tenant_id, employee_id=employee_id,
+            role=owner.actor.role, campaign=campaign, account_id=source.account_id,
+            contact_point_id=source.contact_point_id, sending_identity_id=source.sending_identity_id)
+        # 最终再取一次原件owner交集，避免跨领域读取期间转交客户或轮换邮箱。
+        final_owner = await self.owners.require(tenant_id, message_id, employee_id)
+        if final_owner != owner:
+            raise PermissionDenied("当前普通对话范围已改变")
+        return CurrentDialogueScope(owner, policy, tuple(products))
+
+    async def require_business_facts(
+        self, tenant_id: TenantId, *, employee_id: EmployeeId, role: str,
+        campaign: CampaignView, account_id: ProspectAccountId,
+        contact_point_id: ContactPointId, sending_identity_id: SendingIdentityId,
+    ) -> tuple[ProductCustomerView, ...]:
+        """当前范围交集可在绑定前检查；只读业务事实，不授予原件访问权。"""
+        policy = campaign.boundary.ordinary_dialogue_policy
+        if (campaign.tenant_id != tenant_id or policy is None or not campaign.approval_id
+            or policy.owner_employee_id != employee_id
+            or sending_identity_id not in policy.reply_sender_identity_ids):
+            raise PermissionDenied("当前普通对话范围拒绝")
         contact = await self.prospects.get_outreach_contact_facts(
-            tenant_id, source.account_id, source.contact_point_id)
-        if (contact.tenant_id != tenant_id or contact.account_id != source.account_id
-            or contact.contact_point_id != source.contact_point_id or contact.kind.value != "email"
+            tenant_id, account_id, contact_point_id)
+        if (contact.tenant_id != tenant_id or contact.account_id != account_id
+            or contact.contact_point_id != contact_point_id or contact.kind.value != "email"
             or contact.verification.value != "verified" or contact.verified_at is None
             or not contact.legal_basis_ref or contact.country not in campaign.boundary.markets
             or contact.entity_type not in campaign.boundary.target_entity_types):
             raise PermissionDenied("当前普通对话联系人拒绝")
-        for target in (SuppressionTarget(contact_point_id=source.contact_point_id),
-                       SuppressionTarget(account_id=source.account_id)):
+        for target in (SuppressionTarget(contact_point_id=contact_point_id),
+                       SuppressionTarget(account_id=account_id)):
             suppressed = await self.outreach.is_suppressed(tenant_id, target,
                 actor=Actor("system:dialogue-suppression", OutreachScope(level=ScopeLevel.SYSTEM,
                     allowed_suppression_targets=frozenset({target.canonical_id})), "system"))
@@ -89,7 +112,7 @@ class CurrentOrdinaryDialogueAccess:
         for reference in policy.product_refs:
             try:
                 visible = await self.products.get_ordinary_dialogue_view(tenant_id, ProductId(reference.product_id),
-                    actor=ProductActor(str(employee_id), ProductRole.BOSS if owner.actor.role == "boss" else ProductRole.SALES, tenant_id))
+                    actor=ProductActor(str(employee_id), ProductRole.BOSS if role == "boss" else ProductRole.SALES, tenant_id))
             except ValidationError:
                 raise PermissionDenied("普通对话产品范围已改变") from None
             if (visible.product_id != reference.product_id
@@ -98,8 +121,4 @@ class CurrentOrdinaryDialogueAccess:
                 or canonical_fact_hash(asdict(visible)) != reference.customer_view_sha256):
                 raise PermissionDenied("普通对话产品范围已改变")
             products.append(visible)
-        # 最终再取一次原件owner交集，避免跨领域读取期间转交客户或轮换邮箱。
-        final_owner = await self.owners.require(tenant_id, message_id, employee_id)
-        if final_owner != owner:
-            raise PermissionDenied("当前普通对话范围已改变")
-        return CurrentDialogueScope(owner, policy, tuple(products))
+        return tuple(products)

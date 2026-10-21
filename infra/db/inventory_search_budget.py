@@ -1,6 +1,6 @@
 """按任务行锁持久固定搜索身份与总请求预算；未知保留预留。"""
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from decimal import Decimal
 
@@ -29,6 +29,7 @@ class InventorySearchBudget:
         *,
         now: Callable[[], datetime],
         trusted_maximum_requests: int | None = None,
+        trusted_cap_reader: Callable[[], Awaitable[int | None]] | None = None,
     ) -> None:
         self.factory, self.tenant, self.job_id, self.lease_token = (
             factory,
@@ -43,6 +44,7 @@ class InventorySearchBudget:
         ):
             raise ValueError("受信任务上限无效")
         self.trusted_maximum_requests = trusted_maximum_requests
+        self.trusted_cap_reader = trusted_cap_reader
         self.binding = {
             **pin.model_dump(mode="json"),
             "policy": policy.model_dump(mode="json"),
@@ -93,6 +95,10 @@ class InventorySearchBudget:
         return row
 
     async def bind(self) -> None:
+        if self.trusted_cap_reader is not None:
+            current = await self.trusted_cap_reader()
+            if current is not None:
+                self.trusted_maximum_requests = min(self.trusted_maximum_requests, current) if self.trusted_maximum_requests is not None else current
         async with self.factory() as session, session.begin():
             row = await session.scalar(
                 select(AcquisitionJobRow)

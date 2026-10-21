@@ -323,6 +323,8 @@ async def exercise_reply(*, sessions, tenant, owner, boss, user, sender, attempt
         assert denied.status_code == 403
         for previous, target in (("pending", "in_progress"), ("in_progress", "completed")):
             command = {"expected_status":previous,"status":target}
+            if target == "completed":
+                command.update(disposition="handled", note="合成私有回复验收处理，非采购确认。", request_id="fixture-reply-handled")
             result = await client.post("/inbox/reply-work/" + work["action_id"], headers=headers, json=command)
             assert result.status_code == 200, result.text
             repeat = await client.post("/inbox/reply-work/" + work["action_id"], headers=headers, json=command)

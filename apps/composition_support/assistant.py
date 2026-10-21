@@ -24,6 +24,7 @@ from domains.employees.service import Actor as EmployeeActor
 from domains.opportunities.service import OpportunityService
 from infra.db.assistant import SqlAssistantRepository
 from infra.db.model_configuration import SqlModelConfigurationRepository
+from infra.model_settings_summary import PlatformModelSummary
 from infra.standalone.settings import StandaloneModelSettings, deployment_verification
 from shared.schemas.identifiers import TenantId
 from tool_gateway.fingerprint import HmacFingerprintProvider
@@ -63,7 +64,7 @@ def build_assistant_core(
 ) -> AssistantCore:
     identity = CurrentEmployeeIdentity(employees, lookup)
     configuration_repo = SqlModelConfigurationRepository(factory, fingerprints, now=now, deployment_verification=deployment_verification(settings), deployment_provider=settings.provider)
-    configuration = ModelConfigurationServiceImpl(configuration_repo, identity, now=now)
+    configuration = ModelConfigurationServiceImpl(configuration_repo, identity, now=now, public_summary=PlatformModelSummary(settings))
 
     @asynccontextmanager
     async def opportunity_scope(

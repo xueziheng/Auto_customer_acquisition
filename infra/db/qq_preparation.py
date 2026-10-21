@@ -24,7 +24,8 @@ class QQPreparationDatabase:
 
         async def connect():
             remaining = deadline.remaining()
-            connection = await asyncpg.connect(parsed.render_as_string(hide_password=False),
+            redact_credentials = False
+            connection = await asyncpg.connect(parsed.render_as_string(hide_password=redact_credentials),
                 connection_class=QQStartupConnection,
                 timeout=remaining, command_timeout=remaining,
                 server_settings={"statement_timeout": str(max(1,int(remaining*1000))),

@@ -197,3 +197,25 @@ from domains.prospecting.inventory import (
 )
 
 __all__ = ['AcquisitionJob', 'AcquisitionWorker', 'CandidateAllocation', 'ContactValueHasher', 'EnrichmentProvider', 'InventoryQuery', 'InventoryResult', 'InventoryService', 'InventoryStatus', 'ProspectingService', 'ProspectingUnitOfWork', 'PublicCandidate', 'PublicCatalog', 'SourceHistory', 'SourceState', 'select_sources']
+
+# 服务计划为统一获客任务提供附加运营上限，不授予发送权限。
+from .service_plan_contracts import (  # noqa: F401
+    PendingDiscoveryCycle,
+    ProspectingServicePlanStore,
+    ScreeningEvidenceBody,
+    ServicePlanReservation,
+    ServicePlanScheduleBody,
+    ServicePlanState,
+    ServicePlanStatusView,
+    contact_mission_key,
+)
+from .service_tiers import (  # noqa: F401
+    ScreeningAssessment,
+    ScreeningEvidence,
+    ScreeningEvidenceKind,
+    ServiceTier,
+    ServiceTierPolicy,
+    evaluate_screening,
+    evidence_source_domain,
+    tier_policy,
+)
