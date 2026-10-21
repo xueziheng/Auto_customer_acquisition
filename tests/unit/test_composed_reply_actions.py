@@ -819,3 +819,60 @@ async def test_composed_actions_create_durable_conversation_work_once(
     assert request.contact_point_id == CONTACT_POINT_ID
     assert request.action.value == action
     assert str(request.idempotency_key) == f"reply:{action}:{MESSAGE_ID}"
+
+
+async def test_commercial_question_without_opportunity_enters_review_not_followup():
+    from dataclasses import replace
+
+    from domains.conversations.schemas import ReplyWorkAction
+
+    class NoOpportunity(_Business):
+        async def load(self, tenant_id, context):
+            return replace(await super().load(tenant_id, context), opportunity_id=None)
+
+    queue = _ConversationActions()
+    actions = _module().ComposedReplyActionPorts(
+        tenant_id=TENANT, evidence=_Evidence("requests_quote", has_candidate_fields=False),
+        business=NoOpportunity(), content=_Content(), demand=_Demand(),
+        opportunities=_Opportunities(), outreach=_Outreach(),
+        sending_identities=_SendingIdentities(), conversations=queue,
+    )
+    await actions.request_handoff(TENANT, CONTEXT, f"reply:handoff:{MESSAGE_ID}")
+    assert [item.action for item in queue.requests.values()] == [ReplyWorkAction.REVIEW_REPLY]
+
+
+async def test_incomplete_specification_without_commercial_request_keeps_followup():
+    from dataclasses import replace
+
+    from domains.conversations.schemas import ReplyWorkAction
+
+    class NoOpportunity(_Business):
+        async def load(self, tenant_id, context):
+            return replace(await super().load(tenant_id, context), opportunity_id=None)
+
+    queue = _ConversationActions()
+    actions = _module().ComposedReplyActionPorts(
+        tenant_id=TENANT, evidence=_Evidence("provides_specification"),
+        business=NoOpportunity(), content=_Content(), demand=_Demand(),
+        opportunities=_Opportunities(), outreach=_Outreach(),
+        sending_identities=_SendingIdentities(), conversations=queue,
+    )
+    await actions.request_handoff(TENANT, CONTEXT, f"reply:handoff:{MESSAGE_ID}")
+    assert [item.action for item in queue.requests.values()] == [ReplyWorkAction.CREATE_FOLLOW_UP]
+
+async def test_scoped_materials_request_queues_bounded_planner_without_handoff():
+    from dataclasses import replace
+
+    from domains.conversations.schemas import ReplyWorkAction
+    scoped = replace(CONTEXT, dialogue_binding_id=new_id('dlg'))
+    class ScopedBusiness(_Business):
+        async def load(self, tenant_id, context):
+            assert context == scoped
+            return replace(await super().load(tenant_id, CONTEXT), opportunity_id=None)
+    queue, opportunities = _ConversationActions(), _Opportunities()
+    actions = _module().ComposedReplyActionPorts(
+        tenant_id=TENANT, evidence=_Evidence('requests_materials', has_candidate_fields=False),
+        business=ScopedBusiness(), content=_Content(), demand=_Demand(), opportunities=opportunities,
+        outreach=_Outreach(), sending_identities=_SendingIdentities(), conversations=queue)
+    await actions.request_handoff(TENANT, scoped, f'reply:handoff:{MESSAGE_ID}')
+    assert [item.action for item in queue.requests.values()] == [ReplyWorkAction.CREATE_FOLLOW_UP]

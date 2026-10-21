@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from domains.conversations.dialogue_source import DialogueSourceReader
 from domains.conversations.schemas import ReplyCategory
 from domains.conversations.service import ConversationsUnitOfWork
 from domains.demand.schemas import (
@@ -31,9 +32,11 @@ class TenantBoundCustomerReplyEvidenceVerifier:
         tenant_id: TenantId,
         conversations_uow_factory: Callable[[TenantId], ConversationsUnitOfWork],
         outreach: OutreachService,
+        dialogue_sources: DialogueSourceReader | None = None,
     ) -> None:
         if not callable(conversations_uow_factory):
             raise ValidationError("客户回复证据依赖无效")
+        self._dialogue_sources = dialogue_sources
         self._tenant_id = tenant_id
         self._uow_factory = conversations_uow_factory
         self._outreach = outreach
@@ -83,53 +86,61 @@ class TenantBoundCustomerReplyEvidenceVerifier:
             if getattr(conversation, "account_id", None) != claim.account_id:
                 raise ValidationError("客户回复企业关联不匹配")
 
-        actor = Actor(
-            "system:reply-evidence-verifier",
-            OutreachScope(
-                level=ScopeLevel.SYSTEM,
-                allowed_enrollment_ids=frozenset({claim.enrollment_id}),
-            ),
-            "system",
-        )
-        enrollment = await self._outreach.get_enrollment(
-            tenant_id, claim.enrollment_id, actor=actor
-        )
-        if (
-            not isinstance(enrollment, EnrollmentView)
-            or enrollment.tenant_id != tenant_id
-            or enrollment.enrollment_id != claim.enrollment_id
-            or enrollment.account_id != claim.account_id
-            or enrollment.contact_point_id != claim.contact_point_id
-        ):
-            raise ValidationError("客户回复 Enrollment 关联不匹配")
-        if enrollment.source_hypothesis_id != claim.hypothesis_id:
-            raise ValidationError("客户回复来源假设不匹配")
-        target = await self._outreach.resolve_delivery_feedback(
-            tenant_id,
-            DeliveryCorrelationLookup(
-                deterministic_message_id=str(claim.outbound_message_id)
-            ),
-            actor=Actor(
+        if claim.dialogue_binding_id is not None:
+            source = await self._dialogue_sources.for_message(tenant_id, claim.source_message_id) if self._dialogue_sources is not None else None
+            if (source is None or source.binding_id != claim.dialogue_binding_id
+                or source.account_id != claim.account_id or source.contact_point_id != claim.contact_point_id
+                or source.hypothesis_id != claim.hypothesis_id or source.enrollment_id != claim.enrollment_id):
+                raise ValidationError("客户回复对话证据来源不匹配")
+        else:
+            if claim.enrollment_id is None or claim.outbound_message_id is None:
+                raise ValidationError("客户回复冷来源缺失")
+            actor = Actor(
                 "system:reply-evidence-verifier",
                 OutreachScope(
                     level=ScopeLevel.SYSTEM,
-                    allowed_sending_identity_ids=frozenset(
-                        {enrollment.sending_identity_id}
-                    ),
+                    allowed_enrollment_ids=frozenset({claim.enrollment_id}),
                 ),
                 "system",
-            ),
-        )
-        if (
-            not isinstance(target, DeliveryFeedbackTarget)
-            or target.tenant_id != tenant_id
-            or target.enrollment_id != claim.enrollment_id
-            or target.account_id != claim.account_id
-            or target.contact_point_id != claim.contact_point_id
-            or target.sending_identity_id != enrollment.sending_identity_id
-        ):
-            raise ValidationError("客户回复投递关联不匹配")
-
+            )
+            enrollment = await self._outreach.get_enrollment(
+                tenant_id, claim.enrollment_id, actor=actor
+            )
+            if (
+                not isinstance(enrollment, EnrollmentView)
+                or enrollment.tenant_id != tenant_id
+                or enrollment.enrollment_id != claim.enrollment_id
+                or enrollment.account_id != claim.account_id
+                or enrollment.contact_point_id != claim.contact_point_id
+            ):
+                raise ValidationError("客户回复 Enrollment 关联不匹配")
+            if enrollment.source_hypothesis_id != claim.hypothesis_id:
+                raise ValidationError("客户回复来源假设不匹配")
+            target = await self._outreach.resolve_delivery_feedback(
+                tenant_id,
+                DeliveryCorrelationLookup(
+                    deterministic_message_id=str(claim.outbound_message_id)
+                ),
+                actor=Actor(
+                    "system:reply-evidence-verifier",
+                    OutreachScope(
+                        level=ScopeLevel.SYSTEM,
+                        allowed_sending_identity_ids=frozenset(
+                            {enrollment.sending_identity_id}
+                        ),
+                    ),
+                    "system",
+                ),
+            )
+            if (
+                not isinstance(target, DeliveryFeedbackTarget)
+                or target.tenant_id != tenant_id
+                or target.enrollment_id != claim.enrollment_id
+                or target.account_id != claim.account_id
+                or target.contact_point_id != claim.contact_point_id
+                or target.sending_identity_id != enrollment.sending_identity_id
+            ):
+                raise ValidationError("客户回复投递关联不匹配")
         level = _reply_evidence_level(classification.category)
         return VerifiedCustomerReplyEvidence(
             tenant_id=tenant_id,

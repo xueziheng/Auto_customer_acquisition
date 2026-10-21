@@ -99,12 +99,14 @@ class InboundPageProcessor:
                             or item.in_reply_to is None
                         ):
                             raise InboundPageError("page_integrity")
-                        # 5a只准入精确自有Message-ID；route必须仍等于受信发送配置。
+                        # 新对话独立Message-ID必须先命中同租户SENT来源；冷路径仍保留原路由前缀。
+                        resolver = getattr(tx, "resolve_dialogue_header", None)
+                        dialogue = await resolver(item.in_reply_to) if callable(resolver) else None
                         prefix = f"<{page.route.route_id}."
-                        if not item.in_reply_to.startswith(prefix):
+                        if dialogue is None and not item.in_reply_to.startswith(prefix):
                             reason = "unknown_outbound"
                         else:
-                            target = await tx.outreach.resolve_delivery_feedback(
+                            target = None if dialogue is not None else await tx.outreach.resolve_delivery_feedback(
                                 page.route.tenant_id,
                                 DeliveryCorrelationLookup(
                                     deterministic_message_id=item.in_reply_to
@@ -113,11 +115,12 @@ class InboundPageProcessor:
                                     page.route.configured_identity_id
                                 ),
                             )
-                            if target is None:
+                            source = target if target is not None else dialogue
+                            if source is None:
                                 reason = "unknown_outbound"
                             elif (
-                                target.tenant_id != page.route.tenant_id
-                                or target.sending_identity_id
+                                source.tenant_id != page.route.tenant_id
+                                or source.sending_identity_id
                                 != page.route.configured_identity_id
                             ):
                                 raise InboundPageError("page_integrity")
@@ -125,7 +128,7 @@ class InboundPageProcessor:
                                 message_id = await tx.conversations.ingest_inbound(
                                     page.route.tenant_id,
                                     None,
-                                    target.account_id,
+                                    source.account_id,
                                     str(item.raw.artifact_id),
                                     item.external_message_id,
                                     item.sent_at,
@@ -133,6 +136,11 @@ class InboundPageProcessor:
                                         item.in_reply_to
                                     ),
                                 )
+                                if dialogue is not None:
+                                    binder = getattr(tx, "bind_dialogue_message", None)
+                                    if not callable(binder):
+                                        raise InboundPageError("page_integrity")
+                                    await binder(dialogue.binding_id, message_id)
                     elif item.disposition not in {
                         InboundDisposition.SKIPPED_LABEL,
                         InboundDisposition.SKIPPED_DELIVERY_REPORT,

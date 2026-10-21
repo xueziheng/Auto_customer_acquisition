@@ -361,7 +361,7 @@ async def test_unknown_page_is_atomic_replay_safe_and_has_real_raw(page_runtime)
         )[1] == mime(message_id="<unknown-one@example.test>")
 
 
-async def prepare_sent(runtime, *, reply_source=False, initialized_staff=None):
+async def prepare_sent(runtime, *, reply_source=False, initialized_staff=None, ordinary_policy=None, sending_employee_id=None):
     """真实公开登记/认证/验证/审批/发送；不插Attempt结果态。"""
     from httpx import ASGITransport, AsyncClient
 
@@ -532,6 +532,7 @@ async def prepare_sent(runtime, *, reply_source=False, initialized_staff=None):
             5,
             5,
             (),
+            ordinary_dialogue_policy=ordinary_policy,
         ),
         actor=boss,
     )
@@ -561,6 +562,11 @@ async def prepare_sent(runtime, *, reply_source=False, initialized_staff=None):
         ),
         actor=boss,
     )
+    if sending_employee_id is not None:
+        from infra.db.tables import OwnershipLockRow
+        async with runtime['factory'].begin() as db:
+            db.add(OwnershipLockRow(tenant_id=tenant, lock_id=new_id('own'), account_id=account,
+                owner=sending_employee_id, locked_at=stamp, locked_by_rule='controlled-dialogue'))
     system = OA(
         "system:inbound-test",
         OutreachScope(
@@ -581,7 +587,7 @@ async def prepare_sent(runtime, *, reply_source=False, initialized_staff=None):
     ) as client:
         response = await client.post(
             f"/crm/message-attempts/{attempt.attempt_id}/send",
-            headers={"X-Tenant-Id": tenant, "X-Employee-Id": boss_id},
+            headers={"X-Tenant-Id": tenant, "X-Employee-Id": sending_employee_id or boss_id},
             json={
                 "subject": "Current supply needs",
                 "body": "Which components are you currently looking for?",

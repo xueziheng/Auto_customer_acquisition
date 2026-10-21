@@ -137,5 +137,5 @@ def configured_codex_provider(settings: StandaloneModelSettings, identity: Invoc
         settings=CodexRunnerSettings(codex_binary=settings.codex_binary, bwrap_binary=Path("/usr/bin/bwrap"),
             python_binary=Path("/usr/bin/python3"), job_root=settings.codex_job_root,
             timeout_seconds=settings.limits.timeout_seconds, max_input_bytes=min(settings.limits.max_input_bytes, 1024*1024), max_output_bytes=1024*1024,
-            reply_classification=(identity.capability == "business_mail_triage" or (identity.capability == "reply_qualification" and (round_budget is not None or bool(settings.qq_reply and settings.qq_reply.continuous))))),
+            reply_classification=(identity.capability == "business_mail_triage" or (identity.capability in {"reply_qualification", "ordinary_dialogue"} and (round_budget is not None or bool(settings.qq_reply and settings.qq_reply.continuous))))),
         scope=KnowledgeTaskScope(str(identity.tenant_id), str(identity.employee_id), str(identity.run_id)), discovery=discovery)

@@ -225,8 +225,8 @@ class ReplyWorkRecord:
     action_id: str
     tenant_id: TenantId
     message_id: MessageId
-    outbound_message_id: OutboundMessageId
-    enrollment_id: EnrollmentId
+    outbound_message_id: OutboundMessageId | None
+    enrollment_id: EnrollmentId | None
     account_id: ProspectAccountId
     contact_point_id: ContactPointId
     action: ReplyWorkAction
@@ -234,6 +234,9 @@ class ReplyWorkRecord:
     status: ReplyWorkStatus
     idempotency_key: IdempotencyKey
     created_at: datetime
+
+    dialogue_binding_id: str | None = None
+    review_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.owner_queue is not REPLY_WORK_QUEUES.get(self.action):

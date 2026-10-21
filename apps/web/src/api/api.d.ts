@@ -1714,6 +1714,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/inbox/business-mail/{message_id}/ordinary-dialogue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Admit Ordinary Inquiry
+         * @description 本人显式选择现有客户和精确获批范围；所有准入事实仍由事务桥重读。
+         */
+        post: operations["admit_ordinary_inquiry_inbox_business_mail__message_id__ordinary_dialogue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/business-mail/{message_id}/ordinary-dialogue-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ordinary Inquiry Options
+         * @description 只有本人邮箱当前owner可读精确受托scope选项，不开放Campaign管理。
+         */
+        get: operations["ordinary_inquiry_options_inbox_business_mail__message_id__ordinary_dialogue_options_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/inbox/business-mail/{message_id}/reply-draft": {
         parameters: {
             query?: never;
@@ -3977,7 +4017,7 @@ export interface components {
             markets: string[];
             /** Name */
             name: string;
-            ordinary_dialogue_policy?: components["schemas"]["OrdinaryDialoguePolicyInput"] | null;
+            ordinary_dialogue_policy?: components["schemas"]["OrdinaryDialogueSelection"] | null;
             /** Sender Identity Ids */
             sender_identity_ids: string[];
             /** Steps */
@@ -6602,6 +6642,73 @@ export interface components {
             unit: string;
         };
         /**
+         * InquiryAdmissionRequest
+         * @description 用户选现有客户、联系人、产品与精确批准范围，并指出客户表达的原话。
+         */
+        InquiryAdmissionRequest: {
+            /** Account Id */
+            account_id: string;
+            /** Campaign Id */
+            campaign_id: string;
+            /** Campaign Version */
+            campaign_version: number;
+            /** Contact Point Id */
+            contact_point_id: string;
+            /** Customer Quote */
+            customer_quote: string;
+            /** Product Id */
+            product_id: string;
+        };
+        /**
+         * InquiryAdmissionView
+         * @description 准入结果仅给现有业务对象引用，不暴露执行租约或模型绑定。
+         */
+        InquiryAdmissionView: {
+            /** Hypothesis Id */
+            hypothesis_id: string;
+            /** Message Id */
+            message_id: string;
+            /**
+             * State
+             * @default admitted
+             */
+            state: string;
+        };
+        /** InquiryChoices */
+        InquiryChoices: {
+            /** Contacts */
+            contacts: components["schemas"]["InquiryContactChoice"][];
+            /** Scopes */
+            scopes: components["schemas"]["InquiryScopeChoice"][];
+        };
+        /** InquiryContactChoice */
+        InquiryContactChoice: {
+            /** Account Id */
+            account_id: string;
+            /** Account Name */
+            account_name: string;
+            /** Contact Point Id */
+            contact_point_id: string;
+        };
+        /** InquiryProductChoice */
+        InquiryProductChoice: {
+            /** Name */
+            name: string;
+            /** Product Id */
+            product_id: string;
+        };
+        /** InquiryScopeChoice */
+        InquiryScopeChoice: {
+            /** Campaign Id */
+            campaign_id: string;
+            /** Campaign Version */
+            campaign_version: number;
+            /** Name */
+            name: string;
+            /** Products */
+            products: components["schemas"]["InquiryProductChoice"][];
+        };
+        /**
          * InventoryAllocationView
          * @description 只含已授权归属与公开事实；不公开内部幂等键。
          */
@@ -7787,12 +7894,14 @@ export interface components {
             owner_employee_id: string;
             /** Product Refs */
             product_refs: components["schemas"]["DialogueProductRef"][];
+            /** Reply Sender Identity Ids */
+            reply_sender_identity_ids: string[];
         };
         /**
-         * OrdinaryDialoguePolicyInput
-         * @description 真人选择的有界范围；模型调用额度与 token 上限均为独立硬上限。
+         * OrdinaryDialogueSelection
+         * @description 企业选择产品、实际负责人、邮箱及业务轮次，不提交hash或运行参数。
          */
-        OrdinaryDialoguePolicyInput: {
+        OrdinaryDialogueSelection: {
             /** Assessment Ref */
             assessment_ref: string;
             /**
@@ -7800,20 +7909,14 @@ export interface components {
              * Format: date-time
              */
             expires_at: string;
-            /** Max Input Bytes */
-            max_input_bytes: number;
-            /** Max Model Calls */
-            max_model_calls: number;
-            /** Max No Progress Rounds */
-            max_no_progress_rounds: number;
-            /** Max Output Tokens */
-            max_output_tokens: number;
             /** Max Rounds */
             max_rounds: number;
             /** Owner Employee Id */
             owner_employee_id: string;
-            /** Product Refs */
-            product_refs: components["schemas"]["DialogueProductRef"][];
+            /** Product Ids */
+            product_ids: string[];
+            /** Reply Sender Identity Ids */
+            reply_sender_identity_ids: string[];
         };
         /**
          * PlanReferenceBody
@@ -9336,8 +9439,10 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Dialogue Binding Id */
+            dialogue_binding_id?: string | null;
             /** Enrollment Id */
-            enrollment_id: string;
+            enrollment_id: string | null;
             /**
              * History
              * @default []
@@ -9348,8 +9453,10 @@ export interface components {
             /** Message Id */
             message_id: string;
             /** Outbound Message Id */
-            outbound_message_id: string;
+            outbound_message_id: string | null;
             owner_queue: components["schemas"]["ReplyWorkQueue"];
+            /** Review Reason */
+            review_reason?: string | null;
             status: components["schemas"]["ReplyWorkStatus"];
         };
         /**
@@ -16928,6 +17035,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BusinessMailFollowupView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    admit_ordinary_inquiry_inbox_business_mail__message_id__ordinary_dialogue_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InquiryAdmissionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InquiryAdmissionView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    ordinary_inquiry_options_inbox_business_mail__message_id__ordinary_dialogue_options_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InquiryChoices"];
                 };
             };
             /** @description 请求参数无效 */

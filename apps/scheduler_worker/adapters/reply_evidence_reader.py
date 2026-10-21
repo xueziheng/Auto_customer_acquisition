@@ -44,6 +44,11 @@ class ConversationReplyEvidenceReader:
                 if message is not None
                 else None
             )
+        source = None
+        if message is not None and message.outbound_message_id is None:
+            async with self._uow_factory(tenant_id) as uow:
+                reader = getattr(uow, "dialogue_source", None)
+                source = await reader(tenant_id, message_id) if callable(reader) else None
         if message is None:
             raise ValidationError("回复证据消息不存在")
         if (
@@ -52,7 +57,7 @@ class ConversationReplyEvidenceReader:
             or message.tenant_id != tenant_id
             or message.message_id != message_id
             or getattr(message.direction, "value", None) != "inbound"
-            or message.outbound_message_id is None
+            or (message.outbound_message_id is None and (source is None or source.source_kind != "inquiry"))
             or not isinstance(message.raw_artifact_ref, str)
             or not message.raw_artifact_ref
             or conversation is None

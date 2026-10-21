@@ -4,6 +4,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from infra.db.dialogue_source import SqlDialogueSources
 from infra.db.tables import (
     ConversationRow,
     MessageRow,
@@ -83,6 +84,18 @@ class SqlReplyRunBindingReader:
             or context.get("message_id") != run.subject_ref
         ):
             raise ModelGenerationError("permission")
+        if context.get("dialogue_binding_id") is not None:
+            source = await SqlDialogueSources(self._factory, tenant_id).for_message_in(
+                session, tenant_id, MessageId(run.subject_ref)
+            )
+            message = await session.get(MessageRow, (str(tenant_id), run.subject_ref))
+            if (source is None or message is None or source.binding_id != context.get("dialogue_binding_id")
+                or context.get("outbound_message_id") != message.outbound_message_id
+                or context.get("enrollment_id") != source.enrollment_id
+                or context.get("account_id") != source.account_id
+                or context.get("contact_point_id") != source.contact_point_id):
+                raise ModelGenerationError("permission")
+            return MessageId(run.subject_ref)
         # 同一查询快照核对消息所属账户与出站序列；避免拼接另一账户的回复。
         found = (
             await session.execute(

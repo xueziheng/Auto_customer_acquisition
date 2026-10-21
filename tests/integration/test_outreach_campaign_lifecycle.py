@@ -120,6 +120,7 @@ async def test_exact_version_approval_and_revision_are_durable(
     ) if with_policy else None
     dialogue_policy = OrdinaryDialoguePolicyInput(
         owner_employee_id=EmployeeId(new_id("emp")), assessment_ref="lia:dialogue",
+        reply_sender_identity_ids=(sender_id,),
         product_refs=[{"product_id": new_id("prd"), "customer_view_sha256": "a" * 64}],
         expires_at=NOW + timedelta(days=7), max_rounds=3, max_model_calls=3,
         max_no_progress_rounds=2, max_input_bytes=16000, max_output_tokens=1000,

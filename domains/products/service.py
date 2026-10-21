@@ -39,6 +39,9 @@ from domains.products.models import (
     QualifiedProductMatch,
 )
 from domains.products.permissions import ProductActor, ProductRole
+from domains.products.repository import (
+    ProductsUnitOfWork as ProductsUnitOfWork,  # noqa: PLC0414 -- 显式公共事务端口导出
+)
 from domains.products.schemas import (
     CandidateProductCreate,
     CatalogApprovalDecisionInput,
@@ -159,6 +162,12 @@ class ProductService(Protocol):
     ) -> ProductCustomerView:
         """客户视图。**API 层对外接口只允许调这个方法**——
         内部视图泄漏给客户是永久性商业损伤。"""
+        ...
+
+    async def get_ordinary_dialogue_view(
+        self, tenant_id: TenantId, product_id: ProductId, *, actor: ProductActor
+    ) -> ProductCustomerView:
+        """重核当前正式确认资格，只返回客户可见字段。"""
         ...
 
     async def create_candidate_from_sourcing(

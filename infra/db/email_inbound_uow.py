@@ -11,10 +11,12 @@ from typing import Self, cast
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domains.conversations.dialogue_source import DialogueSource
 from domains.conversations.repository import ConversationsUnitOfWork
 from domains.conversations.service_impl import ConversationServiceImpl
 from domains.outreach.repository import OutreachUnitOfWork
 from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
+from infra.db.dialogue_source import SqlDialogueSources
 from infra.db.email_feedback_uow import (
     AuditSink,
     OutreachServiceBuilder,
@@ -127,6 +129,18 @@ class SqlAlchemyInboundPageUnitOfWork:
             except BaseException:  # noqa: BLE001 - 保留原业务/取消异常
                 logger.error("入站打开事务关闭失败")
             raise
+
+    async def resolve_dialogue_header(self, header: str) -> DialogueSource | None:
+        """只认当前企业已SENT对话身份，不改变原冷发送关联。"""
+        return await SqlDialogueSources(self._store.factory, self._store.tenant_id).for_sent_header_in(
+            self._session, self._store.tenant_id, header
+        )
+
+    async def bind_dialogue_message(self, binding_id: str, message_id: MessageId) -> None:
+        """与Message、outbox、cursor在同一事务提交可信来源映射。"""
+        await SqlDialogueSources(self._store.factory, self._store.tenant_id).bind_message(
+            self._session, binding_id, message_id
+        )
 
     async def receipt(self, digest: str) -> str | None:
         return await self._session.scalar(

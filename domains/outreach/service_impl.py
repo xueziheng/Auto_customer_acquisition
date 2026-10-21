@@ -316,6 +316,13 @@ class OutreachServiceImpl:
             ):
                 raise SendingIdentityUnavailableError("Campaign 发件身份不符合资格")
 
+        if boundary.ordinary_dialogue_policy is not None:
+            for identity_id in boundary.ordinary_dialogue_policy.reply_sender_identity_ids:
+                snapshot = await self._sender_snapshot(tenant_id, identity_id, actor, action, for_cold_outreach=False)
+                if (snapshot.role not in {OutreachSenderRole.COLD_OUTREACH, OutreachSenderRole.PRIMARY_BUSINESS}
+                    or snapshot.authentication_passed is not True):
+                    raise SendingIdentityUnavailableError("普通回复发件身份不符合资格")
+
     async def _view(
         self,
         uow: OutreachUnitOfWork,
@@ -711,6 +718,27 @@ class OutreachServiceImpl:
             rule = self._require(actor, action, tenant_id, campaign_id=campaign_id)
             view = await self._view(uow, tenant_id, campaign, now.date())
         self._allow(actor, action, tenant_id, rule)
+        return view
+
+    async def get_ordinary_dialogue_scope(
+        self, tenant_id: TenantId, campaign_id: CampaignId, *, version: int,
+        owner_employee_id: str, actor: Actor,
+    ) -> CampaignView:
+        """复核普通对话独立批准范围；不创建Enrollment、不授予具体承诺。"""
+        action = OutreachAction.CAMPAIGN_READ
+        actor, _ = self._preauthorize(actor, action, tenant_id)
+        approval = await self._require_approved_version(
+            tenant_id, campaign_id, version, actor, action
+        )
+        view = await self.get_campaign(tenant_id, campaign_id, actor=actor)
+        policy = view.boundary.ordinary_dialogue_policy
+        if (view.state is not CampaignState.ACTIVE or view.version != version
+            or view.approval_id != approval.approval_id
+            or view.approved_by != approval.approved_by
+            or view.approved_at != approval.approved_at
+            or policy is None or policy.owner_employee_id != owner_employee_id
+            or policy.expires_at <= self._validate_now(self._now())):
+            raise ValidationError("当前普通对话授权范围不可用")
         return view
 
     async def list_campaigns(
@@ -1331,11 +1359,13 @@ class OutreachServiceImpl:
         identity_id: SendingIdentityId,
         actor: Actor,
         action: OutreachAction,
+        *, for_cold_outreach: bool = True,
     ) -> SendingIdentityEligibilitySnapshot:
         try:
-            snapshot = await self._senders.get_sending_identity_eligibility(
-                tenant_id, identity_id
-            )
+            if for_cold_outreach:
+                snapshot = await self._senders.get_sending_identity_eligibility(tenant_id, identity_id)
+            else:
+                snapshot = await self._senders.get_sending_identity_eligibility(tenant_id, identity_id, for_cold_outreach=False)
         except (TransientError, OSError, RuntimeError):
             raise OutreachProviderUnavailableError("发件身份资格暂不可用") from None
         if not isinstance(snapshot, SendingIdentityEligibilitySnapshot):

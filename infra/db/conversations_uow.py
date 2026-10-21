@@ -10,6 +10,8 @@ from typing import Self
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from domains.conversations.dialogue_source import DialogueSource
+from infra.db.dialogue_source import read_dialogue_source
 from infra.db.inbox_access import SqlAlchemyInboxAccessFactsReader
 from infra.db.outbox import PostgresEventBus
 from infra.db.repositories.conversations import (
@@ -50,6 +52,24 @@ class SqlAlchemyConversationsUnitOfWork:
         self.reply_work = ReplyWorkRepositoryImpl(session, self._tenant_id)
         self.bus = PostgresEventBus(session, self._tenant_id, now=self._now)
         return self
+
+    async def dialogue_source(self, tenant_id: TenantId, message_id: MessageId) -> DialogueSource | None:
+        """在当前分类事务中复核可信来源映射。"""
+        if tenant_id != self._tenant_id:
+            raise TenantIsolationViolation("跨租户数据隔离违规")
+        return await read_dialogue_source(self._session, tenant_id, message_id)
+
+    async def pause_dialogue(self, tenant_id: TenantId, message_id: MessageId) -> None:
+        """与人工核对工作同事务停止后续自动回复，保留历史来源。"""
+        from infra.db.dialogue_execution_tables import DialogueBindingRow
+        source = await self.dialogue_source(tenant_id, message_id)
+        if source is None:
+            raise TenantIsolationViolation("对话来源不可用")
+        row = await self._session.get(
+            DialogueBindingRow, (str(tenant_id), source.binding_id), with_for_update=True
+        )
+        if row is not None and row.state == "active":
+            row.state = "review"
 
     async def lock_message(self, tenant_id: TenantId, message_id: MessageId) -> None:
         """同 (tenant, message) 事务级 advisory 锁：把「查重→落分类→发布事件」

@@ -6,7 +6,12 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from artifact_store.store import BoundedRawArtifactStore
+from artifact_store.store import BoundedRawArtifactStore, GeneratedArtifactStore
+from domains.conversations.dialogue_access import (
+    OrdinaryDialogueAccess,
+    OrdinaryDialogueOriginalAccess,
+)
+from domains.conversations.inbox_access import InboxActor
 from domains.demand.schemas import (
     CustomerReplyEvidenceClaim,
     VerifiedCustomerReplyEvidence,
@@ -15,7 +20,7 @@ from domains.demand.service import CustomerReplyEvidenceVerifier
 from domains.opportunities.service import OpportunityService
 from infra.db.qq_trial import SqlQQTrialGate
 from shared.errors import ValidationError
-from shared.schemas.identifiers import MessageId, TenantId
+from shared.schemas.identifiers import EmployeeId, MessageId, TenantId
 
 
 @dataclass(frozen=True)
@@ -28,6 +33,30 @@ class ReplyRuntimeResources:
     now: Callable[[], datetime]
     trial_gate: SqlQQTrialGate | None = None
     bind_classification_commit: Callable[[Callable[[AsyncSession, MessageId | None], Awaitable[None]]], None] | None = None
+
+    bind_dialogue_access: Callable[[OrdinaryDialogueAccess], None] | None = None
+    generated_store: GeneratedArtifactStore | None = None
+
+
+class DeferredOrdinaryDialogueAccess:
+    """规范Conversation服务的一次性普通对话授权槽，未装配默认拒绝。"""
+    def __init__(self) -> None:
+        self.delegate: OrdinaryDialogueAccess | None = None
+
+    def bind(self, delegate: OrdinaryDialogueAccess) -> None:
+        if self.delegate is not None:
+            raise ValidationError("普通对话授权只能装配一次")
+        self.delegate = delegate
+
+    async def require_original(self, tenant_id: TenantId, message_id: MessageId, employee_id: EmployeeId) -> InboxActor:
+        if not isinstance(self.delegate, OrdinaryDialogueOriginalAccess):
+            raise ValidationError("普通对话原件授权未配置")
+        return await self.delegate.require_original(tenant_id, message_id, employee_id)
+
+    async def require(self, tenant_id: TenantId, message_id: MessageId, employee_id: EmployeeId) -> InboxActor:
+        if self.delegate is None:
+            raise ValidationError("普通对话授权未配置")
+        return await self.delegate.require(tenant_id, message_id, employee_id)
 
 
 class DeferredCustomerReplyEvidenceVerifier:

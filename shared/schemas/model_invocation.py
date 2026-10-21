@@ -24,6 +24,7 @@ ModelCapability = Literal[
     "knowledge_ingest",
     "inventory_discovery",
     "customer_preparation",
+    "ordinary_dialogue",
 ]
 
 

@@ -14,6 +14,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from infra.db.tables import Base
@@ -95,6 +96,9 @@ class BusinessMailRow(Base):
     subject: Mapped[str] = mapped_column(Text)
     body_text: Mapped[str] = mapped_column(Text)
     message_header: Mapped[str | None] = mapped_column(Text)
+    in_reply_to: Mapped[str | None] = mapped_column(String(256))
+    reply_recipient: Mapped[str | None] = mapped_column(String(254))
+    dialogue_feedback: Mapped[dict[str, object] | None] = mapped_column(JSONB(none_as_null=True))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     content_sha256: Mapped[str] = mapped_column(String(64))

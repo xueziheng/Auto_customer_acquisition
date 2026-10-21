@@ -27,6 +27,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from infra.db.dialogue_source import SqlDialogueSources
 from infra.db.tables import MessageRow, OutreachEnrollmentRow, OutreachMessageAttemptRow
 from shared.errors import ValidationError
 from shared.events.catalog import InboundMessageStored
@@ -58,6 +59,25 @@ class ReplyQualificationEventHandlers:
     async def on_inbound_message_stored(self, event: InboundMessageStored) -> None:
         # 1) 租户校验（第一条）
         if event.tenant_id != self._tenant_id:
+            return
+        source = await SqlDialogueSources(self._factory, self._tenant_id).for_message(
+            self._tenant_id, event.message_id
+        )
+        if source is not None:
+            async with self._factory() as session:
+                message = await session.get(MessageRow, (str(self._tenant_id), str(event.message_id)))
+            if message is None or message.outbound_message_id != event.outbound_message_id:
+                return
+            await self._engine.start(
+                self._tenant_id, "reply_qualification", str(event.message_id),
+                {"message_id": str(event.message_id),
+                 "outbound_message_id": message.outbound_message_id,
+                 "enrollment_id": source.enrollment_id,
+                 "account_id": source.account_id,
+                 "contact_point_id": source.contact_point_id,
+                 "dialogue_binding_id": source.binding_id},
+                f"reply:{event.message_id}",
+            )
             return
         # 2) 出站关联必填
         if event.outbound_message_id is None:

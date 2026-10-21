@@ -28,9 +28,11 @@ from infra.db.business_mail_tables import (
     BusinessMailReceiptRow,
     BusinessMailRow,
 )
+from infra.db.dialogue_execution_tables import DialogueExecutionRow
 from infra.db.tables import (
     EmployeeRow,
     ModelInvocationRow,
+    OutreachMessageAttemptRow,
     RawArtifactRow,
     ToolCallEventRow,
     ToolCallRow,
@@ -241,6 +243,19 @@ class SqlBusinessMailRepository:
                     .limit(1)
                 )
                 if existing is None:
+                    header = item.in_reply_to or (item.dialogue_feedback.original_message_id if item.dialogue_feedback else None)
+                    linked = False
+                    if header is not None:
+                        linked = (await db.scalar(select(DialogueExecutionRow.source_message_id).where(
+                            DialogueExecutionRow.tenant_id == actor.tenant_id,
+                            DialogueExecutionRow.deterministic_message_id == header,
+                            DialogueExecutionRow.state == 'sent'))) is not None
+                        if not linked:
+                            linked = (await db.scalar(select(OutreachMessageAttemptRow.attempt_id).where(
+                                OutreachMessageAttemptRow.tenant_id == actor.tenant_id,
+                                OutreachMessageAttemptRow.deterministic_message_id == header,
+                                OutreachMessageAttemptRow.state == 'sent'))) is not None
+                    failure = item.parse_failure or ('ordinary_dialogue_pending' if linked else None)
                     existing = BusinessMailRow(
                         tenant_id=actor.tenant_id,
                         message_id=new_id("bmi"),
@@ -248,7 +263,9 @@ class SqlBusinessMailRepository:
                         sender=item.sender,
                         subject=item.subject,
                         body_text=item.body_text,
-                        message_header=item.message_header,
+                        message_header=item.message_header, in_reply_to=item.in_reply_to,
+                        reply_recipient=item.reply_recipient,
+                        dialogue_feedback=item.dialogue_feedback.model_dump(mode='json') if item.dialogue_feedback else None,
                         received_at=item.received_at,
                         ingested_at=datetime.now(UTC),
                         content_sha256=item.content_sha256,
@@ -258,24 +275,24 @@ class SqlBusinessMailRepository:
                         artifact_id=item.artifact_id,
                         uidvalidity=item.uidvalidity,
                         uid=item.uid,
-                        category="review" if item.parse_failure else "pending",
+                        category="review" if failure else "pending",
                         classification_status="failed"
-                        if item.parse_failure
+                        if failure
                         else "pending",
                         revision=0,
-                        failure_code=item.parse_failure,
+                        failure_code=failure,
                         run_id=new_id("run"),
                     )
                     db.add(existing)
                     await db.flush()
-                    if item.parse_failure:
+                    if failure:
                         self._history(
                             db,
                             existing,
                             category="review",
                             origin="system",
                             reason="邮件内容需要人工确认",
-                            failure=item.parse_failure,
+                            failure=failure,
                         )
                 db.add(
                     BusinessMailReceiptRow(

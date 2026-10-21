@@ -59,6 +59,7 @@ from ..dependencies import (
     get_request_identity,
     resolve_outreach_access,
 )
+from ..dialogue_scope import OrdinaryDialogueSelection, bind_dialogue_selection
 from ..identity import RequestIdentity
 from ..middleware import ApiErrorResponse, ApiSettings
 
@@ -96,7 +97,7 @@ class CampaignBoundaryBody(BaseModel):
     daily_total_message_limit: int = Field(ge=1)
     handoff_triggers: list[str]
     stop_on_reply: bool = True
-    ordinary_dialogue_policy: OrdinaryDialoguePolicyInput | None = None
+    ordinary_dialogue_policy: OrdinaryDialogueSelection | None = None
     customer_agent_policy: CustomerAgentPolicyInput | None = None
 
 
@@ -121,7 +122,7 @@ def _campaign_id(value: str) -> CampaignId:
     return CampaignId(value)
 
 
-def _campaign_request(body: CampaignBoundaryBody) -> CampaignCreateRequest:
+def _campaign_request(body: CampaignBoundaryBody, policy: OrdinaryDialoguePolicyInput | None = None) -> CampaignCreateRequest:
     return CampaignCreateRequest(
         name=body.name,
         markets=tuple(body.markets),
@@ -140,7 +141,7 @@ def _campaign_request(body: CampaignBoundaryBody) -> CampaignCreateRequest:
         daily_total_message_limit=body.daily_total_message_limit,
         handoff_triggers=tuple(body.handoff_triggers),
         stop_on_reply=body.stop_on_reply,
-        ordinary_dialogue_policy=body.ordinary_dialogue_policy,
+        ordinary_dialogue_policy=policy,
         customer_agent_policy=body.customer_agent_policy,
     )
 
@@ -265,7 +266,7 @@ async def create_campaign(
         allowed_roles=_BOSS_ROLES,
     )
     return await dependencies.outreach.create_campaign(
-        identity.tenant_id, _campaign_request(body), actor=actor
+        identity.tenant_id, _campaign_request(body, await bind_dialogue_selection(body.ordinary_dialogue_policy, identity, dependencies)), actor=actor
     )
 
 
@@ -371,7 +372,7 @@ async def revise_campaign(
         allowed_roles=_CAMPAIGN_WRITER_ROLES,
     )
     campaign = await dependencies.outreach.revise_campaign(
-        identity.tenant_id, typed_id, _campaign_request(body), actor=actor
+        identity.tenant_id, typed_id, _campaign_request(body, await bind_dialogue_selection(body.ordinary_dialogue_policy, identity, dependencies)), actor=actor
     )
     approval_id = await _submit_boundary_approval(
         campaign,

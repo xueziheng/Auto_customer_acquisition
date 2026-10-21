@@ -176,25 +176,28 @@ class ClassifyStep:
                 }
             )
             require_reply_evidence(content, result)
+            classified_by = result.model_used or classified_by
         category = result.category
         actor = (
             await access.require(run.tenant_id, message_id, outbound_message_id)
             if access is not None
             else None
         )
-        actions = await self._conversations.record_classification(
-            run.tenant_id,
-            message_id,
-            category,
-            classified_by=classified_by,
-            outbound_message_id=outbound_message_id,
-            candidate_fields=tuple(
-                ReplyFieldEvidence(item.field, item.value, item.quote)
-                for item in result.candidate_fields
-            ),
-            suppress_scope=result.suppress_scope,
-            **({"actor": actor} if actor is not None else {}),
-        )
+        fields = tuple(ReplyFieldEvidence(item.field, item.value, item.quote)
+                       for item in result.candidate_fields)
+        if run.context.get("dialogue_binding_id") is not None:
+            if actor is None:
+                raise ValidationError("普通对话分类缺少当前授权")
+            actions = await self._conversations.record_ordinary_dialogue_classification(
+                run.tenant_id, message_id, category, classified_by=classified_by,
+                outbound_message_id=outbound_message_id, candidate_fields=fields,
+                suppress_scope=result.suppress_scope, actor=actor)
+        else:
+            actions = await self._conversations.record_classification(
+                run.tenant_id, message_id, category, classified_by=classified_by,
+                outbound_message_id=outbound_message_id, candidate_fields=fields,
+                suppress_scope=result.suppress_scope,
+                **({"actor": actor} if actor is not None else {}))
         classification = await self._conversations.get_classification(
             run.tenant_id, message_id
         )
@@ -244,6 +247,11 @@ class ApplyActionsStep:
             if not isinstance(action, str):
                 raise ValidationError("回复动作无效")
             await self._apply(run, action, category)
+        if run.context.get("dialogue_binding_id") is not None:
+            finish = getattr(self._action_ports, "finish_dialogue_actions", None)
+            if not callable(finish):
+                raise ReplyActionNotWiredError("普通对话停止端口未配置")
+            await finish(run.tenant_id, self._action_context(run))
         return ("complete", None, {})
 
     async def _apply(self, run: WorkflowRun, action: str, category: str) -> None:
@@ -279,36 +287,34 @@ class ApplyActionsStep:
 
     @staticmethod
     def _action_context(run: WorkflowRun) -> ReplyActionContext:
-        values = {
-            "message_id": run.context.get("message_id"),
-            "outbound_message_id": run.context.get("outbound_message_id"),
-            "enrollment_id": run.context.get("enrollment_id"),
-            "account_id": run.context.get("account_id"),
-            "contact_point_id": run.context.get("contact_point_id"),
-        }
-        prefixes = {
-            "message_id": "msg_",
-            "enrollment_id": "enr_",
-            "account_id": "acc_",
-            "contact_point_id": "cp_",
-        }
-        if any(
-            not isinstance(value, str) or not value.strip() for value in values.values()
-        ) or any(
-            not str(values[name]).startswith(prefix)
-            for name, prefix in prefixes.items()
-        ):
-            raise ValidationError("回复动作关联上下文无效")
+        values = run.context
+        for name, prefix in (("message_id", "msg_"), ("account_id", "acc_"), ("contact_point_id", "cp_")):
+            if not isinstance(values.get(name), str) or not values[name].startswith(prefix):
+                raise ValidationError("回复动作关联上下文无效")
+        binding = values.get("dialogue_binding_id")
+        enrollment, outbound = values.get("enrollment_id"), values.get("outbound_message_id")
+        if binding is not None and (not isinstance(binding, str) or not binding.startswith("dlg_")):
+            raise ValidationError("回复对话绑定无效")
+        if binding is None and (not enrollment or not outbound):
+            raise ValidationError("回复动作缺少冷来源")
+        if enrollment is not None and (not isinstance(enrollment, str) or not enrollment.startswith("enr_")):
+            raise ValidationError("回复动作Enrollment无效")
+        if outbound is not None and (not isinstance(outbound, str) or not outbound.strip()):
+            raise ValidationError("回复动作出站关联无效")
         return ReplyActionContext(
-            message_id=MessageId(str(values["message_id"])),
-            outbound_message_id=OutboundMessageId(str(values["outbound_message_id"])),
-            enrollment_id=EnrollmentId(str(values["enrollment_id"])),
-            account_id=ProspectAccountId(str(values["account_id"])),
-            contact_point_id=ContactPointId(str(values["contact_point_id"])),
+            message_id=MessageId(values["message_id"]),
+            outbound_message_id=OutboundMessageId(outbound) if outbound is not None else None,
+            enrollment_id=EnrollmentId(enrollment) if enrollment is not None else None,
+            account_id=ProspectAccountId(values["account_id"]),
+            contact_point_id=ContactPointId(values["contact_point_id"]),
+            dialogue_binding_id=binding,
         )
 
     async def _stop_sequence(self, run: WorkflowRun) -> None:
         raw_enrollment = run.context.get("enrollment_id")
+        if raw_enrollment is None and run.context.get("dialogue_binding_id") is not None:
+            # 准入来源在分类与动作端口重读；首次询盘没有冷序列可停止。
+            return
         if not isinstance(raw_enrollment, str) or not raw_enrollment.startswith("enr_"):
             raise ValidationError("回复 stop_sequence 缺少 enrollment")
         enrollment_id = EnrollmentId(raw_enrollment)

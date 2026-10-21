@@ -4,6 +4,7 @@ import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
 import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
 import BusinessMailFollowup from "./BusinessMailFollowup.vue";
+import BusinessMailDialogue from "./BusinessMailDialogue.vue";
 
 type Item = components["schemas"]["BusinessMailItem"];
 type Detail = components["schemas"]["BusinessMailDetail"];
@@ -35,6 +36,9 @@ const filters: { key: Bucket; label: string }[] = [
 ];
 function failureLabel(code: string | null): string {
   const messages: Record<string, string> = {
+    ordinary_dialogue_pending: "已关联发送记录，等待当前权限与客户对话核验",
+    ordinary_dialogue_admission_denied: "对话准入条件已变化，请负责人核对客户归属、邮箱连接及授权",
+    cold_reply_admission_denied: "开发邮件回复准入受阻，请核对当前邮箱及受托分类员工",
     quota: "识别额度不足，邮件已保留，可人工分类",
     permission: "识别权限不可用，邮件已保留",
     configuration: "识别服务尚未配置，邮件已保留",
@@ -282,6 +286,7 @@ onBeforeUnmount(() => { if (timer) globalThis.clearInterval(timer); });
             </p>
             <dl><dt>来源邮箱</dt><dd>{{ detail.mailbox_address }} · QQ 收件箱</dd><dt>接收时间</dt><dd>{{ date(detail.source.received_at) }}</dd><dt>来源记录</dt><dd>{{ detail.source.artifact_id }}</dd><dt>已保存内容校验</dt><dd>{{ detail.source.source_sha256 }}</dd></dl>
           </details>
+          <BusinessMailDialogue :key="`dialogue:${detail.message_id}`" :message-id="detail.message_id" :source-kind="detail.source.source_kind" @unauthorized="revoke" />
           <BusinessMailFollowup
             :key="detail.message_id"
             :message-id="detail.message_id"

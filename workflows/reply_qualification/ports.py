@@ -99,10 +99,12 @@ class ReplyActionContext:
     """回复动作只需的关联 ID；禁止携带原文、地址或 artifact 对象键。"""
 
     message_id: MessageId
-    outbound_message_id: OutboundMessageId
-    enrollment_id: EnrollmentId
+    outbound_message_id: OutboundMessageId | None
+    enrollment_id: EnrollmentId | None
     account_id: ProspectAccountId
     contact_point_id: ContactPointId
+    dialogue_binding_id: str | None = None
+
 
 
 @runtime_checkable

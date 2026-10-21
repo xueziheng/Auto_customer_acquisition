@@ -6,10 +6,12 @@ import argparse
 import asyncio
 import logging
 import socket
+from contextlib import AbstractAsyncContextManager
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 import uvicorn
 from fastapi import FastAPI
@@ -66,7 +68,7 @@ def create_standalone_app(
     qq_mail_directory: Path | None = None,
     hunter_customer_settings_file: Path | None = None,
 ) -> FastAPI:
-    reply_employee_binding(profile, settings)
+    reply_employee_binding(profile, settings, ordinary_mailboxes=qq_mail_directory is not None and settings.qq_reply is None)
     knowledge = load_knowledge_settings(profile.knowledge_settings_file) if profile.knowledge_settings_file is not None else None
     runtime = runtime_settings(profile)
     hunter_customer_settings = load_hunter_customer_settings(hunter_customer_settings_file)
@@ -178,6 +180,27 @@ def create_standalone_app(
         business.state.business_mail = BusinessMailService(business_mail_repository)
         business.state.business_mail_followup = BusinessMailFollowupService(
             SqlBusinessMailFollowupRepository(business_mail_repository))
+        from infra.db.inquiry_admission import SqlInquiryAdmissionTransaction
+        from workflows.reply_qualification.inquiry_admission import (
+            InquiryAdmission,
+            InquiryAdmissionTransaction,
+        )
+        dependencies = business.state.dependencies
+        from domains.conversations.service_impl import ConversationServiceImpl
+        from infra.db.dialogue_owner_access import (
+            DialogueOriginalAccess,
+            SqlDialogueOwnerAccess,
+        )
+        if isinstance(dependencies.conversations, ConversationServiceImpl):
+            dependencies.conversations.bind_ordinary_original_access(DialogueOriginalAccess(
+                SqlDialogueOwnerAccess(sessions, TenantId(profile.tenant_id), business_mail_repository)))
+        if dependencies.products is not None:
+            from apps.api.composition.dialogue_inquiry import OrdinaryInquiryChoices
+            business.state.ordinary_inquiry_choices = OrdinaryInquiryChoices(sessions,
+                business.state.business_mail, dependencies.outreach, dependencies.products)
+            business.state.ordinary_inquiry_admission = InquiryAdmission(
+                lambda tenant: cast(AbstractAsyncContextManager[InquiryAdmissionTransaction], SqlInquiryAdmissionTransaction(sessions, tenant, business_mail_repository, now=lambda:datetime.now(UTC))),
+                dependencies.outreach, dependencies.products, dependencies.prospecting)
     business.state.employee_accounts = EmployeeAccountCreation(
         TenantId(profile.tenant_id),
         PostgresAccountCreation(sessions, TenantId(profile.tenant_id)),

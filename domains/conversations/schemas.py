@@ -40,24 +40,34 @@ class ReplyWorkActionRequest:
     """创建 metadata-only 回复工作项；不接受正文、地址或自由文本。"""
 
     message_id: MessageId
-    outbound_message_id: OutboundMessageId
-    enrollment_id: EnrollmentId
+    outbound_message_id: OutboundMessageId | None
+    enrollment_id: EnrollmentId | None
     account_id: ProspectAccountId
     contact_point_id: ContactPointId
     action: ReplyWorkAction
     idempotency_key: IdempotencyKey
 
+    dialogue_binding_id: str | None = None
+    review_reason: str | None = None
+
     def __post_init__(self) -> None:
         values = (
             self.message_id,
-            self.outbound_message_id,
-            self.enrollment_id,
             self.account_id,
             self.contact_point_id,
             self.idempotency_key,
         )
         if any(not isinstance(value, str) or not value.strip() for value in values):
             raise ValidationError("回复工作动作关联无效")
+        if self.dialogue_binding_id is None:
+            if not self.outbound_message_id or not self.enrollment_id:
+                raise ValidationError("回复工作缺少冷来源或对话绑定")
+        elif not self.dialogue_binding_id.startswith("dlg_"):
+            raise ValidationError("回复工作对话绑定无效")
+        if self.review_reason is not None and (self.action is not ReplyWorkAction.REVIEW_REPLY or self.review_reason not in {
+            "need_validated_intake_permission_required", "commercial_request", "scope_changed",
+            "invalid_plan", "model_result_unknown", "budget_exhausted", "unsupported_provider", "no_progress", "human_requested", "insufficient_evidence"}):
+            raise ValidationError("回复核对原因无效")
         if not isinstance(self.action, ReplyWorkAction):
             raise ValidationError("回复工作动作类型无效")
 
@@ -92,8 +102,8 @@ class ReplyWorkActionView:
 
     action_id: str
     message_id: MessageId
-    outbound_message_id: OutboundMessageId
-    enrollment_id: EnrollmentId
+    outbound_message_id: OutboundMessageId | None
+    enrollment_id: EnrollmentId | None
     account_id: ProspectAccountId
     contact_point_id: ContactPointId
     action: ReplyWorkAction
@@ -103,6 +113,9 @@ class ReplyWorkActionView:
     created_at: datetime
     can_handle: bool = False
     history: tuple[ReplyWorkHandlingView, ...] = ()
+    dialogue_binding_id: str | None = None
+    review_reason: str | None = None
+
 
 
 @dataclass(frozen=True)

@@ -61,6 +61,7 @@ from workflows.engine.audit import Phase1RunAuditAuthorizer, RunAuditService
 from .bootstrap import CanonicalSchedulerBootstrap, ResearchRuntimePorts
 from .config import SchedulerWorkerConfig
 from .customer_preparation_runtime import PreparationRuntime
+from .dialogue_resources import DialogueArtifactPorts
 from .inventory_ports import InventoryRuntimePorts
 from .main import EnterpriseKnowledgeDriverProtocol, SchedulerRuntime
 from .main import main as run_worker
@@ -178,6 +179,7 @@ def _create_standalone_factory(
     knowledge_settings: KnowledgeSettings | None = None,
     inventory_control: tuple[async_sessionmaker[AsyncSession], TenantId] | None = None,
     qq_dns_enabled: bool = False,
+    qq_mail_directory: Path | None = None,
     hunter_customer_settings: HunterCustomerSettings | None = None,
 ) -> SchedulerRuntimeFactory:
     if settings.qq_reply is not None and settings.qq_reply.trial is not None:
@@ -185,10 +187,14 @@ def _create_standalone_factory(
             raise ValueError("受控回复必须保留显式模型数据许可")
         if trial_provider_factory is None and (settings.model_catalog_directory is None or settings.codex_job_root is None):
             raise ValueError("受控回复必须配置原租户 Codex 模型入口")
-    inbound = _reply_ports(profile, settings, reply_inbound)
+    ordinary_enabled = settings.reply_enabled and qq_mail_directory is not None and settings.qq_reply is None
+    ordinary_only = ordinary_enabled and profile.gmail is None
+    if ordinary_only and reply_inbound is not None:
+        raise ValueError("普通询盘模式不能注入冷收信端口")
+    inbound = None if ordinary_only else _reply_ports(profile, settings, reply_inbound)
     send_transport: GmailHttpTransport | None = None
-    reply_employee = reply_employee_binding(profile, settings)
-    if settings.automatic_send_enabled:
+    reply_employee = reply_employee_binding(profile, settings, ordinary_mailboxes=ordinary_enabled)
+    if settings.automatic_send_enabled and not ordinary_only:
         if settings.qq_reply is not None or profile.gmail is None or inbound is None or not isinstance(inbound.provider, GmailHttpTransport):
             raise ValueError("自动发送必须具有独立启用与完整Gmail配置")
         send_transport = inbound.provider
@@ -289,6 +295,7 @@ def _create_standalone_factory(
         standalone_research=research_ports is not None,
         secret_resolver=inbound.secret_resolver if inbound is not None else profile,
         inbound_ports=inbound,
+        reply_artifact_ports=(DialogueArtifactPorts(S3ObjectStoreSettings.from_pilot_environ(env), profile) if ordinary_enabled else None),
         unconfigured_dns_step=UnconfiguredDnsStep(),
         qq_dns_enabled=qq_dns_enabled,
         bootstrap=CanonicalSchedulerBootstrap(
@@ -320,7 +327,7 @@ def _create_standalone_factory(
             )
             if research_ports is not None
             else None,
-            campaign_enabled=settings.automatic_send_enabled,
+            campaign_enabled=settings.automatic_send_enabled and send_transport is not None,
             gmail_transport=send_transport,
             secret_resolver=inbound.secret_resolver if inbound is not None else None,
             reply_factory=(
@@ -334,12 +341,13 @@ def _create_standalone_factory(
                     resolver=model_resolver,
                     fingerprints=fingerprints,
                     owner=instance_id,
+                    mailbox_directory=qq_mail_directory if ordinary_enabled else None,
                     provider_factory=provider_factory,
                     trial_gate=resources.trial_gate,
                     trial_provider_factory=trial_provider_factory,
                 )
             )
-            if reply_employee is not None
+            if reply_employee is not None or ordinary_enabled
             else None,
         ),
         resolver_factory=UnconfiguredDnsResolver,
@@ -367,6 +375,7 @@ def create_standalone_factory(
     inventory_ports: InventoryRuntimePorts | None = None,
     reply_inbound: InboundRuntimePorts | None = None,
     qq_dns_enabled: bool = False,
+    qq_mail_directory: Path | None = None,
     hunter_customer_settings_file: Path | None = None,
 ) -> Callable[[], AbstractAsyncContextManager[SchedulerRuntime]]:
     """构造无 IO；对象 SDK 在进入进程生命周期后拥有并对称关闭。"""
@@ -450,6 +459,7 @@ def create_standalone_factory(
                 knowledge_settings=knowledge_settings,
                 inventory_control=inventory_control,
                 qq_dns_enabled=qq_dns_enabled,
+                qq_mail_directory=qq_mail_directory,
                 hunter_customer_settings=hunter_customer_settings,
             )
             async with factory() as runtime:
@@ -477,6 +487,7 @@ def main() -> int:
             create_standalone_factory(
                 profile, settings, EnvironmentSecretResolver(os.environ),
                 qq_dns_enabled=(args.profile.absolute().parent / "qq-mail").is_dir(),
+                qq_mail_directory=(args.profile.absolute().parent / "qq-mail" if (args.profile.absolute().parent / "qq-mail").is_dir() else None),
                 hunter_customer_settings_file=(args.hunter_customer_settings or
                     ((args.profile.absolute().parent / "hunter-customer-settings.json")
                      if (args.profile.absolute().parent / "hunter-customer-settings.json").is_file() else None)),

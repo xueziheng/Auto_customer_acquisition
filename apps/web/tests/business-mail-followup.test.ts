@@ -119,3 +119,36 @@ it("preserves an explicitly edited handling selector across a read refresh", asy
  button("刷新处理记录").click(); await flush();
  expect(root.querySelector<HTMLSelectElement>('[aria-label="处理状态"]')!.value).toBe("waiting_customer");
 });
+
+it("admits an ordinary inquiry using server choices and retains the exact request after an uncertain result", async () => {
+ const writes: unknown[] = [];
+ await mount(async (url, request) => {
+  if (url.pathname.endsWith("ordinary-dialogue-options")) return json({ contacts: [{account_id:"acc_one",contact_point_id:"cp_one",account_name:"Buyer"}], scopes:[{campaign_id:"cmp_one",campaign_version:3,name:"Approved scope",products:[{product_id:"prd_one",name:"Hinges"}]}] });
+  if (url.pathname.endsWith("ordinary-dialogue")) {
+   writes.push(await request.json());
+   if (writes.length===1) throw new TypeError("synthetic uncertain result");
+   return json({binding_id:"dlg_one"});
+  }
+  return json(initial);
+ });
+ button("纳入获批普通沟通").click(); await flush();
+ field("询盘现有客户","cp_one"); field("询盘获批范围","cmp_one:3"); await nextTick();
+ field("询盘产品","prd_one"); field("客户原话摘录","Please send details."); await nextTick();
+ expect(root.textContent).not.toContain("customer_view_sha256");
+ button("确认纳入普通沟通").click(); await flush();
+ expect(root.textContent).toContain("准入结果待核对");
+ button("核对原准入请求").click(); await flush();
+ expect(writes).toEqual([{
+  account_id:"acc_one",contact_point_id:"cp_one",campaign_id:"cmp_one",campaign_version:3,product_id:"prd_one",customer_quote:"Please send details.",
+ },writes[0]]);
+ expect(root.textContent).toContain("未建立冷邮件序列");
+ expect(root.textContent).not.toContain("发送成功");
+});
+
+it("clears ordinary inquiry choices when the current employee loses access", async () => {
+ const revoke = await mount(async url => url.pathname.endsWith("ordinary-dialogue-options") ? json({contacts:[{account_id:"a",contact_point_id:"c",account_name:"Private buyer"}],scopes:[]}) : json(initial));
+ button("纳入获批普通沟通").click(); await flush();
+ revoke(); await flush();
+ expect(root.textContent).not.toContain("Private buyer");
+ expect(root.querySelector('[aria-label="客户原话摘录"]')).toBeNull();
+});

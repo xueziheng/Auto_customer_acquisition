@@ -14,7 +14,13 @@ from domains.conversations.business_mail import (
     MailBucket,
 )
 from shared.errors import PermissionDenied, TransientError, ValidationError
+from workflows.reply_qualification.inquiry_admission import (
+    InquiryAdmission,
+    InquiryAdmissionRequest,
+    InquiryAdmissionView,
+)
 
+from ..composition.dialogue_inquiry import InquiryChoices, OrdinaryInquiryChoices
 from ..dependencies import get_request_identity
 from ..identity import RequestIdentity
 
@@ -94,3 +100,37 @@ async def correct_business_mail(
         raise HTTPException(
             status_code=409, detail="邮件归类已变化，请刷新后重新确认"
         ) from None
+
+
+
+
+@router.post('/inbox/business-mail/{message_id}/ordinary-dialogue', response_model=InquiryAdmissionView)
+async def admit_ordinary_inquiry(
+    message_id: str,
+    body: InquiryAdmissionRequest,
+    request: Request,
+    response: Response,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+) -> InquiryAdmissionView:
+    """本人显式选择现有客户和精确获批范围；所有准入事实仍由事务桥重读。"""
+    if request.query_params:
+        raise ValidationError('普通询盘准入不接受额外参数')
+    _headers(response)
+    admission = getattr(request.app.state, 'ordinary_inquiry_admission', None)
+    if not isinstance(admission, InquiryAdmission):
+        raise TransientError('普通询盘准入服务未配置')
+    source = await admission.admit(_actor(identity), message_id, body)
+    return InquiryAdmissionView(message_id=source.admitted_message_id, hypothesis_id=str(source.hypothesis_id))
+
+
+@router.get('/inbox/business-mail/{message_id}/ordinary-dialogue-options', response_model=InquiryChoices)
+async def ordinary_inquiry_options(message_id: str, request: Request, response: Response,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)]) -> InquiryChoices:
+    """只有本人邮箱当前owner可读精确受托scope选项，不开放Campaign管理。"""
+    if request.query_params or await request.body():
+        raise ValidationError('普通询盘选择不接受额外参数')
+    _headers(response)
+    choices = getattr(request.app.state, 'ordinary_inquiry_choices', None)
+    if not isinstance(choices, OrdinaryInquiryChoices):
+        raise TransientError('普通询盘准入未配置')
+    return await choices.read(_actor(identity), message_id)

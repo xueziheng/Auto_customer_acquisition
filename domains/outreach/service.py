@@ -77,6 +77,7 @@ class SendingIdentityEligibilityProvider(Protocol):
         self,
         tenant_id: TenantId,
         identity_id: SendingIdentityId,
+        *, for_cold_outreach: bool = True,
     ) -> SendingIdentityEligibilitySnapshot: ...
 
 
@@ -167,6 +168,13 @@ class OutreachService(Protocol):
         *,
         actor: Actor,
     ) -> CampaignView: ...
+
+    async def get_ordinary_dialogue_scope(
+        self, tenant_id: TenantId, campaign_id: CampaignId, *, version: int,
+        owner_employee_id: str, actor: Actor,
+    ) -> CampaignView:
+        """重核当前精确版本的普通对话许可，不复活或创建冷序列。"""
+        ...
 
     async def get_campaign(
         self,

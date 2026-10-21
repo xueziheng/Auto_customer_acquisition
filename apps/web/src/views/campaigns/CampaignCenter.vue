@@ -44,6 +44,15 @@ const agentDocumentIds = ref<string[]>([]);
 const canConfigureAgent = ref(false), agentInputsError = ref("");
 const agentEmployees = ref<components["schemas"]["EmployeeView"][]>([]);
 const agentDocuments = ref<components["schemas"]["KnowledgeDocumentView"][]>([]);
+const dialogueEnabled = ref(false), dialogueOwner = ref(""), dialogueBasis = ref("");
+const dialogueProducts = ref<components["schemas"]["ProductSupplyCardView"][]>([]);
+const dialogueProductIds = ref<string[]>([]), dialogueSenderIds = ref<string[]>([]);
+const dialogueExpiry = ref(""), dialogueRounds = ref(3), dialogueError = ref("");
+function resetDialogue(): void {
+  dialogueEnabled.value = false; dialogueOwner.value = ""; dialogueBasis.value = "";
+  dialogueProductIds.value = []; dialogueSenderIds.value = []; dialogueExpiry.value = "";
+  dialogueRounds.value = 3; form.ordinary_dialogue_policy = null;
+}
 const marketsText = ref("");
 const entityTypesText = ref("");
 const categoriesText = ref("");
@@ -64,6 +73,7 @@ const form = reactive<CampaignBody>({
 });
 
 function reset(): void {
+  resetDialogue(); dialogueProducts.value = []; dialogueError.value = "";
   configurationMode.value = "automatic";
   if (!disposed && route.query.execution_mode !== undefined) {
     const query = { ...route.query }; delete query.execution_mode;
@@ -145,6 +155,7 @@ function syncFormCollections(): void {
 function newCampaign(): void {
   if (actionBusy.value || commandUnknown.value) return;
   editingCampaignId.value = null;
+  resetDialogue();
   agentEnabled.value = false; agentOwner.value = ""; assessmentRef.value = ""; agentDocumentIds.value = []; form.customer_agent_policy = null;
   form.name = "";
   marketsText.value = "";
@@ -177,6 +188,11 @@ function reviseCampaign(campaign: Campaign): void {
   form.daily_new_contact_limit = campaign.boundary.daily_new_contact_limit;
   form.daily_total_message_limit = campaign.boundary.daily_total_message_limit;
   form.stop_on_reply = campaign.boundary.stop_on_reply;
+  const dialogue = campaign.boundary.ordinary_dialogue_policy;
+  dialogueEnabled.value = Boolean(dialogue); dialogueOwner.value = dialogue?.owner_employee_id ?? "";
+  dialogueBasis.value = dialogue?.assessment_ref ?? ""; dialogueProductIds.value = dialogue?.product_refs.map(ref => ref.product_id) ?? [];
+  dialogueSenderIds.value = [...(dialogue?.reply_sender_identity_ids ?? [])]; dialogueRounds.value = dialogue?.max_rounds ?? 3;
+  dialogueExpiry.value = dialogue?.expires_at ? new Date(new Date(dialogue.expires_at).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0,16) : "";
   const policy = campaign.boundary.customer_agent_policy;
   agentEnabled.value = Boolean(policy); agentOwner.value = policy?.owner_employee_id ?? "";
   assessmentRef.value = policy?.assessment_ref ?? ""; agentDocumentIds.value = policy?.confirmed_refs?.map(ref => ref.document_id) ?? [];
@@ -246,8 +262,16 @@ async function loadEnrollments(campaignId: string): Promise<void> {
   finally { if (op.valid() && selectedId.value === campaignId) detailLoading.value = false; }
 }
 async function saveBoundary(): Promise<void> {
-  if (actionBusy.value || commandUnknown.value || identityError.value || identitiesLoading.value || (!realFlowComposed.value && !(agentEnabled.value && canConfigureAgent.value)) || !formSendersUsable.value) return;
+  if (actionBusy.value || commandUnknown.value || identityError.value || identitiesLoading.value || (!realFlowComposed.value && !((agentEnabled.value || dialogueEnabled.value) && canConfigureAgent.value)) || !formSendersUsable.value) return;
   syncFormCollections();
+  if (dialogueEnabled.value) {
+    if (!dialogueOwner.value || !dialogueBasis.value.trim() || !dialogueProductIds.value.length || !dialogueSenderIds.value.length || !dialogueExpiry.value || dialogueError.value) {
+      error.value = "请选择普通沟通的负责人、产品、回复邮箱和授权期限，并填写依据引用"; return;
+    }
+    form.ordinary_dialogue_policy = {owner_employee_id: dialogueOwner.value, assessment_ref: dialogueBasis.value.trim(),
+      product_ids: [...dialogueProductIds.value], reply_sender_identity_ids: [...dialogueSenderIds.value],
+      expires_at: new Date(dialogueExpiry.value).toISOString(), max_rounds: dialogueRounds.value};
+  } else { form.ordinary_dialogue_policy = campaigns.value.find(c => c.campaign_id === editingCampaignId.value)?.boundary.ordinary_dialogue_policy ? null : undefined; }
   if (agentEnabled.value) {
     const docs = agentDocuments.value.filter(doc => agentDocumentIds.value.includes(doc.document_id));
     if (!canConfigureAgent.value || agentInputsError.value || !agentEmployees.value.some(e => e.employee_id === agentOwner.value) || !assessmentRef.value.trim() || docs.length < 1 || docs.length > 5 || docs.length !== agentDocumentIds.value.length) {
@@ -327,7 +351,7 @@ async function saveBoundary(): Promise<void> {
 
 async function transition(action: "start" | "activate" | "pause" | "cancel"): Promise<void> {
   if (!selected.value || actionBusy.value || commandUnknown.value) return;
-  if ((action === "start" || action === "activate") && ((!realFlowComposed.value && !(canConfigureAgent.value && selected.value?.boundary.customer_agent_policy)) || !selectedSendersUsable.value || identitiesLoading.value || identityError.value)) return;
+  if ((action === "start" || action === "activate") && ((!realFlowComposed.value && !(canConfigureAgent.value && (selected.value?.boundary.customer_agent_policy || selected.value?.boundary.ordinary_dialogue_policy))) || !selectedSendersUsable.value || identitiesLoading.value || identityError.value)) return;
   const op = gate.begin("command"); if (!op?.valid()) return;
   actionBusy.value = true;
   error.value = null;
@@ -398,8 +422,18 @@ async function loadAgentInputs(): Promise<void> {
     agentInputsError.value = "";
   } catch { if (op.valid()) { agentEmployees.value = []; agentDocuments.value = []; agentInputsError.value = "负责人或确认资料读取失败，请刷新核对"; } }
 }
+async function loadDialogueProducts(): Promise<void> {
+  const op = gate.begin("dialogue-products"); if (!op?.valid()) return;
+  try {
+    const result = await client.GET("/products", {params: {query: {limit: 50}}, signal: op.signal});
+    if (!op.valid()) return;
+    if (!result.response.ok || !result.data) { dialogueError.value = "产品读取失败，请刷新"; return; }
+    dialogueProducts.value = result.data.filter(p => p.pool === "formal" && p.candidate_status === null && !p.source_only);
+    dialogueError.value = "";
+  } catch { if (op.valid()) dialogueError.value = "产品读取失败，请刷新"; }
+}
 onMounted(() => {
-  void Promise.all([loadCampaigns(), loadIdentities(), loadCapabilities(), loadAgentInputs()]);
+  void Promise.all([loadCampaigns(), loadIdentities(), loadCapabilities(), loadAgentInputs(), loadDialogueProducts()]);
 });
 </script>
 
@@ -573,6 +607,21 @@ onMounted(() => {
             {{ agentInputsError }}
           </p>
         </fieldset>
+        <fieldset v-if="canConfigureAgent">
+          <legend>普通邮件持续沟通</legend>
+          <label><input v-model="dialogueEnabled" type="checkbox" aria-label="批准普通邮件持续沟通">在本次精确范围内批准普通产品说明和需求追问</label>
+          <template v-if="dialogueEnabled">
+            <label>客户及邮箱负责人<select v-model="dialogueOwner" aria-label="普通沟通负责人"><option value="">请选择</option><option v-for="e in agentEmployees" :key="e.employee_id" :value="e.employee_id">{{ e.name }}</option></select></label>
+            <label>已确认产品<select v-model="dialogueProductIds" multiple aria-label="普通沟通产品"><option v-for="p in dialogueProducts" :key="p.product_id" :value="p.product_id">{{ p.name_zh }}</option></select></label>
+            <label>普通回复邮箱<select v-model="dialogueSenderIds" multiple aria-label="普通回复邮箱"><option v-for="identity in identities.filter(i => ['cold_outreach','primary_business'].includes(i.role))" :key="identity.identity_id" :value="identity.identity_id">{{ identity.address }}</option></select></label>
+            <label>授权截止时间<input v-model="dialogueExpiry" type="datetime-local" aria-label="普通沟通授权期限"></label>
+            <label>每个对话最多回复轮数<input v-model.number="dialogueRounds" type="number" min="1" max="10" aria-label="普通沟通轮数"></label>
+            <p>该范围最多调用模型 {{ Math.min(40, dialogueRounds * 4) }} 次，包含分类、需求提取和回复规划；失败或结果未知也计入上限。</p>
+            <label>处理依据引用<input v-model="dialogueBasis" maxlength="512" aria-label="普通沟通依据"></label>
+            <p>只使用当前获准对外展示的产品资料；内部确认资料不因此公开。首次询盘须再选择本范围并核验联系人、客户归属和本人邮箱权限，不建立冷邮件序列。回复同时占用本活动每日总发送量；两轮无进展即暂停。价格、交期、认证等商业承诺仍逐次交人工。</p>
+            <p v-if="dialogueError" role="alert">{{ dialogueError }}</p>
+          </template>
+        </fieldset>
         <div class="editor-actions">
           <button
             type="button"
@@ -582,7 +631,7 @@ onMounted(() => {
           </button><button
             class="btn-primary"
             type="submit"
-            :disabled="actionBusy || commandUnknown || identitiesLoading || Boolean(identityError) || (!realFlowComposed && !(agentEnabled && canConfigureAgent)) || !formSendersUsable"
+            :disabled="actionBusy || commandUnknown || identitiesLoading || Boolean(identityError) || (!realFlowComposed && !((agentEnabled || dialogueEnabled) && canConfigureAgent)) || !formSendersUsable"
           >
             {{ actionBusy ? (manual ? "批准中…" : "启动中…") : agentEnabled ? "保存并提交范围批准" : manual ? (editingCampaignId ? "保存并批准联系范围" : "创建并批准手动联系范围") : editingCampaignId ? "保存并继续自动发邮件" : "创建并启动自动发邮件" }}
           </button>
@@ -635,7 +684,7 @@ onMounted(() => {
             <button
               v-if="selected.state === 'draft' || selected.state === 'pending_approval'"
               type="button"
-              :disabled="actionBusy || commandUnknown || identitiesLoading || Boolean(identityError) || (!realFlowComposed && !(canConfigureAgent && selected?.boundary.customer_agent_policy)) || !selectedSendersUsable"
+              :disabled="actionBusy || commandUnknown || identitiesLoading || Boolean(identityError) || (!realFlowComposed && !(canConfigureAgent && (selected?.boundary.customer_agent_policy || selected?.boundary.ordinary_dialogue_policy))) || !selectedSendersUsable"
               @click="transition('start')"
             >
               {{ selected.boundary.customer_agent_policy ? "批准客户准备范围" : manual ? "批准手动联系范围" : "启动自动发邮件" }}
@@ -643,7 +692,7 @@ onMounted(() => {
               v-if="selected.state === 'paused'"
               class="btn-primary"
               type="button"
-              :disabled="actionBusy || commandUnknown || identitiesLoading || Boolean(identityError) || (!realFlowComposed && !(canConfigureAgent && selected?.boundary.customer_agent_policy)) || !selectedSendersUsable"
+              :disabled="actionBusy || commandUnknown || identitiesLoading || Boolean(identityError) || (!realFlowComposed && !(canConfigureAgent && (selected?.boundary.customer_agent_policy || selected?.boundary.ordinary_dialogue_policy))) || !selectedSendersUsable"
               @click="transition('activate')"
             >
               {{ selected.boundary.customer_agent_policy ? "恢复已批准准备范围" : manual ? "恢复已批准范围" : "启动自动安全发送" }}

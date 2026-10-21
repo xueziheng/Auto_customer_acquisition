@@ -83,7 +83,7 @@ class GatewayReplyContentReader:
     async def load(
         self, tenant_id: TenantId, message_id: MessageId
     ) -> ReplyMessageContent:
-        """当前 active boss 先授权，成功 ledger 与读后重核后才取得本次 bytes。"""
-        actor = await self._access.actor(tenant_id)
+        """当前冷回复或独立普通对话入口先授权，成功 ledger 与读后重核后才取得本次 bytes。"""
+        actor = await self._access.for_message(tenant_id, message_id)
         raw = await self._reader.read(tenant_id, message_id, actor=actor)
         return project_reply_content(raw, max_subject_chars=4096, max_body_chars=65536)

@@ -88,6 +88,7 @@ class StandaloneModelSettings(BaseModel):
     limits: ModelLimits
     model_data_export_enabled: bool = Field(strict=True)
     reply_enabled: bool = Field(default=False, strict=True)
+    reply_classifier_employee_id: str | None = Field(default=None, pattern=r"^emp_[A-Za-z0-9]+$", max_length=40)
     automatic_send_enabled: bool = Field(default=False, strict=True)
     qq_reply: QQReplySettings | None = None
     research: StandaloneResearchSettings | None = None
@@ -104,6 +105,11 @@ class StandaloneModelSettings(BaseModel):
             raise ValueError("回复输出上限不得低于128；回复端口另限8192")
         if self.qq_reply is not None and (not self.reply_enabled or self.automatic_send_enabled):
             raise ValueError("QQ私有测试只允许显式回信处理，自动发送必须关闭")
+        if self.reply_classifier_employee_id is not None and (
+            not self.reply_enabled
+            or (self.qq_reply is not None and self.reply_classifier_employee_id != self.qq_reply.classifier_employee_id)
+        ):
+            raise ValueError("冷回复员工与显式回复配置冲突")
         from shared.schemas.model_connection import MODEL_ENDPOINTS
         if self.api_base_url not in MODEL_ENDPOINTS:
             raise ValueError("模型接口地址无效")

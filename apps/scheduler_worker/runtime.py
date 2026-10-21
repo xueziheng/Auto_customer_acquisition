@@ -118,6 +118,7 @@ from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.compliance_uow import SqlAlchemyComplianceUnitOfWork
 from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
+from infra.db.dialogue_source import SqlDialogueSources
 from infra.db.directive_uow import SqlAlchemyDirectiveUnitOfWork
 from infra.db.email_feedback_uow import (
     AuditSink as FeedbackAuditSink,
@@ -332,6 +333,7 @@ from .hunter_contacts import (
     build_hunter_contact_tools,
 )
 from .main import (
+    CampaignDriver,
     EnterpriseKnowledgeDriverProtocol,
     OutboxDrainer,
     RuntimeActivation,
@@ -545,6 +547,7 @@ class ReplyQualificationComposition:
     outreach: OutreachService
     action_ports: ReplyActionPorts
     classification_access: ReplyClassificationAccess | None = None
+    dialogue_driver: CampaignDriver | None = None
 
     def __post_init__(self) -> None:
         # 浅域实现可能只实现部分 Protocol 方法；按 reply 链实际消费的
@@ -1062,6 +1065,7 @@ from apps.composition_support.email_inbound import (
     build_inbound_composition,
 )
 
+from .dialogue_resources import DialogueArtifactPorts, build_dialogue_artifacts
 from .inbound_driver import InboundDriver
 
 
@@ -1075,6 +1079,7 @@ class SchedulerRuntimeFactory:
         *,
         bootstrap: SchedulerBootstrap | None = None,
         inbound_ports: InboundRuntimePorts | None = None,
+        reply_artifact_ports: DialogueArtifactPorts | None = None,
         resolver_factory: Callable[[], AsyncTxtResolver] = DnsPythonAsyncResolver,
         pilot_config: SchedulerWorkerConfig | None = None,
         standalone_research: bool = False,
@@ -1122,7 +1127,7 @@ class SchedulerRuntimeFactory:
             or getattr(bootstrap, "contacts_enabled", True)
             or (pilot_gmail and inbound_ports is None and not getattr(bootstrap, "campaign_enabled", False))
             or (getattr(bootstrap, "campaign_enabled", False) and not pilot_gmail)
-            or ((inbound_ports is not None) != (getattr(bootstrap, "reply_factory", None) is not None))
+            or (((inbound_ports is not None or reply_artifact_ports is not None)) != (getattr(bootstrap, "reply_factory", None) is not None))
         ):
             raise ValidationError("本机 scheduler 外部能力必须未配置")
         if pilot_config is None and (
@@ -1136,6 +1141,7 @@ class SchedulerRuntimeFactory:
         self._environ = environ
         self._dependencies = dependencies
         self._bootstrap = bootstrap
+        self._reply_artifact_ports = reply_artifact_ports
         self._inbound_ports = inbound_ports
         self._resolver_factory = resolver_factory
         self._health_server_factory = health_server_factory
@@ -1164,6 +1170,7 @@ class SchedulerRuntimeFactory:
         primary: BaseException | None = None
         quotation = None
         inbound = None
+        dialogue_artifacts = None
         assistant_ports = None
         try:
             if isinstance(self._inbound_ports, QQTrialRuntimePorts):
@@ -1468,7 +1475,11 @@ class SchedulerRuntimeFactory:
                     if not isinstance(inbound_adapter.trial_gate, SqlQQTrialGate):
                         raise ValidationError("受控入站必须绑定原持久门禁")
                     trial_gate = inbound_adapter.trial_gate
-            from .reply_binding import DeferredReplyCommit
+            from .reply_binding import (
+                DeferredOrdinaryDialogueAccess,
+                DeferredReplyCommit,
+            )
+            dialogue_access = DeferredOrdinaryDialogueAccess()
             reply_commit = DeferredReplyCommit(trial_gate.commit_message if trial_gate else None)
             core = SchedulerCoreServices(
                 employee_scope,
@@ -1482,6 +1493,7 @@ class SchedulerRuntimeFactory:
                         trial_commit=reply_commit.commit,
                     ),  # type: ignore[arg-type, return-value]
                     now=self._now,
+                    dialogue_access=dialogue_access,
                 ),
                 playbook_organization,
                 country_policy,
@@ -1639,6 +1651,10 @@ class SchedulerRuntimeFactory:
                     lease_owner=ports.lease_owner,
                     now=self._now,
                 )
+            if self._reply_artifact_ports is not None and inbound is None:
+                dialogue_artifacts = build_dialogue_artifacts(self._reply_artifact_ports, factory, self._now)
+            reply_raw = inbound.bounded_raw_store if inbound is not None else (dialogue_artifacts.raw if dialogue_artifacts else None)
+            reply_generated = inbound.generated_store if inbound is not None else (dialogue_artifacts.generated if dialogue_artifacts else None)
             sent_archive = None
             if inbound is not None:
                 from infra.outbound_mail_archive import (
@@ -1673,6 +1689,7 @@ class SchedulerRuntimeFactory:
                                 ),
                             ),
                             outreach=campaign_outreach,
+                            dialogue_sources=SqlDialogueSources(factory, config.tenant_id),
                         )
                     )
                 contacts = self._bootstrap.build_contacts(
@@ -1697,13 +1714,15 @@ class SchedulerRuntimeFactory:
                     resources=(
                         ReplyRuntimeResources(
                             factory,
-                            inbound.bounded_raw_store,
+                            reply_raw,
                             dependencies.opportunity_service,
                             self._now,
                             trial_gate,
                             reply_commit.bind,
+                            dialogue_access.bind,
+                            reply_generated,
                         )
-                        if inbound is not None
+                        if reply_raw is not None
                         else None
                     ),
                 )
@@ -2103,6 +2122,7 @@ class SchedulerRuntimeFactory:
                 knowledge_driver=knowledge_driver,
                 inventory_driver=inventory_driver,
                 campaign_driver=campaign_driver,
+                dialogue_driver=dependencies.reply_qualification.dialogue_driver if dependencies.reply_qualification else None,
                 activation=runtime_activation,
                 quote_expiry_driver=(
                     QuoteExpiryDriver(
@@ -2210,6 +2230,11 @@ class SchedulerRuntimeFactory:
                 try:
                     await inbound.aclose()
                 except BaseException as error:  # noqa: BLE001 - 保留原异常并完成资源释放
+                    cleanup_error = error
+            if dialogue_artifacts is not None:
+                try:
+                    await dialogue_artifacts.aclose()
+                except BaseException as error:  # noqa: BLE001 - 继续释放进程资源
                     cleanup_error = error
             if quotation is not None:
                 try:

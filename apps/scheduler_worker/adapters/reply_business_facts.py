@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from domains.conversations.dialogue_source import DialogueSourceReader
 from domains.demand.service import DemandService
 from domains.opportunities.permissions import Actor as OpportunityActor
 from domains.opportunities.service import OpportunityService
@@ -28,6 +29,8 @@ from ..reply_actions import ReplyBusinessFacts
 
 
 def _enrollment_actor(context: ReplyActionContext) -> OutreachActor:
+    if context.enrollment_id is None:
+        raise ValidationError("回复冷来源缺失")
     return OutreachActor(
         "system:reply-business-facts",
         OutreachScope(
@@ -61,6 +64,7 @@ class TenantBoundReplyBusinessFactsReader:
         prospecting: ProspectingService,
         opportunities: OpportunityService,
         opportunity_actor: OpportunityActor,
+        dialogue_sources: DialogueSourceReader | None = None,
     ) -> None:
         required = (
             (outreach, "get_enrollment"),
@@ -78,6 +82,7 @@ class TenantBoundReplyBusinessFactsReader:
             or not isinstance(opportunity_actor, OpportunityActor)
         ):
             raise ValidationError("回复业务事实读取依赖无效")
+        self._dialogue_sources = dialogue_sources
         self._tenant_id = tenant_id
         self._outreach = outreach
         self._demand = demand
@@ -94,39 +99,49 @@ class TenantBoundReplyBusinessFactsReader:
             raise TenantIsolationViolation("回复业务事实跨租户读取")
         if not isinstance(context, ReplyActionContext):
             raise ValidationError("回复业务事实上下文无效")
-        enrollment = await self._outreach.get_enrollment(
-            tenant_id,
-            context.enrollment_id,
-            actor=_enrollment_actor(context),
-        )
-        if (
-            enrollment.tenant_id != tenant_id
-            or enrollment.enrollment_id != context.enrollment_id
-            or enrollment.account_id != context.account_id
-            or enrollment.contact_point_id != context.contact_point_id
-        ):
-            raise ValidationError("回复 Enrollment 关联不匹配")
-        source_hypothesis_id = enrollment.source_hypothesis_id
-        if source_hypothesis_id is None:
-            raise ValidationError("回复 Enrollment 缺少来源假设")
-        identity_id = SendingIdentityId(str(enrollment.sending_identity_id))
-        delivery = await self._outreach.resolve_delivery_feedback(
-            tenant_id,
-            DeliveryCorrelationLookup(
-                deterministic_message_id=str(context.outbound_message_id)
-            ),
-            actor=_identity_actor(identity_id),
-        )
-        if (
-            not isinstance(delivery, DeliveryFeedbackTarget)
-            or delivery.tenant_id != tenant_id
-            or delivery.enrollment_id != context.enrollment_id
-            or delivery.account_id != context.account_id
-            or delivery.contact_point_id != context.contact_point_id
-            or delivery.sending_identity_id != identity_id
-        ):
-            raise ValidationError("回复出站消息关联不匹配")
-
+        source_hypothesis_id: NeedHypothesisId | None
+        if context.dialogue_binding_id is not None:
+            source = await self._dialogue_sources.for_message(tenant_id, context.message_id) if self._dialogue_sources is not None else None
+            if (source is None or source.binding_id != context.dialogue_binding_id
+                or source.account_id != context.account_id or source.contact_point_id != context.contact_point_id
+                or source.enrollment_id != context.enrollment_id):
+                raise ValidationError("回复对话来源不匹配")
+            source_hypothesis_id = source.hypothesis_id
+        else:
+            if context.enrollment_id is None or context.outbound_message_id is None:
+                raise ValidationError("回复冷来源缺失")
+            enrollment = await self._outreach.get_enrollment(
+                tenant_id,
+                context.enrollment_id,
+                actor=_enrollment_actor(context),
+            )
+            if (
+                enrollment.tenant_id != tenant_id
+                or enrollment.enrollment_id != context.enrollment_id
+                or enrollment.account_id != context.account_id
+                or enrollment.contact_point_id != context.contact_point_id
+            ):
+                raise ValidationError("回复 Enrollment 关联不匹配")
+            source_hypothesis_id = enrollment.source_hypothesis_id
+            if source_hypothesis_id is None:
+                raise ValidationError("回复 Enrollment 缺少来源假设")
+            identity_id = SendingIdentityId(str(enrollment.sending_identity_id))
+            delivery = await self._outreach.resolve_delivery_feedback(
+                tenant_id,
+                DeliveryCorrelationLookup(
+                    deterministic_message_id=str(context.outbound_message_id)
+                ),
+                actor=_identity_actor(identity_id),
+            )
+            if (
+                not isinstance(delivery, DeliveryFeedbackTarget)
+                or delivery.tenant_id != tenant_id
+                or delivery.enrollment_id != context.enrollment_id
+                or delivery.account_id != context.account_id
+                or delivery.contact_point_id != context.contact_point_id
+                or delivery.sending_identity_id != identity_id
+            ):
+                raise ValidationError("回复出站消息关联不匹配")
         account = await self._prospecting.get_account(tenant_id, context.account_id)
         contact = await self._prospecting.get_contact_point(
             tenant_id, context.contact_point_id

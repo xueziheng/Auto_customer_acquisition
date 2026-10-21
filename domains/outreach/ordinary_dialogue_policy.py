@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from shared.schemas.identifiers import EmployeeId
+from shared.schemas.identifiers import EmployeeId, SendingIdentityId
 
 
 class DialogueProductRef(BaseModel):
@@ -20,6 +20,7 @@ class OrdinaryDialoguePolicyInput(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
     owner_employee_id: EmployeeId
     assessment_ref: str = Field(min_length=1, max_length=512)
+    reply_sender_identity_ids: tuple[SendingIdentityId, ...] = Field(min_length=1, max_length=5, strict=False)
     product_refs: tuple[DialogueProductRef, ...] = Field(min_length=1, max_length=5, strict=False)
     expires_at: datetime = Field(strict=False)
     max_rounds: int = Field(gt=0, le=20)
@@ -34,6 +35,17 @@ class OrdinaryDialoguePolicyInput(BaseModel):
         """引用必须非空且不可携带控制字符，员工当前资格由授权服务检查。"""
         if not value.strip() or value != value.strip() or any(ord(c) < 32 for c in value):
             raise ValueError("普通对话范围引用无效")
+        return value
+
+    @field_validator("reply_sender_identity_ids")
+    @classmethod
+    def reply_senders(cls, value: tuple[SendingIdentityId, ...]) -> tuple[SendingIdentityId, ...]:
+        """普通回复范围独立于冷发送身份，不允许隐式复用或重复身份。"""
+        import re
+        if len(set(value)) != len(value) or any(
+            not re.fullmatch(r"sid_[0-7][0-9A-HJKMNP-TV-Z]{25}", item) for item in value
+        ):
+            raise ValueError("普通回复发件身份范围无效")
         return value
 
     @field_validator("expires_at")

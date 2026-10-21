@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.dialogue_feedback import DialogueDeliveryReport
+
 
 class BusinessMailPayload(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
@@ -16,6 +18,9 @@ class BusinessMailPayload(BaseModel):
     message_header: str | None = Field(
         default=None, repr=False, exclude=True, max_length=1000
     )
+    in_reply_to: str | None = Field(default=None, repr=False, exclude=True, max_length=256)
+    reply_recipient: str | None = Field(default=None, repr=False, exclude=True, max_length=254)
+    dialogue_feedback: DialogueDeliveryReport | None = Field(default=None, repr=False, exclude=True)
     received_at: datetime
     parse_failure: str | None = None
     source_kind: Literal["full_mime", "headers_only"] = "full_mime"

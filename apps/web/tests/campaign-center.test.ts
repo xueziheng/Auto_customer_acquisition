@@ -110,6 +110,7 @@ async function mountPurpose(path = "/campaigns", options: {
       return response(current);
     }
     if (url.pathname === "/prospects/customers/access") return response({role: options.agentRole ?? "sales", can_assign: options.agentRole === "boss", can_search: options.agentRole === "boss"});
+    if (url.pathname === "/products") return response([{product_id:"prd_public",name_zh:"已确认铰链",pool:"formal",candidate_status:null,source_only:false}]);
     if (url.pathname === "/team/employees") return response([{tenant_id: "tn_server_bound", employee_id: "emp_owner", name: "业务负责人", role: "sales", is_active: true}]);
     if (url.pathname === "/knowledge/documents") return response({items: [{tenant_id: "tn_server_bound", document_id: "doc_scope", current_revision_id: "rev_scope", status: "confirmed", source: {filename: "确认产品.txt"}}]});
     if (url.pathname === "/crm/campaigns") return response([current]);
@@ -320,4 +321,23 @@ it("发送关闭时老板可显式批准准备范围，员工隐藏入口", asyn
   const employee = await mountPurpose("/campaigns", {agentRole: "sales"});
   button(employee.root, "设置自动任务").click(); await nextTick();
   expect(employee.root.querySelector('[aria-label="批准自动准备并入组"]')).toBeNull();
+});
+
+
+it("普通沟通授权只提交当前产品及回复邮箱选择，不要求用户填写hash或模型配置", async () => {
+ const {root,writes}=await mountPurpose("/campaigns",{agentRole:"boss"});
+ button(root,"修订边界").click(); await nextTick();
+ const enabled=root.querySelector<HTMLInputElement>('[aria-label="批准普通邮件持续沟通"]')!;
+ enabled.checked=true; enabled.dispatchEvent(new Event("change")); await nextTick();
+ for (const [label,value] of [["普通沟通负责人","emp_owner"],["普通沟通产品","prd_public"],["普通回复邮箱","sid_controlled"]]) {
+  const select=root.querySelector<HTMLSelectElement>(`[aria-label="${label}"]`)!;
+  select.value=value!; select.dispatchEvent(new Event("change"));
+ }
+ fill(root,"普通沟通授权期限","2027-01-01T10:00"); fill(root,"普通沟通轮数","3"); fill(root,"普通沟通依据","已审核沟通范围"); await nextTick();
+ root.querySelector<HTMLButtonElement>('.boundary-editor button[type="submit"]')!.click();
+ await eventually(()=>expect(writes.length).toBeGreaterThan(0));
+ const body=await writes[0].json();
+ expect(body.ordinary_dialogue_policy).toMatchObject({owner_employee_id:"emp_owner",product_ids:["prd_public"],reply_sender_identity_ids:["sid_controlled"],max_rounds:3});
+ expect(JSON.stringify(body)).not.toContain("customer_view_sha256");
+ expect(root.textContent).not.toContain("run_id");
 });
