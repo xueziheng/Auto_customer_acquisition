@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 
-from sqlalchemy import func, select, update
+from sqlalchemy import SQLColumnExpression, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -225,8 +225,10 @@ def _row_to_reply_work(row: ConversationReplyWorkRow) -> ReplyWorkRecord:
         action_id=row.action_id,
         tenant_id=TenantId(row.tenant_id),
         message_id=MessageId(row.message_id),
-        outbound_message_id=OutboundMessageId(row.outbound_message_id),
-        enrollment_id=EnrollmentId(row.enrollment_id),
+        outbound_message_id=OutboundMessageId(row.outbound_message_id) if row.outbound_message_id is not None else None,
+        enrollment_id=EnrollmentId(row.enrollment_id) if row.enrollment_id is not None else None,
+        dialogue_binding_id=row.dialogue_binding_id,
+        review_reason=row.review_reason,
         account_id=ProspectAccountId(row.account_id),
         contact_point_id=ContactPointId(row.contact_point_id),
         action=ReplyWorkAction(row.action),
@@ -248,8 +250,10 @@ class ReplyWorkRepositoryImpl(_ConversationsRepository, ReplyWorkRepository):
                 tenant_id=str(record.tenant_id),
                 action_id=record.action_id,
                 message_id=str(record.message_id),
-                outbound_message_id=str(record.outbound_message_id),
-                enrollment_id=str(record.enrollment_id),
+                outbound_message_id=str(record.outbound_message_id) if record.outbound_message_id is not None else None,
+                enrollment_id=str(record.enrollment_id) if record.enrollment_id is not None else None,
+                dialogue_binding_id=record.dialogue_binding_id,
+                review_reason=record.review_reason,
                 account_id=str(record.account_id),
                 contact_point_id=str(record.contact_point_id),
                 action=record.action.value,
@@ -313,7 +317,7 @@ class ReplyWorkRepositoryImpl(_ConversationsRepository, ReplyWorkRepository):
         status: ReplyWorkStatus, limit: int, account_id: ProspectAccountId | None = None,
     ) -> list[ReplyWorkRecord]:
         self._require_tenant(tenant_id, "conversation_reply_work_owned")
-        order = (ConversationReplyWorkRow.created_at, ConversationReplyWorkRow.action_id)
+        order: tuple[SQLColumnExpression[Any], ...] = (ConversationReplyWorkRow.created_at, ConversationReplyWorkRow.action_id)
         if status in (ReplyWorkStatus.COMPLETED, ReplyWorkStatus.CANCELLED):
             latest = select(func.max(ConversationReplyWorkUpdateRow.handled_at)).where(
                 ConversationReplyWorkUpdateRow.tenant_id == tenant_id,
@@ -362,7 +366,7 @@ class ReplyWorkRepositoryImpl(_ConversationsRepository, ReplyWorkRepository):
             ConversationReplyWorkRow.action_id == action_id,
             ConversationReplyWorkRow.status == expected.value,
         ).values(status=status.value))
-        if result.rowcount != 1:
+        if cast(CursorResult, result).rowcount != 1:
             raise ValidationError("回复工作状态已变化，请刷新")
 
     async def list_updates(

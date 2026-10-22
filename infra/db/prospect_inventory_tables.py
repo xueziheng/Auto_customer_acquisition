@@ -3,6 +3,7 @@
 from datetime import date, datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -10,6 +11,7 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -110,6 +112,10 @@ class AcquisitionJobRow(Base):
             name="ck_acquisition_status",
         ),
         CheckConstraint(
+            "collection_reserved_seconds BETWEEN 0 AND 480",
+            name="ck_acquisition_collection_budget",
+        ),
+        CheckConstraint(
             "remaining_count >= 0 AND requested_count >= remaining_count AND attempts >= 0",
             name="ck_acquisition_counts",
         ),
@@ -119,6 +125,20 @@ class AcquisitionJobRow(Base):
     key_hash: Mapped[str] = mapped_column(String(64))
     employee_id: Mapped[str] = mapped_column(String(40))
     query: Mapped[dict] = mapped_column(JSONB)
+    search_binding: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    search_reservations: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"))
+    fit_batches: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    source_plan: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    collection_deadline: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    collection_reserved_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     requested_count: Mapped[int] = mapped_column(Integer)
     remaining_count: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(16))
@@ -149,3 +169,40 @@ class AcquisitionAttemptRow(Base):
         JSONB(none_as_null=True), nullable=True
     )
     attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class InventoryFollowupRequestRow(Base):
+    """原搜索请求事务内保存的私有委托，不扫描历史取得记录补造授权。"""
+    __tablename__ = "inventory_followup_requests"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "key_hash"], ["inventory_requests.tenant_id", "inventory_requests.key_hash"], name="fk_followup_request"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    authorization: Mapped[dict] = mapped_column(JSONB)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class CustomerPreparationItemRow(Base):
+    """每次授权交付唯一准备项；仅存安全引用、租约和固定状态。"""
+    __tablename__ = "customer_preparation_items"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "key_hash"], ["inventory_followup_requests.tenant_id", "inventory_followup_requests.key_hash"], name="fk_preparation_request"),
+        ForeignKeyConstraint(["tenant_id", "allocation_id"], ["candidate_allocations.tenant_id", "candidate_allocations.allocation_id"], name="fk_preparation_allocation"),
+        CheckConstraint("state IN ('queued','processing','blocked','enrolled')", name="ck_preparation_state"),
+        CheckConstraint("version >= 0", name="ck_preparation_version"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    allocation_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    key_hash: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(20), default="queued")
+    stage: Mapped[str] = mapped_column(String(30), default="authorize")
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    lease_token: Mapped[str | None] = mapped_column(String(40))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    external_started: Mapped[bool] = mapped_column(Boolean, default=False)
+    blocked_reason: Mapped[str | None] = mapped_column(String(60))
+    result_refs: Mapped[dict] = mapped_column(JSONB, default=dict)
+    ownership_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

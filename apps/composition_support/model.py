@@ -252,7 +252,7 @@ def configured_codex_provider(
                 identity.capability
                 in {"business_mail_triage", "business_mail_followup"}
                 or (
-                    identity.capability == "reply_qualification"
+                    identity.capability in {"reply_qualification", "ordinary_dialogue"}
                     and (
                         round_budget is not None
                         or bool(settings.qq_reply and settings.qq_reply.continuous)

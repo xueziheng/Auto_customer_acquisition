@@ -142,7 +142,7 @@ async def test_actual_api_lifespan_closes_quotation_before_database_even_before_
         "build_phase1_dependencies",
         lambda *a, **kw: SimpleNamespace(
             quotation=SimpleNamespace(lifecycle=Lifecycle()), email_inbound=None,
-            model_lifecycle=None, object_store_lifecycle=None
+            model_lifecycle=None, object_store_lifecycle=None, customer_verification=None
         ),
     )
     monkeypatch.setattr(runtime, "assert_database_schema_current", schema)

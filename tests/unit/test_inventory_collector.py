@@ -249,3 +249,26 @@ async def test_repeated_directory_order_rejection_consumes_existing_tool_budget(
 
     with pytest.raises(ValueError, match='来源未实际搜索'):
         await CodexInventoryCollector(factory, generate).collect(JOB, 'dealer_networks', guard)
+
+
+@pytest.mark.parametrize("retry_query", ["steel Kenya", "different products Kenya"])
+async def test_source_unknown_blocks_new_query_and_tool_call(retry_query):
+    from apps.scheduler_worker.inventory_collector import CodexInventoryCollector
+    from shared.errors import TransientError
+    calls = []
+    async def search(*args, **kwargs):
+        calls.append(1)
+        raise TransientError("unknown")
+    async def factory(*args):
+        return SimpleNamespace(searcher=SimpleNamespace(search=search))
+    async def generate(job, source, session, payload):
+        for query in ("steel Kenya", retry_query):
+            try:
+                await session.call("source_search", {"source_id": source, "query": query})
+            except ValueError:
+                assert len(calls) == 1
+        return {"candidates": []}
+    async def guard():
+        pass
+    await CodexInventoryCollector(factory, generate).collect(JOB, "company_websites", guard)
+    assert len(calls) == 1

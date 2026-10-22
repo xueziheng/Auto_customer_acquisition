@@ -149,6 +149,7 @@ class SchedulerRuntime:
     config: SchedulerConfig
     assistant_driver: AssistantDriverProtocol | None = None
     campaign_driver: CampaignDriver | None = None
+    dialogue_driver: CampaignDriver | None = None
     activation: RuntimeActivation | None = None
     quote_expiry_driver: QuoteExpiryDriver | None = None
     sourcing_admission_driver: SourcingAdmissionDriverProtocol | None = None
@@ -289,6 +290,7 @@ async def _run_cycle(
         or runtime.catalog_product_driver is not None
         or runtime.inbound_driver is not None
         or runtime.inventory_driver is not None
+        or runtime.dialogue_driver is not None
     ) and confirm_lock is None:
         raise RuntimeError("单副本阶段扫描缺少 scheduler 锁确认")
     pre_count = 0
@@ -421,6 +423,15 @@ async def _run_cycle(
             cycle=cycle,
         )
 
+    if runtime.dialogue_driver is not None:
+        assert confirm_lock is not None
+        await confirm_lock()
+        try:
+            await runtime.dialogue_driver.scan_once()
+        except Exception as error:  # noqa: BLE001 -- 独立普通回复阶段日志固定脱敏。
+            _log_phase_error(phase="ordinary_dialogue", error=error, tenant_id=runtime.tenant_id, cycle=cycle)
+        await confirm_lock()
+
     if workflow_succeeded and workflow_count > 0:
         if (
             runtime.assistant_driver is not None
@@ -429,6 +440,7 @@ async def _run_cycle(
             or runtime.catalog_product_driver is not None
             or runtime.inbound_driver is not None
             or runtime.inventory_driver is not None
+            or runtime.dialogue_driver is not None
         ):
             assert confirm_lock is not None
             await confirm_lock()
@@ -458,7 +470,7 @@ async def _run_cycle(
 async def _same_lock_backend(connection: AsyncConnection, expected_pid: int) -> bool:
     """确认 dedicated physical connection 未变化，并结束 heartbeat 事务。"""
     try:
-        current_pid = (
+        current_pid: int = (
             await connection.execute(text("SELECT pg_backend_pid()"))
         ).scalar_one()
         await connection.commit()
@@ -683,7 +695,7 @@ async def _run_scheduler_worker(
             cleanup_signals()
             if lock_owned:
                 try:
-                    released = (
+                    released: bool = (
                         await connection.execute(
                             text("SELECT pg_advisory_unlock(:lock_key)"),
                             {"lock_key": lock_key},

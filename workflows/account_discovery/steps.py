@@ -239,7 +239,9 @@ class FindContactsStep:
         enricher: ContactEnricher,
         *,
         now: Callable[[], datetime],
+        max_contacts: int | None = None,
     ) -> None:
+        self._max_contacts = max_contacts
         self._prospecting = prospecting
         self._enricher = enricher
         self._now = now
@@ -254,6 +256,7 @@ class FindContactsStep:
             for item in contact.contact_points
             if item.legal_basis_source == "hunter"
         )
+        existing_ids = tuple(dict.fromkeys(existing_ids))[:self._max_contacts]
         if existing_ids:
             return (
                 "advance",
@@ -272,7 +275,8 @@ class FindContactsStep:
         )
         contact_point_ids: list[str] = []
         collected_at = self._now()
-        for candidate in result.candidates:
+        candidates = result.candidates[:self._max_contacts]
+        for candidate in candidates:
             source = candidate.sources[0]
             recorded = await self._prospecting.record_discovered_contact(
                 run.tenant_id,
@@ -304,7 +308,7 @@ class FindContactsStep:
             "verify_contacts",
             {
                 "contact_point_ids": list(dict.fromkeys(contact_point_ids)),
-                "candidate_count": len(result.candidates),
+                "candidate_count": len(candidates),
                 "enrichment_cost_note": result.cost_note.value,
             },
         )
@@ -315,7 +319,9 @@ class VerifyContactsStep:
         self,
         prospecting: ProspectingService,
         verifier: ContactVerifier,
+        *, max_contacts: int | None = None,
     ) -> None:
+        self._max_contacts = max_contacts
         self._prospecting = prospecting
         self._verifier = verifier
 
@@ -332,7 +338,7 @@ class VerifyContactsStep:
             EmailVerificationOutcome.RISKY: VerificationStatus.RISKY,
             EmailVerificationOutcome.UNVERIFIED: VerificationStatus.UNVERIFIED,
         }
-        for raw_id in dict.fromkeys(raw_ids):
+        for raw_id in tuple(dict.fromkeys(raw_ids))[:self._max_contacts]:
             contact_point_id = ContactPointId(
                 _exact_text(raw_id, "账户发现联系方式标识无效", max_len=40)
             )

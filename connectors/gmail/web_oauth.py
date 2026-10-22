@@ -58,7 +58,9 @@ class GmailWebOAuth:
             import requests
 
             flow = self._flow(state, verifier)
-            from oauthlib.oauth2 import WebApplicationClient
+            from oauthlib.oauth2 import (  # type: ignore[import-untyped]
+                WebApplicationClient,
+            )
 
             with requests.Session() as exchange_session:
                 exchange_session.trust_env = False

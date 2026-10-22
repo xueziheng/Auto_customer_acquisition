@@ -1,4 +1,5 @@
 """真实 IMAP 解析器的合成协议验证，只允许必要 Sent 头读取。"""
+import sys
 from dataclasses import replace
 
 import pytest
@@ -7,6 +8,9 @@ from connectors.qq_mail.sent_collect import QQSentAliasCollector, SentReadReques
 from shared.schemas.qq_trial import QQTrialStopped
 from tests.unit.qq_p1_imap import p1_mailbox
 
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux", reason="需 Linux prctl 父进程保护；独立 Linux 容器验收"
+)
 
 def request():
     marker="synthetic-p1."+"a"*64

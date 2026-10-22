@@ -99,6 +99,9 @@ it.each(['success','error'] as const)('列表拒绝后的旧纠正%s不得在恢
   if(req.method==='POST')return correction.promise;
   if(path.endsWith('/conversations')){lists++;return lists===1?json([inboxItem('first')]):lists===2?json({},403):recovery.promise;}
   if(path.endsWith('/next-questions'))return json({},503);
+  if(path.endsWith('/reply-work'))return json([]);
+  if(path.endsWith('/content'))return json({},503);
+  if(path.endsWith('/retry-classification'))return json({},503);
   detailReads++;return json(inboxDetail(path.endsWith('/first')?'first':'recovered'));
  },'/inbox');
  button(root,'提交纠正').click();await flush();button(root,'刷新').click();await flush();expect(root.textContent).not.toContain('protected-first');

@@ -4,6 +4,7 @@ from domains.prospecting.inventory_access import InventoryAccessScope, ScopedInv
 from domains.prospecting.service import InventoryService
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import EmployeeId, TenantId
+from workflows.customer_preparation.authority import CustomerAgentScopeAuthority
 
 from ..dependencies import ConfiguredApiDependencies
 from ..identity import RequestIdentity
@@ -57,3 +58,24 @@ def bind_inventory(
         identity.tenant_id,
         identity.employee.employee_id,
     )
+
+
+class CurrentCustomerAgentAuthority(CustomerAgentScopeAuthority):
+    """API仅注入当前进程公共服务，授权编排与scheduler共享。"""
+
+    def __init__(self, dependencies: ConfiguredApiDependencies, tenant_id: TenantId) -> None:
+        from datetime import UTC, datetime
+
+        from apps.composition_support.campaign_approval_reader import (
+            CurrentCampaignApprovalReader,
+        )
+        super().__init__(
+            employees=dependencies.employees,
+            lookup_actor=dependencies.employee_lookup_actor,
+            outreach=dependencies.outreach,
+            approvals=CurrentCampaignApprovalReader(
+                tenant_id, dependencies.approvals,
+                now=lambda: datetime.now(UTC),
+            ) if dependencies.approvals is not None else None,
+            knowledge=dependencies.enterprise_knowledge.service if dependencies.enterprise_knowledge else None,
+        )

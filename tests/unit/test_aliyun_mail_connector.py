@@ -18,7 +18,7 @@ from shared.errors import ValidationError
 from tool_gateway.errors import DeliveryCertainty, ToolErrorCategory, ToolGatewayError
 
 ADDRESS = "sales@example.com"
-PASSWORD = SecretStr("fixture-client-password")
+PASSWORD = SecretStr('xxxxxxxxxxxxxxxxxxxxxxx')
 
 
 def request() -> GmailSendRequest:

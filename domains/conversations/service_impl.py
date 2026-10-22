@@ -12,6 +12,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from domains.conversations.dialogue_access import (
+    OrdinaryDialogueAccess,
+    OrdinaryDialogueOriginalAccess,
+)
 from domains.conversations.errors import ReingestConflictError
 from domains.conversations.inbox_access import (
     InboxAction,
@@ -46,6 +50,7 @@ from domains.conversations.schemas import (
     ConversationInboxItem,
     InboxEvidenceRef,
     InboxMessageView,
+    ReplyWorkAction,
     ReplyWorkActionRequest,
     ReplyWorkActionView,
     ReplyWorkHandlingView,
@@ -73,11 +78,20 @@ class ConversationServiceImpl:
         uow_factory: Callable[[TenantId], ConversationsUnitOfWork],
         *,
         now: Callable[[], datetime],
+        dialogue_access: OrdinaryDialogueAccess | None = None,
     ) -> None:
         if not callable(uow_factory) or not callable(now):
             raise ValidationError("会话服务依赖无效")
         self._uow_factory = uow_factory
         self._now = now
+        self._dialogue_access = dialogue_access
+        self._dialogue_original_access: OrdinaryDialogueOriginalAccess | None = dialogue_access if isinstance(dialogue_access, OrdinaryDialogueOriginalAccess) else None
+
+    def bind_ordinary_original_access(self, access: OrdinaryDialogueOriginalAccess) -> None:
+        """组合根一次装配真人原件读口；不授予分类、模型或发送能力。"""
+        if self._dialogue_original_access is not None:
+            raise ValidationError("普通对话原件权限只能装配一次")
+        self._dialogue_original_access = access
 
     @staticmethod
     def _validate_now(value: datetime) -> datetime:
@@ -326,6 +340,47 @@ class ConversationServiceImpl:
         suppress_scope: ReplySuppressScope | None = None,
         actor: InboxActor | None = None,
     ) -> tuple[str, ...]:
+        """原冷回复分类入口，维持active boss规则。"""
+        return await self._record_classification(
+            tenant_id, message_id, category, classified_by,
+            outbound_message_id=outbound_message_id, candidate_fields=candidate_fields,
+            suppress_scope=suppress_scope, actor=actor,
+            ordinary_dialogue=False,
+        )
+
+    async def record_ordinary_dialogue_classification(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+        category: ReplyCategory,
+        classified_by: str,
+        *,
+        outbound_message_id: OutboundMessageId | None = None,
+        candidate_fields: tuple[ReplyFieldEvidence, ...] = (),
+        suppress_scope: ReplySuppressScope | None = None,
+        actor: InboxActor,
+    ) -> tuple[str, ...]:
+        """普通对话专用分类入口，精确scope与本人原件权限必须仍有效。"""
+        return await self._record_classification(
+            tenant_id, message_id, category, classified_by,
+            outbound_message_id=outbound_message_id, candidate_fields=candidate_fields,
+            suppress_scope=suppress_scope, actor=actor,
+            ordinary_dialogue=True,
+        )
+
+    async def _record_classification(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+        category: ReplyCategory,
+        classified_by: str,
+        *,
+        outbound_message_id: OutboundMessageId | None = None,
+        candidate_fields: tuple[ReplyFieldEvidence, ...] = (),
+        suppress_scope: ReplySuppressScope | None = None,
+        actor: InboxActor | None = None,
+        ordinary_dialogue: bool = False,
+    ) -> tuple[str, ...]:
         """落分类留痕并返回 ``REPLY_ACTIONS`` 动作序列（幂等契约见 docstring）。
 
         幂等/冲突契约（显式，不静默）：
@@ -364,6 +419,15 @@ class ConversationServiceImpl:
             raise ValidationError("非退订分类不得携带抑制范围")
         now = self._validate_now(self._now())
         async with self._uow_factory(tenant_id) as uow:
+            reader = getattr(uow, "dialogue_source", None)
+            bound = await reader(tenant_id, message_id) if callable(reader) else None
+            if bound is not None and not ordinary_dialogue:
+                raise PermissionDenied("普通对话必须使用独立分类入口")
+            if ordinary_dialogue:
+                if bound is None or actor is None or self._dialogue_access is None:
+                    raise PermissionDenied("普通对话分类权限拒绝")
+                if await self._dialogue_access.require(tenant_id, message_id, actor.employee_id) != actor:
+                    raise PermissionDenied("普通对话分类权限拒绝")
             if actor is not None:
                 await self._message_access(
                     uow,
@@ -378,25 +442,28 @@ class ConversationServiceImpl:
                 )
                 if current is None:
                     raise PermissionDenied("回复内部操作权限拒绝")
-                require_reply_internal_access(
-                    tenant_id,
-                    QuoteEmployeeFact.model_validate(
-                        {
-                            "tenant_id": tenant_id,
-                            "employee_id": current.employee_id,
-                            "role": current.role,
-                            "is_active": current.is_active,
-                            "manager_id": current.manager_id,
-                            "team_id": None,
-                        }
-                    ),
-                    action="qualify",
-                )
+                if not ordinary_dialogue:
+                    require_reply_internal_access(
+                        tenant_id,
+                        QuoteEmployeeFact.model_validate(
+                            {
+                                "tenant_id": tenant_id,
+                                "employee_id": current.employee_id,
+                                "role": current.role,
+                                "is_active": current.is_active,
+                                "manager_id": current.manager_id,
+                                "team_id": None,
+                            }
+                        ),
+                        action="qualify",
+                    )
                 message = await uow.messages.get(tenant_id, message_id)
+                source_reader = getattr(uow, "dialogue_source", None)
+                source = await source_reader(tenant_id, message_id) if callable(source_reader) else None
                 if (
                     message is None
                     or message.direction is not MessageDirection.INBOUND
-                    or message.outbound_message_id is None
+                    or (message.outbound_message_id is None and (source is None or source.source_kind != "inquiry"))
                     or message.outbound_message_id != outbound_message_id
                 ):
                     raise PermissionDenied("回复消息绑定拒绝")
@@ -476,6 +543,8 @@ class ConversationServiceImpl:
             message_id=record.message_id,
             outbound_message_id=record.outbound_message_id,
             enrollment_id=record.enrollment_id,
+            dialogue_binding_id=record.dialogue_binding_id,
+            review_reason=record.review_reason,
             account_id=record.account_id,
             contact_point_id=record.contact_point_id,
             action=record.action,
@@ -501,6 +570,8 @@ class ConversationServiceImpl:
         if (
             record.message_id != request.message_id
             or record.outbound_message_id != request.outbound_message_id
+            or record.review_reason != request.review_reason
+            or record.dialogue_binding_id != request.dialogue_binding_id
             or record.enrollment_id != request.enrollment_id
             or record.account_id != request.account_id
             or record.contact_point_id != request.contact_point_id
@@ -533,6 +604,20 @@ class ConversationServiceImpl:
             )
             if conversation is None or conversation.account_id != request.account_id:
                 raise ValidationError("回复工作动作账户关联不匹配")
+            if request.dialogue_binding_id is not None:
+                reader = getattr(uow, "dialogue_source", None)
+                source = await reader(tenant_id, request.message_id) if callable(reader) else None
+                if (source is None or source.binding_id != request.dialogue_binding_id
+                    or source.account_id != request.account_id
+                    or source.contact_point_id != request.contact_point_id
+                    or source.enrollment_id != request.enrollment_id
+                    or message.outbound_message_id != request.outbound_message_id):
+                    raise ValidationError("回复工作对话来源无效")
+            if request.dialogue_binding_id is not None and request.action is ReplyWorkAction.REVIEW_REPLY:
+                pause = getattr(uow, "pause_dialogue", None)
+                if not callable(pause):
+                    raise ValidationError("对话停止端口未配置")
+                await pause(tenant_id, request.message_id)
             existing = await uow.reply_work.get_by_message_action(
                 tenant_id, request.message_id, request.action
             )
@@ -546,6 +631,8 @@ class ConversationServiceImpl:
                     message_id=request.message_id,
                     outbound_message_id=request.outbound_message_id,
                     enrollment_id=request.enrollment_id,
+                    dialogue_binding_id=request.dialogue_binding_id,
+                    review_reason=request.review_reason,
                     account_id=request.account_id,
                     contact_point_id=request.contact_point_id,
                     action=request.action,
@@ -679,6 +766,13 @@ class ConversationServiceImpl:
                     history=tuple(self._handling_view(item) for item in history))
             if current.status is not expected_status:
                 raise ValidationError("回复工作状态已变化，请刷新")
+            reader = getattr(uow, "dialogue_source", None)
+            bound = await reader(tenant_id, current.message_id) if callable(reader) else None
+            if bound is not None:
+                pause = getattr(uow, "pause_dialogue", None)
+                if not callable(pause):
+                    raise ValidationError("普通对话人工接管端口未配置")
+                await pause(tenant_id, current.message_id)
             await uow.reply_work.change_status(tenant_id, action_id, expected_status, status)
             update = ReplyWorkUpdateRecord(
                 tenant_id=tenant_id, action_id=action_id, sequence=len(history) + 1,
@@ -795,6 +889,13 @@ class ConversationServiceImpl:
             classifications: ClassificationRepository = uow.classifications
             if await classifications.get(tenant_id, message_id) is None:
                 raise ValidationError("消息尚未分类")
+            reader = getattr(uow, "dialogue_source", None)
+            source = await reader(tenant_id, message_id) if callable(reader) else None
+            if source is not None:
+                pause = getattr(uow, "pause_dialogue", None)
+                if not callable(pause):
+                    raise ValidationError("普通对话停止端口未配置")
+                await pause(tenant_id, message_id)
             await classifications.add_correction(
                 ClassificationCorrection(
                     correction_id=new_id("ccr"),
@@ -1012,6 +1113,14 @@ class ConversationServiceImpl:
         message = await uow.messages.get(tenant_id, message_id)
         if message is None:
             raise PermissionDenied("收件箱访问拒绝")
+        reader = getattr(uow, "dialogue_source", None)
+        source = await reader(tenant_id, message_id) if callable(reader) else None
+        if source is not None:
+            original = self._dialogue_original_access
+            if original is None:
+                raise PermissionDenied("普通对话原件权限未配置")
+            if await original.require_original(tenant_id, message_id, actor.employee_id) != actor:
+                raise PermissionDenied("普通对话原件权限拒绝")
         conversation = await uow.conversations.get(tenant_id, message.conversation_id)
         if conversation is None:
             raise PermissionDenied("收件箱访问拒绝")

@@ -196,6 +196,7 @@ async def test_reply_action_dispatch_uses_metadata_only_context(
         "enrollment_id": ENROLLMENT,
         "account_id": ACCOUNT,
         "contact_point_id": CONTACT,
+        "dialogue_binding_id": None,
     }
     assert idempotency_key == f"reply:{action}:{MESSAGE}"
 

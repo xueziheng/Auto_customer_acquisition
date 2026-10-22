@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from domains.organization.data_sources import (
     DataSourceConflict,
@@ -61,19 +61,20 @@ class FileModelApiRepository:
                 raise DataSourceConflict("配置已更新或正在启用，请刷新后重试")
             key = update.api_key.get_secret_value() if update.api_key else None
             if key is None:
-                if not old.configured or (old.provider, old.base_url) != (update.provider, update.base_url):
+                if not old.configured or old.configuration_version is None or (old.provider, old.base_url) != (update.provider, update.base_url):
                     raise DataSourceInputInvalid("首次配置或更换服务商时请填写新的 API Key")
                 key = json.loads(private_read(self.key_path(old.configuration_version)))["api_key"]
             version = new_id("mcv")
             private_write(self.key_path(version), json.dumps({"tenant_id": tenant_id, "configuration_version": version, "api_key": key}).encode())
+            saved_at = datetime.now(UTC)
             view = ModelApiView(
                 **update.model_dump(exclude={"api_key", "expected_revision"}),
                 configured=True, revision=old.revision + 1, configuration_version=version,
-                updated_at=datetime.now(UTC), active_model=old.active_model,
+                updated_at=saved_at, active_model=old.active_model,
                 active_provider=old.active_provider, active_version=old.active_version,
             )
             state["view"] = view.model_dump(mode="json")
-            state["audit"].append({"tenant_id": tenant_id, "actor": actor, "action": "save", "version": version, "at": view.updated_at.isoformat()})
+            state["audit"].append({"tenant_id": tenant_id, "actor": actor, "action": "save", "version": version, "at": saved_at.isoformat()})
             self._write(state)
             return view
 
@@ -112,7 +113,7 @@ class FileModelApiRepository:
             view = ModelApiView.model_validate(state["view"])
             if view.revision != revision:
                 raise DataSourceConflict("配置已更新")
-            changes = {"apply_status": "applied" if success else "failed"}
+            changes: dict[str, Any] = {"apply_status": "applied" if success else "failed"}
             if success:
                 changes.update(active_model=view.model, active_provider=view.provider, active_version=view.configuration_version)
             state["view"] = view.model_copy(update=changes).model_dump(mode="json")

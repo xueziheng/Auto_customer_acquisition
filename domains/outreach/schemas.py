@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 
+from domains.outreach.customer_agent_policy import (
+    CustomerAgentPolicy,
+    CustomerAgentPolicyInput,
+)
 from domains.outreach.models import (
     CampaignBoundary,
     CampaignState,
@@ -23,6 +27,10 @@ from domains.outreach.models import (
     _split_deterministic_message_id,
     _split_idempotency_header,
     _validate_delivery_route,
+)
+from domains.outreach.ordinary_dialogue_policy import (
+    OrdinaryDialoguePolicy,
+    OrdinaryDialoguePolicyInput,
 )
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
@@ -255,6 +263,8 @@ class CampaignCreateRequest:
     daily_total_message_limit: int
     handoff_triggers: tuple[str, ...]
     stop_on_reply: bool = True
+    ordinary_dialogue_policy: OrdinaryDialoguePolicyInput | None = None
+    customer_agent_policy: CustomerAgentPolicyInput | None = None
 
     def __post_init__(self) -> None:
         _require_safe_text(self.name, "Campaign name", allow_spaces=True)
@@ -603,6 +613,8 @@ class CampaignBoundaryView:
     daily_total_message_limit: int
     handoff_triggers: tuple[str, ...]
     stop_on_reply: bool
+    ordinary_dialogue_policy: OrdinaryDialoguePolicy | None = None
+    customer_agent_policy: CustomerAgentPolicy | None = None
 
 
 @dataclass(frozen=True)

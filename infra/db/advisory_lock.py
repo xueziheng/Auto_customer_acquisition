@@ -87,7 +87,7 @@ class PostgresAdvisoryLock:
         if not self._owned or connection is None or expected_pid is None:
             return False
         try:
-            current_pid = (
+            current_pid: int = (
                 await connection.execute(text("SELECT pg_backend_pid()"))
             ).scalar_one()
             await connection.commit()
@@ -112,7 +112,7 @@ class PostgresAdvisoryLock:
         try:
             if self._owned:
                 try:
-                    released = (
+                    released: bool = (
                         await connection.execute(
                             text("SELECT pg_advisory_unlock(:lock_key)"),
                             {"lock_key": self._lock_key},

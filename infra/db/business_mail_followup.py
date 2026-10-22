@@ -24,7 +24,8 @@ from infra.db.business_mail_followup_tables import (
     BusinessMailReplyDraftRow,
 )
 from infra.db.business_mail_tables import BusinessMailboxRow, BusinessMailRow
-from shared.errors import ValidationError
+from infra.db.dialogue_execution_tables import DialogueBindingRow
+from shared.errors import PermissionDenied, ValidationError
 from shared.schemas.identifiers import new_id
 
 
@@ -38,6 +39,14 @@ class CurrentBusinessMailLease:
         self, db: AsyncSession, actor: BusinessMailActor, message_id: str
     ) -> tuple[BusinessMailRow, BusinessMailboxRow]:
         return await self.source._message(db, actor, message_id)
+
+    async def reject_ordinary_dialogue(self, db: AsyncSession, actor: BusinessMailActor, message_id: str) -> None:
+        """原件锁内检查，避免QQ验收领取与正式准入各自成功。"""
+        binding = await db.scalar(select(DialogueBindingRow.binding_id).where(
+            DialogueBindingRow.tenant_id == actor.tenant_id,
+            DialogueBindingRow.business_message_id == message_id).limit(1))
+        if binding is not None:
+            raise PermissionDenied("该邮件已纳入普通沟通，不能重复执行QQ询盘")
 
     async def check(self, actor: BusinessMailActor, box: BusinessMailboxRow) -> None:
         await self.source.binding.check(actor, box.address, box.binding_operation_id)
@@ -82,12 +91,12 @@ class SqlBusinessMailFollowupRepository:
                     BusinessMailReplyDraftRow.draft_id == current.draft_id,
                 )
             )
-        return BusinessMailFollowupView(
-            message_id=message.message_id,
-            revision=current.revision if current else 0,
-            owner_id=box.owner_id,
-            status=current.status if current else "pending",
-            draft=BusinessMailReplyDraftView(
+        return BusinessMailFollowupView.model_validate({
+            "message_id": message.message_id,
+            "revision": current.revision if current else 0,
+            "owner_id": box.owner_id,
+            "status": current.status if current else "pending",
+            "draft": BusinessMailReplyDraftView(
                 **{
                     k: getattr(draft, k)
                     for k in BusinessMailReplyDraftView.model_fields
@@ -95,13 +104,13 @@ class SqlBusinessMailFollowupRepository:
             )
             if draft
             else None,
-            history=[
+            "history": [
                 BusinessMailFollowupEvent(
                     **{k: getattr(h, k) for k in BusinessMailFollowupEvent.model_fields}
                 )
                 for h in history
             ],
-        )
+        })
 
     async def get(
         self, actor: BusinessMailActor, message_id: str
@@ -128,6 +137,8 @@ class SqlBusinessMailFollowupRepository:
         )
         async with self.sessions.begin() as db:
             message, box = await self.lease.acquire(db, actor, message_id)
+            if key.startswith(('inquiry-', 'business-reply-')):
+                await self.lease.reject_ordinary_dialogue(db, actor, message_id)
             digest = hashlib.sha256(
                 json.dumps(
                     {
@@ -205,7 +216,7 @@ class SqlBusinessMailFollowupRepository:
             state.revision += 1
             if draft_id:
                 state.draft_id = draft_id
-            else:
+            elif isinstance(command, BusinessMailHandlingCommand):
                 state.status = command.status
             db.add(
                 BusinessMailFollowupEventRow(
@@ -215,7 +226,7 @@ class SqlBusinessMailFollowupRepository:
                     kind=kind,
                     revision=state.revision,
                     status=state.status,
-                    note="保存未发送回复草稿" if draft_id else command.note,
+                    note="保存未发送回复草稿" if isinstance(command, BusinessMailDraftCommand) else command.note,
                     actor_id=actor.employee_id,
                     created_at=now,
                     draft_id=draft_id,

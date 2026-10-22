@@ -83,7 +83,8 @@ class QQSentAliasCollector:
             async with asyncio.timeout(deadline.remaining()):
                 if not await self._authorize():
                     raise QQTrialStopped("alias_binding")
-                password = self._resolver.resolve("QQ_INBOUND_AUTH")
+                reference = "QQ_INBOUND_AUTH"
+                password = self._resolver.resolve(reference)
                 if not isinstance(password, str) or not 0 < len(password) <= 1024:
                     raise QQTrialStopped("alias_binding")
                 await command("open")

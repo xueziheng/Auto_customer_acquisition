@@ -23,10 +23,11 @@ async def setup_service(integration_engine, tmp_path, rejected=False, provider="
     calls = []
     class Authentication:
         def __init__(self, address, password):
-            self.address, self.password = address, password
+            self.address = address
+            self.password = password
         async def authenticate(self):
             calls.append(self.address)
-            assert self.password.get_secret_value() == "synthetic-aliyun-only"
+            assert self.password.get_secret_value() == 'xxxxxxxxxxxxxxxxxxxxx'
             if rejected:
                 raise ToolGatewayError(ToolErrorCategory.PROVIDER_AUTH_REQUIRED)
     service_type = AliyunWebService
@@ -35,7 +36,7 @@ async def setup_service(integration_engine, tmp_path, rejected=False, provider="
         service_type = QQWebService
     service = service_type(tmp_path, sessions, HmacFingerprintProvider("v1", b"t" * 32),
         connector_factory=Authentication)
-    command = AliyunConnectCommand(email="sales@example.com", password="synthetic-aliyun-only", confirm_connect=True)
+    command = AliyunConnectCommand(email="sales@example.com", password='xxxxxxxxxxxxxxxxxxxxx', confirm_connect=True)
     return service, actor, command, calls
 
 
@@ -58,7 +59,7 @@ async def test_connect_via_gateway_then_current_employee_only(integration_engine
         rows = (await s.scalars(select(ToolCallRow).where(ToolCallRow.tenant_id == actor.tenant_id))).all()
         assert len(rows) == 1 and rows[0].status == "succeeded"
         serialized = repr({c.name: getattr(rows[0], c.name) for c in ToolCallRow.__table__.columns})
-        assert "synthetic-aliyun-only" not in serialized and "sales@example.com" not in serialized
+        assert 'xxxxxxxxxxxxxxxxxxxxx' not in serialized and "sales@example.com" not in serialized
     with pytest.raises(PermissionDenied):
         await service.status(actor.model_copy(update={"user_id": new_id("usr")}))
     async with service.sessions.begin() as s:
@@ -83,7 +84,7 @@ async def test_delivery_resolver_requires_current_employee_and_exact_bound_sende
     resolved = []
     def connector(address, password):
         resolved.append(address)
-        assert password.get_secret_value() == "synthetic-aliyun-only"
+        assert password.get_secret_value() == 'xxxxxxxxxxxxxxxxxxxxx'
         return object()
     delivery = AliyunOutboundConnectors(service.store, service.sessions, connector_factory=connector)
     await delivery.resolve(actor.tenant_id, actor.employee_id, command.email)

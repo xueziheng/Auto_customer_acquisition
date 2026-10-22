@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from domains.prospecting.agent_profile import (
+    AgentAccountProfilePatch,
+    AgentProfileEvidenceReader,
+)
 from domains.prospecting.customer_preparation import AccountProfilePatch
 from domains.prospecting.repository import (
     ProspectingUnitOfWork as _ProspectingUnitOfWork,
@@ -74,6 +78,13 @@ class ProspectingService(Protocol):
         request: AccountProfilePatch,
     ) -> ProspectAccountView:
         """仅补缺失类型/行业；来源需人工确认，同值幂等，冲突拒绝且不覆盖。"""
+        ...
+
+    async def fill_account_profile_from_evidence(
+        self, tenant_id: TenantId, account_id: ProspectAccountId,
+        request: AgentAccountProfilePatch, *, evidence: AgentProfileEvidenceReader,
+    ) -> ProspectAccountView:
+        """核验本企业真实网页逐字证据后补空，保留Agent提取者，不替代人工入口。"""
         ...
 
     async def resolve_account(
@@ -186,3 +197,25 @@ from domains.prospecting.inventory import (
 )
 
 __all__ = ['AcquisitionJob', 'AcquisitionWorker', 'CandidateAllocation', 'ContactValueHasher', 'EnrichmentProvider', 'InventoryQuery', 'InventoryResult', 'InventoryService', 'InventoryStatus', 'ProspectingService', 'ProspectingUnitOfWork', 'PublicCandidate', 'PublicCatalog', 'SourceHistory', 'SourceState', 'select_sources']
+
+# 服务计划为统一获客任务提供附加运营上限，不授予发送权限。
+from .service_plan_contracts import (  # noqa: F401
+    PendingDiscoveryCycle,
+    ProspectingServicePlanStore,
+    ScreeningEvidenceBody,
+    ServicePlanReservation,
+    ServicePlanScheduleBody,
+    ServicePlanState,
+    ServicePlanStatusView,
+    contact_mission_key,
+)
+from .service_tiers import (  # noqa: F401
+    ScreeningAssessment,
+    ScreeningEvidence,
+    ScreeningEvidenceKind,
+    ServiceTier,
+    ServiceTierPolicy,
+    evaluate_screening,
+    evidence_source_domain,
+    tier_policy,
+)

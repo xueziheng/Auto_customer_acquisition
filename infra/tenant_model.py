@@ -10,6 +10,8 @@ def resolve_task_model(settings: StandaloneModelSettings, identity: InvocationId
         return settings
     if str(identity.tenant_id) != settings.api_business_tenant or identity.configuration_version != settings.configuration_version:
         raise ModelGenerationError("configuration")
+    if settings.api_control_tenant is None:
+        raise ModelGenerationError("configuration")
     catalog = FileModelCatalog(settings.model_catalog_directory, TenantId(settings.api_control_tenant))
     try:
         selected = catalog.for_run(str(identity.tenant_id), str(identity.run_id), f"{identity.user_id}/{identity.employee_id}", identity.configuration_version)

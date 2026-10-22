@@ -31,22 +31,89 @@ from tool_gateway.fingerprint import HmacFingerprintProvider
 
 @pytest.mark.parametrize(
     "response_text,valid,shape",
-    [('{"candidates":[]}', True, 'valid'), ('{"invented":"private-invalid-result"}', False, 'invalid_top_keys'),
-     ('[]', False, 'not_object'), ('{"candidates":null}', False, 'candidates_not_list'),
-     ('PRIVATE', False, 'invalid_json'), ('{"candidates":[' + ','.join(['null'] * 101) + ']}', False, 'candidates_over_limit')],
+    [
+        ('{"candidates":[]}', True, "valid"),
+        ('{"invented":"private-invalid-result"}', False, "invalid_top_keys"),
+        ("[]", False, "not_object"),
+        ('{"candidates":null}', False, "candidates_not_list"),
+        ("PRIVATE", False, "invalid_json"),
+        (
+            '{"candidates":[' + ",".join(["null"] * 101) + "]}",
+            False,
+            "candidates_over_limit",
+        ),
+    ],
 )
+@pytest.mark.parametrize("with_context", [False, True])
 async def test_inventory_model_uses_job_identity_and_persistent_gateway(
-    unit_engine, monkeypatch, response_text, valid, shape
+    unit_engine, monkeypatch, response_text, valid, shape, with_context
 ):
     tenant, control = TenantId(new_id("tn")), TenantId(new_id("tn"))
     employee = EmployeeId(new_id("emp"))
     sessions = async_sessionmaker(unit_engine, expire_on_commit=False)
     catalog = PostgresPublicCatalog(sessions, control)
     backend = PostgresInventoryService(sessions, tenant, catalog)
+    context_reader = None
+    refs = ()
+    if with_context:
+        from domains.products.schemas import KnowledgeActor
+        from domains.products.service import EnterpriseKnowledgeServiceImpl
+        from tests.unit.test_enterprise_knowledge import (
+            ANALYSIS,
+            SOURCE,
+            TEXT,
+            MemoryRepo,
+            MemoryUow,
+        )
+        from workflows.enterprise_knowledge.confirmed_context import (
+            ConfirmedContextReader,
+        )
+
+        repo = MemoryRepo()
+        repo.roles[employee] = ("boss", "usr_fixture")
+        knowledge = EnterpriseKnowledgeServiceImpl(lambda tenant: MemoryUow(repo))
+        actor_knowledge = KnowledgeActor(tenant_id=tenant, employee_id=employee)
+        doc = await knowledge.register_upload(
+            tenant, actor_knowledge, SOURCE, idempotency_key="synthetic"
+        )
+        claim = await knowledge.claim_next(tenant, lease_owner="synthetic")
+        detail = await knowledge.complete_processing(
+            tenant,
+            claim,
+            source_text=TEXT,
+            analysis=ANALYSIS,
+            model="synthetic",
+            extracted_by="synthetic",
+        )
+        await knowledge.confirm(
+            tenant,
+            actor_knowledge,
+            doc.document_id,
+            revision_id=detail.revision.revision_id,
+            expected_version=detail.document.version,
+        )
+        refs = (
+            {
+                "document_id": doc.document_id,
+                "revision_id": detail.revision.revision_id,
+            },
+        )
+        context_reader = ConfirmedContextReader(knowledge)
+    original_fresh = catalog.fresh
+
+    async def public_fresh(query, now):
+        assert query is None or (query.intent is None and not query.confirmed_refs)
+        return await original_fresh(query, now)
+
+    catalog.fresh = public_fresh
     await backend.request(
         tenant,
         employee,
-        InventoryQuery(product_tags=("private-query",)),
+        InventoryQuery(
+            product_tags=("private-query",),
+            intent="内部目标" if with_context else None,
+            confirmed_refs=refs,
+        ),
         1,
         "inventory-model-request",
     )
@@ -93,11 +160,38 @@ async def test_inventory_model_uses_job_identity_and_persistent_gateway(
 
     class Provider:
         calls = 0
+        fit_mode = False
 
         async def generate(self, request):
             self.calls += 1
+            if self.fit_mode:
+                assert request.payload["allowed_source"] == "inventory_fit"
+                assert request.payload["internal_confirmed_context"][0]["facts"]
+                assert (
+                    request.payload["candidates_for_fit"][0]["candidate_id"]
+                    == "pci_test"
+                )
+                return ModelResponse(
+                    text='{"assessments":[{"candidate_id":"pci_test","matched":true,"evidence_quote":"Acme repairs hinges","inference":"推断：公开维修网络与本企业目标适配"}]}',
+                    model=request.model,
+                    usage=ModelUsage(
+                        input_tokens=20, cached_input_tokens=0, output_tokens=10
+                    ),
+                )
             assert request.payload["query"] == job.query.model_dump(mode="json")
             assert request.payload["allowed_source"] == "company_websites"
+            if with_context:
+                assert (
+                    request.payload["internal_confirmed_context"][0]["facts"][0][
+                        "value"
+                    ]
+                    == "stainless steel"
+                )
+                assert request.payload["internal_confirmed_context"][0][
+                    "fact_provenance"
+                ]
+            else:
+                assert request.payload["internal_confirmed_context"] == []
             return ModelResponse(
                 text=response_text,
                 model=request.model,
@@ -119,7 +213,9 @@ async def test_inventory_model_uses_job_identity_and_persistent_gateway(
     ) as session:
 
         def configured(selected, identity, *, discovery):
-            assert discovery is session and identity.run_id == job.id
+            assert (
+                provider.fit_mode or discovery is session
+            ) and identity.run_id == job.id
             return provider
 
         monkeypatch.setattr(
@@ -136,6 +232,7 @@ async def test_inventory_model_uses_job_identity_and_persistent_gateway(
             sessions=sessions,
             fingerprints=HmacFingerprintProvider("v1", b"k" * 32),
             lease_owner="inventory-model-test",
+            context_reader=context_reader,
         )
         if valid:
             assert await model.generate(
@@ -148,7 +245,9 @@ async def test_inventory_model_uses_job_identity_and_persistent_gateway(
                 )
             assert failure.value.code == "invalid_response"
             assert failure.value.summary.input_shape == shape
-            assert "private-invalid-result" not in failure.value.summary.model_dump_json()
+            assert (
+                "private-invalid-result" not in failure.value.summary.model_dump_json()
+            )
         with pytest.raises(ModelGenerationError):
             await model.generate(job, "company_websites", session, {"query": "spoof"})
     assert provider.calls == 1
@@ -175,3 +274,26 @@ async def test_inventory_model_uses_job_identity_and_persistent_gateway(
             ]
         )
         assert "private-query" not in safe and "private-invalid-result" not in safe
+
+    if valid and with_context:
+        from tests.unit.test_prospect_inventory import candidate
+
+        c = candidate(
+            product_tags=("private-query",),
+            evidence_text="Acme repairs hinges through dealer network",
+        )
+        await catalog.save_public((c,))
+        batch = await backend.reserve_fit_batch(tenant, job.id, job.lease_token, (c,))
+        provider.fit_mode = True
+
+        async def guard():
+            await context_reader.read(tenant, employee, job.query.confirmed_refs)
+
+        decisions = await model.evaluate(job, batch, (c,), guard)
+        assert decisions[0].matched and decisions[0].source_type == "agent_inference"
+        await backend.complete_fit_batch(
+            tenant, job.id, job.lease_token, batch.sequence, decisions
+        )
+        result = await backend.deliver_job(tenant, job.id, job.lease_token)
+        assert [allocation.candidate.id for allocation in result.allocations] == [c.id]
+        assert provider.calls == 2

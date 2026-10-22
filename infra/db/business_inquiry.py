@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from email.utils import getaddresses
 from types import SimpleNamespace
 
-from sqlalchemy import or_, select
+from sqlalchemy import exists, or_, select
 
 from domains.conversations.business_inquiry import (
     InquiryAutomationScope,
@@ -17,6 +17,7 @@ from domains.conversations.business_mail_followup import (
 from infra.db.business_mail_followup import SqlBusinessMailFollowupRepository
 from infra.db.business_mail_tables import BusinessMailClassificationRow, BusinessMailRow
 from infra.db.business_reply import CurrentBusinessReplyPolicy
+from infra.db.dialogue_execution_tables import DialogueBindingRow
 from infra.pilot.config import private_read
 from shared.errors import PermissionDenied, ValidationError
 
@@ -54,6 +55,9 @@ class InquiryRecords:
                         BusinessMailRow.source_kind == "full_mime",
                         BusinessMailRow.classification_status == "classified",
                         BusinessMailRow.category == "business",
+                        ~exists(select(DialogueBindingRow.binding_id).where(
+                            DialogueBindingRow.tenant_id == s.actor.tenant_id,
+                            DialogueBindingRow.business_message_id == BusinessMailRow.message_id)),
                     )
                     .order_by(BusinessMailRow.ingested_at, BusinessMailRow.message_id)
                 )

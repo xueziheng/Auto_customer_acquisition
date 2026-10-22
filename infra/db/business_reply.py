@@ -57,6 +57,7 @@ class CurrentBusinessReplyPolicy:
             return False
         async with self.source.sessions.begin() as db:
             row, box = await self.lease.acquire(db, scope.actor, scope.message_id)
+            await self.lease.reject_ordinary_dialogue(db, scope.actor, scope.message_id)
             if (
                 box.address != scope.sender
                 or box.binding_operation_id != scope.binding_operation_id
@@ -145,6 +146,7 @@ class CurrentBusinessReplyPolicy:
     async def metadata(self, message_id):
         async with self.source.sessions.begin() as db:
             row, box = await self.lease.acquire(db, self.scope.actor, message_id)
+            await self.lease.reject_ordinary_dialogue(db, self.scope.actor, message_id)
             if (
                 box.address != self.scope.sender
                 or box.binding_operation_id != self.scope.binding_operation_id

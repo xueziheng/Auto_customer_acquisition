@@ -123,3 +123,53 @@ async def test_current_employee_revocation_rejects_model(field, value):
     with pytest.raises(ModelGenerationError):
         await authority.check(identity)
     config.authorize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["intent", "label", "payload", "context", "evidence"])
+@pytest.mark.parametrize("marker", ["password=placeholder", "token=SYNTHETIC_PLACEHOLDER", "sk-" + "X" * 24, "tvly-" + "X" * 24, None])
+async def test_actual_model_dispatch_guards_complete_search_and_fit_projection(monkeypatch, field, marker):
+    from apps.scheduler_worker import inventory_model as module
+    from domains.prospecting.inventory_fit import (
+        InventoryFitBatch,
+        fit_query_fingerprint,
+    )
+    from tests.unit.test_prospect_inventory import candidate
+
+    _, job, reader, _, _ = setup()
+    value = marker or "普通经销商目标"
+    query = InventoryQuery(product_tags=(value if field == "label" else "hinges",),
+        intent=value if field == "intent" else "正常目标",
+        confirmed_refs=({"document_id": "doc", "revision_id": "rev"},))
+    # 旧请求序列化后重新加载，输入护栏不能依赖API曾经检查。
+    job = AcquisitionJob.model_validate_json(job.model_copy(update={"query": query, "attempts": 2}).model_dump_json())
+    reader.get_job.return_value = job
+    identity = SimpleNamespace()
+    monkeypatch.setattr(module, "InventoryModelAuthority", lambda **_: SimpleNamespace(identity=AsyncMock(return_value=identity), check=AsyncMock()))
+    settings = SimpleNamespace(configuration_version="v1", api_key_file="never-read", codex_job_root="never-created",
+        model="synthetic", limits=SimpleNamespace(timeout_seconds=1, max_output_tokens=100))
+    monkeypatch.setattr(module, "resolve_task_model", lambda *_: settings)
+    generator = SimpleNamespace(generate=AsyncMock(return_value=SimpleNamespace(text='{"candidates": []}')))
+    composition = SimpleNamespace(generator=generator, aclose=AsyncMock())
+    monkeypatch.setattr(module, "build_model_composition", lambda **_: composition)
+    model = module.InventoryDiscoveryModel(tenant_id=TENANT, backend=reader, employees=None, configuration=None,
+        settings=settings, resolver=None, sessions=None, fingerprints=None, lease_owner="test",
+        context_reader=SimpleNamespace(read=AsyncMock(return_value=[{"facts": {"name": value if field == "context" else "steel"}}])))
+
+    async def dispatch():
+        if field == "evidence":
+            c = candidate(evidence_text=value)
+            batch = InventoryFitBatch(sequence=0, query_fingerprint=fit_query_fingerprint(query),
+                candidates=({"candidate_id": c.id, "evidence_version": module.candidate_evidence_version(c)},), state="started")
+            generator.generate.return_value.text = __import__("json").dumps({"assessments": [{"candidate_id": c.id,
+                "matched": False, "evidence_quote": value, "inference": "推断证据不足"}]})
+            return await model.evaluate(job, batch, (c,), AsyncMock())
+        return await model.generate(job, "company_websites", None, {"hint": value if field == "payload" else "normal"})
+
+    if marker:
+        with pytest.raises(ModelGenerationError):
+            await dispatch()
+        generator.generate.assert_not_awaited()
+    else:
+        await dispatch()
+        generator.generate.assert_awaited_once()

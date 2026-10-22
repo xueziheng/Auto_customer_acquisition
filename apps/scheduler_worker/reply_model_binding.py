@@ -1,6 +1,7 @@
 """业务回复模型的受信绑定；正文和模型输出不得授予调用身份。"""
 
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Protocol
 
 from pydantic import ValidationError as SchemaValidationError
@@ -56,6 +57,12 @@ class ReplyRetryAuthority(Protocol):
     ) -> InvocationIdentity: ...
 
 
+class OrdinaryReplyActor(Protocol):
+    async def actor(self, tenant: TenantId, message: MessageId) -> AssistantActor | None:
+        """只从精确服务器绑定选择当前获批owner，无绑定返回None保留旧权限。"""
+        ...
+
+
 class ReplyModelAuthority:
     """受托员工的当前资格、规范回复关联与模型许可必须同时成立。"""
 
@@ -67,11 +74,15 @@ class ReplyModelAuthority:
         configuration: ModelConfigurationService,
         *,
         tenant_id: TenantId,
-        employee_id: EmployeeId,
+        employee_id: EmployeeId | None,
         model: str,
         retries: ReplyRetryAuthority | None = None,
         recovery_only: bool = False,
+        ordinary: OrdinaryReplyActor | None = None,
+        resolved_model: Callable[[InvocationIdentity], str] | None = None,
     ) -> None:
+        self._resolved_model = resolved_model
+        self._ordinary = ordinary
         self._recovery_only = recovery_only
         self._retries = retries
         self._runs = runs
@@ -82,9 +93,15 @@ class ReplyModelAuthority:
         self._employee_id = employee_id
         self._model = model
 
-    async def _actor(self) -> AssistantActor:
+    async def _actor(self, message: MessageId) -> AssistantActor:
         """只读当前员工公开服务，不把配置中的员工编号当成授权。"""
         try:
+            if self._ordinary is not None:
+                delegated = await self._ordinary.actor(self._tenant_id, message)
+                if delegated is not None:
+                    return delegated
+            if self._employee_id is None:
+                raise ModelGenerationError("permission")
             async with self._employees(self._tenant_id) as service:
                 employee = await service.get_employee(
                     self._tenant_id, self._employee_id, actor=self._lookup
@@ -115,7 +132,7 @@ class ReplyModelAuthority:
     ) -> InvocationIdentity:
         """从持久关联和当前员工产生固定序号，拒绝历史身份漂移。"""
         run_id = await self._runs.resolve(self._tenant_id, message_id)
-        actor = await self._actor()
+        actor = await self._actor(message_id)
         if self._retries is not None:
             retry = await self._retries.retry_identity(
                 self._tenant_id, message_id, configuration_version
@@ -143,7 +160,7 @@ class ReplyModelAuthority:
         if (
             (self._recovery_only and identity.sequence < 1)
             or identity.tenant_id != self._tenant_id
-            or identity.employee_id != self._employee_id
+            or (self._ordinary is None and identity.employee_id != self._employee_id)
             or identity.capability != "reply_qualification"
             or identity.turn_id is not None
             or (
@@ -152,9 +169,9 @@ class ReplyModelAuthority:
             )
         ):
             raise ModelGenerationError("permission")
-        await self._runs.validate(self._tenant_id, identity.run_id)
-        actor = await self._actor()
-        if actor.user_id != identity.user_id:
+        message_id = await self._runs.validate(self._tenant_id, identity.run_id)
+        actor = await self._actor(message_id)
+        if actor.user_id != identity.user_id or actor.employee_id != identity.employee_id:
             raise ModelGenerationError("permission")
         allowed = [identity]
         if identity.sequence >= 1:
@@ -168,7 +185,7 @@ class ReplyModelAuthority:
                 and 0 <= prior.sequence < identity.sequence
                 and prior.model_copy(update={"sequence": identity.sequence}) == identity
             )
-            if (prior not in allowed and not authorized_retry) or model != self._model:
+            if (prior not in allowed and not authorized_retry) or model != (self._resolved_model(identity) if self._resolved_model else self._model):
                 raise ModelGenerationError("permission")
         try:
             await self._configuration.authorize(
@@ -191,9 +208,11 @@ class BoundReplyClassifier:
         max_output_tokens: int,
         retry_generator: Callable[[InvocationIdentity, MessageId], ModelGenerationPort]
         | None = None,
+        select_model: Callable[[InvocationIdentity, MessageId], Awaitable[tuple[str, ModelGenerationPort] | None]] | None = None,
         replay: Callable[[MessageId], Awaitable[ReplyClassificationResult | None]]
         | None = None,
     ) -> None:
+        self._select_model = select_model
         self._replay = replay
         self._retry_generator = retry_generator
         self._authority = authority
@@ -242,10 +261,14 @@ class BoundReplyClassifier:
             generator = self._retry_generator(
                 identity, MessageId(message["message_id"])
             )
+        actual_model = self._model
+        if self._select_model is not None:
+            selected = await self._select_model(identity, MessageId(message['message_id']))
+            if selected is not None:
+                actual_model, generator = selected
         client = GatewayJsonModelClient(identity, generator)
         port = StructuredReplyModelPort(
-            client, self._model, max_output_tokens=self._max_output_tokens
+            client, actual_model, max_output_tokens=self._max_output_tokens
         )
-        return await QualificationAgent(self._model, port, None, None).classify(
-            message=message
-        )
+        result = await QualificationAgent(actual_model, port, None, None).classify(message=message)
+        return replace(result, model_used=actual_model)

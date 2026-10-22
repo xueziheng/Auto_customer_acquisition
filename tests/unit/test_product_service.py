@@ -518,3 +518,17 @@ async def test_matching_requires_complete_exact_evidence_bound_spec_comparisons(
             "product_spec_duplicate",
         }
         assert finding.spec_comparisons
+
+
+async def test_dialogue_view_requires_current_formal_product_and_only_exports_customer_fields():
+    from dataclasses import asdict
+
+    from shared.errors import ValidationError
+    product = _formal_product("prd_dialogue")
+    service, _, _ = _service(products=_Products([product]))
+    view = await service.get_ordinary_dialogue_view(TENANT, product.product_id, actor=_actor())
+    assert view.name_en == "Hinge"
+    assert "internal_cost" not in asdict(view) and "supplier_id" not in asdict(view)
+    product.pool = ProductPool.CANDIDATE
+    with pytest.raises(ValidationError):
+        await service.get_ordinary_dialogue_view(TENANT, product.product_id, actor=_actor())

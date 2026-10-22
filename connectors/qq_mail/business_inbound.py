@@ -6,13 +6,22 @@ import hashlib
 import re
 from datetime import UTC, datetime
 from email import policy
+from email.message import MIMEPart
 from email.parser import BytesParser
 from email.utils import getaddresses, parsedate_to_datetime
 from html.parser import HTMLParser
 
+from connectors.qq_mail.dialogue_feedback import parse_dialogue_report
+from connectors.qq_mail.inbound import QQInboundTransport
 from connectors.qq_mail.inbound_transport import _Session, _thread_call
 from connectors.qq_mail.mime_structure import _Wire
 from shared.business_mail import BusinessFetchPage, RawBusinessMail
+from shared.errors import ValidationError
+from shared.schemas.business_reply import (
+    validate_reply_address,
+    validate_reply_message_id,
+)
+from shared.schemas.email_feedback import EmailFeedbackCorrelation
 from shared.schemas.email_inbound import HEADER_BYTES, MIME_BYTES, InboundError
 from shared.schemas.email_inbound_diagnostics import require_protocol_ok
 from shared.schemas.qq_trial import QQTrialStopped
@@ -73,7 +82,7 @@ def _parse_business_body(result: object, uid: int) -> tuple[bytes, int | None]:
             )
         ):
             raise InboundError()
-        return raw, reported
+        return raw, reported if type(reported) is int else None
     except QQTrialStopped:
         raise InboundError() from None
 
@@ -118,6 +127,7 @@ def parse_business_mime(
     if not 0 < len(raw) <= MIME_BYTES:
         raise InboundError()
     failure = None
+    in_reply_to, reply_recipient, feedback = None, None, None
     sender, subject, body, message_header = "", "", "", None
     occurred = received_at or datetime.now(UTC)
     try:
@@ -129,6 +139,25 @@ def parse_business_mime(
         ids = message.get_all("Message-ID", [])
         if len(ids) == 1 and re.fullmatch(r"<[^<>\s]{1,998}>", str(ids[0])):
             message_header = str(ids[0])
+        replies = message.get_all("In-Reply-To", [])
+        recipients = getaddresses(message.get_all("To", []))
+        if len(replies) == 1 and len(recipients) == 1:
+            try:
+                reply_header = str(replies[0])
+                try:
+                    validate_reply_message_id(reply_header)
+                except ValidationError:
+                    # 旧冷发送使用独立的有界 route+hash 标识，不能按邮箱 local-part 上限丢弃。
+                    if not reply_header.startswith("<") or not reply_header.endswith(">"):
+                        raise
+                    local = reply_header[1:-1].split("@", 1)[0]
+                    route = local.split(".", 1)[0] if "." in local else None
+                    EmailFeedbackCorrelation(route, reply_header[1:-1], None)
+                validate_reply_address(recipients[0][1])
+                in_reply_to, reply_recipient = str(replies[0]), recipients[0][1]
+            except ValidationError:
+                pass
+        feedback = parse_dialogue_report(raw)
         dates = message.get_all("Date", [])
         if len(dates) == 1:
             try:
@@ -139,7 +168,7 @@ def parse_business_mime(
                 failure = "invalid_date"
         plain: list[str] = []
         html: list[str] = []
-        parts = [message]
+        parts: list[MIMEPart] = [message]
         while parts:
             part = parts.pop()
             # walk()会继续进入被跳过的附件容器；必须在遍历前剪枝整棵附件子树。
@@ -172,7 +201,8 @@ def parse_business_mime(
         sender=sender,
         subject=subject,
         body_text=body,
-        message_header=message_header,
+        message_header=message_header, in_reply_to=in_reply_to, reply_recipient=reply_recipient,
+        dialogue_feedback=feedback,
         received_at=occurred,
         parse_failure=failure,
         raw_mime=raw,
@@ -198,7 +228,7 @@ def content_hash(message: RawBusinessMail) -> str:
 
 class QQBusinessInboundConnector:
     def __init__(
-        self, transport: object, *, initial_uid_window: int = 500, page_size: int = 20
+        self, transport: QQInboundTransport, *, initial_uid_window: int = 500, page_size: int = 20
     ) -> None:
         if not 1 <= initial_uid_window <= 2000 or not 1 <= page_size <= 50:
             raise ValueError("普通来信读取范围无效")
@@ -241,7 +271,7 @@ class QQBusinessInboundConnector:
                 connection.budget = HEADER_BYTES
                 connection.literal_limit = HEADER_BYTES
                 status, data = connection.uid(
-                    "SEARCH", None, "UID", f"{after + 1}:{upper}"
+                    "SEARCH", None, "UID", f"{after + 1}:{upper}"  # type: ignore[arg-type]  # imaplib允许None省略charset
                 )
                 require_protocol_ok(status)
                 if (

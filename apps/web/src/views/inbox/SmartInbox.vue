@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import { useRoute } from "vue-router";
 import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
@@ -25,8 +25,21 @@ const items = ref<InboxItem[]>([]);
 const previews = ref<Record<string, components["schemas"]["MessageContentView"]>>({});
 type ReplyWork = components["schemas"]["ReplyWorkActionView"];
 const replyWork = ref<ReplyWork[]>([]);
+const reviewReasons: Record<string, string> = {
+  need_validated_intake_permission_required: "需求已验证，待有权限人员建立或接管贸易机会",
+  commercial_request: "客户提出商业承诺问题，请人工处理并按要求逐次审批",
+  scope_changed: "当前授权或资料已变化，自动回复已暂停",
+  budget_exhausted: "本次授权的调用或回复额度已用完",
+  unsupported_provider: "当前邮箱尚不支持此线程回复",
+  no_progress: "连续回复未增加需求信息，请人工判断",
+  human_requested: "客户要求人工沟通",
+  insufficient_evidence: "缺少可对外使用的资料，请人工核对",
+  invalid_plan: "回复计划未通过资料或格式校验，未发送，请人工处理",
+  model_result_unknown: "模型结果未能确认，已保留调用记录且不会自动重试，请人工处理",
+};
 const workNotes = ref<Record<string, string>>({});
 const workRecovery = replyWorkRecovery(client);
+onBeforeUnmount(workRecovery.dispose);
 const workRequests = workRecovery.records;
 const expandedEvidence = ref<Record<string, boolean>>({});
 const workSections = computed(() => [
@@ -587,6 +600,7 @@ onMounted(() => void loadItems());
             >
               <strong>{{ actionLabels[work.action] ?? work.action }} · {{ workStatusLabels[work.status] }}</strong>
               <span>{{ categoryLabel(detail.messages.find(message => message.message_id === work.message_id)?.effective_category ?? null) }}</span>
+              <p v-if="work.review_reason">{{ reviewReasons[work.review_reason] ?? "自动回复已暂停，请人工核对" }}</p>
               <details @toggle="expandedEvidence[work.action_id] = ($event.target as HTMLDetailsElement).open">
                 <summary>查看本工作项的原邮件依据</summary>
                 <MessageContent

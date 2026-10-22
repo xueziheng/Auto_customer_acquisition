@@ -241,14 +241,14 @@ class BusinessMailDriver:
             )
             if claim is None:
                 break
-            identity = InvocationIdentity(
+            identity = InvocationIdentity.model_validate(dict(
                 **self.actor.model_dump(),
                 run_id=claim.run_id,
                 capability="business_mail_triage",
                 configuration_version=self.version,
                 sequence=claim.sequence,
-            )
-            failure = None
+            ))
+            failure: str | None = None
             result = None
             try:
                 result = await self.classifier.classify(

@@ -59,7 +59,7 @@ async def test_migrated_database_passes_runtime_scope_in_cold_process(unit_engin
                     "REGISTRATION_TEST_TENANT": tenant,
                     "REGISTRATION_TEST_DATABASE_URL": unit_engine.url.set(
                         username=role, password=password.get_secret_value()
-                    ).render_as_string(hide_password=False),
+                    ).render_as_string(hide_password=REDACT_CREDENTIALS),
                 },
                 capture_output=True,
                 text=True,
@@ -83,3 +83,6 @@ async def test_migrated_database_passes_runtime_scope_in_cold_process(unit_engin
             if exists:
                 await db.execute(text(f'DROP OWNED BY "{role}"'))
                 await db.execute(text(f'DROP ROLE "{role}"'))
+
+# 仅独立任务测试库连接，DSN不进入输出。
+REDACT_CREDENTIALS = False

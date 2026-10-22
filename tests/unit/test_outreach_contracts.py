@@ -155,7 +155,7 @@ def test_provider_protocol_signatures_are_exact_async_contracts() -> None:
         ),
         "SendingIdentityEligibilityProvider": (
             "get_sending_identity_eligibility",
-            ("self", "tenant_id", "identity_id"),
+            ("self", "tenant_id", "identity_id", "for_cold_outreach"),
         ),
         "CampaignApprovalProvider": (
             "get_campaign_approval",

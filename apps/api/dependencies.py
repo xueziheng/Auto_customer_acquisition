@@ -55,7 +55,7 @@ from domains.outreach.permissions import (
 )
 from domains.outreach.service import OutreachService
 from domains.products.service import CatalogProposalService, ProductService
-from domains.prospecting.service import ProspectingService
+from domains.prospecting.service import ProspectingService, ProspectingServicePlanStore
 from domains.sending_identity.permissions import (
     Actor as SendingIdentityActor,
 )
@@ -315,6 +315,8 @@ class ConfiguredApiDependencies:
     research_access: ResearchAccessService | None = None
     research_execution: DiscoveryExecutionReader | None = None
     research_evidence: ResearchEvidenceReader | None = None
+    screening_evidence: ResearchEvidenceReader | None = None
+    prospecting_service_plans: ProspectingServicePlanStore | None = None
     quotation: QuotationHttpComposition | None = None
     sourcing: SourcingService | None = None
     sourcing_application: SourcingCaseApplication | None = None

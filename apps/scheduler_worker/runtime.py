@@ -103,7 +103,7 @@ from domains.outreach.service import (
     SendingIdentityEligibilityProvider,
 )
 from domains.outreach.service_impl import OutreachServiceImpl
-from domains.prospecting.service import ContactValueHasher, ProspectingService
+from domains.prospecting.service import ProspectingService
 from domains.prospecting.service_impl import ProspectingServiceImpl
 from domains.sending_identity.permissions import (
     Phase1SendingIdentityAuthorizer,
@@ -118,6 +118,7 @@ from infra.db.approval_uow import SqlAlchemyApprovalUnitOfWork
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.compliance_uow import SqlAlchemyComplianceUnitOfWork
 from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
+from infra.db.dialogue_source import SqlDialogueSources
 from infra.db.directive_uow import SqlAlchemyDirectiveUnitOfWork
 from infra.db.email_feedback_uow import (
     AuditSink as FeedbackAuditSink,
@@ -196,6 +197,8 @@ from tool_gateway.handlers.email_send import (
     DeliveryMaterialProvider,
     EmailSendHandler,
     OutboundMailArchive,
+    OutboundMailConnectors,
+    OutboundMailOwnerResolver,
     UnsubscribeLink,
     UnsubscribeLinkProvider,
 )
@@ -320,6 +323,9 @@ from .catalog_product_runtime import (
 )
 from .config import SchedulerWorkerConfig
 from .contact_binding import ContactRuntimeResources
+from .contact_hashing import (
+    DomainSeparatedContactValueHasher as _DomainSeparatedContactValueHasher,
+)
 from .directive_reader import (
     DirectiveSourcingAdmissionPolicyReader,
     SchedulerDirectiveEmployeeReader,
@@ -329,6 +335,7 @@ from .hunter_contacts import (
     build_hunter_contact_tools,
 )
 from .main import (
+    CampaignDriver,
     EnterpriseKnowledgeDriverProtocol,
     OutboxDrainer,
     RuntimeActivation,
@@ -375,19 +382,6 @@ class CompleteOutboxRegistry(Protocol):
 
 _HEALTH_CHECKPOINTS = frozenset({"config", "schema", "database", "registry"})
 _SOURCING_ADMISSION_LEASE_DURATION = timedelta(minutes=5)
-
-
-class _DomainSeparatedContactValueHasher(ContactValueHasher):
-    """复用 scheduler HMAC key，但以固定域标签隔离联系方式指纹。"""
-
-    def __init__(self, provider: HmacFingerprintProvider) -> None:
-        self._provider = provider
-
-    def fingerprint(self, canonical_value: str) -> str:
-        digest, _version = self._provider.fingerprint(
-            (b"contact-value-v1", canonical_value.encode("utf-8"))
-        )
-        return digest
 
 
 class _NoSignalUvicornServer(uvicorn.Server):
@@ -522,8 +516,10 @@ class CampaignMessagingComposition:
     campaign_approvals: CampaignApprovalProvider
     reply_status: ReplyStatusProvider
     delivery_materials: DeliveryMaterialProvider
-    secret_resolver: SecretResolver
-    gmail_transport: GmailHttpTransport
+    secret_resolver: SecretResolver | None
+    gmail_transport: GmailHttpTransport | None
+    outbound_mail_connectors: OutboundMailConnectors | None = None
+    mailbox_owner: OutboundMailOwnerResolver | None = None
 
     def __post_init__(self) -> None:
         providers = (
@@ -532,11 +528,14 @@ class CampaignMessagingComposition:
             (self.campaign_approvals, CampaignApprovalProvider),
             (self.reply_status, ReplyStatusProvider),
             (self.delivery_materials, DeliveryMaterialProvider),
-            (self.secret_resolver, SecretResolver),
-            (self.gmail_transport, GmailHttpTransport),
+
         )
         if any(not isinstance(value, contract) for value, contract in providers):
             raise ValidationError("scheduler Campaign 发送依赖未完整配置")
+        if self.outbound_mail_connectors is None and (not isinstance(self.secret_resolver, SecretResolver) or not isinstance(self.gmail_transport, GmailHttpTransport)):
+            raise ValidationError("scheduler Campaign 发送连接器未配置")
+        if self.outbound_mail_connectors is not None and self.mailbox_owner is None:
+            raise ValidationError("scheduler 本人发件身份映射未配置")
 
 
 @dataclass(frozen=True)
@@ -555,6 +554,7 @@ class ReplyQualificationComposition:
     outreach: OutreachService
     action_ports: ReplyActionPorts
     classification_access: ReplyClassificationAccess | None = None
+    dialogue_driver: CampaignDriver | None = None
 
     def __post_init__(self) -> None:
         # 浅域实现可能只实现部分 Protocol 方法；按 reply 链实际消费的
@@ -1072,6 +1072,7 @@ from apps.composition_support.email_inbound import (
     build_inbound_composition,
 )
 
+from .dialogue_resources import DialogueArtifactPorts, build_dialogue_artifacts
 from .inbound_driver import InboundDriver
 
 
@@ -1085,6 +1086,7 @@ class SchedulerRuntimeFactory:
         *,
         bootstrap: SchedulerBootstrap | None = None,
         inbound_ports: InboundRuntimePorts | None = None,
+        reply_artifact_ports: DialogueArtifactPorts | None = None,
         resolver_factory: Callable[[], AsyncTxtResolver] = DnsPythonAsyncResolver,
         pilot_config: SchedulerWorkerConfig | None = None,
         standalone_research: bool = False,
@@ -1131,8 +1133,8 @@ class SchedulerRuntimeFactory:
             or (getattr(bootstrap, "research_enabled", True) and not standalone_research)
             or getattr(bootstrap, "contacts_enabled", True)
             or (pilot_gmail and inbound_ports is None and not getattr(bootstrap, "campaign_enabled", False))
-            or (getattr(bootstrap, "campaign_enabled", False) and not pilot_gmail)
-            or ((inbound_ports is not None) != (getattr(bootstrap, "reply_factory", None) is not None))
+            or (getattr(bootstrap, "campaign_enabled", False) and not pilot_gmail and getattr(bootstrap, "outbound_factory", None) is None)
+            or (((inbound_ports is not None or reply_artifact_ports is not None)) != (getattr(bootstrap, "reply_factory", None) is not None))
         ):
             raise ValidationError("本机 scheduler 外部能力必须未配置")
         if pilot_config is None and (
@@ -1146,6 +1148,7 @@ class SchedulerRuntimeFactory:
         self._environ = environ
         self._dependencies = dependencies
         self._bootstrap = bootstrap
+        self._reply_artifact_ports = reply_artifact_ports
         self._inbound_ports = inbound_ports
         self._resolver_factory = resolver_factory
         self._health_server_factory = health_server_factory
@@ -1174,6 +1177,7 @@ class SchedulerRuntimeFactory:
         primary: BaseException | None = None
         quotation = None
         inbound = None
+        dialogue_artifacts = None
         assistant_ports = None
         try:
             if isinstance(self._inbound_ports, QQTrialRuntimePorts):
@@ -1478,7 +1482,11 @@ class SchedulerRuntimeFactory:
                     if not isinstance(inbound_adapter.trial_gate, SqlQQTrialGate):
                         raise ValidationError("受控入站必须绑定原持久门禁")
                     trial_gate = inbound_adapter.trial_gate
-            from .reply_binding import DeferredReplyCommit
+            from .reply_binding import (
+                DeferredOrdinaryDialogueAccess,
+                DeferredReplyCommit,
+            )
+            dialogue_access = DeferredOrdinaryDialogueAccess()
             reply_commit = DeferredReplyCommit(trial_gate.commit_message if trial_gate else None)
             core = SchedulerCoreServices(
                 employee_scope,
@@ -1492,6 +1500,7 @@ class SchedulerRuntimeFactory:
                         trial_commit=reply_commit.commit,
                     ),  # type: ignore[arg-type, return-value]
                     now=self._now,
+                    dialogue_access=dialogue_access,
                 ),
                 playbook_organization,
                 country_policy,
@@ -1649,16 +1658,20 @@ class SchedulerRuntimeFactory:
                     lease_owner=ports.lease_owner,
                     now=self._now,
                 )
+            if self._reply_artifact_ports is not None and inbound is None:
+                dialogue_artifacts = build_dialogue_artifacts(self._reply_artifact_ports, factory, self._now)
+            reply_raw = inbound.bounded_raw_store if inbound is not None else (dialogue_artifacts.raw if dialogue_artifacts else None)
+            reply_generated = inbound.generated_store if inbound is not None else (dialogue_artifacts.generated if dialogue_artifacts else None)
             sent_archive = None
-            if inbound is not None:
+            if reply_raw is not None:
                 from infra.outbound_mail_archive import (
                     OutboundMailArchive as MailArchive,
                 )
                 sent_archive = MailArchive(
-                    factory, cast(RawArtifactStore, inbound.bounded_raw_store), core.conversations
+                    factory, cast(RawArtifactStore, reply_raw), core.conversations
                 )
             if dependencies.campaign_messaging is not None:
-                if config.gmail_oauth_token_ref is None:
+                if config.gmail_oauth_token_ref is None and dependencies.campaign_messaging.outbound_mail_connectors is None:
                     raise ValidationError("邮件发送未配置")
                 campaign_handlers, campaign_outreach = self._build_campaign_messaging(
                     factory,
@@ -1669,6 +1682,7 @@ class SchedulerRuntimeFactory:
                     secrets,
                     tool_user,
                     archive=sent_archive,
+                    preparation_core=core,
                 )
             if self._bootstrap is not None:
                 if campaign_outreach is not None:
@@ -1682,6 +1696,7 @@ class SchedulerRuntimeFactory:
                                 ),
                             ),
                             outreach=campaign_outreach,
+                            dialogue_sources=SqlDialogueSources(factory, config.tenant_id),
                         )
                     )
                 contacts = self._bootstrap.build_contacts(
@@ -1706,13 +1721,15 @@ class SchedulerRuntimeFactory:
                     resources=(
                         ReplyRuntimeResources(
                             factory,
-                            inbound.bounded_raw_store,
+                            reply_raw,
                             dependencies.opportunity_service,
                             self._now,
                             trial_gate,
                             reply_commit.bind,
+                            dialogue_access.bind,
+                            reply_generated,
                         )
-                        if inbound is not None
+                        if reply_raw is not None
                         else None
                     ),
                 )
@@ -1737,6 +1754,7 @@ class SchedulerRuntimeFactory:
                     classification_access=reply_composition.classification_access,
                 )
             account_handlers: dict[str, StepHandler] = {}
+            current_contact_verifier: ContactVerifier | None = None
             runtime_activation: RuntimeActivation | None = None
             if dependencies.account_discovery is not None:
                 if campaign_outreach is None:
@@ -1794,7 +1812,12 @@ class SchedulerRuntimeFactory:
                         raise ValidationError("scheduler 联系人发现实现未配置")
                     enricher = account.enricher
                     verifier = account.verifier
+                current_contact_verifier = verifier if account.hunter is None or hunter_validated else None
+                from infra.db.prospecting_service_plans import (
+                    PostgresProspectingServicePlanStore,
+                )
                 account_handlers = build_account_discovery_handlers(
+                    service_plans=PostgresProspectingServicePlanStore(factory),
                     task_reader=account.task_reader,
                     capability=account.capability,
                     prospecting=account.prospecting,
@@ -1892,6 +1915,16 @@ class SchedulerRuntimeFactory:
                 build_inventory = getattr(self._bootstrap, "build_inventory", None)
                 if build_inventory is not None:
                     inventory_driver = build_inventory(core, factory)
+                build_preparation = getattr(self._bootstrap, "build_customer_preparation", None)
+                if build_preparation is not None:
+                    preparation = await build_preparation(core, factory, campaign_outreach, current_contact_verifier)
+                    if preparation is not None:
+                        from .customer_preparation_runtime import (
+                            InventoryWithCustomerPreparation,
+                        )
+                        inventory_driver = InventoryWithCustomerPreparation(inventory_driver, preparation.driver)
+                        runtime_activation = _InboundRuntimeActivation(runtime_activation, preparation.activate)
+
             knowledge_driver = None
             if self._bootstrap is not None:
                 build_knowledge = getattr(self._bootstrap, "build_knowledge", None)
@@ -2049,6 +2082,21 @@ class SchedulerRuntimeFactory:
                     account_campaign_events,
                 )
 
+            if dependencies.account_discovery is not None:
+                from infra.db.contact_screening_waits import (
+                    PostgresContactScreeningWaitReader,
+                )
+                from infra.db.prospecting_service_plans import (
+                    PostgresProspectingServicePlanStore,
+                )
+                from workflows.account_discovery.screening_wake import (
+                    ContactScreeningWakeDriver,
+                )
+
+                from .scheduled_inventory import InventoryWithScreeningWake
+                inventory_driver = InventoryWithScreeningWake(inventory_driver, ContactScreeningWakeDriver(
+                    tenant_id=config.tenant_id, waits=PostgresContactScreeningWaitReader(factory),
+                    service_plans=PostgresProspectingServicePlanStore(factory), engine=workflow, clock=self._now))
             if dependencies.demand_discovery is not None:
                 register_demand_discovery(workflow)
 
@@ -2100,6 +2148,7 @@ class SchedulerRuntimeFactory:
                 knowledge_driver=knowledge_driver,
                 inventory_driver=inventory_driver,
                 campaign_driver=campaign_driver,
+                dialogue_driver=dependencies.reply_qualification.dialogue_driver if dependencies.reply_qualification else None,
                 activation=runtime_activation,
                 quote_expiry_driver=(
                     QuoteExpiryDriver(
@@ -2208,6 +2257,11 @@ class SchedulerRuntimeFactory:
                     await inbound.aclose()
                 except BaseException as error:  # noqa: BLE001 - 保留原异常并完成资源释放
                     cleanup_error = error
+            if dialogue_artifacts is not None:
+                try:
+                    await dialogue_artifacts.aclose()
+                except BaseException as error:  # noqa: BLE001 - 继续释放进程资源
+                    cleanup_error = error
             if quotation is not None:
                 try:
                     await quotation.lifecycle.aclose()
@@ -2240,6 +2294,7 @@ class SchedulerRuntimeFactory:
         tool_user: UserId,
         *,
         archive: OutboundMailArchive | None = None,
+        preparation_core: SchedulerCoreServices | None = None,
     ) -> tuple[dict[str, StepHandler], OutreachService]:
         """装配 Campaign 发送链路：outreach 服务、退订链接、email.send 网关。
 
@@ -2249,7 +2304,7 @@ class SchedulerRuntimeFactory:
         from workflows.email_feedback.repository import FeedbackPageUnitOfWork
 
         gmail_reference = config.gmail_oauth_token_ref
-        if gmail_reference is None:
+        if gmail_reference is None and composition.outbound_mail_connectors is None:
             raise ValidationError("邮件发送未配置")
         tenant = config.tenant_id
         now = self._now
@@ -2336,11 +2391,9 @@ class SchedulerRuntimeFactory:
         unsubscribe_links: UnsubscribeLinkProvider = _SchedulerUnsubscribeLinkAdapter(
             unsubscribe_service
         )
-        gmail = _SchedulerLazyGmailConnector(
-            composition.gmail_transport,
-            composition.secret_resolver,
-            gmail_reference,
-        )
+        gmail = None
+        if composition.gmail_transport is not None and composition.secret_resolver is not None and gmail_reference is not None:
+            gmail = _SchedulerLazyGmailConnector(composition.gmail_transport, composition.secret_resolver, gmail_reference)
         handler = EmailSendHandler(
             gmail,
             composition.delivery_materials,
@@ -2350,6 +2403,9 @@ class SchedulerRuntimeFactory:
             outreach_actor_factory=_scheduler_delivery_binding_actor,
             route_id=config.email_feedback_route_id,
             archive=archive,
+            connectors=composition.outbound_mail_connectors,
+            owner_resolver=composition.mailbox_owner,
+            legacy_gmail_for_unmapped=True,
         )
         campaign_registry = ToolRegistry()
         campaign_registry.register(_email_send_manifest(), handler)
@@ -2358,6 +2414,16 @@ class SchedulerRuntimeFactory:
         ):
             raise ValidationError("scheduler Campaign registry 无效")
         permission = SchedulerCampaignPermissionCheck(factory, tenant)
+        from tool_gateway.checks.customer_preparation import (
+            CustomerPreparationPermissionCheck,
+        )
+
+        from .customer_preparation_runtime import build_preparation_send_guard
+        permission_stage: CheckStage = PermissionCheck(permission.authorize)
+        if preparation_core is not None:
+            permission_stage = CustomerPreparationPermissionCheck(permission_stage,
+                build_preparation_send_guard(preparation_core, factory, tenant, outreach, now))
+
         rate_limit = RateLimitCheck(
             outreach, sending, outreach_actor_for, sending_actor_for
         )
@@ -2365,7 +2431,7 @@ class SchedulerRuntimeFactory:
             campaign_registry,  # type: ignore[arg-type]
             {
                 "tenant": TenantCheck(),
-                "permission": PermissionCheck(permission.authorize),
+                "permission": permission_stage,
                 "suppression": SuppressionCheck(outreach, outreach_actor_for),
                 "approval": ApprovalCheck(),
                 "idempotency": IdempotencyCheck(),

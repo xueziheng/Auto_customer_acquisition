@@ -699,3 +699,16 @@ it("原请求未知后当前条件拒绝仍保留原键，刷新只读并允许�
   expect(await fresh.writes[0].json()).toEqual(await writes[0].clone().json());
   expect(sessionStorage.length).toBe(0);
 });
+
+it.each([true, false])("公开来源邮箱与实际验证状态分开展示 matched=%s", async (matched) => {
+  const { host } = await mount("/customers/a", {read: (request) => {
+    if (new URL(request.url).pathname !== "/prospects/customers/a") return undefined;
+    const a = allocation("a");
+    a.candidate.public_emails = [matched ? "verified_a@company.test" : "unverified@company.test"];
+    return Promise.resolve(json({allocation:a,owner:"emp_a",account:null,contacts:options("a").contacts,enrollments:[],can_stop:false,blocking_reasons:[]}));
+  }});
+  expect(host.textContent).toContain("公开来源记录");
+  expect(host.textContent).toContain("实际可达性与入组状态见联系人验证状态");
+  expect(host.textContent).toContain(matched ? "verified_a@company.test" : "unverified@company.test");
+  expect(host.textContent).not.toContain("未验证可达性，不能用于自动跟进");
+});

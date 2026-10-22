@@ -7,6 +7,7 @@ from apps.composition_support.employee_readers import EmployeeServiceScope
 from connectors.qq_mail.inbound import ProjectReplyScope
 from domains.assistant.schemas import AssistantActor
 from domains.assistant.service import ModelConfigurationService
+from domains.conversations.dialogue_access import OrdinaryDialogueAccess
 from domains.conversations.service import (
     ConversationsUnitOfWork,
     InboxActor,
@@ -66,16 +67,17 @@ class CurrentReplyAccess:
     """配置只是标识绑定；每次检查打开独立当前员工 scope，不缓存角色。"""
 
     tenant_id: TenantId
-    employee_id: EmployeeId
+    employee_id: EmployeeId | None
     employee_scope: EmployeeServiceScope
     uow_factory: Callable[[TenantId], ConversationsUnitOfWork]
     trial_gate: QQTrialGate | None = None
     retries: SqlReplyRetryRepository | None = None
     recovery_only: bool = False
+    dialogue_access: OrdinaryDialogueAccess | None = None
 
     async def actor(self, tenant_id: TenantId) -> InboxActor:
         """读当前 Employee 后执行原 qualify 纯规则，再构造 Inbox 上界。"""
-        if tenant_id != self.tenant_id:
+        if tenant_id != self.tenant_id or self.employee_id is None:
             raise PermissionDenied("回复内部操作权限拒绝")
         try:
             async with self.employee_scope(tenant_id) as employees:
@@ -99,6 +101,14 @@ class CurrentReplyAccess:
         require_reply_internal_access(tenant_id, fact, action="qualify")
         return InboxActor(tenant_id, self.employee_id, employee.role, InboxScope.TENANT)
 
+    async def for_message(self, tenant_id: TenantId, message_id: MessageId) -> InboxActor:
+        """仅服务器精确来源关联可选独立对话入口；普通冷回复仍走老板规则。"""
+        async with self.uow_factory(tenant_id) as uow:
+            message = await uow.messages.get(tenant_id, message_id)
+        if message is None:
+            raise PermissionDenied("回复消息绑定拒绝")
+        return await self.require(tenant_id, message_id, message.outbound_message_id)
+
     async def require(
         self,
         tenant_id: TenantId,
@@ -114,16 +124,23 @@ class CurrentReplyAccess:
             raise PermissionDenied("该消息没有人工恢复授权")
         elif self.trial_gate is not None:
             await self.trial_gate.require_message(str(message_id))
-        await self.actor(tenant_id)
+        if tenant_id != self.tenant_id:
+            raise PermissionDenied("回复内部操作权限拒绝")
         async with self.uow_factory(tenant_id) as uow:
             message = await uow.messages.get(tenant_id, message_id)
+            reader = getattr(uow, "dialogue_source", None)
+            source = await reader(tenant_id, message_id) if callable(reader) else None
         if (
             message is None
             or message.tenant_id != tenant_id
             or message.message_id != message_id
             or message.direction.value != "inbound"
-            or message.outbound_message_id is None
+            or (message.outbound_message_id is None and (source is None or source.source_kind != "inquiry"))
             or message.outbound_message_id != outbound_message_id
         ):
             raise PermissionDenied("回复消息绑定拒绝")
+        if source is not None:
+            if self.dialogue_access is None:
+                raise PermissionDenied("普通对话授权未配置")
+            return await self.dialogue_access.require(tenant_id, message_id, source.owner_employee_id)
         return await self.actor(tenant_id)

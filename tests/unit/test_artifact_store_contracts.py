@@ -132,7 +132,7 @@ def test_raw_and_generated_kinds_are_disjoint() -> None:
         "audio",
         "text",
     ]
-    assert [kind.value for kind in GeneratedArtifactKind] == ["email_draft", "quote_pdf"]
+    assert [kind.value for kind in GeneratedArtifactKind] == ["email_draft", "dialogue_plan", "quote_pdf"]
     assert {kind.value for kind in RawArtifactKind}.isdisjoint(
         {kind.value for kind in GeneratedArtifactKind}
     )

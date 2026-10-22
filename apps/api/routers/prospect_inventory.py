@@ -13,6 +13,7 @@ from domains.prospecting.inventory import (
     InventoryAssignmentRequest,
     InventoryTransferRequest,
 )
+from domains.prospecting.inventory_followup import InventoryFollowupScope
 from domains.prospecting.service import (
     AcquisitionJob,
     CandidateAllocation,
@@ -31,9 +32,11 @@ from shared.schemas.identifiers import (
     ProspectAccountId,
     TenantId,
 )
+from workflows.enterprise_knowledge.confirmed_context import ConfirmedContextReader
 
 from ..dependencies import (
     document_idempotency_header,
+    get_api_dependencies,
     get_request_identity,
     raw_idempotency_key,
 )
@@ -47,6 +50,7 @@ class InventoryRequestBody(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     query: InventoryQuery
     count: int = Field(strict=True, ge=1, le=100)
+    followup_scope: InventoryFollowupScope | None = None
 
 
 class InventoryAllocationView(BaseModel):
@@ -168,6 +172,13 @@ async def request_candidates(
     _key: Annotated[None, Depends(document_idempotency_header)],
 ) -> InventoryRequestView:
     require_boss(identity)
+    if body.query.confirmed_refs:
+        knowledge = get_api_dependencies(request).enterprise_knowledge
+        if knowledge is None:
+            raise TransientError("企业资料服务尚未配置")
+        await ConfirmedContextReader(knowledge.service).read(
+            identity.tenant_id, identity.employee.employee_id, body.query.confirmed_refs
+        )
     try:
         result = await _service(request, identity).request(
             identity.tenant_id,
@@ -175,6 +186,7 @@ async def request_candidates(
             body.query,
             body.count,
             raw_idempotency_key(request),
+            **({"followup_scope": body.followup_scope} if body.followup_scope is not None else {}),
         )
     except IdempotencyConflict:
         raise HTTPException(status_code=409) from None

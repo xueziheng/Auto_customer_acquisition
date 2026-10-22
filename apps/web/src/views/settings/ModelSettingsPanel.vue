@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { codeLabel } from "../../components/displayLabels";
-/* global setTimeout, clearTimeout, Event, HTMLInputElement */
-import { computed, inject, onMounted, onBeforeUnmount, ref } from 'vue';
+/* global setTimeout, clearTimeout */
+import { inject, onMounted, onBeforeUnmount, ref } from 'vue';
 import type { components } from '../../api/api';
 import { apiClient } from '../../api/client';
 import { useQuoteRequestScope } from '../costing-quotes/quote-request-scope';
@@ -9,25 +9,10 @@ type View=components['schemas']['ModelSettingsView'];
 type Limits=components['schemas']['ModelLimits'];
 const client=inject('tradeos-api-client',apiClient);
 const view=ref<View|null>(null),error=ref(''),busy=ref(false),visible=ref(true);
-const exportEnabled=ref(false);
-const model=ref(''),limits=ref<Limits|null>(null),dirty=ref(false);
-const editVersion=ref<string|null>(null);
-const conflict=computed(()=>dirty.value&&view.value?.configuration_version!==editVersion.value);
-function resetDraft(){
-  if(!view.value)return;
-  model.value=view.value.model??'';exportEnabled.value=view.value.model_data_export_enabled;
-  limits.value=view.value.limits?{...view.value.limits}:null;
-  editVersion.value=view.value.configuration_version??null;dirty.value=false;error.value='';
-}
 let key:string|null=null, timer:ReturnType<typeof setTimeout>|undefined;
 const labels:Record<View['status'],string>={missing:'尚未配置',pending_restart:'已保存，等待进程重启',unverified:'已装配，尚未验证',verified:'连接验证通过',failed:'连接测试未通过'};
 const fields:Record<keyof Limits,string>={window_seconds:'额度窗口（秒）',tenant_calls:'公司调用上限',employee_calls:'每人调用上限',tenant_concurrency:'公司并发上限',employee_concurrency:'每人并发上限',max_input_bytes:'输入上限（字节）',max_output_tokens:'输出上限（模型计量单位）',timeout_seconds:'超时（秒）'};
-function toggleCallLimit(field:'tenant_calls'|'employee_calls',event:Event){
-  if(!limits.value)return;
-  limits.value[field]=(event.target as HTMLInputElement).checked?null:(view.value?.limits?.[field]??1);
-  dirty.value=true;
-}
-const scope=useQuoteRequestScope(client,()=>[],()=>{view.value=null;limits.value=null;model.value='';editVersion.value=null;exportEnabled.value=false;key=null;busy.value=false;dirty.value=false;if(timer)clearTimeout(timer);});
+const scope=useQuoteRequestScope(client,()=>[],()=>{view.value=null;key=null;busy.value=false;if(timer)clearTimeout(timer);});
 async function load() {
   const op=scope.begin('load');if(!op)return;
   try {
@@ -37,7 +22,6 @@ async function load() {
     visible.value=r.response.status!==403;
     if(!r.data){view.value=null;error.value=r.response.status===503?'独立模型服务尚未装配':'无法读取当前模型设置';return;}
     view.value=r.data;error.value='';
-    if(!dirty.value)resetDraft();
   }catch{if(op.valid()){view.value=null;error.value='设置读取失败，请刷新';}}
   finally{if(op.valid()){if(timer)clearTimeout(timer);timer=setTimeout(()=>void load(),globalThis.document.hidden?15000:4000);}}
 }
@@ -49,20 +33,6 @@ async function probe(){
     const r=await client.POST('/settings/model/probe',{body:{idempotency_key:key},signal:op.signal});if(!op.valid())return;
     if(r.data){key=null;await load();}else error.value='探测未接纳，请核对当前版本、权限和额度';
   }catch{if(op.valid())error.value='探测回执未知；再次点击将核对同一请求';}
-  finally{if(op.valid())busy.value=false;}
-}
-async function save(){
-  if(busy.value||!dirty.value||!limits.value||!view.value||!editVersion.value||conflict.value)return;
-  const op=scope.begin('write');if(!op)return;
-  busy.value=true;
-  try{
-    const r=await client.POST('/settings/model',{body:{expected_version:editVersion.value,model:model.value,limits:limits.value,model_data_export_enabled:exportEnabled.value},signal:op.signal});if(!op.valid())return;
-    if(r.data){view.value=r.data;resetDraft();key=null;}else{
-      if(r.response.status===409)await load();
-      if(!op.valid())return;
-      error.value='保存未完成，请核对次数上限、其他正整数限制和当前配置版本';
-    }
-  }catch{if(op.valid())error.value='保存回执未收到，请刷新核对版本后再操作';}
   finally{if(op.valid())busy.value=false;}
 }
 onMounted(()=>void load());onBeforeUnmount(()=>{if(timer)clearTimeout(timer);});
@@ -83,7 +53,7 @@ onMounted(()=>void load());onBeforeUnmount(()=>{if(timer)clearTimeout(timer);});
         刷新连接状态
       </button>
     </header>
-    <p>密钥由管理员在服务器端配置，本页只保存模型与额度。设置生效后，符合当前配置的待处理任务会按新额度继续处理。</p>
+    <p>模型连接与调用限额由平台管理者配置。本页显示当前新任务使用的连接；已开始任务保留原绑定版本。</p>
     <p
       v-if="error"
       role="alert"
@@ -97,7 +67,7 @@ onMounted(()=>void load());onBeforeUnmount(()=>{if(timer)clearTimeout(timer);});
         最近失败：{{ codeLabel(view.failure_code) }}
       </p>
       <p v-if="view.status==='pending_restart'">
-        请管理员将部署文件同步到本页配置版本及参数，并重启接口与后台，再显式测试连接。
+        当前进程配置尚未匹配，请联系平台管理者核对。
       </p>
       <p
         v-if="view.probe_state==='queued'||view.probe_state==='running'"
@@ -113,68 +83,12 @@ onMounted(()=>void load());onBeforeUnmount(()=>{if(timer)clearTimeout(timer);});
       >
         测试连接（消耗一次额度）
       </button>
-      <p
-        v-if="conflict"
-        role="alert"
-      >
-        配置已被更新。请先核对当前版本，旧修改尚未保存。
-        <button
-          type="button"
-          :disabled="busy"
-          @click="resetDraft"
-        >
-          放弃修改并载入当前配置
-        </button>
-      </p>
-      <form
-        v-if="limits"
-        @submit.prevent="save"
-        @input="dirty=true"
-      >
-        <label><input
-          v-model="exportEnabled"
-          type="checkbox"
-          :disabled="busy"
-        >允许业务资料发送至模型服务（保存新版本）</label>
-        <label>模型编号<input
-          v-model="model"
-          required
-          maxlength="128"
-          :disabled="busy"
-        ></label>
-        <div
-          v-for="(label,field) in fields"
-          :key="field"
-        >
-          <label>{{ label }}<input
-            v-model.number="limits[field]"
-            :aria-label="label"
-            type="number"
-            min="1"
-            step="1"
-            required
-            :disabled="busy||limits[field]===null"
-          ></label>
-          <label v-if="field==='tenant_calls'||field==='employee_calls'">
-            <input
-              type="checkbox"
-              :aria-label="label+'不限次数'"
-              :checked="limits[field]===null"
-              :disabled="busy"
-              @change="toggleCallLimit(field,$event)"
-            >不限次数
-          </label>
-        </div>
-        <p v-if="limits.tenant_calls===null||limits.employee_calls===null">
-          不限次数仍会产生模型服务商费用，并发和单次请求限制继续生效。
-        </p>
-        <button
-          type="submit"
-          :disabled="busy||!dirty||conflict"
-        >
-          保存模型设置
-        </button>
-      </form>
+      <p>模型：{{ view.model ?? '未绑定' }} · 平台连接版本：{{ view.platform_connection_version ?? '独立部署' }}</p>
+      <dl v-if="view.limits">
+        <template v-for="(label,field) in fields" :key="field">
+          <dt>{{ label }}</dt><dd>{{ view.limits[field] ?? '未设次数上限' }}</dd>
+        </template>
+      </dl>
     </template>
   </section>
 </template>

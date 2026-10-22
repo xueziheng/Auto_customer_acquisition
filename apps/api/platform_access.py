@@ -55,8 +55,8 @@ from .platform_data_source_usage import PlatformDataSourceUsage
 from .platform_model_api import PlatformModelApi
 from .routers.authentication import install_authentication_errors
 from .routers.platform_data_sources import create_data_sources_router, data_source_error
-from .routers.platform_model_api import create_model_api_router
 from .routers.platform_inventory import create_inventory_quota_router
+from .routers.platform_model_api import create_model_api_router
 
 
 class PlatformSessionResponse(BaseModel):
@@ -225,6 +225,8 @@ def create_platform_app(
     app.state.model_catalog = None
     if model_catalog_settings is not None and model_catalog_settings.model_catalog_directory is not None:
         config = model_catalog_settings
+        if config.model_catalog_directory is None or config.codex_job_root is None:
+            raise ValueError("模型目录运行环境不完整")
         runner = CodexRunnerSettings(config.codex_binary, Path("/usr/bin/bwrap"), Path("/usr/bin/python3"), config.codex_job_root, 90, 1024*1024, 1024*1024)
         app.state.model_catalog = PlatformModelCatalog(control_tenant, access,
             FileModelCatalog(config.model_catalog_directory, control_tenant), factory, data_sources_fingerprints, runner)

@@ -125,7 +125,7 @@ class NotificationProjectionHandler:
         if isinstance(event, ReplyReceived):
             if not reply_requires_owner_attention(ReplyCategory(event.reply_category)):
                 return
-            if self._conversations is None:
+            if self._conversations is None or event.conversation_id is None:
                 raise ValidationError("回复通知缺少当前消息事实")
             classification = await self._conversations.get_classification(self._tenant_id, event.message_id)
             messages = await self._conversations.list_messages(self._tenant_id, event.conversation_id)

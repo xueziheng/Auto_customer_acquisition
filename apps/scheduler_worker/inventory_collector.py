@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from hashlib import sha256
-from typing import Protocol, cast
+from typing import Protocol
 from urllib.parse import urlsplit
 
 from connectors.codex_agent.discovery import (
@@ -21,7 +21,7 @@ from domains.prospecting.projection_diagnostic import (
     inspect_candidate_shape,
 )
 from domains.prospecting.public_evidence import ProjectionRejected, project_candidate
-from domains.prospecting.service import AcquisitionJob
+from domains.prospecting.service import AcquisitionJob, PublicCandidate
 from shared.schemas.discovery_diagnostic import (
     DiscoveryDiagnostic,
     DiscoveryDiagnosticError,
@@ -29,10 +29,11 @@ from shared.schemas.discovery_diagnostic import (
 from shared.schemas.identifiers import RunId
 from shared.schemas.page_failure import PageReadFailure
 from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
-from tool_gateway.handlers.free_search import FreeSearchGatewaySearcher
 from tool_gateway.handlers.web_slots import SearchResultBatch
+from workflows.enterprise_knowledge.confirmed_context import ConfirmedContextReader
 
-from .inventory_query import compose_inventory_query
+from .inventory_acquisition import InventoryPlanBudget
+from .inventory_query import choose_inventory_country, compose_inventory_query
 from .inventory_web import InventoryWebTools
 
 ToolFactory = Callable[
@@ -51,7 +52,16 @@ class InventoryModel(Protocol):
 
 
 class CodexInventoryCollector:
-    def __init__(self, tools: ToolFactory, generate: InventoryModel) -> None:
+    def __init__(
+        self,
+        tools: ToolFactory,
+        generate: InventoryModel,
+        *,
+        context_reader: ConfirmedContextReader | None = None,
+        service_budget: InventoryPlanBudget | None = None,
+    ) -> None:
+        self.service_budget = service_budget
+        self.context_reader = context_reader
         self.tools, self.generate = tools, generate
         self._failure_scope: tuple[str, str, str | None] | None = None
         self._failed_hosts: set[str] = set()
@@ -64,11 +74,25 @@ class CodexInventoryCollector:
         *,
         target_count: int = 50,
     ) -> CollectionResult:
+        upstream_guard = guard
+
+        async def current_guard() -> None:
+            await upstream_guard()
+            if job.query.confirmed_refs:
+                if self.context_reader is None:
+                    from shared.errors import PermissionDenied
+
+                    raise PermissionDenied("企业资料上下文不可用")
+                await self.context_reader.read(
+                    job.tenant_id, job.employee_id, job.query.confirmed_refs
+                )
+
+        await current_guard()
         scope = (str(job.tenant_id), str(job.id), job.lease_token)
         if self._failure_scope != scope:
             self._failure_scope, self._failed_hosts = scope, set()
         failed_hosts = self._failed_hosts
-        tools = await self.tools(job, source_id, guard)
+        tools = await self.tools(job, source_id, current_guard)
         pages: dict[str, tuple[SearchResultBatch, int]] = {}
         snapshots: dict[str, PageSnapshot] = {}
         run_id = RunId(str(job.id))
@@ -91,31 +115,62 @@ class CodexInventoryCollector:
 
         async def execute(name: str, arguments: dict) -> dict:
             nonlocal searches, discovery_read
-            await guard()
+            await current_guard()
             if name == "source_search":
                 if set(arguments) != {"source_id", "query"} or arguments[
                     "source_id"
                 ] not in {source_id, "company_websites"}:
-                    raise DiscoveryDiagnosticError(DiscoveryDiagnostic("source_scope", "invalid_request", 0))
+                    raise DiscoveryDiagnosticError(
+                        DiscoveryDiagnostic("source_scope", "invalid_request", 0)
+                    )
                 if searches >= DISCOVERY_SEARCH_LIMIT:
                     raise DiscoveryToolFailure("search_limit_reached")
                 official = arguments["source_id"] == "company_websites"
                 if source_id != "company_websites" and official and not discovery_read:
                     raise DiscoveryToolFailure("source_read_required")
                 searches += 1
+                search_country = job.query.country or "ZZ"
+                search_query = job.query
+                if (
+                    job.query.regions
+                    or job.query.countries
+                    or job.query.region not in {None, "africa"}
+                ):
+                    search_country = choose_inventory_country(
+                        job.query, arguments["query"], searches - 1
+                    )
+                    search_query = job.query.model_copy(
+                        update={
+                            "country": search_country,
+                            "countries": (),
+                            "regions": (),
+                            "region": None,
+                        }
+                    )
                 try:
                     query = compose_inventory_query(
-                        job.query, strategies[arguments["source_id"]], arguments["query"]
+                        search_query,
+                        strategies[arguments["source_id"]],
+                        arguments["query"],
+                        maximum_chars=getattr(tools, "maximum_query_chars", 400),
+                        public_domains=tuple(
+                            sorted(
+                                {
+                                    urlsplit(batch.results[index].url).hostname or ""
+                                    for batch, index in pages.values()
+                                }
+                            )
+                        ),
                     )
                 except ValueError:
                     raise DiscoveryDiagnosticError(
                         DiscoveryDiagnostic("source_scope", "invalid_request", 0)
                     ) from None
-                batch = await cast(FreeSearchGatewaySearcher, tools.searcher).search(
+                batch = await tools.searcher.search(
                     job.tenant_id,
                     run_id,
                     query,
-                    job.query.country or "ZZ",
+                    search_country,
                     job.query.product_tags[0],
                     20,
                     quota_request_key=sha256(
@@ -138,18 +193,27 @@ class CodexInventoryCollector:
                         }
                     )
                 return {"results": result, "content_is_untrusted": True}
-            if (
-                name not in ("read_public_page", "browse_public_page")
-                or set(arguments) != {"page_id"}
-            ):
-                raise DiscoveryDiagnosticError(DiscoveryDiagnostic("page_scope", "invalid_request", 0))
+            if name not in ("read_public_page", "browse_public_page") or set(
+                arguments
+            ) != {"page_id"}:
+                raise DiscoveryDiagnosticError(
+                    DiscoveryDiagnostic("page_scope", "invalid_request", 0)
+                )
             if arguments["page_id"] not in pages:
                 raise DiscoveryToolFailure("page_id_unknown")
             page_id = arguments["page_id"]
             batch, index = pages[page_id]
-            host = (urlsplit(batch.results[index].url).hostname or "").encode("idna").decode().lower().rstrip(".")
+            host = (
+                (urlsplit(batch.results[index].url).hostname or "")
+                .encode("idna")
+                .decode()
+                .lower()
+                .rstrip(".")
+            )
             if not host:
-                raise DiscoveryDiagnosticError(DiscoveryDiagnostic("page_scope", "invalid_request", 0))
+                raise DiscoveryDiagnosticError(
+                    DiscoveryDiagnostic("page_scope", "invalid_request", 0)
+                )
             if host in failed_hosts:
                 raise DiscoveryToolFailure("page_unavailable")
             reader = (
@@ -157,11 +221,16 @@ class CodexInventoryCollector:
                 if name == "browse_public_page"
                 else tools.page_reader
             )
+            if self.service_budget is not None:
+                from domains.prospecting.service import evidence_source_domain
+                await self.service_budget.reserve_execution(job, kind="pages",
+                    key=f"{source_id}:{name}:{batch.results[index].url}", amount=1,
+                    host=evidence_source_domain(batch.results[index].url))
             try:
                 snapshot = await reader.read_page(job.tenant_id, run_id, batch, index)
             except PageReadFailure as error:
                 failed_hosts.add(host)
-                await guard()
+                await current_guard()
                 if error.recoverable:
                     raise DiscoveryToolFailure("page_unavailable") from None
                 raise DiscoveryDiagnosticError(error.diagnostic) from None
@@ -175,12 +244,12 @@ class CodexInventoryCollector:
                     ToolErrorCategory.PROVIDER_PERMANENT,
                 }:
                     raise
-                await guard()
+                await current_guard()
                 raise DiscoveryToolFailure("page_unavailable") from None
             except BaseException:
                 failed_hosts.add(host)
                 raise
-            await guard()
+            await current_guard()
             snapshots[page_id] = snapshot
             if page_id not in official_pages:
                 discovery_read = True
@@ -201,7 +270,7 @@ class CodexInventoryCollector:
             timeout_seconds=140,
             max_result_bytes=100000,
         ) as session:
-            await guard()
+            await current_guard()
             try:
                 result = await self.generate(
                     job,
@@ -231,31 +300,49 @@ class CodexInventoryCollector:
                     },
                 )
             except ProjectionDiagnosticError as error:
-                raise ProjectionDiagnosticError(ProjectionSummary.model_validate({
-                    **error.summary.model_dump(),
-                    "tool_usage": session.usage_snapshot(),
-                    "search_result_count": len(pages), "read_success_count": len(snapshots),
-                    "official_read_count": len(official_pages.intersection(snapshots)),
-                })) from None
-            await guard()
+                raise ProjectionDiagnosticError(
+                    ProjectionSummary.model_validate(
+                        {
+                            **error.summary.model_dump(),
+                            "tool_usage": session.usage_snapshot(),
+                            "search_result_count": len(pages),
+                            "read_success_count": len(snapshots),
+                            "official_read_count": len(
+                                official_pages.intersection(snapshots)
+                            ),
+                        }
+                    )
+                ) from None
+            await current_guard()
         if searches == 0:
             raise ValueError("来源未实际搜索，不能记录完成")
-        candidates = []
+        candidates: list[PublicCandidate] = []
         shape = inspect_candidate_shape(result)
         counts: dict[str, int] = {}
 
-        def summary(*, complete: bool = False, internal: bool = False) -> ProjectionSummary:
-            return ProjectionSummary.model_validate({
-                **shape.model_dump(), "projection_complete": complete, "internal_failure": internal,
-                "tool_usage": session.usage_snapshot(),
-                "projected_count": len(candidates), "rejected": counts,
-                "search_result_count": len(pages), "read_success_count": len(snapshots),
-                "official_read_count": len(official_pages.intersection(snapshots)),
-            })
+        def summary(
+            *, complete: bool = False, internal: bool = False
+        ) -> ProjectionSummary:
+            return ProjectionSummary.model_validate(
+                {
+                    **shape.model_dump(),
+                    "projection_complete": complete,
+                    "internal_failure": internal,
+                    "tool_usage": session.usage_snapshot(),
+                    "projected_count": len(candidates),
+                    "rejected": counts,
+                    "search_result_count": len(pages),
+                    "read_success_count": len(snapshots),
+                    "official_read_count": len(official_pages.intersection(snapshots)),
+                }
+            )
 
         if shape.input_shape != "valid":
             raise ProjectionDiagnosticError(summary())
-        for value in result["candidates"]:
+        raw_candidates = result.get("candidates")
+        if not isinstance(raw_candidates, list):
+            raise ProjectionDiagnosticError(summary())
+        for value in raw_candidates:
             reason = None
             if not isinstance(value, dict):
                 reason = "item_not_object"
@@ -267,7 +354,9 @@ class CodexInventoryCollector:
                 reason = "page_not_read"
             elif value["page_id"] not in official_pages:
                 reason = "discovery_only"
-            elif not isinstance(value.get("name"), str) or not isinstance(value.get("country"), str):
+            elif not isinstance(value.get("name"), str) or not isinstance(
+                value.get("country"), str
+            ):
                 reason = "item_fields_invalid"
             else:
                 try:
@@ -282,10 +371,16 @@ class CodexInventoryCollector:
             snapshot = snapshots[value["page_id"]]
             try:
                 candidate = project_candidate(
-                    source_id="company_websites", source_url=snapshot.url, text=snapshot.text,
-                    content_hash=snapshot.content_hash, artifact_id=snapshot.snapshot_artifact_ref,
-                    observed_at=snapshot.observed_at, name=value["name"], country=value["country"],
-                    product_tags=job.query.product_tags, public_emails=emails,
+                    source_id="company_websites",
+                    source_url=snapshot.url,
+                    text=snapshot.text,
+                    content_hash=snapshot.content_hash,
+                    artifact_id=snapshot.snapshot_artifact_ref,
+                    observed_at=snapshot.observed_at,
+                    name=value["name"],
+                    country=value["country"],
+                    product_tags=job.query.product_tags,
+                    public_emails=emails,
                 )
             except ProjectionRejected as error:
                 counts[error.reason] = counts.get(error.reason, 0) + 1

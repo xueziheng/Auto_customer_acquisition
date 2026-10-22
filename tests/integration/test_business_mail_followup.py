@@ -1,18 +1,19 @@
 """真实PG的当前授权、幂等重放、并发CAS与原件不变。"""
 
 import asyncio
+
 import pytest
-from sqlalchemy import select, update
-from tests.integration.test_business_mail import setup_mail
+from sqlalchemy import update
+
 from domains.conversations.business_mail_followup import (
     BusinessMailDraftCommand,
-    BusinessMailHandlingCommand,
     BusinessMailFollowupConflict,
+    BusinessMailHandlingCommand,
 )
 from infra.db.business_mail_followup import SqlBusinessMailFollowupRepository
-from infra.db.business_mail_tables import BusinessMailRow
 from infra.db.tables import EmployeeRow
 from shared.errors import PermissionDenied, ValidationError
+from tests.integration.test_business_mail import setup_mail
 
 
 async def prepared(engine):
@@ -32,7 +33,7 @@ async def prepared(engine):
 
 
 async def test_followup_refresh_replay_and_original(integration_engine):
-    sessions, actor, binding, source, message, repo = await prepared(integration_engine)
+    _sessions, actor, binding, source, message, repo = await prepared(integration_engine)
     before = await source.detail(actor, message)
     assert (await repo.get(actor, message)).revision == 0
     command = BusinessMailDraftCommand(
@@ -67,7 +68,7 @@ async def test_followup_refresh_replay_and_original(integration_engine):
 
 
 async def test_followup_cas_and_revoke(integration_engine):
-    sessions, actor, binding, source, message, repo = await prepared(integration_engine)
+    sessions, actor, _binding, _source, message, repo = await prepared(integration_engine)
     command = BusinessMailHandlingCommand(
         expected_revision=0, status="completed", note="人工处理"
     )
@@ -105,7 +106,7 @@ async def test_followup_identity_boundary(integration_engine, change):
 
 async def test_headers_only_no_draft(integration_engine):
     # 原件不可变触发器不能被测试绕过，构造合法headers_only页后持久化。
-    sessions, actor, _, source, box, page = await setup_mail(integration_engine)
+    _sessions, actor, _, source, box, page = await setup_mail(integration_engine)
     item = page.messages[0].model_copy(
         update={"source_kind": "headers_only", "mime_sha256": None}
     )
@@ -147,7 +148,11 @@ async def test_boss_has_no_other_mailbox_privilege(integration_engine):
 
 async def test_immutable_history_and_draft(integration_engine):
     from sqlalchemy.exc import DBAPIError
-    from infra.db.business_mail_followup_tables import BusinessMailFollowupEventRow, BusinessMailReplyDraftRow
+
+    from infra.db.business_mail_followup_tables import (
+        BusinessMailFollowupEventRow,
+        BusinessMailReplyDraftRow,
+    )
     sessions, actor, _, _, message, repo = await prepared(integration_engine)
     result = await repo.apply(actor, message, BusinessMailDraftCommand(expected_revision=0,subject='Hi',body_text='Hello'), idempotency_key='immutable-key')
     for model, fields in ((BusinessMailFollowupEventRow, {'note':'changed'}),(BusinessMailReplyDraftRow, {'body_text':'changed'})):

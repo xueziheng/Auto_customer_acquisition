@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
 from artifact_store.repository import ArtifactUnitOfWork
-from artifact_store.service_impl import RawArtifactStoreImpl
+from artifact_store.service_impl import GeneratedArtifactStoreImpl, RawArtifactStoreImpl
 from artifact_store.store import BoundedRawArtifactStore
 from connectors.gmail.client import SecretResolver
 from connectors.gmail.inbound import GmailInboundReader
@@ -188,6 +188,7 @@ class InboundComposition:
     objects: DeferredS3ObjectBlobTransport
     bounded_raw_store: BoundedRawArtifactStore
     trial_gate: QQTrialGate | None = None
+    generated_store: GeneratedArtifactStoreImpl | None = None
 
     async def aclose(self) -> None:
         await self.objects.aclose()
@@ -372,6 +373,11 @@ def build_inbound_composition(
         objects,
         raw_store,
         adapter.trial_gate if adapter else None,
+        GeneratedArtifactStoreImpl(lambda t: cast(ArtifactUnitOfWork, SqlAlchemyArtifactUnitOfWork(factory, t)),
+            objects, 32768, now, new_id,
+            bounded_transport=S3BoundedObjectBlobTransport(object_settings, secret_resolver,
+                limits=ObjectReadLimits(connect_timeout_ms=2000, read_timeout_ms=2000,
+                    total_timeout_ms=10000, maximum_attempts=1, chunk_bytes=65536))),
     )
 
 

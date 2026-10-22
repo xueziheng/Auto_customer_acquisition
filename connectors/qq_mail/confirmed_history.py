@@ -51,10 +51,10 @@ def checked_headers(raw: bytes, grant: ProjectReplyGrant, confirmed: ConfirmedHi
         return None
     if message.get_all("Cc") or message.get_all("Bcc"):
         return None
-    sender = getaddresses(message.get_all("From"))
+    sender = getaddresses(message.get_all("From", []))
     if len(sender) != 1 or sender[0][1] != grant.recipient:
         return None
-    to = getaddresses(message.get_all("To"))
+    to = getaddresses(message.get_all("To", []))
     if len(to) != 1 or to[0][1] != grant.sender:
         return None
     subject = re.sub(r"^(?:Re:\s*)+", "", str(message["Subject"]), flags=re.IGNORECASE)
@@ -108,7 +108,7 @@ class _HistorySession(_Session):
             def stamp(value: datetime) -> str:
                 months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
                 return f"{value.day:02d}-{months[value.month - 1]}-{value.year}"
-            status, rows = self.connection.uid("SEARCH", None, "SINCE", stamp(sent_at),
+            status, rows = self.connection.uid("SEARCH", None, "SINCE", stamp(sent_at),  # type: ignore[arg-type]  # imaplib允许None省略charset
                                                "BEFORE", stamp(sent_at + timedelta(days=1)))
             require_protocol_ok(status)
             if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], bytes):

@@ -699,10 +699,12 @@ class CustomerReplyEvidenceClaim:
 
     hypothesis_id: NeedHypothesisId
     source_message_id: MessageId
-    outbound_message_id: OutboundMessageId
-    enrollment_id: EnrollmentId
+    outbound_message_id: OutboundMessageId | None
+    enrollment_id: EnrollmentId | None
     account_id: ProspectAccountId
     contact_point_id: ContactPointId
+    dialogue_binding_id: str | None = None
+
 
 
 @dataclass(frozen=True)

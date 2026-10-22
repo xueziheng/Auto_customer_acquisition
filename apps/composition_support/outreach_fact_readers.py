@@ -111,14 +111,15 @@ class CurrentSendingIdentityReader:
         self._now = now
 
     async def get_sending_identity_eligibility(
-        self, tenant_id: TenantId, identity_id: SendingIdentityId
+        self, tenant_id: TenantId, identity_id: SendingIdentityId,
+        *, for_cold_outreach: bool = True,
     ) -> SendingIdentityEligibilitySnapshot:
         if tenant_id != self._tenant:
             raise ValidationError("当前发件身份事实不可用")
         actor = sending_reader_actor(identity_id)
         view = await self._sending.get(tenant_id, identity_id, actor=actor)
         permission = await self._sending.check_send_permission(
-            tenant_id, identity_id, True, actor=actor
+            tenant_id, identity_id, for_cold_outreach, actor=actor
         )
         if view.identity_id != identity_id:
             raise ValidationError("当前发件身份事实不可用")

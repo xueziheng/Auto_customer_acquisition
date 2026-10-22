@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -28,7 +29,9 @@ from tool_gateway.pipeline import (
     ToolCallContext,
     ToolGateway,
     ToolInvocationState,
+    _GatewayRegistry,
 )
+from tool_gateway.repository import ToolGatewayUnitOfWork
 
 
 class PlatformModelApi:
@@ -55,7 +58,7 @@ class PlatformModelApi:
             config = await self.get(principal)
             if config.revision != command.expected_revision or config.apply_status == "pending":
                 raise DataSourceConflict("配置已变化，请刷新")
-            if not config.configured or self._sessions is None or self._fingerprints is None:
+            if not config.configured or config.configuration_version is None or self._sessions is None or self._fingerprints is None:
                 raise DataSourceUnavailable("请先配置模型连接")
             if kind == "api" and config.tested_at and datetime.now(UTC) - config.tested_at < timedelta(seconds=60):
                 return config
@@ -89,9 +92,9 @@ class PlatformModelApi:
                 factory, config.model, self._fingerprints)
             registry = ToolRegistry()
             registry.register(MODEL_CONNECTION_MANIFEST, handler)
-            gateway = ToolGateway(registry,
+            gateway = ToolGateway(cast(_GatewayRegistry, registry),
                 {"tenant": Check(), "permission": PermissionCheck(permitted), "idempotency": IdempotencyCheck(), "rate_limit": Rate()},
-                lambda tenant_id: SqlAlchemyToolGatewayUnitOfWork(self._sessions, tenant_id),
+                lambda tenant_id: cast(ToolGatewayUnitOfWork, SqlAlchemyToolGatewayUnitOfWork(self._sessions, tenant_id)),
                 lease_duration=timedelta(seconds=120), lease_owner="platform_model_test", id_factory=new_id)
             try:
                 result = await gateway.invoke(ToolCallContext(tenant, principal.user_id, MODEL_CONNECTION_MANIFEST.tool_id,

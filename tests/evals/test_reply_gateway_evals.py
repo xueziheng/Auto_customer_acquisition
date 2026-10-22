@@ -66,7 +66,8 @@ def corpus_hashes():
 async def test_eval_projection_does_not_leak_expected_labels():
     before = corpus_hashes()
     inputs = list(REPLIES_DIR.glob("*/*/input.json"))
-    assert len(inputs) == 160
+    # 语料只增不改；新增反例不应阻止原生产投影隔离断言运行。
+    assert len(inputs) >= 160
     source = json.loads(
         (REPLIES_DIR / "provides_specification/case_01/input.json").read_text()
     )

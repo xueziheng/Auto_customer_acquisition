@@ -12,7 +12,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from domains.conversations.schemas import (
     MAX_REPLY_FIELD_QUOTE_CODEPOINTS,
@@ -168,7 +168,7 @@ class ReplyEvidenceSnapshot:
     classified_by: str
     classified_at: datetime
     raw_artifact_ref: str
-    outbound_message_id: OutboundMessageId
+    outbound_message_id: OutboundMessageId | None
     candidate_fields: tuple[ReplyFieldSnapshot, ...]
 
 
@@ -240,6 +240,11 @@ def _candidate_business_value(field: ReplyFieldSnapshot) -> object:
     return value
 
 
+class OrdinaryFeedback(Protocol):
+    async def apply(self, tenant: TenantId, context: ReplyActionContext,
+                    kind: Literal["bounce", "complaint"]) -> None: ...
+
+
 class ComposedReplyActionPorts:
     """把字段、接管与投递反馈动作接到真实公共域服务。
 
@@ -260,6 +265,7 @@ class ComposedReplyActionPorts:
         sending_identities: SendingIdentityService,
         conversations: ConversationService,
         opportunity_intake: ReplyOpportunityIntake | None = None,
+        dialogue_feedback: OrdinaryFeedback | None = None,
     ) -> None:
         if (
             not isinstance(tenant_id, str)
@@ -293,6 +299,7 @@ class ComposedReplyActionPorts:
         self._sending_identities = sending_identities
         self._conversations = conversations
         self._opportunity_intake = opportunity_intake
+        self._dialogue_feedback = dialogue_feedback
 
     def _require_call(
         self,
@@ -342,6 +349,8 @@ class ComposedReplyActionPorts:
             != UTC.utcoffset(evidence.classified_at)
         ):
             raise ValidationError("回复投递反馈证据无效")
+        if context.enrollment_id is None:
+            raise ValidationError("回复反馈缺少冷来源，必须使用对话反馈端口")
         enrollment = await self._outreach.get_enrollment(
             tenant_id,
             context.enrollment_id,
@@ -471,6 +480,7 @@ class ComposedReplyActionPorts:
                     source_message_id=context.message_id,
                     outbound_message_id=context.outbound_message_id,
                     enrollment_id=context.enrollment_id,
+                    dialogue_binding_id=context.dialogue_binding_id,
                     account_id=context.account_id,
                     contact_point_id=context.contact_point_id,
                 ),
@@ -486,6 +496,9 @@ class ComposedReplyActionPorts:
             raise ValidationError("回复需求关联不存在")
         assert hypothesis_id is not None
         if self._opportunity_intake is None:
+            if context.dialogue_binding_id is not None:
+                # 后续 handoff 动作统一决定继续补齐还是交有权限人员，避免提前停普通问答。
+                return
             raise ValidationError("回复机会创建组合未配置")
         await self._opportunity_intake.create_and_assign(
             tenant_id,
@@ -503,13 +516,23 @@ class ComposedReplyActionPorts:
     ) -> None:
         self._require_call(tenant_id, context, idempotency_key, "handoff")
         evidence, business = await self._facts(tenant_id, context)
+        if context.dialogue_binding_id is not None and evidence.category == "requests_materials":
+            await self.create_follow_up(tenant_id, context, f"reply:create_follow_up:{context.message_id}")
+            return
         if business.opportunity_id is None:
-            if business.need_id is not None and business.missing_information:
+            if (evidence.category == "provides_specification"
+                and business.need_id is not None and business.missing_information):
                 await self.create_follow_up(
                     tenant_id, context, f"reply:create_follow_up:{context.message_id}"
                 )
                 return
-            raise ValidationError("回复机会关联不存在")
+            reason = ("need_validated_intake_permission_required"
+                      if context.dialogue_binding_id is not None and business.need_id is not None
+                      and not business.missing_information and self._opportunity_intake is None
+                      else "commercial_request")
+            await self._enqueue_work(tenant_id, context, f"reply:review_reply:{context.message_id}",
+                                     ReplyWorkAction.REVIEW_REPLY, review_reason=reason)
+            return
         content = await self._content.load(tenant_id, context.message_id)
         if content is None:
             raise ValidationError("回复消息原文不可读")
@@ -564,6 +587,11 @@ class ComposedReplyActionPorts:
         self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
     ) -> None:
         self._require_call(tenant_id, context, idempotency_key, "route_bounce")
+        if context.dialogue_binding_id is not None:
+            if self._dialogue_feedback is None:
+                raise ValidationError("普通对话反馈端口未配置")
+            await self._dialogue_feedback.apply(tenant_id, context, "bounce")
+            return
         evidence, target = await self._feedback_target(
             tenant_id, context, category="bounce"
         )
@@ -587,6 +615,11 @@ class ComposedReplyActionPorts:
         self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
     ) -> None:
         self._require_call(tenant_id, context, idempotency_key, "record_complaint")
+        if context.dialogue_binding_id is not None:
+            if self._dialogue_feedback is None:
+                raise ValidationError("普通对话反馈端口未配置")
+            await self._dialogue_feedback.apply(tenant_id, context, "complaint")
+            return
         evidence, target = await self._feedback_target(
             tenant_id, context, category="complaint"
         )
@@ -662,6 +695,7 @@ class ComposedReplyActionPorts:
         context: ReplyActionContext,
         idempotency_key: str,
         action: ReplyWorkAction,
+        *, review_reason: str | None = None,
     ) -> None:
         await self._conversations.enqueue_reply_work_action(
             tenant_id,
@@ -669,9 +703,11 @@ class ComposedReplyActionPorts:
                 message_id=context.message_id,
                 outbound_message_id=context.outbound_message_id,
                 enrollment_id=context.enrollment_id,
+                dialogue_binding_id=context.dialogue_binding_id,
                 account_id=context.account_id,
                 contact_point_id=context.contact_point_id,
                 action=action,
+                review_reason=review_reason,
                 idempotency_key=IdempotencyKey(idempotency_key),
             ),
         )

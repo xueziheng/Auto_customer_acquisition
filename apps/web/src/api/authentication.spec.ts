@@ -239,11 +239,15 @@ it("I2 生产App在退出挂起且身份先失效时隐藏登录与业务入口"
   vi.stubGlobal("fetch", vi.fn(async (url: string) => url.endsWith("/auth/logout") ? new Promise<Response>(resolve => { release = resolve; }) : Response.json(dto)));
   await auth.login("synthetic", crypto.randomUUID());
   const { default: App } = await import("../App.vue");
-  const { clearAuthenticatedIdentity } = await import("./client");
+  const { clearAuthenticatedIdentity, createApiClient } = await import("./client");
+  const shellClient = createApiClient({ fetch: async request => {
+    expect(new URL(request.url).pathname).toBe("/api/prospects/customers/access");
+    return Response.json({ can_search: false, can_assign: false });
+  } });
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: "/:pathMatch(.*)*", component: { render: () => h("p", "合成业务页面") } }] });
   await router.push("/commands");
   const host = document.createElement("div"); document.body.append(host);
-  const app = createApp(App); app.use(router); app.mount(host);
+  const app = createApp(App); app.use(router); app.provide("tradeos-api-client", shellClient); app.mount(host);
   const flush = async () => { await nextTick(); await new Promise(resolve => setTimeout(resolve, 0)); };
   await flush(); expect(host.textContent).toContain("合成业务页面");
   expect(host.textContent).toContain("合成通知");

@@ -1476,6 +1476,7 @@ def test_complete_registry_has_handoff_all_notification_and_auth_handlers() -> N
             "notification.reputation_threshold_breached",
         ),
         ("CommitmentOverdue", "notification.commitment_overdue"),
+        ("ReplyReceived", "notification.customer_reply"),
         ("ApprovalDecided", "notification.approval_decided"),
         ("AuthenticationCheckRequested", "sending_identity_auth.requested"),
     }
@@ -2236,6 +2237,7 @@ async def test_production_factory_builds_complete_runtime_and_cleans_resources(
             "HandoffRequested",
             "HandoffAccepted",
             "HandoffQueueBacklogged",
+            "ReplyReceived",
             "SendingIdentitySuspended",
             "ReputationThresholdBreached",
             "CommitmentOverdue",

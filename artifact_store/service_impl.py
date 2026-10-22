@@ -370,12 +370,15 @@ class GeneratedArtifactStoreImpl:
 
     async def get_bounded(self, tenant_id: TenantId, artifact_id: ArtifactId,
         *, maximum_bytes: int) -> tuple[GeneratedArtifactMeta, bytes]:
-        """仅QUOTE_PDF且metadata事务已释放，实际读取最多metadata长度加一哨兵。"""
+        """仅受支持的派生文件且metadata事务已释放，实际读取最多metadata长度加一哨兵。"""
         limit = min(_require_limit(maximum_bytes), self._maximum_bytes)
         if self._bounded_transport is None:
             raise ArtifactBoundedReadUnavailable()
         record = await self._get_record(tenant_id, artifact_id)
-        if record.meta.kind is not GeneratedArtifactKind.QUOTE_PDF or record.meta.mime_type != "application/pdf":
+        if (record.meta.kind, record.meta.mime_type) not in {
+            (GeneratedArtifactKind.QUOTE_PDF, "application/pdf"),
+            (GeneratedArtifactKind.DIALOGUE_PLAN, "application/vnd.tradeos.dialogue-plan+json"),
+        }:
             raise ValidationError("派生文件绑定无效")
         if record.meta.size_bytes > limit:
             raise ArtifactReadLimitExceeded()

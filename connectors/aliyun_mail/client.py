@@ -293,7 +293,22 @@ def _sent_mailbox(client: imaplib.IMAP4_SSL) -> str:
     return choices[0]
 
 
-def _has_sent_message(client: imaplib.IMAP4_SSL, request: GmailSendRequest) -> bool:
+class SentMessageHeaders(Protocol):
+    """只读发送去重头；冷邮件与原线程回复保持各自业务契约。"""
+
+    @property
+    def deterministic_message_id(self) -> str: ...
+    @property
+    def idempotency_header(self) -> str: ...
+    @property
+    def from_address(self) -> str: ...
+    @property
+    def recipient_address(self) -> str: ...
+    @property
+    def subject(self) -> str: ...
+
+
+def _has_sent_message(client: imaplib.IMAP4_SSL, request: SentMessageHeaders) -> bool:
     status, result = client.uid(
         "SEARCH",
         "HEADER",

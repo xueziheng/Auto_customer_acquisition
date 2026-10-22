@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Literal, cast
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +11,11 @@ from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
 from agent_runtime.model_client import StructuredJsonModelClient
 from agent_runtime.qualification_agent.agent import QualificationAgent, ReplyClassifier
 from agent_runtime.qualification_agent.openai_port import StructuredReplyModelPort
+from domains.conversations.dialogue_access import (
+    OrdinaryDialogueAccess,
+    OrdinaryDialogueOriginalAccess,
+)
+from domains.conversations.dialogue_source import DialogueSource
 from domains.conversations.schemas import (
     ReplyCategory,
     ReplyWorkAction,
@@ -33,10 +38,11 @@ from domains.organization.permissions import (
 )
 from domains.outreach.service import OutreachService
 from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
+from infra.db.dialogue_source import SqlDialogueSources
 from infra.db.private_reply_test import PrivateReplyTestReader
 from infra.db.qq_trial import SqlQQTrialGate
 from infra.db.reply_retry import SqlReplyRetryRepository
-from shared.errors import TenantIsolationViolation
+from shared.errors import PermissionDenied, TenantIsolationViolation, ValidationError
 from shared.schemas.identifiers import EmployeeId, IdempotencyKey, MessageId, TenantId
 from shared.schemas.quote_facts import QuoteEmployeeFact
 from workflows.reply_qualification.ports import MessageContentReader, ReplyActionContext
@@ -51,18 +57,29 @@ from .reply_binding import ReplyRuntimeResources
 from .runtime import ReplyQualificationComposition, SchedulerCoreServices
 
 
+class ColdDialogueAdmission(Protocol):
+    async def admit(self, message_id: MessageId, enrollment_id: str) -> DialogueSource: ...
+
+
+@runtime_checkable
+class DeferredColdDialogueAdmission(Protocol):
+    async def defer_completed_materials(self, message_id: MessageId, enrollment_id: str) -> bool: ...
+
+
 @dataclass(frozen=True)
 class CurrentEmployeeReplyFactory:
     """配置只绑定真实员工ID与模型端口；角色从当前Employee服务读取。"""
 
     tenant_id: TenantId
-    employee_id: EmployeeId
+    employee_id: EmployeeId | None
     model_client: StructuredJsonModelClient | None = None
     model: str = ""
     classifier: ReplyClassifier | None = None
     trial_gate: SqlQQTrialGate | None = None
     retries: SqlReplyRetryRepository | None = None
     recovery_only: bool = False
+    dialogue_access: OrdinaryDialogueAccess | None = None
+    dialogue_admission: ColdDialogueAdmission | None = None
 
     def __post_init__(self) -> None:
         if self.trial_gate is not None:
@@ -118,6 +135,12 @@ class CurrentEmployeeReplyFactory:
             core = replace(
                 core, conversations=ConversationServiceImpl(uow, now=resources.now)
             )
+        if self.dialogue_access is not None:
+            if resources.bind_dialogue_access is not None:
+                resources.bind_dialogue_access(self.dialogue_access)
+            else:
+                core = replace(core, conversations=ConversationServiceImpl(
+                    uow, now=resources.now, dialogue_access=self.dialogue_access))
         access = CurrentReplyAccess(
             self.tenant_id,
             self.employee_id,
@@ -126,6 +149,7 @@ class CurrentEmployeeReplyFactory:
             self.trial_gate,
             self.retries,
             self.recovery_only,
+            self.dialogue_access,
         )
         content = GatewayReplyContentReader(
             self.tenant_id,
@@ -144,6 +168,8 @@ class CurrentEmployeeReplyFactory:
             resources,
             content,
             evidence,
+            self.dialogue_access,
+            self.dialogue_admission,
         )
         classifier = self.classifier
         if classifier is None:
@@ -172,12 +198,30 @@ class CurrentEmployeeReplyActions:
     """借用每次调用独立的员工scope，业务规则仍由原ComposedReplyActionPorts及域执行。"""
 
     tenant_id: TenantId
-    employee_id: EmployeeId
+    employee_id: EmployeeId | None
     core: SchedulerCoreServices
     outreach: OutreachService
     resources: ReplyRuntimeResources
     content: MessageContentReader
     evidence: ConversationReplyEvidenceReader
+    dialogue_access: OrdinaryDialogueAccess | None = None
+    dialogue_admission: ColdDialogueAdmission | None = None
+
+    async def finish_dialogue_actions(self, tenant: TenantId, context: ReplyActionContext) -> None:
+        """持久分类动作完成后终止普通授权；抑制已生效也必须能保存停止事实。"""
+        if tenant != self.tenant_id or context.dialogue_binding_id is None:
+            raise TenantIsolationViolation("普通对话停止范围无效")
+        source = await SqlDialogueSources(self.resources.sessions, tenant).for_message(tenant, context.message_id)
+        if source is None or source.binding_id != context.dialogue_binding_id or not isinstance(self.dialogue_access, OrdinaryDialogueOriginalAccess):
+            raise TenantIsolationViolation("普通对话停止来源无效")
+        await self.dialogue_access.require_original(tenant, context.message_id, source.owner_employee_id)
+        from infra.db.conversations_uow import SqlAlchemyConversationsUnitOfWork
+        async with SqlAlchemyConversationsUnitOfWork(self.resources.sessions, tenant, now=self.resources.now) as uow:
+            classification = await uow.classifications.get(tenant, context.message_id)
+            if classification is None:
+                raise ValidationError("普通对话停止缺少持久分类")
+            if classification.category.value in {"rejection", "unsubscribe", "bounce", "complaint", "no_current_need", "future_need_possible", "refers_other_contact"}:
+                await uow.pause_dialogue(tenant, context.message_id)
 
     async def _run(
         self,
@@ -198,10 +242,40 @@ class CurrentEmployeeReplyActions:
     ) -> None:
         if tenant != self.tenant_id:
             raise TenantIsolationViolation("回复动作跨租户执行")
+        if (method == "request_handoff" and context.dialogue_binding_id is None
+            and context.enrollment_id is not None and self.dialogue_admission is not None
+            and await self.core.conversations.get_effective_reply_category(tenant, context.message_id) == "requests_materials"):
+            try:
+                admitted = await self.dialogue_admission.admit(context.message_id, str(context.enrollment_id))
+            except PermissionDenied:
+                # 未获独立范围仍保留原手工移交；绝不为资料请求隐式授权。
+                admitted = None
+                if isinstance(self.dialogue_admission, DeferredColdDialogueAdmission):
+                    try:
+                        deferred = await self.dialogue_admission.defer_completed_materials(context.message_id, str(context.enrollment_id))
+                    except PermissionDenied:
+                        deferred = False
+                    if deferred:
+                        method = "create_follow_up"
+                        key = f"reply:create_follow_up:{context.message_id}"
+            if admitted is not None:
+                context = replace(context, dialogue_binding_id=admitted.binding_id)
+        delegated = None
+        if context.dialogue_binding_id is not None:
+            source = await SqlDialogueSources(self.resources.sessions, tenant).for_message(tenant, context.message_id)
+            if source is None or self.dialogue_access is None or source.binding_id != context.dialogue_binding_id:
+                raise TenantIsolationViolation("普通对话来源授权缺失")
+            if method in {"route_bounce", "record_complaint"} and isinstance(self.dialogue_access, OrdinaryDialogueOriginalAccess):
+                delegated = await self.dialogue_access.require_original(tenant, context.message_id, source.owner_employee_id)
+            else:
+                delegated = await self.dialogue_access.require(tenant, context.message_id, source.owner_employee_id)
+        employee_id = delegated.employee_id if delegated is not None else self.employee_id
+        if employee_id is None:
+            raise ValidationError("未配置冷回复分类员工")
         async with self.core.employee_scope(tenant) as employees:
             employee = await employees.get_employee(
                 tenant,
-                self.employee_id,
+                employee_id,
                 actor=EmployeeActor(
                     "system:reply-actor", EmployeeScope.SYSTEM, "system"
                 ),
@@ -216,8 +290,9 @@ class CurrentEmployeeReplyActions:
                     "team_id": employee.team_id,
                 }
             )
-            require_reply_internal_access(self.tenant_id, fact, action="qualify")
-            private_test = await PrivateReplyTestReader(
+            if delegated is None:
+                require_reply_internal_access(self.tenant_id, fact, action="qualify")
+            private_test = context.enrollment_id is not None and await PrivateReplyTestReader(
                 self.resources.sessions
             ).matches(
                 tenant,
@@ -256,7 +331,9 @@ class CurrentEmployeeReplyActions:
                 return
             opportunity_actor = OpportunityActor(
                 str(employee.employee_id),
-                OpportunityScope(level=ScopeLevel.TENANT),
+                OpportunityScope(
+                    level={"boss": ScopeLevel.TENANT, "manager": ScopeLevel.MANAGER, "sales": ScopeLevel.SELF}[employee.role],
+                    allowed_owners=frozenset({employee.employee_id}) if delegated is not None else None),
                 employee.role,
             )
             employee_actor = EmployeeActor(
@@ -276,8 +353,9 @@ class CurrentEmployeeReplyActions:
                 prospecting=self.core.prospecting,
                 opportunities=self.resources.opportunities,
                 opportunity_actor=opportunity_actor,
+                dialogue_sources=SqlDialogueSources(self.resources.sessions, self.tenant_id),
             )
-            intake = DurableReplyOpportunityIntake(
+            intake = None if delegated is not None and employee.role != "boss" else DurableReplyOpportunityIntake(
                 tenant_id=self.tenant_id,
                 demand=self.core.demand,
                 prospecting=self.core.prospecting,
@@ -289,6 +367,7 @@ class CurrentEmployeeReplyActions:
                 opportunity_actor=opportunity_actor,
                 employee_actor=employee_actor,
             )
+            from apps.scheduler_worker.dialogue_feedback import DialogueReplyFeedback
             actions = ComposedReplyActionPorts(
                 tenant_id=self.tenant_id,
                 evidence=self.evidence,
@@ -300,6 +379,7 @@ class CurrentEmployeeReplyActions:
                 sending_identities=self.core.sending,
                 conversations=self.core.conversations,
                 opportunity_intake=intake,
+                dialogue_feedback=DialogueReplyFeedback(self.resources.sessions, self.outreach, self.core.sending),
             )
             await getattr(actions, method)(tenant, context, key)
 

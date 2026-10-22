@@ -1,5 +1,6 @@
 import pytest
 from pydantic import ValidationError
+
 from domains.conversations.business_mail_followup import (
     BusinessMailDraftCommand,
     BusinessMailHandlingCommand,

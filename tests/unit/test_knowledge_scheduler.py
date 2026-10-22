@@ -32,7 +32,7 @@ def runtime(events, *, driver):
         quote_expiry_driver=None, sourcing_admission_driver=None,
         catalog_product_driver=None, inbound_driver=None, knowledge_driver=driver,
         assistant_driver=Assistant(),
-        inventory_driver=None,
+        inventory_driver=None, dialogue_driver=None,
     )
 
 

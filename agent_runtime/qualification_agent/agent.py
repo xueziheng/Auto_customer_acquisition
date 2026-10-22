@@ -147,6 +147,7 @@ class ReplyClassificationResult:
     candidate_fields: tuple[ReplyFieldCandidate, ...] = ()
     suppress_scope: ReplySuppressScope | None = None
     rejected_candidates: bool = False
+    model_used: str | None = None
 
 
 @runtime_checkable

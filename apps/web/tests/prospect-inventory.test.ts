@@ -5,7 +5,7 @@ import InventoryPanel from "../src/views/customer-discovery/InventoryPanel.vue";
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach((f) => f()); clearAuthenticatedIdentity(); vi.restoreAllMocks(); sessionStorage.clear(); });
 async function settle() { for (let i = 0; i < 8; i++) { await nextTick(); await new Promise((r) => setTimeout(r, 0)); } }
-async function mount(failFirst = false, options: { populated?: boolean; postStatus?: number; delayedPost?: Promise<Response>; delayedGet?: Promise<Response>; history?: boolean; delayedPage?: Promise<Response>; sources?: unknown[] } = {}) {
+async function mount(failFirst = false, options: { scopes?: unknown[]; populated?: boolean; postStatus?: number; delayedPost?: Promise<Response>; delayedGet?: Promise<Response>; history?: boolean; delayedPage?: Promise<Response>; sources?: unknown[]; knowledge?: unknown[]; delayedKnowledge?: Promise<Response> } = {}) {
   configureAuthenticatedIdentity("tenant_a", "employee_a");
   let failure: number | "network" | null = null;
   let postStatus = options.postStatus;
@@ -21,6 +21,9 @@ async function mount(failFirst = false, options: { populated?: boolean; postStat
       return new Response(JSON.stringify({ allocations: [], job: { id: "acq_test", query: { product_tags: ["三轮车"], region: "africa" }, status: "queued", requested_count: 5, remaining_count: 5, attempts: 0 } }), { status: 202 });
     }
     reads.push(req.clone());
+    if (path === "/knowledge/documents" && options.delayedKnowledge) return options.delayedKnowledge;
+    if (path === "/knowledge/documents") return new Response(JSON.stringify({items: options.knowledge ?? []}), {status: 200});
+    if (path === "/crm/campaigns") return new Response(JSON.stringify(options.scopes ?? []), {status: 200});
     if (path === "/team/employees") return new Response("[]", { status: 200 });
     if (failure && options.delayedGet && path.endsWith("/jobs")) return options.delayedGet;
     if (failure === "network") throw new TypeError("network");
@@ -248,4 +251,66 @@ it.each([403, 503, "network"] as const)("未知搜索后分页失败 %s：403清
     expect(countryInput.value).toBe("KE"); expect(countInput.value).toBe("7");
     expect(root.textContent).toContain("重试原搜索请求");
   }
+});
+
+
+it("提交已确认企业资料、自然要求和多国家，换账号清空引用", async () => {
+  const { root, claims } = await mount(false, {knowledge: [{document_id: "doc1", tenant_id:"tenant_a", status:"confirmed", current_revision_id:"rev1", source:{filename:"产品目录.md"}}]});
+  fill(root);
+  const intent = root.querySelector<HTMLTextAreaElement>('[aria-label="搜索要求"]')!;
+  expect(intent).not.toBeNull();
+  intent.value = "寻找经销商"; intent.dispatchEvent(new Event("input"));
+  const countries = root.querySelector<HTMLInputElement>('[aria-label="国家代码"]')!;
+  countries.value = "KE,NG"; countries.dispatchEvent(new Event("input"));
+  submit(root); await settle();
+  const body = await claims[0]!.json();
+  expect(body.query.confirmed_refs).toEqual([{document_id:"doc1", revision_id:"rev1"}]);
+  expect(body.query.countries).toEqual(["KE","NG"]);
+  expect(body.query.intent).toBe("寻找经销商");
+  configureAuthenticatedIdentity("tenant_b", "employee_b"); await settle();
+  expect(root.textContent).not.toContain("产品目录.md");
+  expect(intent.value).toBe("");
+});
+
+
+it("资料请求未返回时阻止关键词回退，换账号拒绝迟到企业资料", async () => {
+  let resolve!: (value: Response) => void;
+  const delayedKnowledge = new Promise<Response>(r => {resolve = r;});
+  const {root, claims} = await mount(false, {delayedKnowledge});
+  fill(root); submit(root); await settle(); expect(claims).toHaveLength(0);
+  configureAuthenticatedIdentity("tenant_b", "employee_b");
+  resolve(new Response(JSON.stringify({items:[{document_id:"private_doc", tenant_id:"tenant_a",status:"confirmed",current_revision_id:"rev1",source:{filename:"原企业私有资料.md"}}]}),{status:200}));
+  await settle();
+  expect(root.textContent).not.toContain("原企业私有资料.md");
+  expect(root.querySelector<HTMLSelectElement>('[aria-label="已确认企业资料"]')!.options.length).toBe(0);
+});
+
+it("原搜索恢复严格保留资料引用和私有要求，不保存资料原文", async () => {
+  const {root, claims, unmount, mountAgain} = await mount(true, {knowledge:[{document_id:"doc1",tenant_id:"tenant_a",status:"confirmed",current_revision_id:"rev1",source:{filename:"产品目录.md"}}]});
+  fill(root);
+  const intent = root.querySelector<HTMLTextAreaElement>('[aria-label="搜索要求"]')!;
+  intent.value = "寻找经销商"; intent.dispatchEvent(new Event("input"));
+  submit(root); await settle();
+  const original = await claims[0]!.json();
+  unmount(); vi.resetModules();
+  mountAgain((await import("../src/views/customer-discovery/InventoryPanel.vue")).default); await settle();
+  submit(root); await settle();
+  expect(await claims[1]!.json()).toEqual(original);
+  expect(claims[1]!.headers.get("Idempotency-Key")).toBe(claims[0]!.headers.get("Idempotency-Key"));
+});
+
+it("自动准备保留精确已批准版本，未知结果恢复同一scope，换身份清除", async () => {
+  const approved = {tenant_id: "tenant_a", campaign_id: "cmp_exact", version: 4, name: "已批准范围", state: "active", boundary: {customer_agent_policy: {confirmed_refs: [{document_id: "d1", revision_id: "r1"}]}}};
+  const {root, claims} = await mount(true, {scopes: [approved, {...approved, campaign_id: "cmp_draft", state: "draft"}]});
+  const picker = root.querySelector<HTMLSelectElement>('[aria-label="自动准备批准范围"]')!;
+  expect(picker.options.length).toBe(2);
+  picker.value = "cmp_exact:4"; picker.dispatchEvent(new Event("change"));
+  fill(root); submit(root); await settle(); submit(root); await settle();
+  expect(claims).toHaveLength(2);
+  const first = await claims[0]!.json();
+  expect(first.followup_scope).toEqual({campaign_id: "cmp_exact", campaign_version: 4});
+  expect(await claims[1]!.json()).toEqual(first);
+  expect(claims[1]!.headers.get("Idempotency-Key")).toBe(claims[0]!.headers.get("Idempotency-Key"));
+  configureAuthenticatedIdentity("tenant_b", "employee_b"); await settle();
+  expect(picker.value).toBe(""); expect(picker.options.length).toBe(1);
 });

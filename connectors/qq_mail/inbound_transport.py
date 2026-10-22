@@ -13,7 +13,6 @@ from connectors.qq_mail.inbound import (
     MAX_SEARCH_RESULTS,
     HeaderResult,
     ProjectReplyGrant,
-    QQInboundSession,
 )
 from connectors.qq_mail.mime_structure import parse_body_fetch, parse_header_fetch
 from shared.schemas.email_inbound import HEADER_BYTES, MIME_BYTES, InboundError
@@ -248,7 +247,7 @@ class QQImapInboundTransport:
         return "QQImapInboundTransport()"
 
     @asynccontextmanager
-    async def session(self) -> AsyncIterator[QQInboundSession]:
+    async def session(self) -> AsyncIterator[_Session]:
         connection = None
         failure = None
         try:

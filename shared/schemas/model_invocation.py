@@ -24,6 +24,8 @@ ModelCapability = Literal[
     "business_mail_followup",
     "knowledge_ingest",
     "inventory_discovery",
+    "customer_preparation",
+    "ordinary_dialogue",
 ]
 
 

@@ -1,11 +1,9 @@
 """本人客户公开资料与适配推断的原子应用服务，不验证邮箱或触达。"""
 
-from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
-from typing import Protocol, cast
-
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from typing import Protocol
 
 from domains.demand.schemas import SignalCaptureRequest
 from domains.demand.service import DemandService
@@ -19,7 +17,10 @@ from domains.prospecting.customer_preparation import (
     CustomerPreparationView,
 )
 from domains.prospecting.schemas import ContactPointKind, DiscoveredContactRequest
-from domains.prospecting.service import ContactValueHasher, ProspectingService
+from domains.prospecting.service import ProspectingService
+from infra.db.customer_preparation import (
+    PostgresCustomerPreparationTransactions as PostgresCustomerPreparationTransactions,  # noqa: PLC0414 -- 兼容旧公共入口
+)
 from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     CandidateAllocationId,
@@ -37,76 +38,6 @@ class CustomerPreparationTransactions(Protocol):
     ) -> AbstractAsyncContextManager[tuple[ProspectingService, DemandService]]:
         """资料、公开信号、假设与未验证联系方式共用同一提交/回滚边界。"""
         ...
-
-
-class _PreparationAccountNames:
-    def __init__(self, prospecting: ProspectingService) -> None:
-        self._prospecting = prospecting
-
-    async def names_for(
-        self, tenant_id: TenantId, account_ids: tuple[ProspectAccountId, ...]
-    ) -> dict[ProspectAccountId, str]:
-        return {
-            a: (await self._prospecting.get_account(tenant_id, a)).name
-            for a in account_ids
-        }
-
-    async def countries_for(
-        self, tenant_id: TenantId, account_ids: tuple[ProspectAccountId, ...]
-    ) -> dict[ProspectAccountId, str]:
-        return {
-            a: (await self._prospecting.get_account(tenant_id, a)).country
-            for a in account_ids
-        }
-
-    async def domains_for(
-        self, tenant_id: TenantId, account_ids: tuple[ProspectAccountId, ...]
-    ) -> dict[ProspectAccountId, str]:
-        result: dict[ProspectAccountId, str] = {}
-        for account_id in account_ids:
-            domain = (
-                await self._prospecting.get_account(tenant_id, account_id)
-            ).website_domain
-            if domain is None:
-                raise ValidationError("客户官网域名尚未确认")
-            result[account_id] = domain
-        return result
-
-
-class PostgresCustomerPreparationTransactions:
-    """组合根适配器；只借用同一会话给现有域服务，副作用串行执行。"""
-
-    def __init__(
-        self,
-        factory: async_sessionmaker[AsyncSession],
-        hasher: ContactValueHasher,
-        *,
-        now: Callable[[], datetime] | None = None,
-    ) -> None:
-        self._factory, self._hasher = factory, hasher
-        self._now = now or (lambda: datetime.now(UTC))
-
-    @asynccontextmanager
-    async def guard(
-        self, tenant_id: TenantId
-    ) -> AsyncIterator[tuple[ProspectingService, DemandService]]:
-        from domains.demand.service_impl import DemandServiceImpl
-        from domains.prospecting.service_impl import ProspectingServiceImpl
-        from infra.db.demand_uow import BorrowedDemandUnitOfWork
-        from infra.db.prospecting_uow import BorrowedProspectingUnitOfWork
-
-        async with self._factory() as session, session.begin():
-            prospecting = ProspectingServiceImpl(
-                lambda t: BorrowedProspectingUnitOfWork(session, t),
-                self._hasher,
-                now=self._now,
-            )
-            demand = DemandServiceImpl(
-                lambda t: BorrowedDemandUnitOfWork(session, t, now=self._now),
-                now=self._now,
-                account_names=_PreparationAccountNames(prospecting),
-            )
-            yield prospecting, cast(DemandService, demand)
 
 
 class CustomerPreparationApplication:

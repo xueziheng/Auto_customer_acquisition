@@ -21,8 +21,8 @@ from domains.conversations.schemas import (
     ReplyCategory,
     ReplyNextQuestionsView,
     ReplyWorkActionView,
-    ReplyWorkUpdate,
     ReplyWorkStatus,
+    ReplyWorkUpdate,
 )
 from domains.conversations.service import ConversationService
 from domains.prospecting.private_reply_test import (

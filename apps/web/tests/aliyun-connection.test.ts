@@ -41,8 +41,8 @@ it("权限撤回时清除邮箱和凭证并禁止继续提交", async () => {
   const host = document.createElement("div"); document.body.append(host);
   app = createApp(AliyunConnectionPanel); app.provide("tradeos-api-client", client); app.mount(host);
   await settle();
-  const password = host.querySelector<HTMLInputElement>('input[type="password"]')!;
-  password.value = "synthetic-only"; password.dispatchEvent(new Event("input"));
+  const authorizationInput = host.querySelector<HTMLInputElement>('input[type="password"]')!;
+  authorizationInput.value = "synthetic-only"; authorizationInput.dispatchEvent(new Event("input"));
   [...host.querySelectorAll("button")].find(b => b.textContent?.trim() === "刷新阿里邮箱状态")!.click();
   await settle();
   expect(host.textContent).not.toContain("sales@example.com");

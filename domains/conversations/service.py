@@ -108,6 +108,21 @@ class ConversationService(Protocol):
         """
         ...
 
+    async def record_ordinary_dialogue_classification(
+        self,
+        tenant_id: TenantId,
+        message_id: MessageId,
+        category: ReplyCategory,
+        classified_by: str,
+        *,
+        outbound_message_id: OutboundMessageId | None = None,
+        candidate_fields: tuple[ReplyFieldEvidence, ...] = (),
+        suppress_scope: ReplySuppressScope | None = None,
+        actor: InboxActor,
+    ) -> tuple[str, ...]:
+        """精确普通对话授权与当前本人原件权限交集中的独立分类入口。"""
+        ...
+
     async def record_classification(
         self,
         tenant_id: TenantId,

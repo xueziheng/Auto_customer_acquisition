@@ -26,6 +26,7 @@ _TENANT_ID = re.compile(rf"tn_{_ULID}")
 _ARTIFACT_ID = re.compile(rf"art_{_ULID}")
 _RUN_ID = re.compile(rf"run_{_ULID}")
 _USER_ID = re.compile(rf"usr_{_ULID}")
+_MESSAGE_REF = re.compile(rf"msg_{_ULID}")
 _SUBJECT_REF = re.compile(rf"enr_{_ULID}")
 _QUOTE_REF = re.compile(rf"quo_{_ULID}")
 _HASH = re.compile(r"[0-9a-f]{64}")
@@ -52,6 +53,7 @@ class GeneratedArtifactKind(str, Enum):
     """只代表 TradeOS 生成的派生产物。"""
 
     EMAIL_DRAFT = "email_draft"
+    DIALOGUE_PLAN = "dialogue_plan"
     QUOTE_PDF = "quote_pdf"
 
 
@@ -85,6 +87,7 @@ GENERATED_ARTIFACT_MIME_TYPES: Mapping[GeneratedArtifactKind, frozenset[str]] = 
                 {"application/vnd.tradeos.email-draft+json"}
             ),
             GeneratedArtifactKind.QUOTE_PDF: frozenset({"application/pdf"}),
+            GeneratedArtifactKind.DIALOGUE_PLAN: frozenset({"application/vnd.tradeos.dialogue-plan+json"}),
         }
     )
 )
@@ -134,8 +137,8 @@ def validate_generated_key(tenant_id: TenantId, key: IdempotencyKey) -> None:
         raise _invalid()
     _positive_int(int(parts[1]))
     if len(parts) == 3:
-        _safe_text(parts[0], _SUBJECT_REF)
-        if parts[2] != "draft":
+        _safe_text(parts[0], _MESSAGE_REF if parts[2] == "dialogue_plan" else _SUBJECT_REF)
+        if parts[2] not in {"draft", "dialogue_plan"}:
             raise _invalid()
     else:
         _safe_text(parts[0], _QUOTE_REF)
@@ -219,7 +222,12 @@ class GeneratedArtifactMeta:
         workflow_run_id = RunId(_canonical_string(self.workflow_run_id, _RUN_ID))
         sequence_number = _positive_int(self.sequence_number)
         generated_by = _safe_text(self.generated_by, _GENERATED_BY)
-        if self.kind is GeneratedArtifactKind.QUOTE_PDF:
+        if self.kind is GeneratedArtifactKind.DIALOGUE_PLAN:
+            subject_ref = _safe_text(self.subject_ref, _MESSAGE_REF)
+            if generated_by != "ordinary_dialogue_v1":
+                raise _invalid()
+            expected_key = f"{subject_ref}:{sequence_number}:dialogue_plan"
+        elif self.kind is GeneratedArtifactKind.QUOTE_PDF:
             subject_ref = _safe_text(self.subject_ref, _QUOTE_REF)
             if generated_by not in QUOTE_PDF_TEMPLATE_VERSIONS:
                 raise _invalid()

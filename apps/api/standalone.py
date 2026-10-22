@@ -6,10 +6,12 @@ import argparse
 import asyncio
 import logging
 import socket
+from contextlib import AbstractAsyncContextManager
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 import uvicorn
 from fastapi import FastAPI
@@ -23,6 +25,7 @@ from connectors.object_store.config import S3ObjectStoreSettings
 from infra.authentication.account_creation import PostgresAccountCreation
 from infra.authentication.service import PostgresAuthentication
 from infra.browser_probe import ungm_probe_enabled
+from infra.db.inventory_search_readiness import InventorySearchReadinessReader
 from infra.db.inventory_sources import InventorySources
 from infra.db.model_configuration import SqlModelConfigurationRepository
 from infra.db.platform_access import EnterpriseReaderBinding
@@ -48,7 +51,7 @@ from .composition.aliyun_web import AliyunOutboundConnectors, AliyunWebService
 from .composition.assistant import build_api_assistant
 from .composition.customer_assignment import CustomerAssignmentBridge
 from .composition.employee_mail import EmployeeMailConnectors
-from .composition.inventory import bind_inventory
+from .composition.inventory import CurrentCustomerAgentAuthority, bind_inventory
 from .composition.qq_web import QQWebService, qq_connector
 from .composition.standalone_contacts import build_standalone_customer_verification
 from .pilot import UnconfiguredModelClient, mount_web, runtime_settings
@@ -65,7 +68,7 @@ def create_standalone_app(
     qq_mail_directory: Path | None = None,
     hunter_customer_settings_file: Path | None = None,
 ) -> FastAPI:
-    reply_employee_binding(profile, settings)
+    reply_employee_binding(profile, settings, ordinary_mailboxes=qq_mail_directory is not None and settings.qq_reply is None)
     knowledge = load_knowledge_settings(profile.knowledge_settings_file) if profile.knowledge_settings_file is not None else None
     runtime = runtime_settings(profile)
     hunter_customer_settings = load_hunter_customer_settings(hunter_customer_settings_file)
@@ -166,15 +169,38 @@ def create_standalone_app(
     if qq is not None:
         business.state.qq_web = qq
         from domains.conversations.business_mail import BusinessMailService
+        from domains.conversations.business_mail_followup import (
+            BusinessMailFollowupService,
+        )
         from infra.business_mail_binding import CurrentBusinessMailboxBinding
         from infra.db.business_mail import SqlBusinessMailRepository
-        from domains.conversations.business_mail_followup import BusinessMailFollowupService
         from infra.db.business_mail_followup import SqlBusinessMailFollowupRepository
         business_mail_repository = SqlBusinessMailRepository(
             sessions, CurrentBusinessMailboxBinding(qq.store))
         business.state.business_mail = BusinessMailService(business_mail_repository)
         business.state.business_mail_followup = BusinessMailFollowupService(
             SqlBusinessMailFollowupRepository(business_mail_repository))
+        from infra.db.inquiry_admission import SqlInquiryAdmissionTransaction
+        from workflows.reply_qualification.inquiry_admission import (
+            InquiryAdmission,
+            InquiryAdmissionTransaction,
+        )
+        dependencies = business.state.dependencies
+        from domains.conversations.service_impl import ConversationServiceImpl
+        from infra.db.dialogue_owner_access import (
+            DialogueOriginalAccess,
+            SqlDialogueOwnerAccess,
+        )
+        if isinstance(dependencies.conversations, ConversationServiceImpl):
+            dependencies.conversations.bind_ordinary_original_access(DialogueOriginalAccess(
+                SqlDialogueOwnerAccess(sessions, TenantId(profile.tenant_id), business_mail_repository)))
+        if dependencies.products is not None:
+            from apps.api.composition.dialogue_inquiry import OrdinaryInquiryChoices
+            business.state.ordinary_inquiry_choices = OrdinaryInquiryChoices(sessions,
+                business.state.business_mail, dependencies.outreach, dependencies.products)
+            business.state.ordinary_inquiry_admission = InquiryAdmission(
+                lambda tenant: cast(AbstractAsyncContextManager[InquiryAdmissionTransaction], SqlInquiryAdmissionTransaction(sessions, tenant, business_mail_repository, now=lambda:datetime.now(UTC))),
+                dependencies.outreach, dependencies.products, dependencies.prospecting)
     business.state.employee_accounts = EmployeeAccountCreation(
         TenantId(profile.tenant_id),
         PostgresAccountCreation(sessions, TenantId(profile.tenant_id)),
@@ -207,7 +233,8 @@ def create_standalone_app(
             TenantId(current_platform.control_tenant_id),
         )
         inventory = PostgresInventoryService(sessions, TenantId(profile.tenant_id), catalog,
-            assignment_bridge=CustomerAssignmentBridge())
+            assignment_bridge=CustomerAssignmentBridge(),
+            followup_authority=CurrentCustomerAgentAuthority(business.state.dependencies, TenantId(profile.tenant_id)))
         business.state.prospect_inventory_factory = lambda identity: bind_inventory(
             inventory, business.state.dependencies, identity,
         )
@@ -222,6 +249,8 @@ def create_standalone_app(
             quota=PostgresSearchQuotaRepository(
                 sessions, TenantId(profile.tenant_id), now=lambda: datetime.now(UTC),
             ),
+            search_policy=settings.inventory_search,
+            search_readiness=InventorySearchReadinessReader(sessions, TenantId(profile.tenant_id), settings).read,
             configured=(settings.research is not None
                         and settings.research.exclusive_account_confirmed),
         )

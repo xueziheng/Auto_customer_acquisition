@@ -27,6 +27,7 @@ from domains.employees.permissions import Actor, EmployeeScope
 from domains.opportunities.scoring import ScoringPolicy
 from domains.opportunities.service import OpportunityService
 from domains.opportunities.service_impl import HandoffPolicy
+from domains.outreach.service import OutreachService
 from infra.db.model_usage import SqlModelUsageRepository
 from infra.db.run_audit import PostgresRunAuditRepository
 from infra.db.schema import assert_database_schema_current
@@ -35,6 +36,10 @@ from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from infra.pilot.config import PILOT_GMAIL_MAILBOX_ALIAS, PilotConfig
 from infra.secrets import EnvironmentSecretResolver
 from infra.standalone.automatic_followup import reply_employee_binding
+from infra.standalone.hunter_settings import (
+    HunterCustomerSettings,
+    load_hunter_customer_settings,
+)
 from infra.standalone.knowledge_settings import (
     KnowledgeSettings,
     load_knowledge_settings,
@@ -49,11 +54,15 @@ from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.model_generate import ModelProvider
 from tool_gateway.qq_trial_model import TrialProviderBudget
 from tool_gateway.repository import ToolGatewayUnitOfWork
+from workflows.account_discovery.ports import ContactVerifier
 from workflows.assistant.ports import AssistantRuntimePorts
 from workflows.engine.audit import Phase1RunAuditAuthorizer, RunAuditService
 
 from .bootstrap import CanonicalSchedulerBootstrap, ResearchRuntimePorts
 from .config import SchedulerWorkerConfig
+from .customer_preparation_runtime import PreparationRuntime
+from .dialogue_resources import DialogueArtifactPorts
+from .inventory_ports import InventoryRuntimePorts
 from .main import EnterpriseKnowledgeDriverProtocol, SchedulerRuntime
 from .main import main as run_worker
 from .pilot import UnconfiguredDnsResolver, UnconfiguredDnsStep
@@ -164,21 +173,28 @@ def _create_standalone_factory(
     provider_factory: Callable[[], ModelProvider] | None = None,
     trial_provider_factory: Callable[[TrialProviderBudget, InvocationIdentity], ModelProvider] | None = None,
     research_ports: ResearchRuntimePorts | None = None,
+    inventory_ports: InventoryRuntimePorts | None = None,
     reply_inbound: InboundRuntimePorts | None = None,
     instance_id: str,
     knowledge_settings: KnowledgeSettings | None = None,
     inventory_control: tuple[async_sessionmaker[AsyncSession], TenantId] | None = None,
     qq_dns_enabled: bool = False,
+    qq_mail_directory: Path | None = None,
+    hunter_customer_settings: HunterCustomerSettings | None = None,
 ) -> SchedulerRuntimeFactory:
     if settings.qq_reply is not None and settings.qq_reply.trial is not None:
         if not settings.model_data_export_enabled:
             raise ValueError("受控回复必须保留显式模型数据许可")
         if trial_provider_factory is None and (settings.model_catalog_directory is None or settings.codex_job_root is None):
             raise ValueError("受控回复必须配置原租户 Codex 模型入口")
-    inbound = _reply_ports(profile, settings, reply_inbound)
+    ordinary_enabled = settings.reply_enabled and qq_mail_directory is not None and settings.qq_reply is None
+    ordinary_only = ordinary_enabled and profile.gmail is None
+    if ordinary_only and reply_inbound is not None:
+        raise ValueError("普通询盘模式不能注入冷收信端口")
+    inbound = None if ordinary_only else _reply_ports(profile, settings, reply_inbound)
     send_transport: GmailHttpTransport | None = None
-    reply_employee = reply_employee_binding(profile, settings)
-    if settings.automatic_send_enabled:
+    reply_employee = reply_employee_binding(profile, settings, ordinary_mailboxes=ordinary_enabled)
+    if settings.automatic_send_enabled and not ordinary_only:
         if settings.qq_reply is not None or profile.gmail is None or inbound is None or not isinstance(inbound.provider, GmailHttpTransport):
             raise ValueError("自动发送必须具有独立启用与完整Gmail配置")
         send_transport = inbound.provider
@@ -259,10 +275,28 @@ def _create_standalone_factory(
 
     def inventory_driver(core, sessions):
         from .standalone_inventory import build_inventory_driver
-        assert inventory_control is not None and research_ports is not None
+        assert inventory_control is not None and (inventory_ports is not None or research_ports is not None)
         return build_inventory_driver(core=core,sessions=sessions,control_sessions=inventory_control[0],
             control_tenant=inventory_control[1],tenant_id=tenant,settings=settings,resolver=model_resolver,
-            fingerprints=fingerprints,research=research_ports,owner=instance_id)
+            fingerprints=fingerprints,research=research_ports,owner=instance_id, inventory_ports=inventory_ports)
+
+    async def preparation_driver(core: SchedulerCoreServices, sessions: async_sessionmaker[AsyncSession], outreach: OutreachService, verifier: ContactVerifier | None) -> PreparationRuntime:
+        from .customer_preparation_runtime import build_customer_preparation
+        assert inventory_control is not None
+        return await build_customer_preparation(core=core, sessions=sessions, control_sessions=inventory_control[0],
+            control_tenant=inventory_control[1], tenant_id=tenant, outreach=outreach, existing_verifier=verifier,
+            settings=settings, resolver=model_resolver, fingerprints=fingerprints, research=research_ports,
+            owner=instance_id, hunter=hunter_customer_settings, inventory_ports=inventory_ports)
+
+    def formal_mail(sessions):
+        from connectors.qq_mail.client import QQMailConnector
+        from infra.aliyun_mail_store import AliyunMailStore
+        from infra.db.campaign_mail_owner import CampaignMailboxOwner
+        from infra.outbound_mail import AliyunOutboundConnectors, EmployeeMailConnectors
+        assert qq_mail_directory is not None
+        store = AliyunMailStore(qq_mail_directory)
+        return (EmployeeMailConnectors(None, None, AliyunOutboundConnectors(store, sessions,
+            connector_factory=QQMailConnector)), CampaignMailboxOwner(sessions, store))
 
     scoring, handoff = profile.policy.scoring_policy, profile.policy.handoff_policy
     return SchedulerRuntimeFactory(
@@ -271,6 +305,7 @@ def _create_standalone_factory(
         standalone_research=research_ports is not None,
         secret_resolver=inbound.secret_resolver if inbound is not None else profile,
         inbound_ports=inbound,
+        reply_artifact_ports=(DialogueArtifactPorts(S3ObjectStoreSettings.from_pilot_environ(env), profile) if ordinary_enabled else None),
         unconfigured_dns_step=UnconfiguredDnsStep(),
         qq_dns_enabled=qq_dns_enabled,
         bootstrap=CanonicalSchedulerBootstrap(
@@ -284,7 +319,8 @@ def _create_standalone_factory(
             ),
             HandoffPolicy(handoff.sla_seconds, handoff.backlog_threshold),
             assistant_factory=assistant,
-            inventory_factory=inventory_driver if inventory_control is not None and research_ports is not None else None,
+            inventory_factory=inventory_driver if inventory_control is not None and (inventory_ports is not None or research_ports is not None) else None,
+            preparation_factory=preparation_driver if inventory_control is not None else None,
             knowledge_factory=knowledge_driver if knowledge_settings is not None and knowledge_settings.enabled else None,
             research_enabled=research_ports is not None,
             research_factory=(
@@ -301,7 +337,8 @@ def _create_standalone_factory(
             )
             if research_ports is not None
             else None,
-            campaign_enabled=settings.automatic_send_enabled,
+            campaign_enabled=settings.automatic_send_enabled and (send_transport is not None or (ordinary_enabled and reply_employee is not None)),
+            outbound_factory=formal_mail if ordinary_enabled and settings.automatic_send_enabled and reply_employee is not None else None,
             gmail_transport=send_transport,
             secret_resolver=inbound.secret_resolver if inbound is not None else None,
             reply_factory=(
@@ -315,12 +352,13 @@ def _create_standalone_factory(
                     resolver=model_resolver,
                     fingerprints=fingerprints,
                     owner=instance_id,
+                    mailbox_directory=qq_mail_directory if ordinary_enabled else None,
                     provider_factory=provider_factory,
                     trial_gate=resources.trial_gate,
                     trial_provider_factory=trial_provider_factory,
                 )
             )
-            if reply_employee is not None
+            if reply_employee is not None or ordinary_enabled
             else None,
         ),
         resolver_factory=UnconfiguredDnsResolver,
@@ -345,23 +383,30 @@ def create_standalone_factory(
     provider_factory: Callable[[], ModelProvider] | None = None,
     trial_provider_factory: Callable[[TrialProviderBudget, InvocationIdentity], ModelProvider] | None = None,
     research_ports: ResearchRuntimePorts | None = None,
+    inventory_ports: InventoryRuntimePorts | None = None,
     reply_inbound: InboundRuntimePorts | None = None,
     qq_dns_enabled: bool = False,
+    qq_mail_directory: Path | None = None,
+    hunter_customer_settings_file: Path | None = None,
 ) -> Callable[[], AbstractAsyncContextManager[SchedulerRuntime]]:
     """构造无 IO；对象 SDK 在进入进程生命周期后拥有并对称关闭。"""
 
     @asynccontextmanager
     async def resources() -> AsyncIterator[SchedulerRuntime]:
+        from connectors.object_store.bounded import S3BoundedObjectBlobTransport
         from connectors.object_store.config import S3ObjectStoreSettings
         from connectors.object_store.s3 import S3ObjectBlobTransport
         from connectors.tavily.transport import TavilySearchApiTransport
         from connectors.web_search.transport import SafePublicPageHttpTransport
+        from shared.schemas.evidence_read import ObjectReadLimits
 
         knowledge_settings = (
             load_knowledge_settings(profile.knowledge_settings_file)
             if profile.knowledge_settings_file is not None else None
         )
+        hunter_customer_settings = load_hunter_customer_settings(hunter_customer_settings_file)
         ports = research_ports
+        page_ports = inventory_ports
         owned: S3ObjectBlobTransport | None = None
         control_engine = None
         inventory_control = None
@@ -391,8 +436,21 @@ def create_standalone_factory(
                     research.secret_ref,
                     model_resolver,
                     research.exclusive_account_confirmed,
+                    bounded_object_transport=S3BoundedObjectBlobTransport(
+                        S3ObjectStoreSettings.from_pilot_environ(profile.runtime_environment()), profile,
+                        limits=ObjectReadLimits(connect_timeout_ms=3000, read_timeout_ms=5000,
+                            total_timeout_ms=15000, chunk_bytes=65536, maximum_attempts=1)),
                 )
-            if profile.platform_settings_file is not None and ports is not None:
+            if page_ports is None and ports is not None:
+                page_ports = InventoryRuntimePorts(ports.page_transport, ports.object_transport,
+                    ports.maximum_artifact_bytes, ports.bounded_object_transport)
+            if page_ports is None and profile.platform_settings_file is not None:
+                owned = S3ObjectBlobTransport(S3ObjectStoreSettings.from_pilot_environ(profile.runtime_environment()), profile)
+                page_ports = InventoryRuntimePorts(SafePublicPageHttpTransport(timeout_seconds=10), owned, 4 * 1024 * 1024,
+                    S3BoundedObjectBlobTransport(S3ObjectStoreSettings.from_pilot_environ(profile.runtime_environment()), profile,
+                        limits=ObjectReadLimits(connect_timeout_ms=3000, read_timeout_ms=5000,
+                            total_timeout_ms=15000, chunk_bytes=65536, maximum_attempts=1)))
+            if profile.platform_settings_file is not None:
                 platform = load_platform_settings(profile.platform_settings_file).model_copy(update={"database_port":profile.database_port})
                 if platform.control_tenant_id == profile.tenant_id:
                     raise ValueError('库存控制租户必须独立')
@@ -406,11 +464,14 @@ def create_standalone_factory(
                 provider_factory=provider_factory,
                 trial_provider_factory=trial_provider_factory,
                 research_ports=ports,
+                inventory_ports=page_ports,
                 reply_inbound=reply_inbound,
                 instance_id=new_id("mrt").lower(),
                 knowledge_settings=knowledge_settings,
                 inventory_control=inventory_control,
                 qq_dns_enabled=qq_dns_enabled,
+                qq_mail_directory=qq_mail_directory,
+                hunter_customer_settings=hunter_customer_settings,
             )
             async with factory() as runtime:
                 yield runtime
@@ -427,6 +488,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="启动独立本机 TradeOS 后台")
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--model-settings", type=Path, required=True)
+    parser.add_argument("--hunter-customer-settings", type=Path)
     args = parser.parse_args()
     logging.disable(logging.CRITICAL)
     try:
@@ -436,6 +498,10 @@ def main() -> int:
             create_standalone_factory(
                 profile, settings, EnvironmentSecretResolver(os.environ),
                 qq_dns_enabled=(args.profile.absolute().parent / "qq-mail").is_dir(),
+                qq_mail_directory=(args.profile.absolute().parent / "qq-mail" if (args.profile.absolute().parent / "qq-mail").is_dir() else None),
+                hunter_customer_settings_file=(args.hunter_customer_settings or
+                    ((args.profile.absolute().parent / "hunter-customer-settings.json")
+                     if (args.profile.absolute().parent / "hunter-customer-settings.json").is_file() else None)),
             )
         )
     except BaseException:  # noqa: BLE001 - 进程边界只返回固定安全失败

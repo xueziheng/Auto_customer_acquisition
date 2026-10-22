@@ -1,12 +1,17 @@
 <script setup lang="ts">
-import { inject } from "vue";
+import { inject, ref, onUnmounted } from "vue";
 import { apiClient, createApiClient } from "../../api/client";
 import { useCustomerAccess } from "../../composables/useCustomerAccess";
+import ProspectingServicePlanPanel from "../../components/ProspectingServicePlanPanel.vue";
 import InventoryPanel from "./InventoryPanel.vue";
+import type { components } from "../../api/api";
+const scheduleQuery = ref<components["schemas"]["InventoryQuery"] | null>(null);
 const client = inject<ReturnType<typeof createApiClient>>(
   "tradeos-api-client",
   apiClient,
 );
+const unsubscribe = client.subscribeIdentity(() => { scheduleQuery.value = null; });
+onUnmounted(unsubscribe);
 const { access, loading, error, load } = useCustomerAccess(client);
 </script>
 <template>
@@ -30,7 +35,10 @@ const { access, loading, error, load } = useCustomerAccess(client);
         重试权限读取
       </button>
     </div>
-    <InventoryPanel v-else-if="access?.can_search && access.can_assign" />
+    <template v-else-if="access?.can_search && access.can_assign">
+      <InventoryPanel @schedule-query="scheduleQuery = $event" />
+      <ProspectingServicePlanPanel :query="scheduleQuery" />
+    </template>
     <p v-else>
       找客户与分配由企业管理员操作。请在“我的客户”查看分配给您的客户。
     </p>

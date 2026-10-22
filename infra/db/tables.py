@@ -1124,6 +1124,8 @@ class OutreachCampaignVersionRow(Base):
     daily_new_contact_limit: Mapped[int] = mapped_column(Integer)
     daily_total_message_limit: Mapped[int] = mapped_column(Integer)
     handoff_triggers: Mapped[list[str]] = mapped_column(postgresql.JSONB)
+    ordinary_dialogue_policy: Mapped[dict[str, object] | None] = mapped_column(postgresql.JSONB, nullable=True)
+    customer_agent_policy: Mapped[dict[str, object] | None] = mapped_column(postgresql.JSONB, nullable=True)
     stop_on_reply: Mapped[bool] = mapped_column(Boolean)
     created_by: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -3009,7 +3011,7 @@ class GeneratedArtifactRow(Base):
         ),
         CheckConstraint("size_bytes > 0", name="ck_artifacts_size"),
         CheckConstraint(
-            "(kind='email_draft' AND mime_type='application/vnd.tradeos.email-draft+json' AND subject_ref ~ '^enr_[0-7][0-9A-HJKMNP-TV-Z]{25}$' AND idempotency_key=subject_ref || ':' || sequence_number::text || ':' || 'draft' AND generated_by ~ '^[a-z][a-z0-9_-]{0,63}$') OR (kind='quote_pdf' AND mime_type='application/pdf' AND subject_ref ~ '^quo_[0-7][0-9A-HJKMNP-TV-Z]{25}$' AND generated_by='quote_pdf_v1' AND idempotency_key=subject_ref || ':' || sequence_number::text || ':quote_pdf:' || generated_by)",
+            "(kind='email_draft' AND mime_type='application/vnd.tradeos.email-draft+json' AND subject_ref ~ '^enr_[0-7][0-9A-HJKMNP-TV-Z]{25}$' AND idempotency_key=subject_ref || ':' || sequence_number::text || ':' || 'draft' AND generated_by ~ '^[a-z][a-z0-9_-]{0,63}$') OR (kind='quote_pdf' AND mime_type='application/pdf' AND subject_ref ~ '^quo_[0-7][0-9A-HJKMNP-TV-Z]{25}$' AND generated_by='quote_pdf_v1' AND idempotency_key=subject_ref || ':' || sequence_number::text || ':quote_pdf:' || generated_by) OR (kind='dialogue_plan' AND mime_type='application/vnd.tradeos.dialogue-plan+json' AND subject_ref ~ '^msg_[0-7][0-9A-HJKMNP-TV-Z]{25}$' AND generated_by='ordinary_dialogue_v1' AND idempotency_key=subject_ref || ':' || sequence_number::text || ':' || 'dialogue_plan')",
             name="ck_artifacts_binding",
         ),
         CheckConstraint(
@@ -3123,6 +3125,8 @@ class ConversationReplyWorkRow(Base):
 
     __tablename__ = "conversation_reply_work"
     __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "dialogue_binding_id"], ["dialogue_bindings.tenant_id", "dialogue_bindings.binding_id"], name="fk_reply_work_dialogue"),
+        CheckConstraint("(enrollment_id IS NOT NULL AND outbound_message_id IS NOT NULL) OR dialogue_binding_id IS NOT NULL", name="ck_reply_work_source"),
         PrimaryKeyConstraint(
             "tenant_id",
             "action_id",
@@ -3176,8 +3180,10 @@ class ConversationReplyWorkRow(Base):
     tenant_id: Mapped[str] = mapped_column(String(32))
     action_id: Mapped[str] = mapped_column(String(32))
     message_id: Mapped[str] = mapped_column(String(32))
-    outbound_message_id: Mapped[str] = mapped_column(String(256))
-    enrollment_id: Mapped[str] = mapped_column(String(40))
+    outbound_message_id: Mapped[str | None] = mapped_column(String(256))
+    enrollment_id: Mapped[str | None] = mapped_column(String(40))
+    dialogue_binding_id: Mapped[str | None] = mapped_column(String(40))
+    review_reason: Mapped[str | None] = mapped_column(String(64))
     account_id: Mapped[str] = mapped_column(String(40))
     contact_point_id: Mapped[str] = mapped_column(String(40))
     action: Mapped[str] = mapped_column(String(40))
@@ -6288,3 +6294,7 @@ class PrivateReplyTestRow(Base):
     owner_id: Mapped[str] = mapped_column(String(40))
     created_by: Mapped[str] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+from infra.db import (
+    dialogue_execution_tables as _dialogue_execution_tables,  # noqa: F401
+)

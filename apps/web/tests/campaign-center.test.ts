@@ -85,7 +85,7 @@ afterEach(() => {
 });
 
 async function mountPurpose(path = "/campaigns", options: {
-  state?: Campaign["state"]; senderUsable?: boolean; otherUsableSender?: boolean; allCapabilities?: boolean;
+  agentRole?: "boss" | "sales"; state?: Campaign["state"]; senderUsable?: boolean; otherUsableSender?: boolean; allCapabilities?: boolean;
   post?: (request: Request) => Promise<Response>;
 } = {}) {
   let generation = 0;
@@ -109,6 +109,10 @@ async function mountPurpose(path = "/campaigns", options: {
       } else if (/\/(start|activate)$/.test(url.pathname)) current = { ...current, state: "active" };
       return response(current);
     }
+    if (url.pathname === "/prospects/customers/access") return response({role: options.agentRole ?? "sales", can_assign: options.agentRole === "boss", can_search: options.agentRole === "boss"});
+    if (url.pathname === "/products") return response([{product_id:"prd_public",name_zh:"已确认铰链",pool:"formal",candidate_status:null,source_only:false}]);
+    if (url.pathname === "/team/employees") return response([{tenant_id: "tn_server_bound", employee_id: "emp_owner", name: "业务负责人", role: "sales", is_active: true}]);
+    if (url.pathname === "/knowledge/documents") return response({items: [{tenant_id: "tn_server_bound", document_id: "doc_scope", current_revision_id: "rev_scope", status: "confirmed", source: {filename: "确认产品.txt"}}]});
     if (url.pathname === "/crm/campaigns") return response([current]);
     if (url.pathname === "/crm/sending-identities") return response([
       sender, ...(options.otherUsableSender ? [{ ...sender, identity_id: "sid_other", usable_for_cold_outreach: true }] : []),
@@ -297,4 +301,43 @@ describe("CampaignCenter", () => {
     expect(submit?.disabled).toBe(true);
     app.unmount();
   });
+});
+
+it("发送关闭时老板可显式批准准备范围，员工隐藏入口", async () => {
+  const {root, writes, switchIdentity} = await mountPurpose("/campaigns", {agentRole: "boss"});
+  button(root, "设置自动任务").click(); await nextTick();
+  await eventually(() => expect(root.querySelector('[aria-label="批准自动准备并入组"]')).not.toBeNull());
+  root.querySelector<HTMLInputElement>('[aria-label="批准自动准备并入组"]')!.click(); await nextTick();
+  fill(root, "目标市场", "US"); fill(root, "产品类别", "hinges"); fill(root, "处理依据引用", "lia:actual-test");
+  for (const [label, value] of [["自动准备负责人", "emp_owner"], ["自动准备确认资料", "doc_scope"]]) {
+    const select = root.querySelector<HTMLSelectElement>(`[aria-label="${label}"]`)!;
+    select.value = value; select.dispatchEvent(new Event("change"));
+  }
+  root.querySelector<HTMLInputElement>('.sender-picker input[value="sid_controlled"]')!.click(); await nextTick();
+  root.querySelector<HTMLButtonElement>('.boundary-editor button[type="submit"]')!.click();
+  await eventually(() => expect(writes).toHaveLength(2));
+  expect((await writes[0]!.json()).customer_agent_policy).toEqual({prepare_and_enroll: true, owner_employee_id: "emp_owner", assessment_ref: "lia:actual-test", basis: "legitimate_interest", subject_type: "legal_entity", contact_type: "role_based", confirmed_refs: [{document_id: "doc_scope", revision_id: "rev_scope"}]});
+  switchIdentity(); await nextTick(); expect(root.textContent).not.toContain("lia:actual-test");
+  const employee = await mountPurpose("/campaigns", {agentRole: "sales"});
+  button(employee.root, "设置自动任务").click(); await nextTick();
+  expect(employee.root.querySelector('[aria-label="批准自动准备并入组"]')).toBeNull();
+});
+
+
+it("普通沟通授权只提交当前产品及回复邮箱选择，不要求用户填写hash或模型配置", async () => {
+ const {root,writes}=await mountPurpose("/campaigns",{agentRole:"boss"});
+ button(root,"修订边界").click(); await nextTick();
+ const enabled=root.querySelector<HTMLInputElement>('[aria-label="批准普通邮件持续沟通"]')!;
+ enabled.checked=true; enabled.dispatchEvent(new Event("change")); await nextTick();
+ for (const [label,value] of [["普通沟通负责人","emp_owner"],["普通沟通产品","prd_public"],["普通回复邮箱","sid_controlled"]]) {
+  const select=root.querySelector<HTMLSelectElement>(`[aria-label="${label}"]`)!;
+  select.value=value!; select.dispatchEvent(new Event("change"));
+ }
+ fill(root,"普通沟通授权期限","2027-01-01T10:00"); fill(root,"普通沟通轮数","3"); fill(root,"普通沟通依据","已审核沟通范围"); await nextTick();
+ root.querySelector<HTMLButtonElement>('.boundary-editor button[type="submit"]')!.click();
+ await eventually(()=>expect(writes.length).toBeGreaterThan(0));
+ const body=await writes[0].json();
+ expect(body.ordinary_dialogue_policy).toMatchObject({owner_employee_id:"emp_owner",product_ids:["prd_public"],reply_sender_identity_ids:["sid_controlled"],max_rounds:3});
+ expect(JSON.stringify(body)).not.toContain("customer_view_sha256");
+ expect(root.textContent).not.toContain("run_id");
 });

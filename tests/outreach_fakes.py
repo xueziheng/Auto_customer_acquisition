@@ -350,7 +350,7 @@ class FakeSenders:
     def __init__(self, snapshots: dict[SendingIdentityId, SendingIdentityEligibilitySnapshot], trace: Trace) -> None:
         self.snapshots, self.trace = snapshots, trace
 
-    async def get_sending_identity_eligibility(self, tenant_id, identity_id):
+    async def get_sending_identity_eligibility(self, tenant_id, identity_id, *, for_cold_outreach=True):
         self.trace.calls.append(("sender", identity_id))
         return self.snapshots[identity_id]
 

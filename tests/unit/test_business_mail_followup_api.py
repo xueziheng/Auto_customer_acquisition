@@ -1,15 +1,17 @@
 """HTTP身份只取认证依赖，错误不得反射草稿正文。"""
 
 from types import SimpleNamespace
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from apps.api.routers.business_mail_followup import router
+
 from apps.api.dependencies import get_request_identity
+from apps.api.routers.business_mail_followup import router
 from domains.conversations.business_mail_followup import (
+    BusinessMailFollowupConflict,
     BusinessMailFollowupService,
     BusinessMailFollowupView,
-    BusinessMailFollowupConflict,
 )
 
 

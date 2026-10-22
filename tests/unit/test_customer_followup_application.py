@@ -24,7 +24,7 @@ C = "cmp_01K39P9M5D6K4A91YEQ80EJZ0X"
 P = "cp_01K39P9M5D6K4A91YEQ80EJZ0X"
 
 
-def fixture(role="sales", owner=EMPLOYEE, account=A, active=True):
+def fixture(role="sales", owner=EMPLOYEE, account=A, active=True, preparation=None):
     from tests.unit.test_prospect_inventory_api import NOW
 
     app, _ = setup(role=role)
@@ -45,7 +45,7 @@ def fixture(role="sales", owner=EMPLOYEE, account=A, active=True):
         request_key="private-key",
     )
     ctx = CustomerContext(
-        TENANT, EMPLOYEE, identity.employee.user_id, role, active, allocation, owner
+        TENANT, EMPLOYEE, identity.employee.user_id, role, active, allocation, owner, preparation
     )
 
     class Reader:
@@ -574,3 +574,15 @@ async def test_original_result_survives_changed_admission_facts_but_new_key_does
         and h.store.actions == actions
     )
     assert not h.store.attempts
+
+async def test_preparation_projection_is_inside_existing_customer_guard():
+    from domains.prospecting.customer_followup import CustomerPreparationStatus
+    status = CustomerPreparationStatus(state="blocked", stage="verify", blocked_reason="external_reconciliation_required", campaign_id=C, campaign_version=1)
+    application, identity, prospecting, _, _ = fixture(account=None, preparation=status)
+    detail = await application.detail(identity, "cal_test")
+    assert detail.preparation == status
+    assert set(detail.preparation.model_dump()) == {"state", "stage", "blocked_reason", "campaign_id", "campaign_version"}
+    application, identity, prospecting, _, _ = fixture(account=None, owner="emp_other", preparation=status)
+    with pytest.raises(PermissionDenied):
+        await application.detail(identity, "cal_test")
+    prospecting.get_account.assert_not_called()

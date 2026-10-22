@@ -299,7 +299,7 @@ def _row_to_case(row: SourcingCaseRow) -> SourcingCase:
 class SourcingCaseRepositoryImpl(_TenantBoundRepository):
     """案例 CRUD；更新以实体上一版本做 CAS。"""
 
-    def _scoped(self) -> Select[tuple[SourcingCaseRow]]:
+    def _scoped(self) -> Select[SourcingCaseRow]:
         return self.scoped_query(SourcingCaseRow)
 
     async def get_or_create(
@@ -579,15 +579,15 @@ def _row_to_snapshot(row: SourcingPrioritySnapshotRow) -> SourcingPrioritySnapsh
 class SourcingAdmissionRepositoryImpl(_TenantBoundRepository):
     """PostgreSQL 准入队列；排序、锁与租户边界都在 SQL 中完成。"""
 
-    def _admissions(self) -> Select[tuple[SourcingAdmissionRow]]:
+    def _admissions(self) -> Select[SourcingAdmissionRow]:
         return self.scoped_query(SourcingAdmissionRow)
 
-    def _snapshots(self) -> Select[tuple[SourcingPrioritySnapshotRow]]:
+    def _snapshots(self) -> Select[SourcingPrioritySnapshotRow]:
         return self.scoped_query(SourcingPrioritySnapshotRow)
 
     def _admissions_with_current_snapshot(
         self,
-    ) -> Select[tuple[SourcingAdmissionRow, SourcingPrioritySnapshotRow]]:
+    ) -> Select[SourcingAdmissionRow, SourcingPrioritySnapshotRow]:
         """以 tenant+current pointer 连接安全读取投影，保留无首快照阻断项。"""
 
         return (

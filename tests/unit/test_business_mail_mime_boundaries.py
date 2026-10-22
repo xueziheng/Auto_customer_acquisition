@@ -105,3 +105,18 @@ def test_normal_multipart_alternative_and_inline_main_body_remain_readable():
     parsed = parse_and_check_original(outer)
     assert "INLINE_MAIN_BODY" in parsed.body_text
     assert "HTML_ALTERNATIVE_BODY" not in parsed.body_text
+
+
+def test_exact_legacy_cold_reply_header_survives_business_ingest():
+    message = envelope()
+    header = '<controlled.' + 'a' * 64 + '@messages.tradeos.invalid>'
+    message['In-Reply-To'] = header
+    assert parse_and_check_original(message).in_reply_to == header
+
+
+def test_ambiguous_or_malformed_cold_reply_headers_are_not_correlated():
+    for header in ('<<controlled.' + 'a' * 64 + '@messages.tradeos.invalid>>',
+                   '<controlled.' + 'a' * 64 + '@messages.tradeos.invalid> <other@example.com>'):
+        message = envelope()
+        message['In-Reply-To'] = header
+        assert parse_and_check_original(message).in_reply_to is None

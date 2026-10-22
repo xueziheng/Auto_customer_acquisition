@@ -1,31 +1,71 @@
 <script setup lang="ts">
-import { computed, inject, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, inject, onMounted, ref } from "vue";
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
 import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
 
 type View = components["schemas"]["BusinessMailFollowupView"];
-type Command = components["schemas"]["BusinessMailHandlingCommand"];
-const props = defineProps<{ messageId: string }>();
+type DraftCommand = components["schemas"]["BusinessMailDraftCommand"];
+type HandlingCommand = components["schemas"]["BusinessMailHandlingCommand"];
+type Intent = { key: string; kind: "draft"; body: DraftCommand } | { key: string; kind: "handling"; body: HandlingCommand };
+const props = defineProps<{ messageId: string; subject: string; sourceKind: "full_mime" | "headers_only" }>();
+const emit = defineEmits<{ unauthorized: [status: number] }>();
 const client = inject<ReturnType<typeof createApiClient>>("tradeos-api-client", apiClient);
 const view = ref<View | null>(null);
-const note = ref("");
-const error = ref("");
 const loading = ref(false);
 const saving = ref(false);
-const pending = ref<{ key: string; body: Command } | null>(null);
-const labels = { pending: "待处理", in_progress: "处理中", waiting_customer: "等待客户回复", completed: "本次处理已完成" };
-const gate = useQuoteRequestScope(client, () => [props.messageId], () => {
-  view.value = null; note.value = ""; pending.value = null; error.value = "";
+const error = ref("");
+const notice = ref("");
+const draftSubject = ref("");
+const bodyText = ref("");
+const status = ref<HandlingCommand["status"]>("in_progress");
+const handlingBaseline = ref<HandlingCommand["status"]>("in_progress");
+const note = ref("");
+const unresolved = ref<Intent | null>(null);
+const labels: Record<View["status"], string> = { pending: "待处理", in_progress: "处理中", waiting_customer: "等待客户回复", completed: "处理完成" };
+const disabled = computed(() => loading.value || saving.value || !view.value || unresolved.value !== null || !gate.hasIdentity.value);
+const draftDisabled = computed(() => disabled.value || props.sourceKind !== "full_mime");
+const draftDirty = computed(() => draftSubject.value !== (view.value?.draft?.subject ?? "") || bodyText.value !== (view.value?.draft?.body_text ?? ""));
+function reset(): void {
+  view.value = null; draftSubject.value = ""; bodyText.value = ""; note.value = "";
+  status.value = handlingBaseline.value = "in_progress"; error.value = ""; notice.value = ""; unresolved.value = null;
   loading.value = false; saving.value = false;
-});
+}
 const sent = computed(() => view.value?.history.some(e => /^(inquiry-sent:|business-reply-sent:)/.test(e.request_key)) ?? false);
 const visibleHistory = computed(() => view.value?.history.filter(e => !/^(inquiry-claim:|inquiry-scope:)/.test(e.request_key)) ?? []);
-function time(value: string): string { return new Date(value).toLocaleString("zh-CN", { hour12: false }); }
-function failure(status: number): string {
-  if (status === 401 || status === 403) { gate.invalidate(); view.value = null; note.value = ""; pending.value = null; return "当前身份无权查看此处理记录"; }
-  if (status === 409) return "处理记录已更新，请刷新核对后再操作";
-  return "处理服务暂不可用，请刷新核对";
+const gate = useQuoteRequestScope(client, () => [props.messageId], reset);
+function date(value: string): string { return new Date(value).toLocaleString("zh-CN", { hour12: false }); }
+function responseError(code: number): string {
+  if (code === 409) return "处理记录已更新，请刷新核对后再保存";
+  if (code === 400 || code === 422) return "填写内容未通过校验，请检查主题、正文或处理说明";
+  if (code === 404) return "邮件处理记录当前不可用";
+  return "处理服务暂不可用，请稍后核对";
+}
+function revoke(code: number): boolean {
+  if (![401, 403].includes(code)) return false;
+  gate.invalidate(); reset(); emit("unauthorized", code); return true;
+}
+function validView(data: View | undefined): data is View {
+  return data?.message_id === props.messageId && Number.isInteger(data.revision)
+    && Array.isArray(data.history) && data.status in labels;
+}
+function apply(data: View, mode: "initial" | "read" | "draft" | "handling"): void {
+  const wasDirty = draftDirty.value;
+  const handlingDirty = status.value !== handlingBaseline.value;
+  const receipt = unresolved.value && data.history.find(entry => entry.request_key === unresolved.value?.key);
+  const completedKind = receipt ? unresolved.value?.kind : null;
+  view.value = data;
+  if (mode === "initial" || mode === "draft" || completedKind === "draft" || !wasDirty) {
+    draftSubject.value = data.draft?.subject ?? ""; bodyText.value = data.draft?.body_text ?? "";
+  }
+  if (mode === "handling" || completedKind === "handling") note.value = "";
+  const nextStatus = data.status === "pending" ? "in_progress" : data.status;
+  if (mode === "initial" || mode === "handling" || completedKind === "handling" || !handlingDirty) status.value = nextStatus;
+  handlingBaseline.value = nextStatus;
+  if (receipt) unresolved.value = null;
+  if (mode === "draft" || completedKind === "draft") notice.value = "草稿已保存，尚未发送";
+  else if (mode === "handling" || completedKind === "handling") notice.value = "处理记录已保存";
+  else if (unresolved.value) notice.value = "保存结果待核对；尚未查到原请求记录，可重试同一保存请求";
 }
 function analysis(noteText: string): { reason: string; fields: { name: string; value: string; quote: string }[]; source: string } | null {
   try {
@@ -38,51 +78,71 @@ function analysis(noteText: string): { reason: string; fields: { name: string; v
   } catch { return null; }
 }
 async function load(): Promise<void> {
-  const op = gate.begin("followup-read"); if (!op?.valid() || saving.value) return;
+  if (!gate.hasIdentity.value || saving.value) return;
+  const operation = gate.begin("read"); if (!operation?.valid()) return;
   loading.value = true; error.value = "";
   try {
-    const result = await client.GET("/inbox/business-mail/{message_id}/followup", { params: { path: { message_id: props.messageId } }, signal: op.signal });
-    if (!op.valid()) return;
-    if (!result.response.ok || !result.data || !Array.isArray(result.data.history)) { error.value = failure(result.response.status); return; }
-    view.value = result.data;
-    if (pending.value && result.data.history.some(e => e.request_key === pending.value?.key)) {
-      pending.value = null; note.value = "";
-    }
-  } catch { if (op.valid()) error.value = "无法读取处理记录，请稍后刷新"; }
-  finally { if (op.valid()) loading.value = false; }
-}
-async function handle(status: Command["status"], retry = false): Promise<void> {
-  if (!view.value || saving.value || (!retry && (pending.value || !note.value.trim()))) return;
-  const op = gate.begin("followup-handle"); if (!op?.valid()) return;
-  if (!retry) pending.value = { key: `business-owner:${globalThis.crypto.randomUUID()}`, body: { expected_revision: view.value.revision, status, note: note.value.trim() } };
-  const request = pending.value; if (!request) return;
-  saving.value = true; error.value = "";
-  try {
-    const result = await client.POST("/inbox/business-mail/{message_id}/handling", {
-      params: { path: { message_id: props.messageId } }, headers: { "Idempotency-Key": request.key }, body: request.body, signal: op.signal,
+    const result = await client.GET("/inbox/business-mail/{message_id}/followup", {
+      params: { path: { message_id: props.messageId } }, signal: operation.signal,
     });
-    if (!op.valid()) return;
-    if (!result.response.ok || !result.data) {
-      error.value = failure(result.response.status);
-      if (result.response.status === 400 || result.response.status === 409) pending.value = null;
+    if (!operation.valid()) return;
+    if (!result.response.ok || !validView(result.data)) {
+      if (!revoke(result.response.status)) error.value = responseError(result.response.status);
       return;
     }
-    view.value = result.data; pending.value = null; note.value = "";
-  } catch { if (op.valid()) error.value = "保存结果待核对，请先刷新处理记录；需要恢复时使用原处理请求"; }
-  finally { if (op.valid()) saving.value = false; }
+    apply(result.data, view.value ? "read" : "initial");
+  } catch { if (operation.valid()) error.value = "无法读取处理记录，请稍后刷新"; }
+  finally { if (operation.valid()) loading.value = false; }
 }
-let timer: ReturnType<typeof globalThis.setInterval> | undefined;
-onMounted(() => { void load(); timer = globalThis.setInterval(() => { if (!saving.value && !loading.value && !note.value && !pending.value) void load(); }, 30000); });
-onBeforeUnmount(() => { if (timer) globalThis.clearInterval(timer); });
+function useTemplate(): void {
+  if (draftDisabled.value) return;
+  draftSubject.value = (/^re:/i.test(props.subject) ? props.subject : `Re: ${props.subject || "Your inquiry"}`).slice(0, 500);
+  bodyText.value = "Hello,\n\nThank you for your inquiry. Could you share your estimated order quantity and destination? This will help us check the details for your request.\n\nBest regards";
+  notice.value = "已填写通用询盘模板，可编辑后保存";
+}
+async function submit(intent: Intent): Promise<void> {
+  if (saving.value || loading.value || !view.value || !gate.hasIdentity.value) return;
+  const operation = gate.begin("save"); if (!operation?.valid()) return;
+  saving.value = true; notice.value = ""; error.value = ""; unresolved.value = intent;
+  try {
+    const params = { path: { message_id: props.messageId } };
+    const headers = { "Idempotency-Key": intent.key };
+    const result = intent.kind === "draft"
+      ? await client.POST("/inbox/business-mail/{message_id}/reply-draft", { params, headers, body: intent.body, signal: operation.signal })
+      : await client.POST("/inbox/business-mail/{message_id}/handling", { params, headers, body: intent.body, signal: operation.signal });
+    if (!operation.valid()) return;
+    if (!result.response.ok || !validView(result.data)) {
+      if (revoke(result.response.status)) return;
+      if (result.response.status >= 400 && result.response.status < 500) unresolved.value = null;
+      notice.value = unresolved.value ? "保存结果待核对，请刷新处理记录；不会自动重复提交" : responseError(result.response.status);
+      return;
+    }
+    if (!result.data.history.some(entry => entry.request_key === intent.key)) {
+      notice.value = "保存结果待核对，请刷新处理记录"; return;
+    }
+    apply(result.data, intent.kind); unresolved.value = null;
+  } catch { if (operation.valid()) notice.value = "保存结果待核对，请刷新处理记录；不会自动重复提交"; }
+  finally { if (operation.valid()) saving.value = false; }
+}
+function saveDraft(): void {
+  if (draftDisabled.value || !draftSubject.value.trim() || !bodyText.value.trim()) return;
+  void submit({ kind: "draft", key: globalThis.crypto.randomUUID(), body: { expected_revision: view.value!.revision, subject: draftSubject.value.trim(), body_text: bodyText.value.trim() } });
+}
+function quickHandle(value: HandlingCommand["status"]): void { status.value = value; saveHandling(); }
+function saveHandling(): void {
+  if (disabled.value || !note.value.trim()) return;
+  void submit({ kind: "handling", key: globalThis.crypto.randomUUID(), body: { expected_revision: view.value!.revision, status: status.value, note: note.value.trim() } });
+}
+onMounted(() => { void load(); });
 </script>
 
 <template>
   <section
     class="followup"
-    aria-label="询盘跟进与负责人处理"
+    aria-label="询盘处理"
   >
     <header>
-      <h3>询盘跟进与负责人处理</h3><button
+      <h3>继续处理</h3><button
         type="button"
         :disabled="loading || saving"
         @click="load"
@@ -91,94 +151,146 @@ onBeforeUnmount(() => { if (timer) globalThis.clearInterval(timer); });
       </button>
     </header>
     <p
+      v-if="loading"
+      role="status"
+    >
+      正在读取处理记录…
+    </p>
+    <p
       v-if="error"
+      class="warning"
       role="alert"
     >
       {{ error }}
     </p>
     <template v-if="view">
-      <p><strong>{{ labels[view.status] }}</strong> · 当前邮箱负责人处理</p>
-      <p class="hint">
-        模型提取需要人工核对；测试数据不计入真实采购需求或商机。
+      <p class="meta">
+        负责人：{{ view.owner_id }} · {{ labels[view.status] }}
       </p>
-      <details v-if="view.draft">
-        <summary>回复内容 · {{ sent ? "邮件服务已接受发送" : "草稿，尚无成功发送记录" }}</summary>
-        <strong>{{ view.draft.subject }}</strong><pre>{{ view.draft.body_text }}</pre>
-      </details>
-      <p
-        v-if="!visibleHistory.length"
-        class="hint"
-      >
-        尚无处理记录
-      </p>
-      <article
-        v-for="entry in visibleHistory"
-        :key="entry.event_id"
-      >
-        <template v-if="analysis(entry.note)">
-          <strong>模型提取 · 待负责人核对</strong><p>{{ analysis(entry.note)?.reason }}</p>
-          <dl
-            v-for="field in analysis(entry.note)?.fields"
-            :key="field.name"
+      <details v-if="view.draft"><summary>回复内容 · {{ sent ? "邮件服务已接受发送" : "草稿，尚无成功发送记录" }}</summary><strong>{{ view.draft.subject }}</strong><pre>{{ view.draft.body_text }}</pre></details>
+      <form @submit.prevent="saveDraft">
+        <header>
+          <h4>回复草稿</h4><button
+            type="button"
+            :disabled="draftDisabled"
+            @click="useTemplate"
           >
-            <dt>{{ field.name }}：{{ field.value }}</dt><dd>客户原话：“{{ field.quote }}”</dd>
-          </dl>
-          <details><summary>来源依据</summary><pre>{{ entry.note }}</pre></details>
-        </template>
-        <template v-else>
-          <strong>{{ entry.kind === "draft_saved" ? "回复草稿已保存" : labels[entry.status] }}</strong>
-          <p>{{ entry.note }}</p>
-        </template>
-        <small>{{ time(entry.created_at) }}</small>
-      </article>
-      <template v-if="view.status !== 'completed'">
+            使用询盘模板
+          </button>
+        </header>
+        <p class="meta">
+          编辑并保存英文回复。草稿尚未发送。
+        </p>
+        <p
+          v-if="sourceKind !== 'full_mime'"
+          class="warning"
+        >
+          正文未完整读取，请先核对原始邮件，暂不能准备回复。
+        </p>
+        <label>主题<input
+          v-model="draftSubject"
+          aria-label="回复主题"
+          maxlength="500"
+          required
+          :disabled="draftDisabled"
+        ></label>
+        <label>正文<textarea
+          v-model="bodyText"
+          aria-label="回复正文"
+          maxlength="10000"
+          rows="8"
+          required
+          :disabled="draftDisabled"
+        /></label>
+        <p
+          v-if="view.draft"
+          class="meta"
+        >
+          草稿已保存，尚未发送 · {{ date(view.draft.created_at) }}
+        </p>
+        <button
+          type="submit"
+          :disabled="draftDisabled || !draftSubject.trim() || !bodyText.trim()"
+        >
+          保存草稿
+        </button>
+      </form>
+      <form @submit.prevent="saveHandling">
+        <h4>负责人处理记录</h4>
+        <label>处理状态<select
+          v-model="status"
+          aria-label="处理状态"
+          :disabled="disabled"
+        ><option value="in_progress">处理中</option><option value="waiting_customer">等待客户回复</option><option value="completed">处理完成</option></select></label>
         <label>处理说明<textarea
           v-model="note"
-          aria-label="负责人处理说明"
-          rows="4"
+          aria-label="处理说明"
           maxlength="2000"
-          :disabled="saving || !!pending"
-          placeholder="写明已核对的信息、仍缺少的依据及下一步"
+          rows="3"
+          required
+          :disabled="disabled"
+          placeholder="记录已做的处理和下一步安排"
         /></label>
-        <p class="hint">
-          完成本次处理只保存处理结果，不自动确认采购、生成商机或发送邮件。
+        <p class="meta">
+          处理状态不代表邮件已发出，也不代表需求或商机已确认。
         </p>
-        <div class="actions">
-          <button
-            type="button"
-            :disabled="saving || !!pending || !note.trim()"
-            @click="handle('waiting_customer')"
-          >
-            等待客户补充
-          </button>
-          <button
-            type="button"
-            :disabled="saving || !!pending || !note.trim()"
-            @click="handle('completed')"
-          >
-            完成本次处理
-          </button>
-          <button
-            v-if="pending"
-            type="button"
-            :disabled="saving || loading"
-            @click="handle(pending.body.status, true)"
-          >
-            恢复原处理请求
-          </button>
-        </div>
-      </template>
+        <button
+          type="submit"
+          :disabled="disabled || !note.trim()"
+        >
+          保存处理记录
+        </button>
+        <button type="button" :disabled="disabled || !note.trim()" @click="quickHandle('waiting_customer')">等待客户补充</button>
+        <button type="button" :disabled="disabled || !note.trim()" @click="quickHandle('completed')">完成本次处理</button>
+      </form>
+      <p
+        v-if="notice"
+        class="notice"
+        role="status"
+      >
+        {{ notice }}
+      </p>
+      <button
+        v-if="unresolved"
+        type="button"
+        :disabled="saving || loading"
+        @click="submit(unresolved)"
+      >
+        重试原保存请求
+      </button>
+      <button v-if="unresolved?.kind === 'handling'" type="button" :disabled="saving || loading" @click="submit(unresolved)">恢复原处理请求</button>
+      <section
+        class="history"
+        aria-label="处理历史"
+      >
+        <h4>处理历史</h4><p
+          v-if="!view.history.length"
+          class="meta"
+        >
+          尚无处理记录
+        </p>
+        <article
+          v-for="entry in visibleHistory"
+          :key="entry.event_id"
+        >
+          <strong>{{ entry.kind === 'draft_saved' ? '保存回复草稿' : labels[entry.status] }}</strong>
+          <template v-if="analysis(entry.note)"><strong>模型提取 · 待负责人核对</strong><p>{{ analysis(entry.note)?.reason }}</p><dl v-for="field in analysis(entry.note)?.fields" :key="field.name"><dt>{{ field.name }}：{{ field.value }}</dt><dd>客户原话：“{{ field.quote }}”</dd></dl><details><summary>来源依据</summary><pre>{{ entry.note }}</pre></details></template><p v-else>{{ entry.note }}</p><small>{{ entry.actor_id }} · {{ date(entry.created_at) }}</small>
+        </article>
+      </section>
     </template>
   </section>
 </template>
 
 <style scoped>
-.followup { margin-top: 24px; border-top: 1px solid #d6dee8; padding-top: 18px; overflow-wrap: anywhere; }
-header, .actions { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
-h3 { font-size: 16px; margin: 0; } p, dt, dd { font-size: 13px; line-height: 1.6; } .hint, small { color: #64748b; }
-article { padding: 12px; background: #f8fafc; margin: 12px 0; border-radius: 6px; }
-pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; font-size: 12px; line-height: 1.6; }
-label { display: grid; gap: 8px; font-size: 13px; } textarea { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; }
-button { padding: 8px 12px; background: white; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer; font: inherit; }
-button:disabled { opacity: .5; cursor: default; } summary { cursor: pointer; font-size: 13px; } [role=alert] { color: #92400e; }
+.followup { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e2e8f0; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+h3, h4 { margin: 0; font-size: 15px; } h4 { font-size: 14px; }
+form, .history { margin-top: 16px; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; }
+label { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; font-size: 13px; }
+input, select, textarea, button { font: inherit; } input, select, textarea { border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px; background: white; color: #334155; min-width: 0; } textarea { resize: vertical; }
+button { border: 1px solid #d6dee8; border-radius: 7px; background: white; color: #334155; padding: 8px 12px; cursor: pointer; font-size: 13px; } button:disabled { opacity: .5; cursor: default; }
+.meta, small { font-size: 12px; color: #64748b; overflow-wrap: anywhere; }
+.warning { padding: 10px; color: #92400e; background: #fffbeb; font-size: 13px; } .notice { font-size: 13px; color: #334155; }
+article { border-top: 1px solid #e2e8f0; padding-top: 12px; margin-top: 12px; font-size: 13px; overflow-wrap: anywhere; } article p { white-space: pre-wrap; }
+@media (max-width: 760px) { form, .history { padding: 12px; } header { align-items: flex-start; } header button { flex-shrink: 0; } }
 </style>

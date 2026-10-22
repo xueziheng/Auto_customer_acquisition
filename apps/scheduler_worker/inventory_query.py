@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 from domains.prospecting.inventory import AFRICA_COUNTRIES, InventoryQuery
@@ -16,8 +17,28 @@ def _plain_spacing(value: str) -> str:
     return " ".join(value.split())
 
 
+def choose_inventory_country(
+    query: InventoryQuery, supplement: str, sequence: int
+) -> str:
+    """模型可选已批准范围内的公开国家名称；未选时轮转，不接受任意地域词。"""
+    text = _plain_spacing(supplement).casefold()
+    targets = query.target_countries
+    for country in targets:
+        if any(
+            re.search(r"(?<!\w)" + re.escape(name.casefold()) + r"(?!\w)", text)
+            for name in (country, COUNTRY_NAMES.get(country, country))
+        ):
+            return country
+    return targets[sequence % len(targets)] if targets else "ZZ"
+
+
 def compose_inventory_query(
-    query: InventoryQuery, strategy: str, supplement: str
+    query: InventoryQuery,
+    strategy: str,
+    supplement: str,
+    *,
+    public_domains: tuple[str, ...] = (),
+    maximum_chars: int = 400,
 ) -> str:
     """完整保留任务首产品/地域/受信策略，仅补充普通词；不扩大查询或证据范围。"""
     if (
@@ -32,8 +53,16 @@ def compose_inventory_query(
     place = (
         COUNTRY_NAMES.get(query.country, query.country)
         if query.country
-        else ("Africa" if query.region == "africa" else "")
+        else (query.region.title() if query.region else "")
     )
+    if query.regions or query.countries:
+        place = (
+            " ".join(COUNTRY_NAMES.get(code, code) for code in query.target_countries)
+            if query.countries
+            else " ".join(
+                sorted(set(query.regions) | ({query.region} if query.region else set()))
+            )
+        )
     fixed = " ".join(
         part
         for part in (
@@ -43,9 +72,34 @@ def compose_inventory_query(
         )
         if part
     )
-    if not fixed or len(fixed) > 400 or len(fixed.split()) > 50:
+    if not fixed or len(fixed) > maximum_chars or len(fixed.split()) > 50:
         raise ValueError("采集检索条件无效")
     text = _plain_spacing(supplement)
+    if query.confirmed_refs or query.intent:
+        # 私有上下文进入模型后，补充词只能选用户公开锚点、固定策略或本轮已观察域名。
+        allowed = {
+            word.casefold()
+            for word in (
+                " ".join(query.product_tags)
+                + " "
+                + strategy
+                + " manufacturer distributor wholesaler dealer retailer importer exporter repair service procurement supplier"
+            ).split()
+        }
+        text = " ".join(
+            word
+            for word in text.split()
+            if word.casefold() in allowed or word.lower() in public_domains
+        )
+        # 保留完整公开域名供官网跟进，拒绝任意字符串拼接外泄。
+        domains = [
+            word.lower() for word in text.split() if word.lower() in public_domains
+        ]
+        text = " ".join(
+            word for word in text.split() if word.lower() not in public_domains
+        )
+    else:
+        domains = []
     words = "".join(
         character if character.isalnum() else " " for character in text
     ).split()
@@ -58,9 +112,13 @@ def compose_inventory_query(
             continue
         if count >= 50:
             break
-        if len(result) + 1 + len(word) > 400:
+        if len(result) + 1 + len(word) > maximum_chars:
             continue
         result += " " + word
         seen.add(normalized)
         count += 1
+    for domain in dict.fromkeys(domains):
+        if count < 50 and len(result) + len(domain) + 1 <= maximum_chars:
+            result += " " + domain
+            count += 1
     return result

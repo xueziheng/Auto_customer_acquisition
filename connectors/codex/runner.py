@@ -106,7 +106,6 @@ def main() -> int:
         }
         command = [
             "/codex",
-            "--no-daemon",
             "exec",
             "--ignore-user-config",
             "--ignore-rules",

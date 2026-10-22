@@ -29,13 +29,34 @@ from domains.prospecting.inventory import (
     validate_assignment_ids,
     validate_request_count,
 )
+from domains.prospecting.inventory_fit import (
+    MAX_FIT_BATCHES,
+    MAX_FIT_CANDIDATES,
+    MAX_FIT_EVIDENCE_BYTES,
+    FitCandidateVersion,
+    InventoryFitAssessment,
+    InventoryFitBatch,
+    candidate_evidence_version,
+    fit_evidence_inputs,
+    fit_query_fingerprint,
+    selected_fit_candidates,
+)
+from domains.prospecting.inventory_followup import (
+    InventoryFollowupAuthority,
+    InventoryFollowupAuthorization,
+    InventoryFollowupScope,
+    PreparationClaim,
+)
 from domains.prospecting.projection_diagnostic import SaveSummary, SourceDiagnostic
 from infra.db.base import TenantScopedRepository
+from infra.db.inventory_service_plan import InventoryServicePlanBudget
 from infra.db.prospect_inventory_tables import (
     AcquisitionAttemptRow,
     AcquisitionJobRow,
     AllocationEmailRow,
     CandidateAllocationRow,
+    CustomerPreparationItemRow,
+    InventoryFollowupRequestRow,
     InventoryQuotaRow,
     InventoryRequestRow,
     PublicCandidateRow,
@@ -210,12 +231,14 @@ class PostgresInventoryService(TenantScopedRepository):
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         timezone: str = "Asia/Shanghai",
         assignment_bridge: InventoryAssignmentBridge | None = None,
+        followup_authority: InventoryFollowupAuthority | None = None,
     ) -> None:
         super().__init__(business_tenant)
         self.factory, self.catalog, self.now = factory, catalog, now
         self.zone = ZoneInfo(timezone)
         self.tenant_id = business_tenant
         self.assignment_bridge = assignment_bridge
+        self.followup_authority = followup_authority
 
     def _check(self, tenant_id: TenantId) -> None:
         """显式拒绝调用方与绑定租户不一致。"""
@@ -293,6 +316,12 @@ class PostgresInventoryService(TenantScopedRepository):
                 )
             ).all()
         )
+        followup = (await session.scalars(
+            self.scoped_query(InventoryFollowupRequestRow).where(
+                InventoryFollowupRequestRow.key_hash == key,
+                InventoryFollowupRequestRow.revoked.is_(False),
+            )
+        )).one_or_none()
         delivered = 0
         now = self.now()
         # 同一个交付时间样本确定额度日与allocated_at，持锁期间也可能跨午夜。
@@ -322,6 +351,11 @@ class PostgresInventoryService(TenantScopedRepository):
                 )
             )
             await session.flush()
+            if followup is not None:
+                session.add(CustomerPreparationItemRow(
+                    tenant_id=self._tenant_id, allocation_id=allocation.id,
+                    key_hash=key, created_at=now, updated_at=now,
+                ))
             for email in candidate.public_emails:
                 session.add(
                     AllocationEmailRow(
@@ -375,6 +409,10 @@ class PostgresInventoryService(TenantScopedRepository):
                 "id": row.job_id,
                 "employee_id": row.employee_id,
                 "query": row.query,
+                "fit_batches": row.fit_batches or [],
+                "source_plan": row.source_plan or [],
+                "collection_deadline": row.collection_deadline,
+                "collection_reserved_seconds": row.collection_reserved_seconds,
                 "requested_count": row.requested_count,
                 "remaining_count": row.remaining_count,
                 "status": row.status,
@@ -394,6 +432,8 @@ class PostgresInventoryService(TenantScopedRepository):
         query: InventoryQuery,
         count: int,
         request_key: str,
+        *,
+        followup_scope: InventoryFollowupScope | None = None,
     ) -> InventoryResult:
         """公共池优先，公司原子分配与不足排队；参数冲突不可静默重放。"""
         self._check(tenant_id)
@@ -401,14 +441,42 @@ class PostgresInventoryService(TenantScopedRepository):
         if not employee_id.strip() or not request_key.strip() or len(request_key) > 200:
             raise ValueError("员工与请求键必须有效")
         query = InventoryQuery.model_validate(query.model_dump())
+        authorization: InventoryFollowupAuthorization | None = None
+        if followup_scope is not None:
+            if self.followup_authority is None:
+                raise PermissionDenied("自动准备授权服务未配置")
+            authorization = await self.followup_authority.authorize(
+                tenant_id, employee_id, followup_scope, query
+            )
+            if (authorization.tenant_id != tenant_id
+                or authorization.actor_employee_id != employee_id
+                or authorization.scope != followup_scope
+                or authorization.query != query):
+                raise PermissionDenied("自动准备授权引用不一致")
         key = _digest(request_key)
         fingerprint = _digest(
             json.dumps(
-                [employee_id, query.model_dump(mode="json"), count], sort_keys=True
+                [
+                    employee_id,
+                    {
+                        key: value
+                        for key, value in query.model_dump(mode="json").items()
+                        if key
+                        not in {"regions", "countries", "intent", "confirmed_refs"}
+                        or value
+                    },
+                    count,
+                    *([followup_scope.model_dump(mode="json")] if followup_scope is not None else []),
+                ],
+                sort_keys=True,
             )
         )
         now = self.now()
-        fresh = await self.catalog.fresh(query, now)
+        fresh = (
+            ()
+            if query.requires_private_fit
+            else await self.catalog.fresh(query.public_projection(), now)
+        )
         async with self.factory() as session, session.begin():
             quota = await self._quota(session, now)
             existing = (
@@ -433,11 +501,25 @@ class PostgresInventoryService(TenantScopedRepository):
                     else None
                 )
                 return await self._result(session, key, job)
+            service_budget = InventoryServicePlanBudget(self.factory, tenant_id, now=self.now)
+            if await service_budget.store.get(tenant_id) is not None:
+                active = (await session.scalars(self.scoped_query(AcquisitionJobRow).where(
+                    AcquisitionJobRow.status.in_(("queued", "processing")),
+                ))).all()
+                if any(InventoryQuery.model_validate(item.query) == query for item in active):
+                    raise PermissionDenied("同一获客目标已有运行中的任务，请等待原任务")
+            await service_budget.reserve_request(key, count)
             req = InventoryRequestRow(
                 tenant_id=tenant_id, key_hash=key, request_hash=fingerprint
             )
             session.add(req)
             await session.flush()
+            if authorization is not None:
+                session.add(InventoryFollowupRequestRow(
+                    tenant_id=tenant_id, key_hash=key,
+                    authorization=authorization.model_dump(mode="json"), revoked=False,
+                ))
+                await session.flush()
             delivered = await self._allocate(
                 session, quota, employee_id, key, fresh, count, now
             )
@@ -460,6 +542,83 @@ class PostgresInventoryService(TenantScopedRepository):
                 session.add(job)
                 await session.flush()
             return await self._result(session, key, job)
+
+    async def claim_preparation(
+        self, tenant_id: TenantId, lease_duration: timedelta = timedelta(minutes=10),
+    ) -> PreparationClaim | None:
+        """独立任务逐项领取；过期外部调用只能核对，不能因恢复再次派发。"""
+        self._check(tenant_id)
+        if not timedelta(0) < lease_duration <= timedelta(minutes=30):
+            raise ValueError("准备任务租约无效")
+        now = self.now()
+        async with self.factory() as session, session.begin():
+            rows = (await session.scalars(
+                self.scoped_query(CustomerPreparationItemRow).where(
+                    or_(CustomerPreparationItemRow.state == "queued",
+                        (CustomerPreparationItemRow.state == "processing") &
+                        (CustomerPreparationItemRow.lease_until <= now)),
+                ).order_by(CustomerPreparationItemRow.created_at, CustomerPreparationItemRow.allocation_id)
+                .with_for_update(skip_locked=True).limit(100)
+            )).all()
+            for row in rows:
+                request = (await session.scalars(self.scoped_query(InventoryFollowupRequestRow).where(
+                    InventoryFollowupRequestRow.key_hash == row.key_hash,
+                ))).one()
+                if request.revoked or row.external_started:
+                    row.state = "blocked"
+                    row.blocked_reason = "authorization_revoked" if request.revoked else "external_reconciliation_required"
+                    row.lease_until = None
+                    row.lease_token = None
+                    row.version += 1
+                    row.updated_at = now
+                    continue
+                row.state = "processing"
+                row.lease_token = new_id("cpl")
+                row.lease_until = now + lease_duration
+                row.version += 1
+                row.updated_at = now
+                return PreparationClaim(
+                    tenant_id=tenant_id, allocation_id=row.allocation_id,
+                    request_key_hash=row.key_hash, lease_token=row.lease_token,
+                    version=row.version, stage=row.stage,
+                    authorization=InventoryFollowupAuthorization.model_validate(request.authorization),
+                    result_refs=row.result_refs, ownership_locked_at=row.ownership_locked_at,
+                )
+        return None
+
+    async def require_preparation_claim(self, tenant_id: TenantId, claim: PreparationClaim) -> None:
+        """外部动作前重新核对同租户当前租约及撤销标记。"""
+        from infra.db.customer_preparation_state import lock_claim
+        self._check(tenant_id)
+        async with self.factory() as session, session.begin():
+            await lock_claim(session, tenant_id, claim, self.now())
+
+    async def block_preparation(self, tenant_id: TenantId, claim: PreparationClaim, *, reason: str) -> None:
+        """仅保存固定原因，不保存外部响应、客户原文或异常消息。"""
+        from domains.prospecting.inventory_followup import PREPARATION_BLOCK_REASONS
+        from infra.db.customer_preparation_state import lock_claim
+        self._check(tenant_id)
+        if reason not in PREPARATION_BLOCK_REASONS:
+            raise ValueError("准备阻断原因无效")
+        async with self.factory() as session, session.begin():
+            row = await lock_claim(session, tenant_id, claim, self.now(), allow_revoked=True)
+            row.state, row.blocked_reason = "blocked", reason
+            row.lease_until, row.lease_token = None, None
+            row.version += 1
+            row.updated_at = self.now()
+
+    async def checkpoint_preparation(
+        self, tenant_id: TenantId, claim: PreparationClaim, *, stage: str,
+        result_refs: dict[str, str] | None = None, external_started: bool = False,
+        ownership_locked_at: datetime | None = None,
+    ) -> PreparationClaim:
+        """同事务比较租约、阶段和CAS；已有归属版本或引用不可覆盖。"""
+        from infra.db.customer_preparation_state import checkpoint, lock_claim
+        self._check(tenant_id)
+        async with self.factory() as session, session.begin():
+            row = await lock_claim(session, tenant_id, claim, self.now())
+            return checkpoint(row, claim, stage=stage, now=self.now(), result_refs=result_refs,
+                              external_started=external_started, ownership_locked_at=ownership_locked_at)
 
     async def list_allocations(
         self,
@@ -534,80 +693,106 @@ class PostgresInventoryService(TenantScopedRepository):
         self._check(tenant_id)
         validate_assignment_ids(allocation_ids)
         async with self.factory() as session, session.begin():
-            await self._quota(session, self.now())
-            employees = (
-                await session.scalars(
-                    self.scoped_query(EmployeeRow)
-                    .where(
-                        EmployeeRow.employee_id.in_({employee_id, acting_employee_id})
-                    )
-                    .order_by(EmployeeRow.employee_id)
-                    # NO KEY UPDATE仍阻止角色/在职更改，兼容归属外键的KEY SHARE。
-                    .with_for_update(key_share=True)
+            return await self._assign_locked(session, tenant_id, allocation_ids, employee_id, acting_employee_id)
+
+    async def _assign_locked(self, session: AsyncSession, tenant_id: TenantId,
+                             allocation_ids: tuple[CandidateAllocationId, ...], employee_id: EmployeeId,
+                             acting_employee_id: EmployeeId) -> tuple[CandidateAllocation, ...]:
+        """人工与受托分配共用相同锁序、领域桥与冲突拒绝。"""
+        await self._quota(session, self.now())
+        employees = (
+            await session.scalars(
+                self.scoped_query(EmployeeRow)
+                .where(
+                    EmployeeRow.employee_id.in_({employee_id, acting_employee_id})
                 )
-            ).all()
-            current = {row.employee_id: row for row in employees}
-            actor, target = current.get(acting_employee_id), current.get(employee_id)
-            if (
-                actor is None
-                or not actor.is_active
-                or actor.role != "boss"
-                or target is None
-                or not target.is_active
-                or target.role not in {"boss", "manager", "sales"}
-            ):
-                raise PermissionDenied("分配必须由当前管理员面向同公司在职员工")
-            rows = (
-                await session.scalars(
-                    self.scoped_query(CandidateAllocationRow)
-                    .where(CandidateAllocationRow.allocation_id.in_(allocation_ids))
-                    .order_by(CandidateAllocationRow.allocation_id)
-                    .with_for_update()
-                )
-            ).all()
-            if len(rows) != len(allocation_ids):
-                raise PermissionDenied("分配记录不存在或不属于当前公司")
-            if any(row.employee_id not in (None, employee_id) for row in rows):
-                raise IdempotencyConflict("客户已有其他负责人")
-            # 私有客户已存在时还必须锁其归属，不能让库存产生第二位负责人。
-            accounts = (
-                await session.scalars(
-                    self.scoped_query(ProspectAccountRow)
-                    .where(
-                        ProspectAccountRow.website_domain.in_(
-                            r.canonical_domain for r in rows
-                        )
+                .order_by(EmployeeRow.employee_id)
+                # NO KEY UPDATE仍阻止角色/在职更改，兼容归属外键的KEY SHARE。
+                .with_for_update(key_share=True)
+            )
+        ).all()
+        current = {row.employee_id: row for row in employees}
+        actor, target = current.get(acting_employee_id), current.get(employee_id)
+        if (
+            actor is None
+            or not actor.is_active
+            or actor.role != "boss"
+            or target is None
+            or not target.is_active
+            or target.role not in {"boss", "manager", "sales"}
+        ):
+            raise PermissionDenied("分配必须由当前管理员面向同公司在职员工")
+        rows = (
+            await session.scalars(
+                self.scoped_query(CandidateAllocationRow)
+                .where(CandidateAllocationRow.allocation_id.in_(allocation_ids))
+                .order_by(CandidateAllocationRow.allocation_id)
+                .with_for_update()
+            )
+        ).all()
+        if len(rows) != len(allocation_ids):
+            raise PermissionDenied("分配记录不存在或不属于当前公司")
+        if any(row.employee_id not in (None, employee_id) for row in rows):
+            raise IdempotencyConflict("客户已有其他负责人")
+        # 私有客户已存在时还必须锁其归属，不能让库存产生第二位负责人。
+        accounts = (
+            await session.scalars(
+                self.scoped_query(ProspectAccountRow)
+                .where(
+                    ProspectAccountRow.website_domain.in_(
+                        r.canonical_domain for r in rows
                     )
-                    .order_by(ProspectAccountRow.account_id)
-                    .with_for_update()
                 )
-            ).all()
-            locks = (
-                await session.scalars(
-                    self.scoped_query(OwnershipLockRow)
-                    .where(
-                        OwnershipLockRow.account_id.in_(a.account_id for a in accounts)
-                    )
-                    .order_by(OwnershipLockRow.account_id)
-                    .with_for_update()
+                .order_by(ProspectAccountRow.account_id)
+                .with_for_update()
+            )
+        ).all()
+        locks = (
+            await session.scalars(
+                self.scoped_query(OwnershipLockRow)
+                .where(
+                    OwnershipLockRow.account_id.in_(a.account_id for a in accounts)
                 )
-            ).all()
-            if any(lock.owner != employee_id for lock in locks):
-                raise IdempotencyConflict("客户已有其他负责人")
-            now = self.now()
-            for row in rows:
-                value = self._allocation(row)
-                if row.account_id is None and self.assignment_bridge is not None:
-                    row.account_id = await self.assignment_bridge.bind(
-                        session, tenant_id, value, employee_id, acting_employee_id
-                    )
-                if row.employee_id is None:
-                    row.employee_id = employee_id
-                    row.assigned_at, row.assigned_by = now, acting_employee_id
-                row.payload = self._allocation(row).model_dump(mode="json")
-            await session.flush()
-            result = {row.allocation_id: self._allocation(row) for row in rows}
-            return tuple(result[value] for value in allocation_ids)
+                .order_by(OwnershipLockRow.account_id)
+                .with_for_update()
+            )
+        ).all()
+        if any(lock.owner != employee_id for lock in locks):
+            raise IdempotencyConflict("客户已有其他负责人")
+        now = self.now()
+        for row in rows:
+            value = self._allocation(row)
+            if row.account_id is None and self.assignment_bridge is not None:
+                row.account_id = await self.assignment_bridge.bind(
+                    session, tenant_id, value, employee_id, acting_employee_id
+                )
+            if row.employee_id is None:
+                row.employee_id = employee_id
+                row.assigned_at, row.assigned_by = now, acting_employee_id
+            row.payload = self._allocation(row).model_dump(mode="json")
+        await session.flush()
+        result = {row.allocation_id: self._allocation(row) for row in rows}
+        return tuple(result[value] for value in allocation_ids)
+
+    async def assign_preparation(self, tenant_id: TenantId, claim: PreparationClaim) -> PreparationClaim:
+        """首次分配、真实归属版本与准备检查点原子提交，不存在恢复补造窗口。"""
+        from infra.db.customer_preparation_state import checkpoint, lock_claim
+        self._check(tenant_id)
+        if self.assignment_bridge is None or claim.stage != "assign":
+            raise PermissionDenied("准备分配未配置或阶段无效")
+        auth = claim.authorization
+        async with self.factory() as session, session.begin():
+            row = await lock_claim(session, tenant_id, claim, self.now())
+            assigned = (await self._assign_locked(session, tenant_id, (CandidateAllocationId(claim.allocation_id),),
+                auth.owner_employee_id, auth.actor_employee_id))[0]
+            actor = (await session.scalars(self.scoped_query(EmployeeRow).where(EmployeeRow.employee_id == auth.actor_employee_id))).one()
+            if actor.user_id != auth.actor_user_id or assigned.account_id is None:
+                raise PermissionDenied("准备分配身份已改变")
+            ownership = (await session.scalars(self.scoped_query(OwnershipLockRow).where(OwnershipLockRow.account_id == assigned.account_id))).one()
+            if ownership.owner != auth.owner_employee_id:
+                raise PermissionDenied("准备分配归属已改变")
+            return checkpoint(row, claim, stage="evidence", now=self.now(),
+                result_refs={"account_id": str(assigned.account_id)}, ownership_locked_at=ownership.locked_at)
 
     async def transfer(
         self,
@@ -785,8 +970,94 @@ class PostgresInventoryService(TenantScopedRepository):
         async with self.factory() as session, session.begin():
             job = await self._leased(session, job_id, lease_token, self.now())
             return await self.catalog.save_public_report(
-                candidates, InventoryQuery.model_validate(job.query)
+                candidates, InventoryQuery.model_validate(job.query).public_projection()
             )
+
+    async def initialize_source_plan(
+        self,
+        tenant_id: TenantId,
+        job_id: AcquisitionJobId,
+        lease_token: str,
+        plan: tuple[str, ...],
+    ) -> AcquisitionJob:
+        """首次派发前固定计划与恢复期限；旧无计划重领任务保守拒绝。"""
+        self._check(tenant_id)
+        if (
+            not 1 <= len(plan) <= 3
+            or len(set(plan)) != len(plan)
+            or any(get_discovery_source(source) is None for source in plan)
+        ):
+            raise ValueError("来源计划无效")
+        async with self.factory() as session, session.begin():
+            row = await self._leased(session, job_id, lease_token, self.now())
+            if not row.source_plan:
+                if row.attempts > 1:
+                    raise ValueError("旧任务无法证明尚未派发")
+                row.source_plan = list(plan)
+                row.collection_deadline = self.now() + timedelta(hours=24)
+            return self._job(row)
+
+    async def source_progress(
+        self,
+        tenant_id: TenantId,
+        job_id: AcquisitionJobId,
+        lease_token: str,
+    ) -> dict[str, str]:
+        """读取同一任务现有尝试账本，started 永远视为未知已消耗。"""
+        self._check(tenant_id)
+        async with self.factory() as session, session.begin():
+            await self._leased(session, job_id, lease_token, self.now())
+            rows = (
+                await session.scalars(
+                    self.scoped_query(AcquisitionAttemptRow).where(
+                        AcquisitionAttemptRow.job_id == job_id
+                    )
+                )
+            ).all()
+            return {row.source_id: row.outcome for row in rows}
+
+    async def reserve_source(
+        self,
+        tenant_id: TenantId,
+        job_id: AcquisitionJobId,
+        lease_token: str,
+        source_id: str,
+    ) -> int:
+        """先持锁扣留时间和started，再允许外部IO；取消或未知结果不退款。"""
+        self._check(tenant_id)
+        async with self.factory() as session, session.begin():
+            row = await self._leased(session, job_id, lease_token, self.now())
+            if (
+                source_id not in row.source_plan
+                or row.collection_deadline is None
+                or row.collection_deadline <= self.now()
+            ):
+                raise ValueError("来源计划已失效")
+            prior = (
+                await session.scalars(
+                    self.scoped_query(AcquisitionAttemptRow).where(
+                        AcquisitionAttemptRow.job_id == job_id,
+                        AcquisitionAttemptRow.source_id == source_id,
+                    )
+                )
+            ).first()
+            seconds = 480 // len(row.source_plan)
+            if prior is not None or row.collection_reserved_seconds + seconds > 480:
+                raise ValueError("来源已派发或预算耗尽")
+            row.collection_reserved_seconds += seconds
+            session.add(
+                AcquisitionAttemptRow(
+                    tenant_id=tenant_id,
+                    attempt_id=new_id("aca"),
+                    job_id=job_id,
+                    source_id=source_id,
+                    outcome="started",
+                    valid_new_count=0,
+                    diagnostic=None,
+                    attempted_at=self.now(),
+                )
+            )
+            return seconds
 
     async def record_source_attempt(
         self,
@@ -825,7 +1096,22 @@ class PostgresInventoryService(TenantScopedRepository):
             safe = checked.model_dump(mode="json")
         now = self.now()
         async with self.factory() as session, session.begin():
-            await self._leased(session, job_id, lease_token, now)
+            job = await self._leased(session, job_id, lease_token, now)
+            if job.source_plan:
+                attempt = (
+                    await session.scalars(
+                        self.scoped_query(AcquisitionAttemptRow).where(
+                            AcquisitionAttemptRow.job_id == job_id,
+                            AcquisitionAttemptRow.source_id == source_id,
+                        )
+                    )
+                ).one_or_none()
+                if attempt is None or attempt.outcome != "started":
+                    raise ValueError("来源未预留或已结束")
+                attempt.outcome = outcome
+                attempt.valid_new_count = valid_new_count
+                attempt.diagnostic = safe
+                return
             session.add(
                 AcquisitionAttemptRow(
                     tenant_id=tenant_id,
@@ -839,6 +1125,139 @@ class PostgresInventoryService(TenantScopedRepository):
                 )
             )
 
+    async def fit_pool(
+        self, tenant_id: TenantId, job_id: AcquisitionJobId, lease_token: str
+    ) -> tuple[PublicCandidate, ...]:
+        """复用公共缓存，但只评估本企业尚未取得的候选，不把旧客户计入交付缺口。"""
+        self._check(tenant_id)
+        job = await self.get_job(tenant_id, job_id)
+        if job is None or not job.query.requires_private_fit:
+            raise ValueError("企业适配任务无效")
+        fresh = await self.catalog.fresh(job.query.public_projection(), self.now())
+        async with self.factory() as session, session.begin():
+            await self._leased(session, job_id, lease_token, self.now())
+            domains = set(
+                (
+                    await session.scalars(
+                        self.scoped_query(CandidateAllocationRow).with_only_columns(
+                            CandidateAllocationRow.canonical_domain
+                        )
+                    )
+                ).all()
+            )
+            emails = set(
+                (
+                    await session.scalars(
+                        self.scoped_query(AllocationEmailRow).with_only_columns(
+                            AllocationEmailRow.email
+                        )
+                    )
+                ).all()
+            )
+            return tuple(
+                c
+                for c in fresh
+                if c.canonical_domain not in domains
+                and not emails.intersection(c.public_emails)
+            )
+
+    async def reserve_fit_batch(
+        self,
+        tenant_id: TenantId,
+        job_id: AcquisitionJobId,
+        lease_token: str,
+        candidates: tuple[PublicCandidate, ...],
+    ) -> InventoryFitBatch:
+        """模型派发前持久化批次；未知结果保留started，稳定序号不得重派。"""
+        self._check(tenant_id)
+        if (
+            not 1 <= len(candidates) <= MAX_FIT_CANDIDATES
+            or len(
+                json.dumps(fit_evidence_inputs(candidates), ensure_ascii=False).encode()
+            )
+            > MAX_FIT_EVIDENCE_BYTES
+        ):
+            raise ValueError("适配批次大小无效")
+        async with self.factory() as session, session.begin():
+            row = await self._leased(session, job_id, lease_token, self.now())
+            if (
+                not InventoryQuery.model_validate(row.query).requires_private_fit
+                or len(row.fit_batches) >= MAX_FIT_BATCHES
+            ):
+                raise ValueError("适配预算已用完")
+            versions = tuple(
+                FitCandidateVersion(
+                    candidate_id=str(c.id),
+                    evidence_version=candidate_evidence_version(c),
+                )
+                for c in candidates
+            )
+            seen = {
+                (c["candidate_id"], c["evidence_version"])
+                for b in row.fit_batches
+                for c in b["candidates"]
+            }
+            if len({v.candidate_id for v in versions}) != len(versions) or any(
+                (v.candidate_id, v.evidence_version) in seen for v in versions
+            ):
+                raise ValueError("适配批次不得重派")
+            batch = InventoryFitBatch(
+                sequence=len(row.fit_batches),
+                state="started",
+                candidates=versions,
+                query_fingerprint=fit_query_fingerprint(
+                    InventoryQuery.model_validate(row.query)
+                ),
+            )
+            row.fit_batches = [*row.fit_batches, batch.model_dump(mode="json")]
+            return batch
+
+    async def complete_fit_batch(
+        self,
+        tenant_id: TenantId,
+        job_id: AcquisitionJobId,
+        lease_token: str,
+        sequence: int,
+        assessments: tuple[InventoryFitAssessment, ...],
+    ) -> None:
+        """只提交本任务当前租约完整批次；模型结果不能选择别的任务/证据版本。"""
+        self._check(tenant_id)
+        async with self.factory() as session, session.begin():
+            row = await self._leased(session, job_id, lease_token, self.now())
+            batches = [InventoryFitBatch.model_validate(b) for b in row.fit_batches]
+            if not 0 <= sequence < len(batches) or batches[sequence].state != "started":
+                raise ValueError("适配批次状态无效")
+            batch = batches[sequence]
+            if batch.query_fingerprint != fit_query_fingerprint(
+                InventoryQuery.model_validate(row.query)
+            ):
+                raise ValueError("适配目标已变化")
+            expected = {(c.candidate_id, c.evidence_version) for c in batch.candidates}
+            if (
+                len(assessments) != len(expected)
+                or {(a.candidate_id, a.evidence_version) for a in assessments}
+                != expected
+            ):
+                raise ValueError("适配结果证据绑定无效")
+            public = {
+                (str(c.id), candidate_evidence_version(c)): c
+                for c in await self.catalog.fresh(
+                    InventoryQuery.model_validate(row.query).public_projection(),
+                    self.now(),
+                )
+            }
+            if any(
+                (a.candidate_id, a.evidence_version) not in public
+                or a.evidence_quote
+                not in public[(a.candidate_id, a.evidence_version)].evidence_text[:4000]
+                for a in assessments
+            ):
+                raise ValueError("适配结果公开证据无效")
+            batches[sequence] = batch.model_copy(
+                update={"state": "complete", "assessments": assessments}
+            )
+            row.fit_batches = [b.model_dump(mode="json") for b in batches]
+
     async def deliver_job(
         self, tenant_id: TenantId, job_id: AcquisitionJobId, lease_token: str
     ) -> InventoryResult:
@@ -848,10 +1267,18 @@ class PostgresInventoryService(TenantScopedRepository):
         if job is None:
             raise ValueError("任务不存在")
         now = self.now()
-        fresh = await self.catalog.fresh(job.query, now)
+        fresh = await self.catalog.fresh(job.query.public_projection(), now)
         async with self.factory() as session, session.begin():
             quota = await self._quota(session, now)
             row = await self._leased(session, job_id, lease_token, now)
+            if InventoryQuery.model_validate(row.query) != job.query:
+                raise ValueError("采集目标已变化")
+            if job.query.requires_private_fit:
+                fresh = selected_fit_candidates(
+                    fresh,
+                    tuple(InventoryFitBatch.model_validate(b) for b in row.fit_batches),
+                    job.query,
+                )
             count = await self._allocate(
                 session,
                 quota,
@@ -861,9 +1288,31 @@ class PostgresInventoryService(TenantScopedRepository):
                 row.remaining_count,
                 now,
             )
+            exhausted = (
+                row.collection_deadline is not None and row.collection_deadline <= now
+            )
+            if row.source_plan:
+                attempts = (
+                    await session.scalars(
+                        self.scoped_query(AcquisitionAttemptRow).where(
+                            AcquisitionAttemptRow.job_id == job_id,
+                        )
+                    )
+                ).all()
+                exhausted = exhausted or set(row.source_plan) <= {
+                    a.source_id for a in attempts
+                }
             row.updated_at = now
             row.remaining_count -= count
-            row.status = "complete" if row.remaining_count == 0 else "queued"
+            row.status = (
+                "complete"
+                if row.remaining_count == 0
+                else "failed"
+                if job.query.requires_private_fit or exhausted
+                else "queued"
+            )
+            if row.status == "failed":
+                row.failure_reason = "budget_exhausted"
             row.lease_token = row.lease_until = None
             return await self._result(session, row.key_hash, row)
 

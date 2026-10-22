@@ -216,7 +216,7 @@ class _CatalogRepository(TenantScopedRepository):
             raise ValueError("Catalog 游标与查询流不匹配")
         return cursor
 
-    async def _fresh_scalar(self, statement: Select[tuple[RowT]]) -> RowT | None:
+    async def _fresh_scalar(self, statement: Select[RowT]) -> RowT | None:
         async with self._factory() as session, session.begin():
             return (await session.execute(statement)).scalar_one_or_none()
 

@@ -504,6 +504,20 @@ class ProductServiceImpl:
     ) -> ProductCustomerView:
         self._require(tenant_id, actor, ProductAction.CUSTOMER_VIEW)
         product = await self._get(tenant_id, product_id)
+        return self._customer_view(product)
+
+    async def get_ordinary_dialogue_view(
+        self, tenant_id: TenantId, product_id: ProductId, *, actor: ProductActor
+    ) -> ProductCustomerView:
+        """仅当前正式确认产品可进入普通对话；不披露内部确认资料。"""
+        self._require(tenant_id, actor, ProductAction.CUSTOMER_VIEW)
+        product = await self._get(tenant_id, product_id)
+        if product.pool is not ProductPool.FORMAL or product.candidate_status is not None:
+            raise ValidationError("普通对话产品必须是当前已确认正式产品")
+        return self._customer_view(product)
+
+    @staticmethod
+    def _customer_view(product: Product) -> ProductCustomerView:
         source_only = product.candidate_status is CandidateStatus.SOURCE_ONLY
         return ProductCustomerView(
             product_id=str(product.product_id),

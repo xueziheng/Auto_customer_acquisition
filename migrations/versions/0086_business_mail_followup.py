@@ -1,6 +1,7 @@
 """普通来信处理与草稿，追加历史受RLS及不可变保护。"""
 import sqlalchemy as sa
 from alembic import op
+
 revision = '0086'
 down_revision = '0085'
 branch_labels = None

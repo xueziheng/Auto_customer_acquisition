@@ -778,13 +778,14 @@ def test_orm_metadata_parity_with_head() -> None:
             "tenant_id", "campaign_id", "version", "name", "markets",
             "target_entity_types", "allowed_categories", "sender_identity_ids",
             "daily_new_contact_limit", "daily_total_message_limit", "handoff_triggers",
-            "stop_on_reply", "created_by", "created_at",
+            "stop_on_reply",
+            "customer_agent_policy", "created_by", "created_at",
         },
         "outreach_sequence_steps": {
             "tenant_id", "campaign_id", "version", "step_number", "intent", "wait_days",
         },
         "outreach_enrollments": {
-            "tenant_id", "enrollment_id", "campaign_id", "campaign_version", "account_id",
+            "tenant_id", "execution_mode", "enrollment_id", "campaign_id", "campaign_version", "account_id",
             "contact_point_id", "sending_identity_id", "state", "current_step",
             "next_send_at", "enrolled_at", "stopped_at", "stop_reason", "idempotency_key",
             "source_hypothesis_id",
@@ -964,6 +965,7 @@ def test_orm_metadata_parity_with_head() -> None:
         assert actual == cols, f"{table} 列集合不一致：{sorted(actual ^ cols)}"
 
     expected_indexes = {
+        "ix_business_mail_inbox": ("tenant_id", "mailbox_id", "received_at"),
         # 对照0043–0045迁移冻结预期，不从被测metadata生成。
         "ix_costing_coverage_sheet_hash": (
             "tenant_id", "cost_sheet_id", "sheet_hash", "confirmed_at", "coverage_id",

@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
-from typing import Protocol
+from typing import Protocol, cast
 
 from connectors.qq_mail.business_inbound import content_hash
 from shared.business_mail import (
@@ -32,6 +32,7 @@ from tool_gateway.pipeline import (
     ToolCallContext,
     ToolGateway,
     ToolInvocationState,
+    _GatewayRegistry,
 )
 from tool_gateway.repository import ToolGatewayUnitOfWorkFactory
 
@@ -204,7 +205,8 @@ class BusinessMailFetchHandler:
                     sender=message.sender,
                     subject=message.subject,
                     body_text=message.body_text,
-                    message_header=message.message_header,
+                    message_header=message.message_header, in_reply_to=message.in_reply_to,
+                    reply_recipient=message.reply_recipient, dialogue_feedback=message.dialogue_feedback,
                     received_at=message.received_at,
                     parse_failure=message.parse_failure,
                     artifact_id=str(meta.artifact_id),
@@ -275,7 +277,7 @@ class GatewayBusinessMailReader:
             ),
         )
         gateway = ToolGateway(
-            registry,
+            cast(_GatewayRegistry, registry),
             {
                 name: _Check(name, self.tenant, self.user, self.mailbox, self.authorize)
                 for name in MANIFEST.checks

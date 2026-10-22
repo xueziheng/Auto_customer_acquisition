@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from domains.organization.data_sources import DataSourceConflict, DataSourceUnavailable
 from domains.organization.model_api import ModelApiUpdate, ModelApiView
@@ -81,6 +82,33 @@ class FileModelCatalog:
         data = self._read(tenant)
         return tuple(self.get(tenant, key) for key, item in data["entries"].items() if not item.get("deleted"))
 
+    def bound_view(self, tenant: TenantId, company: TenantId) -> ModelApiView | None:
+        """只读当前企业绑定的归档元数据；不建目录、run pin，也不读取密钥。"""
+        if tenant != self.tenant_id:
+            raise DataSourceUnavailable("模型库不可用")
+        path = self.directory / "catalog.json"
+        if not self.directory.exists():
+            return None
+        checked_directory(self.directory)
+        if not path.is_file():
+            return None
+        data = json.loads(private_read(path))
+        if data["tenant_id"] != tenant:
+            raise DataSourceUnavailable("模型库不可用")
+        binding = data.get("bindings", {}).get(str(company))
+        if binding is None:
+            return None
+        item = data.get("entries", {}).get(binding["model_id"], {})
+        if item.get("deleted"):
+            return None
+        raw = item.get("versions", {}).get(binding["version"])
+        if raw is None:
+            return None
+        view = ModelApiView.model_validate(raw)
+        if view.configuration_version != binding["version"]:
+            raise DataSourceUnavailable("模型库不可用")
+        return view
+
     def bindings(self, tenant: TenantId) -> dict:
         return self._read(tenant)["bindings"]
 
@@ -92,7 +120,7 @@ class FileModelCatalog:
                 if update.expected_revision != 0 or len(data["entries"]) >= 100:
                     raise DataSourceConflict("模型数量或版本不允许新增")
                 entry_id = new_id("mc")
-                item = {"name": update.name, "versions": {}}
+                item: dict[str, Any] = {"name": update.name, "versions": {}}
             else:
                 item = self._entry(data, entry_id)
             view = self.model_store(entry_id).save(tenant, actor, ModelApiUpdate.model_validate(update.model_dump(exclude={"name"})))

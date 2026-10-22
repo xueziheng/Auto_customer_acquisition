@@ -189,6 +189,8 @@ async def test_quota_resets_company_midnight_and_fresh_matching(inventory):
 
 
 async def test_0073_roundtrip_matches_metadata(integration_engine):
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
     from sqlalchemy import inspect, text
 
     from infra.db.session import create_engine_from
@@ -229,6 +231,35 @@ async def test_0073_roundtrip_matches_metadata(integration_engine):
                 )
                 == 7
             )
+        _run_alembic(url, "downgrade", "0087")
+        async with engine.connect() as conn:
+            cols = await conn.run_sync(
+                lambda c: inspect(c).get_columns("acquisition_jobs")
+            )
+            assert "source_plan" not in {c["name"] for c in cols}
+        _run_alembic(url, "upgrade", "0088")
+        async with engine.connect() as conn:
+            cols = await conn.run_sync(
+                lambda c: inspect(c).get_columns("acquisition_jobs")
+            )
+            assert {
+                "source_plan",
+                "collection_deadline",
+                "collection_reserved_seconds",
+            } <= {c["name"] for c in cols}
+        _run_alembic(url, "downgrade", "0086")
+        async with engine.connect() as conn:
+            cols = await conn.run_sync(
+                lambda c: inspect(c).get_columns("acquisition_jobs")
+            )
+            assert "fit_batches" not in {c["name"] for c in cols}
+        _run_alembic(url, "upgrade", "0087")
+        async with engine.connect() as conn:
+            cols = await conn.run_sync(
+                lambda c: inspect(c).get_columns("acquisition_jobs")
+            )
+            fit = next(c for c in cols if c["name"] == "fit_batches")
+            assert not fit["nullable"] and str(fit["type"]) == "JSONB"
         _run_alembic(url, "downgrade", "0073")
         async with engine.connect() as conn:
             columns = await conn.run_sync(
@@ -250,7 +281,7 @@ async def test_0073_roundtrip_matches_metadata(integration_engine):
         async with engine.connect() as conn:
             assert (
                 await conn.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0075"
+                == ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
             )
     finally:
         await engine.dispose()
@@ -578,7 +609,6 @@ async def test_inventory_driver_retains_surplus_and_finishes_empty_jobs(inventor
         1,
         "empty",
     )
-    assert await driver.scan() == 1
     assert await driver.scan() == 1
     assert (await s.get_job(tenant, result.job.id)).status == "failed"
     calls = collector.calls
@@ -1494,3 +1524,216 @@ async def test_assignment_employee_lock_allows_existing_try_lock(inventory, lock
         if not assignment_task.done():
             assignment_task.cancel()
         await asyncio.gather(assignment_task, return_exceptions=True)
+
+
+async def test_private_request_full_pool_requires_job_fit_and_only_selected_version_consumes_quota(
+    inventory,
+):
+    from domains.prospecting.inventory import InventoryQuery
+    from domains.prospecting.inventory_fit import (
+        InventoryFitAssessment,
+        candidate_evidence_version,
+    )
+
+    s, catalog, _, tenant, _ = inventory
+    good = candidate(
+        id="pci_fit_good", canonical_domain="fit-good.example", public_emails=()
+    )
+    bad = candidate(
+        id="pci_fit_bad", canonical_domain="fit-bad.example", public_emails=()
+    )
+    await catalog.save_public((good, bad))
+    result = await s.request(
+        tenant,
+        EmployeeId("boss"),
+        InventoryQuery(product_tags=("hinges",), intent="仅有维修网络的经销商"),
+        1,
+        "private-full-pool",
+    )
+    assert result.allocations == () and result.job is not None
+    assert (await s.status(tenant)).used_today == 0
+    job = await s.claim_job(tenant, timedelta(minutes=10))
+    eligible = await s.fit_pool(tenant, job.id, job.lease_token)
+    assert {c.id for c in eligible} == {good.id, bad.id}
+    batch = await s.reserve_fit_batch(tenant, job.id, job.lease_token, (good, bad))
+    decisions = tuple(
+        InventoryFitAssessment(
+            candidate_id=c.id,
+            evidence_version=candidate_evidence_version(c),
+            matched=c.id == good.id,
+            evidence_quote=c.evidence_text,
+            inference="公开证据与目标适配的内部推断",
+            extracted_by="synthetic:inventory-fit",
+            extracted_at=NOW,
+        )
+        for c in (good, bad)
+    )
+    await s.complete_fit_batch(
+        tenant, job.id, job.lease_token, batch.sequence, decisions
+    )
+    # 与本次采集混入同一公共池的候选，没有本任务评估不能交付。
+    await catalog.save_public(
+        (
+            candidate(
+                id="pci_unassessed",
+                canonical_domain="other-unassessed.example",
+                public_emails=(),
+            ),
+        )
+    )
+    delivered = await s.deliver_job(tenant, job.id, job.lease_token)
+    assert [a.candidate.id for a in delivered.allocations] == [good.id]
+    assert (await s.status(tenant)).used_today == 1
+
+
+async def test_private_fit_cannot_reuse_changed_evidence_or_other_job_or_tenant(
+    inventory,
+):
+    from domains.prospecting.inventory import InventoryQuery
+    from domains.prospecting.inventory_fit import (
+        InventoryFitAssessment,
+        candidate_evidence_version,
+    )
+
+    s, catalog, _, tenant, _ = inventory
+    c = candidate(
+        id="pci_versioned", canonical_domain="versioned.example", public_emails=()
+    )
+    await catalog.save_public((c,))
+    query = InventoryQuery(product_tags=("hinges",), intent="经销商")
+    await s.request(tenant, EmployeeId("boss"), query, 1, "fit-version")
+    job = await s.claim_job(tenant, timedelta(minutes=10))
+    batch = await s.reserve_fit_batch(tenant, job.id, job.lease_token, (c,))
+    decision = InventoryFitAssessment(
+        candidate_id=c.id,
+        evidence_version=candidate_evidence_version(c),
+        matched=True,
+        evidence_quote=c.evidence_text,
+        inference="适配推断",
+        extracted_by="synthetic",
+        extracted_at=NOW,
+    )
+    with pytest.raises(ValueError):
+        await s.complete_fit_batch(
+            tenant, job.id, "old-fence", batch.sequence, (decision,)
+        )
+    with pytest.raises(ValueError):
+        await s.complete_fit_batch(
+            TenantId("other"), job.id, job.lease_token, batch.sequence, (decision,)
+        )
+    await s.complete_fit_batch(
+        tenant, job.id, job.lease_token, batch.sequence, (decision,)
+    )
+    changed = c.model_copy(
+        update={
+            "evidence_text": c.evidence_text + " Changed evidence",
+            "observed_at": NOW + timedelta(seconds=1),
+        }
+    )
+    await catalog.save_public((changed,))
+    s.now = lambda: NOW + timedelta(seconds=2)
+    delivered = await s.deliver_job(tenant, job.id, job.lease_token)
+    assert not delivered.allocations and (await s.status(tenant)).used_today == 0
+    result = await s.request(tenant, EmployeeId("boss"), query, 1, "fit-other-job")
+    assert result.job is not None and not result.allocations
+
+
+async def test_fit_checkpoint_resume_keeps_completed_and_never_repeats_unknown_batch(
+    inventory,
+):
+    from domains.prospecting.inventory import InventoryQuery
+    from domains.prospecting.inventory_fit import (
+        InventoryFitAssessment,
+        candidate_evidence_version,
+    )
+
+    s, catalog, _, tenant, _ = inventory
+    good = candidate(
+        id="pci_resume_good", canonical_domain="resume-good.example", public_emails=()
+    )
+    unknown = candidate(
+        id="pci_resume_unknown",
+        canonical_domain="resume-unknown.example",
+        public_emails=(),
+    )
+    await catalog.save_public((good, unknown))
+    await s.request(
+        tenant,
+        EmployeeId("boss"),
+        InventoryQuery(product_tags=("hinges",), intent="经销商"),
+        1,
+        "resume-fit",
+    )
+    job = await s.claim_job(tenant, timedelta(minutes=1))
+    first = await s.reserve_fit_batch(tenant, job.id, job.lease_token, (good,))
+    assessment = InventoryFitAssessment(
+        candidate_id=good.id,
+        evidence_version=candidate_evidence_version(good),
+        matched=True,
+        evidence_quote=good.evidence_text,
+        inference="推断适配",
+        extracted_by="synthetic",
+        extracted_at=NOW,
+    )
+    await s.complete_fit_batch(
+        tenant, job.id, job.lease_token, first.sequence, (assessment,)
+    )
+    pending = await s.reserve_fit_batch(tenant, job.id, job.lease_token, (unknown,))
+    s.now = lambda: NOW + timedelta(minutes=2)
+    resumed = await s.claim_job(tenant, timedelta(minutes=1))
+    assert (
+        resumed.fit_batches[0].state == "complete"
+        and resumed.fit_batches[1].state == "started"
+    )
+    with pytest.raises(ValueError, match="不得重派"):
+        await s.reserve_fit_batch(tenant, job.id, resumed.lease_token, (unknown,))
+    with pytest.raises(ValueError):
+        await s.complete_fit_batch(
+            tenant, job.id, job.lease_token, pending.sequence, ()
+        )
+    delivered = await s.deliver_job(tenant, job.id, resumed.lease_token)
+    assert [a.candidate.id for a in delivered.allocations] == [good.id]
+
+
+async def test_fit_batches_enforce_persistent_budget_and_untrusted_quote_rejection(
+    inventory,
+):
+    from domains.prospecting.inventory import InventoryQuery
+    from domains.prospecting.inventory_fit import (
+        InventoryFitAssessment,
+        candidate_evidence_version,
+    )
+
+    s, catalog, _, tenant, _ = inventory
+    pool = tuple(
+        candidate(
+            id=f"pci_budget{i}", canonical_domain=f"budget{i}.example", public_emails=()
+        )
+        for i in range(11)
+    )
+    await catalog.save_public(pool)
+    await s.request(
+        tenant,
+        EmployeeId("boss"),
+        InventoryQuery(product_tags=("hinges",), intent="经销商"),
+        1,
+        "fit-budget",
+    )
+    job = await s.claim_job(tenant, timedelta(minutes=10))
+    for i in range(10):
+        batch = await s.reserve_fit_batch(tenant, job.id, job.lease_token, (pool[i],))
+        assert batch.sequence == i
+    with pytest.raises(ValueError, match="预算"):
+        await s.reserve_fit_batch(tenant, job.id, job.lease_token, (pool[10],))
+    forged = InventoryFitAssessment(
+        candidate_id=pool[0].id,
+        evidence_version=candidate_evidence_version(pool[0]),
+        matched=True,
+        evidence_quote="NOT A PUBLIC FACT",
+        inference="推断",
+        extracted_by="synthetic",
+        extracted_at=NOW,
+    )
+    with pytest.raises(ValueError, match="公开证据"):
+        await s.complete_fit_batch(tenant, job.id, job.lease_token, 0, (forged,))
+    assert (await s.status(tenant)).used_today == 0

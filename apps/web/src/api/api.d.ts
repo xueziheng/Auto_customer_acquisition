@@ -1714,6 +1714,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/inbox/business-mail/{message_id}/ordinary-dialogue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Admit Ordinary Inquiry
+         * @description 本人显式选择现有客户和精确获批范围；所有准入事实仍由事务桥重读。
+         */
+        post: operations["admit_ordinary_inquiry_inbox_business_mail__message_id__ordinary_dialogue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/business-mail/{message_id}/ordinary-dialogue-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ordinary Inquiry Options
+         * @description 只有本人邮箱当前owner可读精确受托scope选项，不开放Campaign管理。
+         */
+        get: operations["ordinary_inquiry_options_inbox_business_mail__message_id__ordinary_dialogue_options_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/inbox/business-mail/{message_id}/reply-draft": {
         parameters: {
             query?: never;
@@ -2546,6 +2586,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/prospects/accounts/{account_id}/screening": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Screening */
+        get: operations["get_screening_prospects_accounts__account_id__screening_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/accounts/{account_id}/screening/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record Screening Evidence
+         * @description 人工仅归类已关联的原始信号；来源、摘录与确认身份都由服务端绑定。
+         */
+        post: operations["record_screening_evidence_prospects_accounts__account_id__screening_evidence_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/prospects/customers": {
         parameters: {
             query?: never;
@@ -2814,6 +2891,43 @@ export interface paths {
         /** Status */
         get: operations["status_prospects_inventory_status_get"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/service-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Service Plan */
+        get: operations["get_service_plan_prospects_service_plan_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/service-plan/schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Configure Service Schedule
+         * @description 经原授权入口配置已确认目标；实际周期仍由统一任务重核。
+         */
+        put: operations["configure_service_schedule_prospects_service_plan_schedule_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -3946,9 +4060,9 @@ export interface components {
             context_hash: string;
             /** Cost Sheet Id */
             cost_sheet_id: string;
-            displayed_total: components["schemas"]["Money"];
-            displayed_unit_price: components["schemas"]["Money"];
-            effective_unit_revenue: components["schemas"]["Money"];
+            displayed_total: components["schemas"]["Money-Output"];
+            displayed_unit_price: components["schemas"]["Money-Output"];
+            effective_unit_revenue: components["schemas"]["Money-Output"];
             /** Inputs Hash */
             inputs_hash: string;
             metrics: components["schemas"]["ProfitMetrics"];
@@ -3966,6 +4080,7 @@ export interface components {
         CampaignBoundaryBody: {
             /** Allowed Categories */
             allowed_categories: string[];
+            customer_agent_policy?: components["schemas"]["CustomerAgentPolicyInput"] | null;
             /** Daily New Contact Limit */
             daily_new_contact_limit: number;
             /** Daily Total Message Limit */
@@ -3976,6 +4091,7 @@ export interface components {
             markets: string[];
             /** Name */
             name: string;
+            ordinary_dialogue_policy?: components["schemas"]["OrdinaryDialogueSelection"] | null;
             /** Sender Identity Ids */
             sender_identity_ids: string[];
             /** Steps */
@@ -3992,6 +4108,7 @@ export interface components {
         CampaignBoundaryView: {
             /** Allowed Categories */
             allowed_categories: string[];
+            customer_agent_policy?: components["schemas"]["CustomerAgentPolicy"] | null;
             /** Daily New Contact Limit */
             daily_new_contact_limit: number;
             /** Daily Total Message Limit */
@@ -4000,6 +4117,7 @@ export interface components {
             handoff_triggers: string[];
             /** Markets */
             markets: string[];
+            ordinary_dialogue_policy?: components["schemas"]["OrdinaryDialoguePolicy"] | null;
             /** Sender Identity Ids */
             sender_identity_ids: string[];
             /** Steps */
@@ -4453,6 +4571,16 @@ export interface components {
             /** Verbatim */
             verbatim: string;
         };
+        /**
+         * ConfirmedKnowledgeRef
+         * @description 精确引用本企业人工确认的资料版本，不表示正式产品发布。
+         */
+        ConfirmedKnowledgeRef: {
+            /** Document Id */
+            document_id: string;
+            /** Revision Id */
+            revision_id: string;
+        };
         /** ContactEnrichmentReadiness */
         ContactEnrichmentReadiness: {
             /** Reason Code */
@@ -4601,7 +4729,7 @@ export interface components {
             /** Quote Fx Ref */
             quote_fx_ref: string | null;
             rounding: components["schemas"]["RoundingPolicy"];
-            unit_price: components["schemas"]["Money"] | null;
+            unit_price: components["schemas"]["Money-Input"] | null;
         };
         /**
          * CostCoverageCreate
@@ -4669,7 +4797,7 @@ export interface components {
          * @description 无可信usage和费率时未知；费用只允许原Money/Decimal契约。
          */
         CostInputObservation: {
-            cost_per_qualified_opportunity?: components["schemas"]["Money"] | null;
+            cost_per_qualified_opportunity?: components["schemas"]["Money-Output"] | null;
             /** Human Work Seconds */
             human_work_seconds?: number | null;
             /**
@@ -4686,7 +4814,7 @@ export interface components {
             model_input_tokens?: number | null;
             /** Model Output Tokens */
             model_output_tokens?: number | null;
-            total_cost?: components["schemas"]["Money"] | null;
+            total_cost?: components["schemas"]["Money-Output"] | null;
         };
         /**
          * CostItemBinding
@@ -4724,7 +4852,7 @@ export interface components {
         };
         /** CostItemView */
         CostItemView: {
-            amount: components["schemas"]["Money"];
+            amount: components["schemas"]["Money-Output"];
             /** Entered By Id */
             entered_by_id?: string | null;
             /** Entered By Name */
@@ -4888,7 +5016,7 @@ export interface components {
             items: components["schemas"]["CostItemView"][];
             /** Margin Rate */
             margin_rate?: string | null;
-            minimum_sellable_price?: components["schemas"]["Money"] | null;
+            minimum_sellable_price?: components["schemas"]["Money-Output"] | null;
             /** Opportunity Id */
             opportunity_id: string;
             /** Quantity */
@@ -4909,7 +5037,7 @@ export interface components {
             source_tier_minimum_quantity?: number | null;
             /** Source Unit */
             source_unit?: string | null;
-            unit_full_cost?: components["schemas"]["Money"] | null;
+            unit_full_cost?: components["schemas"]["Money-Output"] | null;
             /** Version Number */
             version_number: number;
             /** Version Type */
@@ -5110,6 +5238,101 @@ export interface components {
              */
             role: "boss" | "manager" | "sales";
         };
+        /**
+         * CustomerAgentKnowledgeRef
+         * @description 本企业人工确认的精确资料版本，仅供内部适配。
+         */
+        CustomerAgentKnowledgeRef: {
+            /** Document Id */
+            document_id: string;
+            /** Revision Id */
+            revision_id: string;
+        };
+        /**
+         * CustomerAgentPolicy
+         * @description 当前认证员工确认的范围事实，随不可变 Campaign 版本存储。
+         */
+        CustomerAgentPolicy: {
+            /** Assessment Ref */
+            assessment_ref: string;
+            /**
+             * Basis
+             * @default legitimate_interest
+             * @constant
+             */
+            basis: "legitimate_interest";
+            /**
+             * Confirmed At
+             * Format: date-time
+             */
+            confirmed_at: string;
+            /** Confirmed By */
+            confirmed_by: string;
+            /**
+             * Confirmed Refs
+             * @default []
+             */
+            confirmed_refs: components["schemas"]["CustomerAgentKnowledgeRef"][];
+            /**
+             * Contact Type
+             * @default role_based
+             * @constant
+             */
+            contact_type: "role_based";
+            /** Owner Employee Id */
+            owner_employee_id: string;
+            /**
+             * Prepare And Enroll
+             * @default true
+             * @constant
+             */
+            prepare_and_enroll: true;
+            /**
+             * Subject Type
+             * @default legal_entity
+             * @constant
+             */
+            subject_type: "legal_entity";
+        };
+        /**
+         * CustomerAgentPolicyInput
+         * @description 由真人提交的企业法人职务邮箱范围；确认身份与时间只能由服务补充。
+         */
+        CustomerAgentPolicyInput: {
+            /** Assessment Ref */
+            assessment_ref: string;
+            /**
+             * Basis
+             * @default legitimate_interest
+             * @constant
+             */
+            basis: "legitimate_interest";
+            /**
+             * Confirmed Refs
+             * @default []
+             */
+            confirmed_refs: components["schemas"]["CustomerAgentKnowledgeRef"][];
+            /**
+             * Contact Type
+             * @default role_based
+             * @constant
+             */
+            contact_type: "role_based";
+            /** Owner Employee Id */
+            owner_employee_id: string;
+            /**
+             * Prepare And Enroll
+             * @default true
+             * @constant
+             */
+            prepare_and_enroll: true;
+            /**
+             * Subject Type
+             * @default legal_entity
+             * @constant
+             */
+            subject_type: "legal_entity";
+        };
         /** CustomerAllocationView */
         CustomerAllocationView: {
             /** Account Id */
@@ -5179,6 +5402,7 @@ export interface components {
             enrollments: components["schemas"]["CustomerEnrollmentView"][];
             /** Owner */
             owner: string | null;
+            preparation?: components["schemas"]["CustomerPreparationStatus"] | null;
         };
         /** CustomerEnrollmentView */
         CustomerEnrollmentView: {
@@ -5301,6 +5525,28 @@ export interface components {
             /** Source Url */
             source_url: string;
         };
+        /**
+         * CustomerPreparationStatus
+         * @description 只显示持久步骤；入组不代表发送，不公开租约、内部键或私有资料。
+         */
+        CustomerPreparationStatus: {
+            /** Blocked Reason */
+            blocked_reason?: string | null;
+            /** Campaign Id */
+            campaign_id: string;
+            /** Campaign Version */
+            campaign_version: number;
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "authorize" | "assign" | "evidence" | "verify" | "enroll" | "completed";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "processing" | "blocked" | "enrolled";
+        };
         /** CustomerPreparationView */
         CustomerPreparationView: {
             account: components["schemas"]["ProspectAccountView"];
@@ -5399,6 +5645,16 @@ export interface components {
             source_url: string | null;
             /** Status */
             status: string;
+        };
+        /**
+         * DialogueProductRef
+         * @description 须重读客户视图和当前版本的已确认产品引用。
+         */
+        DialogueProductRef: {
+            /** Customer View Sha256 */
+            customer_view_sha256: string;
+            /** Product Id */
+            product_id: string;
         };
         /** DiscoveryConfirmationResponse */
         DiscoveryConfirmationResponse: {
@@ -6460,6 +6716,73 @@ export interface components {
             unit: string;
         };
         /**
+         * InquiryAdmissionRequest
+         * @description 用户选现有客户、联系人、产品与精确批准范围，并指出客户表达的原话。
+         */
+        InquiryAdmissionRequest: {
+            /** Account Id */
+            account_id: string;
+            /** Campaign Id */
+            campaign_id: string;
+            /** Campaign Version */
+            campaign_version: number;
+            /** Contact Point Id */
+            contact_point_id: string;
+            /** Customer Quote */
+            customer_quote: string;
+            /** Product Id */
+            product_id: string;
+        };
+        /**
+         * InquiryAdmissionView
+         * @description 准入结果仅给现有业务对象引用，不暴露执行租约或模型绑定。
+         */
+        InquiryAdmissionView: {
+            /** Hypothesis Id */
+            hypothesis_id: string;
+            /** Message Id */
+            message_id: string;
+            /**
+             * State
+             * @default admitted
+             */
+            state: string;
+        };
+        /** InquiryChoices */
+        InquiryChoices: {
+            /** Contacts */
+            contacts: components["schemas"]["InquiryContactChoice"][];
+            /** Scopes */
+            scopes: components["schemas"]["InquiryScopeChoice"][];
+        };
+        /** InquiryContactChoice */
+        InquiryContactChoice: {
+            /** Account Id */
+            account_id: string;
+            /** Account Name */
+            account_name: string;
+            /** Contact Point Id */
+            contact_point_id: string;
+        };
+        /** InquiryProductChoice */
+        InquiryProductChoice: {
+            /** Name */
+            name: string;
+            /** Product Id */
+            product_id: string;
+        };
+        /** InquiryScopeChoice */
+        InquiryScopeChoice: {
+            /** Campaign Id */
+            campaign_id: string;
+            /** Campaign Version */
+            campaign_version: number;
+            /** Name */
+            name: string;
+            /** Products */
+            products: components["schemas"]["InquiryProductChoice"][];
+        };
+        /**
          * InventoryAllocationView
          * @description 只含已授权归属与公开事实；不公开内部幂等键。
          */
@@ -6498,6 +6821,16 @@ export interface components {
             employee_id: string;
         };
         /**
+         * InventoryFollowupScope
+         * @description 客户端只引用既有批准版本，不能自报负责人或依据。
+         */
+        InventoryFollowupScope: {
+            /** Campaign Id */
+            campaign_id: string;
+            /** Campaign Version */
+            campaign_version: number;
+        };
+        /**
          * InventoryJobView
          * @description 任务租约、并发令牌和底层异常永不进入HTTP。
          */
@@ -6533,20 +6866,29 @@ export interface components {
         };
         /**
          * InventoryQuery
-         * @description 只接受公开市场与产品标签；不承载企业私有原件。
+         * @description 企业任务含私有意图与版本引用；跨公共边界必须调用 public_projection。
          */
         InventoryQuery: {
+            /** Confirmed Refs */
+            confirmed_refs?: components["schemas"]["ConfirmedKnowledgeRef"][];
+            /** Countries */
+            countries?: string[];
             /** Country */
             country?: string | null;
+            /** Intent */
+            intent?: string | null;
             /** Product Tags */
             product_tags: string[];
             /** Region */
-            region?: "africa" | null;
+            region?: ("africa" | "asia" | "europe" | "americas" | "oceania") | null;
+            /** Regions */
+            regions?: ("africa" | "asia" | "europe" | "americas" | "oceania")[];
         };
         /** InventoryRequestBody */
         InventoryRequestBody: {
             /** Count */
             count: number;
+            followup_scope?: components["schemas"]["InventoryFollowupScope"] | null;
             query: components["schemas"]["InventoryQuery"];
         };
         /** InventoryRequestView */
@@ -7073,6 +7415,12 @@ export interface components {
         /** ModelSettingsView */
         ModelSettingsView: {
             /**
+             * Can Edit
+             * @default false
+             * @constant
+             */
+            can_edit: false;
+            /**
              * Can Probe
              * @default false
              */
@@ -7082,6 +7430,11 @@ export interface components {
             /** Failure Code */
             failure_code?: ("permission" | "configuration" | "quota" | "authentication" | "insufficient_balance" | "invalid_request" | "rate_limit" | "provider_error" | "invalid_response" | "output_limit" | "unknown") | null;
             limits?: components["schemas"]["ModelLimits"] | null;
+            /**
+             * Managed By Platform
+             * @default true
+             */
+            managed_by_platform: boolean;
             /** Model */
             model?: string | null;
             /**
@@ -7089,6 +7442,8 @@ export interface components {
              * @default false
              */
             model_data_export_enabled: boolean;
+            /** Platform Connection Version */
+            platform_connection_version?: string | null;
             /** Probe State */
             probe_state?: ("queued" | "running" | "awaiting_input" | "proposal_ready" | "completed" | "blocked" | "failed" | "unknown" | "cancelled") | null;
             /** Probe Turn Id */
@@ -7130,6 +7485,52 @@ export interface components {
          *     - 舍入必须显式指定策略和精度，不依赖默认值。
          */
         Money: {
+            /** Amount */
+            amount: string;
+            /** Currency */
+            currency: string;
+        };
+        /**
+         * Money
+         * @description 金额。不可变。
+         *
+         *     字段：
+         *         amount:   金额，必须是 ``Decimal``
+         *         currency: 币种
+         *
+         *     实现要求：
+         *     - ``__post_init__`` 校验 ``amount`` 是 ``Decimal``，传入 ``float``
+         *       直接抛错。不要"友好地"自动转换——静默转换会让错误留到生产。
+         *     - 算术运算（加减）要求币种一致，不一致抛错，**不自动换算**。
+         *       自动换算会隐藏"用了哪个时点的汇率"这个关键信息。
+         *     - 乘除只允许乘 ``Decimal`` 或 ``int``（数量、比例），不允许
+         *       两个 Money 相乘。
+         *     - 舍入必须显式指定策略和精度，不依赖默认值。
+         */
+        "Money-Input": {
+            /** Amount */
+            amount: string;
+            /** Currency */
+            currency: string;
+        };
+        /**
+         * Money
+         * @description 金额。不可变。
+         *
+         *     字段：
+         *         amount:   金额，必须是 ``Decimal``
+         *         currency: 币种
+         *
+         *     实现要求：
+         *     - ``__post_init__`` 校验 ``amount`` 是 ``Decimal``，传入 ``float``
+         *       直接抛错。不要"友好地"自动转换——静默转换会让错误留到生产。
+         *     - 算术运算（加减）要求币种一致，不一致抛错，**不自动换算**。
+         *       自动换算会隐藏"用了哪个时点的汇率"这个关键信息。
+         *     - 乘除只允许乘 ``Decimal`` 或 ``int``（数量、比例），不允许
+         *       两个 Money 相乘。
+         *     - 舍入必须显式指定策略和精度，不依赖默认值。
+         */
+        "Money-Output": {
             /** Amount */
             amount: string;
             /** Currency */
@@ -7511,8 +7912,8 @@ export interface components {
             destination?: string | null;
             /** Died At State */
             died_at_state?: string | null;
-            estimated_cost?: components["schemas"]["Money"] | null;
-            estimated_profit?: components["schemas"]["Money"] | null;
+            estimated_cost?: components["schemas"]["Money-Output"] | null;
+            estimated_profit?: components["schemas"]["Money-Output"] | null;
             /**
              * Has Pending Handoff
              * @default false
@@ -7545,7 +7946,64 @@ export interface components {
             spec_summary?: string | null;
             /** State */
             state: string;
-            target_price?: components["schemas"]["Money"] | null;
+            target_price?: components["schemas"]["Money-Output"] | null;
+        };
+        /**
+         * OrdinaryDialoguePolicy
+         * @description 服务根据实际认证人和时钟补充确认事实，随批准版本不可变保存。
+         */
+        OrdinaryDialoguePolicy: {
+            /** Assessment Ref */
+            assessment_ref: string;
+            /**
+             * Confirmed At
+             * Format: date-time
+             */
+            confirmed_at: string;
+            /** Confirmed By */
+            confirmed_by: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Max Input Bytes */
+            max_input_bytes: number;
+            /** Max Model Calls */
+            max_model_calls: number;
+            /** Max No Progress Rounds */
+            max_no_progress_rounds: number;
+            /** Max Output Tokens */
+            max_output_tokens: number;
+            /** Max Rounds */
+            max_rounds: number;
+            /** Owner Employee Id */
+            owner_employee_id: string;
+            /** Product Refs */
+            product_refs: components["schemas"]["DialogueProductRef"][];
+            /** Reply Sender Identity Ids */
+            reply_sender_identity_ids: string[];
+        };
+        /**
+         * OrdinaryDialogueSelection
+         * @description 企业选择产品、实际负责人、邮箱及业务轮次，不提交hash或运行参数。
+         */
+        OrdinaryDialogueSelection: {
+            /** Assessment Ref */
+            assessment_ref: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Max Rounds */
+            max_rounds: number;
+            /** Owner Employee Id */
+            owner_employee_id: string;
+            /** Product Ids */
+            product_ids: string[];
+            /** Reply Sender Identity Ids */
+            reply_sender_identity_ids: string[];
         };
         /**
          * PlanReferenceBody
@@ -7892,7 +8350,7 @@ export interface components {
             candidate_status?: string | null;
             /** Category */
             category: string;
-            internal_cost: components["schemas"]["Money"] | null;
+            internal_cost: components["schemas"]["Money-Output"] | null;
             /** Internal Cost Basis */
             internal_cost_basis: string | null;
             /** Internal Cost Source Ref */
@@ -7923,8 +8381,8 @@ export interface components {
          * @description 销售视图。没有供应商、没有成本字段——不是隐藏，是不存在。
          */
         ProductSalesView: {
-            allowed_price_max: components["schemas"]["Money"] | null;
-            allowed_price_min: components["schemas"]["Money"] | null;
+            allowed_price_max: components["schemas"]["Money-Output"] | null;
+            allowed_price_min: components["schemas"]["Money-Output"] | null;
             /** Category */
             category: string;
             /** Faq */
@@ -8360,9 +8818,9 @@ export interface components {
             context_hash: string;
             /** Cost Sheet Id */
             cost_sheet_id: string;
-            displayed_total: components["schemas"]["Money"];
-            displayed_unit_price: components["schemas"]["Money"];
-            effective_unit_revenue: components["schemas"]["Money"];
+            displayed_total: components["schemas"]["Money-Output"];
+            displayed_unit_price: components["schemas"]["Money-Output"];
+            effective_unit_revenue: components["schemas"]["Money-Output"];
             /** Inputs Hash */
             inputs_hash: string;
             metrics: components["schemas"]["QuoteProfitMetrics"];
@@ -8382,7 +8840,7 @@ export interface components {
             description: string;
             /** Line Number */
             line_number: number;
-            line_total: components["schemas"]["Money"];
+            line_total: components["schemas"]["Money-Output"];
             /** Quantity */
             quantity: number;
             rounding: components["schemas"]["QuoteRoundingInput"];
@@ -8390,7 +8848,7 @@ export interface components {
             specification: string;
             /** Unit */
             unit: string;
-            unit_price: components["schemas"]["Money"];
+            unit_price: components["schemas"]["Money-Output"];
         };
         /**
          * QuoteCustomerFileEntry
@@ -8469,7 +8927,7 @@ export interface components {
             scope_confirmation_id: string;
             /** Terms */
             terms: components["schemas"]["QuoteTerm"][];
-            unit_price: components["schemas"]["Money"];
+            unit_price: components["schemas"]["Money-Input"];
             /**
              * Valid Until
              * Format: date-time
@@ -8764,7 +9222,7 @@ export interface components {
             size_spec: string | null;
             /** Status */
             status: string;
-            target_price: components["schemas"]["Money"] | null;
+            target_price: components["schemas"]["Money-Output"] | null;
             /** Unit */
             unit: string | null;
             /** Unit Confirmation Id */
@@ -9068,8 +9526,10 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Dialogue Binding Id */
+            dialogue_binding_id?: string | null;
             /** Enrollment Id */
-            enrollment_id: string;
+            enrollment_id: string | null;
             /**
              * History
              * @default []
@@ -9080,8 +9540,10 @@ export interface components {
             /** Message Id */
             message_id: string;
             /** Outbound Message Id */
-            outbound_message_id: string;
+            outbound_message_id: string | null;
             owner_queue: components["schemas"]["ReplyWorkQueue"];
+            /** Review Reason */
+            review_reason?: string | null;
             status: components["schemas"]["ReplyWorkStatus"];
         };
         /**
@@ -9760,6 +10222,121 @@ export interface components {
             sort_key: components["schemas"]["SortKey"];
         };
         /**
+         * ScreeningAssessment
+         * @description 自动补全状态与可选来源摘要；不表示已验证需求或发送授权。
+         *
+         *     evidence_refs 保留全部已检查来源引用（含未满足时效的材料），去重并稳定排序。
+         *     旧状态仅为历史序列化兼容保留，v2 不产生待人工补证或审核状态。
+         */
+        ScreeningAssessment: {
+            /** Evidence Refs */
+            evidence_refs: string[];
+            /** Missing Requirements */
+            missing_requirements: ("business_match" | "recent_need" | "contact_role" | "independent_confirmation" | "human_review")[];
+            /**
+             * Policy Version
+             * @default 2026-10-10-v2
+             * @enum {string}
+             */
+            policy_version: "2026-10-10-v1" | "2026-10-10-v2";
+            /** Satisfied Requirements */
+            satisfied_requirements: ("business_match" | "recent_need" | "contact_role" | "independent_confirmation" | "human_review")[];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready_for_enrichment" | "ready_for_review" | "needs_evidence";
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "basic" | "standard" | "advanced";
+        };
+        /** ScreeningDetailView */
+        ScreeningDetailView: {
+            assessment: components["schemas"]["ScreeningAssessment"] | null;
+            /** Eligible Signals */
+            eligible_signals?: components["schemas"]["DemandSignalView"][];
+            /** Evidence */
+            evidence: components["schemas"]["ScreeningEvidence"][];
+        };
+        /**
+         * ScreeningEvidence
+         * @description 上游服务绑定 canonical 来源后提交的证据，不接受模型通过布尔值。
+         *
+         *     source_ref/source_url/source_quote 的绑定真实性由服务端核验；本契约只验证
+         *     形状，不能证明原文真实性。人工审核的身份与时间也必须由服务端写入。
+         *     occurred_at 是事件发生时间；未知时保留空值，不得用采集时间替代。
+         */
+        ScreeningEvidence: {
+            /** Account Id */
+            account_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "business_match" | "recent_need" | "contact_role" | "independent_confirmation" | "human_review";
+            /** Occurred At */
+            occurred_at?: string | null;
+            /**
+             * Recorded At
+             * Format: date-time
+             */
+            recorded_at: string;
+            /** Reviewed At */
+            reviewed_at?: string | null;
+            /** Reviewed By */
+            reviewed_by?: string | null;
+            /** Source Quote */
+            source_quote: string;
+            /** Source Ref */
+            source_ref: string;
+            /** Source Url */
+            source_url: string;
+            /** Tenant Id */
+            tenant_id: string;
+        };
+        /** ScreeningEvidenceBody */
+        ScreeningEvidenceBody: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "business_match" | "recent_need" | "contact_role" | "independent_confirmation" | "human_review";
+            /** Occurred At */
+            occurred_at?: string | null;
+            /** Signal Id */
+            signal_id: string;
+        };
+        /**
+         * SearchBackendReadiness
+         * @description 可调度资格和实际搜索执行分开；版本只是安全元数据，不是Key引用。
+         */
+        SearchBackendReadiness: {
+            /**
+             * Backend Id
+             * @default deepseek
+             * @constant
+             */
+            backend_id: "deepseek";
+            /**
+             * Connection Status
+             * @default not_configured
+             * @enum {string}
+             */
+            connection_status: "not_configured" | "not_run" | "passed" | "failed";
+            /** Connection Version */
+            connection_version?: string | null;
+            /** Policy Version */
+            policy_version: string;
+            /**
+             * Search Execution State
+             * @default not_run
+             * @enum {string}
+             */
+            search_execution_state: "not_run" | "running" | "succeeded" | "failed" | "unknown";
+        };
+        /**
          * SendFailureCategory
          * @enum {string}
          */
@@ -9771,6 +10348,120 @@ export interface components {
             step_number: number;
             /** Wait Days */
             wait_days: number;
+        };
+        /** ServicePlanScheduleBody */
+        ServicePlanScheduleBody: {
+            /** Enabled */
+            enabled: boolean;
+            /** Expected Version */
+            expected_version: number;
+            /** Proposal Id */
+            proposal_id?: string | null;
+            query?: components["schemas"]["InventoryQuery"] | null;
+        };
+        /**
+         * ServicePlanState
+         * @description 当前服务期的保守预留；未决消耗不会因切档或重启清零。
+         */
+        ServicePlanState: {
+            /** Acting User Id */
+            acting_user_id?: string | null;
+            /** Candidates Reserved */
+            candidates_reserved: number;
+            /** Contacts Reserved */
+            contacts_reserved: number;
+            /** Employee Id */
+            employee_id?: string | null;
+            /** Last Run At */
+            last_run_at?: string | null;
+            /** Next Run At */
+            next_run_at?: string | null;
+            /**
+             * Period Ends At
+             * Format: date-time
+             */
+            period_ends_at: string;
+            /**
+             * Period Started At
+             * Format: date-time
+             */
+            period_started_at: string;
+            /** Proposal Id */
+            proposal_id?: string | null;
+            query?: components["schemas"]["InventoryQuery"] | null;
+            /** Schedule Enabled */
+            schedule_enabled: boolean;
+            /** Searches Reserved */
+            searches_reserved: number;
+            /**
+             * Target Kind
+             * @default legacy_research
+             * @enum {string}
+             */
+            target_kind: "legacy_research" | "inventory_request";
+            /** Tenant Id */
+            tenant_id: string;
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "basic" | "standard" | "advanced";
+            /** Version */
+            version: number;
+        };
+        /** ServicePlanStatusView */
+        ServicePlanStatusView: {
+            /** Catalog */
+            catalog: components["schemas"]["ServiceTierPolicy"][];
+            plan: components["schemas"]["ServicePlanState"] | null;
+        };
+        /**
+         * ServiceTierPolicy
+         * @description 每 30 天及单轮的处理上限；不表示候选质量、发送许可或收益保证。
+         */
+        ServiceTierPolicy: {
+            /** Cadence Hours */
+            cadence_hours: number;
+            /** Candidate Limit */
+            candidate_limit: number;
+            /** Contact Limit */
+            contact_limit: number;
+            /** Max Contacts Per Company */
+            max_contacts_per_company: number;
+            /** Max Pages Per Company */
+            max_pages_per_company: number;
+            /** Per Run Hypothesis Limit */
+            per_run_hypothesis_limit: number;
+            /** Per Run Page Limit */
+            per_run_page_limit: number;
+            /** Per Run Search Limit */
+            per_run_search_limit: number;
+            /** Per Run Signal Limit */
+            per_run_signal_limit: number;
+            /**
+             * Period Days
+             * @default 30
+             * @constant
+             */
+            period_days: 30;
+            /**
+             * Policy Version
+             * @default 2026-10-10-v2
+             * @enum {string}
+             */
+            policy_version: "2026-10-10-v1" | "2026-10-10-v2";
+            /**
+             * Required Requirements
+             * @default []
+             */
+            required_requirements: ("business_match" | "recent_need" | "contact_role" | "independent_confirmation" | "human_review")[];
+            /** Search Limit */
+            search_limit: number;
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "basic" | "standard" | "advanced";
         };
         /**
          * SessionResponse
@@ -9855,6 +10546,7 @@ export interface components {
             last_used_at?: string | null;
             /** Relevant */
             relevant: boolean;
+            search_backend?: components["schemas"]["SearchBackendReadiness"] | null;
             /** Source Id */
             source_id: string;
             /**
@@ -10733,7 +11425,7 @@ export interface components {
             required_by?: string | null;
             /** Status */
             status: string;
-            target_price?: components["schemas"]["Money"] | null;
+            target_price?: components["schemas"]["Money-Output"] | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -16644,6 +17336,72 @@ export interface operations {
             };
         };
     };
+    admit_ordinary_inquiry_inbox_business_mail__message_id__ordinary_dialogue_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InquiryAdmissionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InquiryAdmissionView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    ordinary_inquiry_options_inbox_business_mail__message_id__ordinary_dialogue_options_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InquiryChoices"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
     save_draft_inbox_business_mail__message_id__reply_draft_post: {
         parameters: {
             query?: never;
@@ -18962,6 +19720,72 @@ export interface operations {
             };
         };
     };
+    get_screening_prospects_accounts__account_id__screening_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScreeningDetailView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    record_screening_evidence_prospects_accounts__account_id__screening_evidence_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScreeningEvidenceBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScreeningDetailView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
     customers_prospects_customers_get: {
         parameters: {
             query?: {
@@ -19564,6 +20388,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InventoryStatus"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    get_service_plan_prospects_service_plan_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServicePlanStatusView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    configure_service_schedule_prospects_service_plan_schedule_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServicePlanScheduleBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServicePlanStatusView"];
                 };
             };
             /** @description 请求参数无效 */
