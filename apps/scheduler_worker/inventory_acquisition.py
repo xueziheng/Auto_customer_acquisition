@@ -135,6 +135,7 @@ class CollectionDeadlineReached(Exception):
 
 
 class InventoryPlanBudget(Protocol):
+    async def undispatched_source_reservation(self, job: AcquisitionJob, source: str) -> int | None: ...
     async def remaining_candidates(self, job: AcquisitionJob) -> int | None: ...
     async def admit_source_candidates(self, job: AcquisitionJob, source: str, candidates: tuple[PublicCandidate, ...]) -> None: ...
     async def fit_candidates(self, job: AcquisitionJob, candidates: tuple[PublicCandidate, ...]) -> tuple[PublicCandidate, ...]: ...
@@ -379,13 +380,18 @@ class InventoryAcquisitionDriver:
                     source_target = max(0, target - fresh_count)
                     if limits is not None:
                         assert self.service_budget is not None
+                        reserved = await self.service_budget.undispatched_source_reservation(job, source_id)
                         remaining = await self.service_budget.remaining_candidates(job)
+                        if reserved is not None:
+                            remaining = reserved
                         source_target = min(source_target, remaining or 0, target // len(plan) + (source_index < target % len(plan)))
                         if source_target == 0:
-                            await self.backend.record_source_attempt(self.tenant_id, job.id, token, source_id, "complete", 0)
+                            await self.backend.reserve_source(self.tenant_id, job.id, token, source_id)
+                            await self.backend.record_source_attempt(self.tenant_id, job.id, token, source_id, "quota_exhausted", 0)
                             continue
                         assert self.service_budget is not None
-                        await self.service_budget.reserve_execution(job, kind="candidates", key=source_id, amount=source_target)
+                        if reserved is None:
+                            await self.service_budget.reserve_execution(job, kind="candidates", key=source_id, amount=source_target)
                     seconds = await self.backend.reserve_source(
                         self.tenant_id, job.id, token, source_id
                     )

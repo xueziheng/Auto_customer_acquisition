@@ -17,7 +17,11 @@ from domains.prospecting.service import (
     ServiceTierPolicy,
     tier_policy,
 )
-from infra.db.prospect_inventory_tables import AcquisitionJobRow, InventoryRequestRow
+from infra.db.prospect_inventory_tables import (
+    AcquisitionAttemptRow,
+    AcquisitionJobRow,
+    InventoryRequestRow,
+)
 from infra.db.prospecting_service_plans import (
     PostgresProspectingServicePlanStore,
     _stored_time,
@@ -123,6 +127,42 @@ class InventoryServicePlanBudget:
         async with self.factory() as session:
             return await session.scalar(select(InventoryRequestRow.key_hash).where(
                 InventoryRequestRow.tenant_id == self.tenant_id, InventoryRequestRow.key_hash == digest))
+
+    async def undispatched_source_reservation(self, job: AcquisitionJob, source: str) -> int | None:
+        """仅恢复同身份原预留；持久租约和缺失started证明尚无派发许可。"""
+        current = await self.current(job)
+        if current is None:
+            return None
+        receipt, policy = current
+        async with self.store._transaction() as session:
+            state = await self.store._plan(session, self.tenant_id)
+            if state is None or not cast(datetime, _stored_time(state.period_started_at)) <= self.now() < cast(datetime, _stored_time(state.period_ends_at)):
+                raise PermissionDenied("来源恢复服务期已失效")
+            row = await session.scalar(select(AcquisitionJobRow).where(
+                AcquisitionJobRow.tenant_id == self.tenant_id,
+                AcquisitionJobRow.job_id == job.id).with_for_update())
+            if (row is None or row.status != "processing" or row.lease_token != job.lease_token
+                or row.lease_until is None or row.lease_until <= self.now()
+                or source not in row.source_plan or row.collection_deadline is None
+                or row.collection_deadline <= self.now()):
+                raise PermissionDenied("来源恢复授权已失效")
+            started = await session.scalar(select(AcquisitionAttemptRow).where(
+                AcquisitionAttemptRow.tenant_id == self.tenant_id,
+                AcquisitionAttemptRow.job_id == job.id,
+                AcquisitionAttemptRow.source_id == source))
+            if started is not None:
+                raise PermissionDenied("未知来源不得重复派发")
+            reservation = await session.get(ProspectingServiceReservationRow, (str(self.tenant_id), receipt.key))
+            if reservation is None or reservation.period_started_at != state.period_started_at:
+                raise PermissionDenied("服务期预留缺失")
+            entry = (reservation.execution_usage or {}).get(sha256(f"candidates:{source}".encode()).hexdigest())
+            if entry is None:
+                return None
+            if entry.get("kind") != "candidates" or entry.get("host") is not None or "domains" in entry:
+                raise PermissionDenied("来源预留不能恢复")
+            used = sum(v["amount"] for v in (reservation.execution_usage or {}).values() if v["kind"] == "candidates")
+            cap = min(receipt.candidates, policy.per_run_signal_limit, tier_policy(cast(ServiceTier, state.tier)).per_run_signal_limit)
+            return min(cast(int, entry["amount"]), max(0, cap - used + entry["amount"]))
 
     async def remaining_candidates(self, job: AcquisitionJob) -> int | None:
         current = await self.current(job)

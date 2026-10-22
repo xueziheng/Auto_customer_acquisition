@@ -10,6 +10,7 @@ from typing import Protocol, cast
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agent_runtime.assistant.reads import EmployeeScopeFactory
+from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
 from apps.composition_support.model import (
     build_model_composition,
     configured_codex_provider,
@@ -43,7 +44,7 @@ from infra.db.model_usage import SqlModelUsageRepository
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from infra.standalone.settings import StandaloneModelSettings
 from infra.tenant_model import resolve_task_model
-from shared.errors import PermissionDenied
+from shared.errors import PermissionDenied, ValidationError
 from shared.schemas.discovery_sources import DISCOVERY_SOURCES
 from shared.schemas.identifiers import AcquisitionJobId, EmployeeId, RunId, TenantId
 from shared.schemas.model_invocation import (
@@ -360,6 +361,19 @@ class InventoryDiscoveryModel:
             if self.context_reader and job.query.confirmed_refs
             else []
         )
+        model_payload = {
+            **payload,
+            "query": job.query.model_dump(mode="json"),
+            "allowed_source": source_id,
+            "internal_confirmed_context": context,
+        }
+        # 检查实际完整投影，历史任务与私有适配也不能绕过凭证边界。
+        try:
+            CredentialMarkerGuard().check(
+                subject=None, body=json.dumps(model_payload, ensure_ascii=False)
+            )
+        except ValidationError:
+            raise ModelGenerationError("permission") from None
         selected = resolve_task_model(self.settings, identity)
         if selected.api_key_file is None or selected.codex_job_root is None:
             raise ModelGenerationError("configuration")
@@ -385,12 +399,7 @@ class InventoryDiscoveryModel:
                 ModelRequest(
                     model=selected.model,
                     system_prompt=_FIT_PROMPT if source_id == _FIT_SOURCE else _PROMPT,
-                    payload={
-                        **payload,
-                        "query": job.query.model_dump(mode="json"),
-                        "allowed_source": source_id,
-                        "internal_confirmed_context": context,
-                    },
+                    payload=model_payload,
                     max_output_tokens=min(selected.limits.max_output_tokens, 8192),
                 ),
             )

@@ -411,6 +411,7 @@ async def test_basic_plan_bounds_all_source_targets_instead_of_replenishing_fift
     class Budget:
         spent = 0
         async def limits(self, job): return {'candidates':10,'searches':10,'pages':10,'pages_per_company':2}
+        async def undispatched_source_reservation(self, job, source): return None
         async def remaining_candidates(self, job): return 10-self.spent
         async def reserve_execution(self, job, *, kind, key, amount, host=None):
             assert kind == 'candidates' and self.spent + amount <= 10

@@ -1,6 +1,6 @@
 # TradeOS Agent 升级验收记录
 
-日期：2026-10-22。状态：Task6首次独立评审发现2项Important，现已完成fix round1实现与相关验证；独立复审及全分支独立评审由控制者执行，尚未完成。本文件不声明生产发布或真实邮件发送。
+日期：2026-10-22。状态：Task6 fix round1已通过独立复审；全分支评审随后提出I1/I2/M2，本次集中修复待一次定向独立复审。本文件不声明生产发布或真实邮件发送。
 
 ## 范围与代码来源
 
@@ -98,7 +98,7 @@ Task7唯一真实来源诊断：原Gateway固定SYSTEM来源诊断供应商HTTP 
 
 未执行生产迁移、部署、真实模型/联系人验证/邮箱操作。真实合格贸易机会数量、单位成本与运营效果未测量，不能以候选、调用或测试数量替代北极星指标。
 
-## 22项裁定、依据与成本
+## 24项裁定、依据与成本
 
 以下来自实施过程的明确裁定；成本不等于已经发生的模型或供应商费用。
 
@@ -126,6 +126,17 @@ Task7唯一真实来源诊断：原Gateway固定SYSTEM来源诊断供应商HTTP 
 |20|精确当前获批普通对话scope内，对已许可普通产品资料的询问可到有界product-section planner；旧无scope冷邮件行为、商业与不支持内容的handoff保留|多一scoped action分支及首个冷回复准入时序/测试；如判断有误只回退此窄批准行为，不扩大邮箱或商业承诺权限|
 |21|复用正式QQ EmployeeMailConnectors经原email.send证明同Provider首封与普通回复；Task5保留严格SENT冷attempt/BusinessMail准入和显式active-boss classifier，Task6接同connector到原Campaign scheduler完成自动首封|新增显式部署委派字段/冲突检查、scheduler连接器装配和同Provider自动全链测试；不扩private grant、不造boss、不混Gmail/QQ夹具，API首封不能代替自动证明；通过前自动QQ冷启动仍未完成|
 |22|保留冷Enrollment全部终态；正常耗尽COMPLETED后的真实分类回信，可凭精确SENT、MIME/canonical、已完成原流程和可继续待办进入独立获批普通scope|增加窄准入、双阶段时序及拒绝测试；running只排无binding待办，完成后重核，不能复活冷序列、清除人工review或扩大商业权限|
+|23|最终评审M1的SQLAlchemy DISTINCT ON兼容、离线charset依赖包、Web分块与风格告警转独立维护；未观察到本次新业务故障，避免扩大升级回归面|保留PG5告警、Linux1环境告警、Web0错误1191警告和分块提示，不声称零告警或生产HTTP已验收|
+|24|最终评审六项无法判断内容作为明确证据限制接受；合成测试、来源哈希不证明真实运行、法律事实或已控制邮箱者的攻击抵抗|以下六项未验收；不扩大权限或生产就绪结论，必要时另做验证/设计|
+
+## 最终评审的六项证据限制
+
+1. 真实DeepSeek/Tavily当前API可用性、免费资格及真实模型质量：禁止本轮重新live；合成响应不证明线上可用。
+2. 真实联系人验证、送达率、域名信誉、真实客户多轮沟通与单位合格机会成本：没有真实运营实验。
+3. 生产配置、API key引用解析、生产迁移/回退与生产多企业隔离：没有部署/配置访问授权；本地两企业PG不替代生产验收。
+4. 各国商业触达合法性与处理依据真实性：代码只验证引用、政策及审批，未核查真实法律事实。
+5. 未触及的全部历史报价、供应、私人测试、外围UI导入代码的逐行正确性：风险导向评审及保存回归不等于穷尽人工审查。
+6. 完整邮箱控制权者恶意修改Sent正文而保留摘要头：当前只验证精确头绑定，未证明可抵抗该攻击，不扩张连接器保证。
 
 ## 迁移与回退
 
@@ -202,3 +213,47 @@ docker run --rm --init --network none --cap-add SYS_ADMIN \
   tests/unit/test_knowledge_file_parser.py -q -p no:cacheprovider \
   --basetemp=/tmp/t6-final-parser3
 ```
+
+## 最终全分支评审集中修复（2026-10-22）
+
+FIX_BASE `4f83fa2265b2642361e57cb78880b8e3330d979e`；本节仅记录最终修复，不覆盖上述历史全套基线。最终提交SHA及BASE..HEAD由计划区 `final-fix-report.md` 记录。此刻仅READY_FOR_SCOPED_REVIEW，不能视为独立复审通过或生产许可。
+
+- I1：原来源候选预留独立提交保留。恢复先锁当前服务计划和任务，核实原服务期、当前租约、固定来源计划、24h期限以及不存在该来源started/终态尝试；仅复用同digest原预留，原amount不改、不退款、不换身份。返回可执行量由当前上限减全部已用量再加本来源原预留推导，并受driver原来源分配上限约束。已started的unknown仍跳过，无第二次调用。降档原15预留仍记15，实际恢复最多5；后续零额度来源持久标记quota_exhausted而不外调。正常/升档恢复继续剩余未调用来源，累计原10不扩大。
+- I2：实际InventoryDiscoveryModel.generate在构造模型组合前，对最终model_payload完整JSON执行既有CredentialMarkerGuard；覆盖query/intent/标签、候选证据和确认资料实际字段。失败仅固定ModelGenerationError(permission)，不回显内容。evaluate经同一边界。真实旧请求持久化、过期领取新lease后仍拒绝；实际生成器零调用。正常输入及原公共搜索隔离验证保持。
+- M2：根总纲入口与当前阶段按已接受ADR0113同步，确认资料可私有搜索，确认不等于正式Product发布、Campaign批准或对外承诺。九条硬边界及商业审批未改。
+- M1：按裁定23转维护；上文原SQLAlchemy 5告警、离线依赖1告警、Web分块提示与1191风格告警仍存在，未批量清理。本轮未重跑Web/Linux/10002全套或真实来源诊断，相关数量不与本轮相加。
+
+本轮最终命令：
+
+```bash
+.venv/bin/python -m pytest tests/unit/test_inventory_model.py tests/unit/test_inventory_source_recovery.py tests/unit/test_inventory_acquisition_driver.py tests/unit/test_inventory_enterprise_context.py tests/unit/test_inventory_search_policy.py tests/unit/test_inventory_query_binding.py tests/unit/test_inventory_search_guidance.py tests/unit/test_inventory_standalone_composition.py tests/evals/test_inventory_evidence.py -q
+.venv/bin/python /tmp/tradeos-agent-upgrade-20261021/fresh_test_database.py tests/integration/test_inventory_source_recovery.py tests/integration/test_inventory_service_plan.py tests/integration/test_inventory_model.py tests/integration/test_inventory_search_budget.py tests/integration/test_inventory_search_readiness.py --basetemp=/tmp/tau-ff-pg4 -q
+.venv/bin/python -m ruff check .
+.venv/bin/python -m mypy domains shared tool_gateway connectors apps workflows notification_gateway infra
+.venv/bin/python scripts/check_boundaries.py
+.venv/bin/python scripts/scan_sensitive.py
+git diff --check
+```
+
+|检查|精确结果与退出码|日志|
+|---|---|---|
+|相关unit/evals|99 passed in 1.74s，exit0|`/tmp/tau-final-fix-unit2.log`|
+|真实PG相关5模块|56 passed in 36.61s，exit0|`/tmp/tau-final-fix-pg4.log`|
+|全ruff|All checks passed!，exit0|`/tmp/tau-final-fix-final-ruff.log`|
+|全mypy|Success: no issues found in 955 source files，exit0|`/tmp/tau-final-fix-final-mypy.log`|
+|结构|七类检查通过，结构自检通过，exit0|`/tmp/tau-final-fix-final-boundaries.log`|
+|敏感扫描|无命中，exit0|`/tmp/tau-final-fix-final-sensitive.log`|
+|差异空白|无输出，exit0|`/tmp/tau-final-fix-final-diff.log`|
+
+RED及中间结果分别保留：
+
+- 将三个实现文件临时还原为FIX_BASE后，新增模型测试命令 `.venv/bin/python -m pytest tests/unit/test_inventory_model.py -k actual_model_dispatch -q`：20 failed, 5 passed, 16 deselected in 0.67s，exit1；`/tmp/tau-final-fix-red-model.log`。正常5条通过，四种凭证×五个输入位置全部未被拦截。
+- 同FIX_BASE，fresh_test_database.py仅运行test_inventory_source_recovery.py的`-k service_budget_checkpoint --basetemp=/tmp/tau-ff-red -q`：4 failed, 2 passed, 16 deselected in 1.47s，exit1；`/tmp/tau-final-fix-red-pg.log`。三项未started恢复失败证明原缺陷；降档unknown的额外失败来自过强终态断言，后续按保守未知消耗修正，不算另一缺陷。
+- 首次两模块PG：2 failed, 34 passed in 8.33s，exit1，`/tmp/tau-final-fix-pg1.log`。零额度分支不能直接record未started来源，修复其状态顺序；unknown且已耗尽不要求成功终态。
+- `/tmp/tau-final-fix-pg2.log`：2 failed, 54 passed in 38.53s，exit1；进程加载旧零额度分支后才完成修改，不能当作修改后失败或通过。一次系统python3编辑脚本因其旧解释器拒绝UTF-8而未执行，已改用.venv解释器执行，未修改仓库解释器配置。
+- `/tmp/tau-final-fix-pg3.log`：56 passed in 37.56s，exit0；随后进一步将恢复的当前服务期/政策核对置于计划锁内，最终以pg4为准。
+- 初次敏感扫描exit1，2条新合成password赋值命中（`/tmp/tau-final-fix-sensitive.log`）。改为既有识别的placeholder值，保留相同凭证标记负例；未改扫描器、白名单或删负例。最终扫描exit0。首次局部ruff有2个import顺序问题，由ruff --fix修正；最终全ruff通过。
+
+本轮无真实provider、模型、页面、邮箱、配置或生产访问；只用合成输入、协议端口和任务PG。六项证据限制与24项裁定逐条保留于本文件。独立复审仍由控制者执行。
+
+最终交付补充：默认与index敏感扫描均exit0；显式`git ls-files --cached --others --exclude-standard -z`全部3130路径（仅排除原无关`.playwright-cli/`与`output/`）扫描exit0，日志`/tmp/tau-final-fix-sensitive-all.log`，没有扫描豁免变更。提交前结构重查通过；任务PG活动client连接0，日志`/tmp/tau-final-fix-release.log`。

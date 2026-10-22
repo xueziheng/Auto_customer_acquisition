@@ -505,3 +505,123 @@ async def test_three_source_private_recovery_with_enough_fit_still_runs_final_ex
     assert current.status == "complete" and current.source_plan == plan
     assert current.collection_reserved_seconds == 320
     assert len(await resumed.list_allocations(tenant, None, 10)) == 1
+
+
+@pytest.mark.parametrize("crash", ["reserved", "unknown"])
+@pytest.mark.parametrize("transition", ["same", "downgrade", "upgrade"])
+async def test_service_budget_checkpoint_crash_recovers_exact_reservation(inventory, crash, transition):
+    from sqlalchemy import select
+
+    from infra.db.inventory_service_plan import InventoryServicePlanBudget
+    from infra.db.prospecting_service_plans import PostgresProspectingServicePlanStore
+    from infra.db.prospecting_service_tables import ProspectingServiceReservationRow
+
+    service, catalog, factory, tenant, _ = inventory
+    clock = [NOW]
+    service.now = lambda: clock[0]
+    store = PostgresProspectingServicePlanStore(factory)
+    tier = "advanced" if transition == "downgrade" else "basic"
+    count = 30 if tier == "advanced" else 10
+    state = await store.assign(tenant, tier, expected_version=None, actor_id="operator", now=NOW)
+    await service.request(tenant, EmployeeId("emp"), InventoryQuery(product_tags=("hinges",)), count, "source-crash")
+    original = service.reserve_source
+    crashed = []
+    calls = []
+
+    async def reserve(*args):
+        if crash == "reserved" and not crashed:
+            crashed.append(args[1])
+            raise asyncio.CancelledError
+        return await original(*args)
+
+    service.reserve_source = reserve
+
+    class EmptyCollector:
+        async def collect(self, job, source, guard, *, target_count):
+            await guard()
+            calls.append((source, target_count))
+            if crash == "unknown" and not crashed:
+                crashed.append(job.id)
+                raise asyncio.CancelledError
+            return CollectionResult((), ProjectionSummary(input_shape="valid", raw_count=0, projected_count=0, projection_complete=True))
+
+    def driver(backend):
+        return InventoryAcquisitionDriver(tenant_id=tenant, backend=backend, catalog=catalog,
+            authority=Authority(), sources=Sources(), collector=EmptyCollector(),
+            service_budget=InventoryServicePlanBudget(factory, tenant, now=lambda: clock[0]), now=lambda: clock[0])
+
+    async def usage():
+        async with factory() as session:
+            row = await session.scalar(select(ProspectingServiceReservationRow).where(
+                ProspectingServiceReservationRow.tenant_id == tenant))
+            return dict(row.execution_usage)
+
+    with pytest.raises(asyncio.CancelledError):
+        await driver(service).scan()
+    first = await service.get_job(tenant, crashed[0])
+    before = await usage()
+    assert len(before) == 1
+    assert len(calls) == int(crash == "unknown")
+    assert await service.source_progress(tenant, first.id, first.lease_token) == (
+        {first.source_plan[0]: "started"} if crash == "unknown" else {})
+    if transition != "same":
+        await store.assign(tenant, "basic" if transition == "downgrade" else "advanced",
+            expected_version=state.version, actor_id="operator", now=NOW)
+    clock[0] += timedelta(minutes=11)
+    restarted = PostgresInventoryService(factory, tenant, catalog, now=lambda: clock[0])
+    await driver(restarted).scan()
+    current = await restarted.get_job(tenant, first.id)
+    assert current.lease_token != first.lease_token
+    after = await usage()
+    key = next(iter(before))
+    assert after[key]["amount"] == before[key]["amount"]
+    assert (await store.get(tenant)).candidates_reserved == count
+    assert len(calls) == len({source for source, _ in calls})
+    if transition != "downgrade":
+        assert [source for source, _ in calls] == list(first.source_plan)
+        assert sum(v["amount"] for v in after.values()) == count
+    else:
+        # 原15预留不退款；降档仅余10上限，恢复未派发来源实际最多5，后续无新预算。
+        assert calls == [(first.source_plan[0], 5 if crash == "reserved" else 15)]
+        assert sum(v["amount"] for v in after.values()) == 15
+    if crash == "reserved":
+        assert current.failure_reason != "collector_failed"
+
+
+async def test_persisted_old_intent_is_denied_at_actual_model_after_new_lease(inventory, monkeypatch):
+    from contextlib import asynccontextmanager
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from apps.scheduler_worker import inventory_model as module
+    from shared.schemas.model_invocation import ModelGenerationError
+
+    service, catalog, factory, tenant, _ = inventory
+    clock = [datetime.now(UTC)]
+    service.now = lambda: clock[0]
+    await service.request(tenant, EmployeeId("emp"), InventoryQuery(product_tags=("hinges",),
+        intent="password=placeholder"), 1, "old-input")
+    first = await service.claim_job(tenant, timedelta(minutes=10))
+    clock[0] += timedelta(minutes=11)
+    backend = PostgresInventoryService(factory, tenant, catalog, now=lambda: clock[0])
+    job = await backend.claim_job(tenant, timedelta(minutes=10))
+    assert job.lease_token != first.lease_token and job.attempts == 2
+
+    @asynccontextmanager
+    async def employees(current_tenant):
+        assert current_tenant == tenant
+        yield SimpleNamespace(get_employee=AsyncMock(return_value=SimpleNamespace(
+            tenant_id=tenant, employee_id=EmployeeId("emp"), user_id="usr", is_active=True, role="sales")))
+
+    settings = SimpleNamespace(configuration_version="v1", api_key_file="never-read", codex_job_root="never-created",
+        model="synthetic", limits=SimpleNamespace(timeout_seconds=1, max_output_tokens=100))
+    monkeypatch.setattr(module, "resolve_task_model", lambda *_: settings)
+    generator = SimpleNamespace(generate=AsyncMock(return_value=SimpleNamespace(text='{"candidates": []}')))
+    monkeypatch.setattr(module, "build_model_composition", lambda **_: SimpleNamespace(generator=generator, aclose=AsyncMock()))
+    model = module.InventoryDiscoveryModel(tenant_id=tenant, backend=backend, employees=employees,
+        configuration=SimpleNamespace(authorize=AsyncMock()), settings=settings, resolver=None,
+        sessions=factory, fingerprints=None, lease_owner="test")
+    with pytest.raises(ModelGenerationError):
+        await model.generate(job, "company_websites", None, {})
+    generator.generate.assert_not_awaited()
