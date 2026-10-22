@@ -1,10 +1,10 @@
 # TradeOS Agent 升级验收记录
 
-日期：2026-10-22。状态：Task6 fix round1已通过独立复审；全分支评审随后提出I1/I2/M2，本次集中修复待一次定向独立复审。本文件不声明生产发布或真实邮件发送。
+日期：2026-10-22。状态：全部分项审查、全分支审查及最终定向复审已完成；已确认的阻断问题全部关闭。实现提交为ad8483ae00961e0c48fb574e51da7d62e46c1296，M1维护债与六项证据限制保留。仅本地代码交付，未合并、推送、生产部署或真实邮件发送。
 
 ## 范围与代码来源
 
-工作分支 `codex/tradeos-agent-upgrade`；实际fork基点 `codex/jslt-enterprise-access@22ece5a86d374795437407a67154ceba2973e1b9`。Task6起点 `0df70cc9c8e486598a018b26d573141a62e05a61`，此前Task1–5/7已通过各自门禁。Task6最终提交与完整BASE..HEAD记录在计划报告，由最终独立评审确认。
+工作分支 `codex/tradeos-agent-upgrade`；实际fork基点 `codex/jslt-enterprise-access@22ece5a86d374795437407a67154ceba2973e1b9`。Task6起点 `0df70cc9c8e486598a018b26d573141a62e05a61`，此前Task1–5/7已通过各自门禁。Task6完整范围为0df70cc..4f83fa2，初审发现经修复复审关闭；全分支最终修复范围为4f83fa2..ad8483a，并通过最终定向复审。
 
 原工作区 `/Volumes/T7/Company/Auto_customer_acquisition` 保持只读。其 `codex/gmail-mailbox-sync@aebaa9b6` 与升级分支在非浅克隆仓库无共同祖先，不能把交付描述成可直接merge回原分支。原独有改动按源码审计语义迁入，没有覆盖原目录或配置。
 
@@ -144,7 +144,7 @@ Task7唯一真实来源诊断：原Gateway固定SYSTEM来源诊断供应商HTTP 
 
 上线需由实际运营者选择企业、当前获批产品/资料、明确Campaign/普通scope、真实本人邮箱和显式分类boss，并核对原全局发送开关。测试通过不会自动开关、批准历史Campaign或扩大private grant。撤批、失去owner权限、邮箱换绑、产品公开hash变化和未知外部结果仍按原停止/人工核对机制处理。
 
-Task6独立评审与全分支独立评审待控制者登记；未完成时不称最终审查通过。旧SQLAlchemy DISTINCT ON告警M1保留如实记录；O1伪造SENT关联暂停问题已窄修并有合成攻击验证。最终验证发现及限制以本节和任务报告为准。
+Task6与最终修复的独立复审均已通过，所有已确认的Critical/Important项为0。旧SQLAlchemy DISTINCT ON告警M1保留如实记录；O1伪造SENT关联暂停问题已窄修并有合成攻击验证。最终验证发现及限制以本节和任务报告为准。
 
 ## 完整PG与Linux复核命令
 
@@ -216,7 +216,7 @@ docker run --rm --init --network none --cap-add SYS_ADMIN \
 
 ## 最终全分支评审集中修复（2026-10-22）
 
-FIX_BASE `4f83fa2265b2642361e57cb78880b8e3330d979e`；本节仅记录最终修复，不覆盖上述历史全套基线。最终提交SHA及BASE..HEAD由计划区 `final-fix-report.md` 记录。此刻仅READY_FOR_SCOPED_REVIEW，不能视为独立复审通过或生产许可。
+FIX_BASE `4f83fa2265b2642361e57cb78880b8e3330d979e`；本节仅记录最终修复，不覆盖上述历史全套基线。本轮提交ad8483ae00961e0c48fb574e51da7d62e46c1296，已通过最终定向复审，见[修复报告](agent-upgrade-final-fixes.md)及[复审报告](agent-upgrade-fix-review.md)；这不授予生产发布许可。
 
 - I1：原来源候选预留独立提交保留。恢复先锁当前服务计划和任务，核实原服务期、当前租约、固定来源计划、24h期限以及不存在该来源started/终态尝试；仅复用同digest原预留，原amount不改、不退款、不换身份。返回可执行量由当前上限减全部已用量再加本来源原预留推导，并受driver原来源分配上限约束。已started的unknown仍跳过，无第二次调用。降档原15预留仍记15，实际恢复最多5；后续零额度来源持久标记quota_exhausted而不外调。正常/升档恢复继续剩余未调用来源，累计原10不扩大。
 - I2：实际InventoryDiscoveryModel.generate在构造模型组合前，对最终model_payload完整JSON执行既有CredentialMarkerGuard；覆盖query/intent/标签、候选证据和确认资料实际字段。失败仅固定ModelGenerationError(permission)，不回显内容。evaluate经同一边界。真实旧请求持久化、过期领取新lease后仍拒绝；实际生成器零调用。正常输入及原公共搜索隔离验证保持。
@@ -254,6 +254,19 @@ RED及中间结果分别保留：
 - `/tmp/tau-final-fix-pg3.log`：56 passed in 37.56s，exit0；随后进一步将恢复的当前服务期/政策核对置于计划锁内，最终以pg4为准。
 - 初次敏感扫描exit1，2条新合成password赋值命中（`/tmp/tau-final-fix-sensitive.log`）。改为既有识别的placeholder值，保留相同凭证标记负例；未改扫描器、白名单或删负例。最终扫描exit0。首次局部ruff有2个import顺序问题，由ruff --fix修正；最终全ruff通过。
 
-本轮无真实provider、模型、页面、邮箱、配置或生产访问；只用合成输入、协议端口和任务PG。六项证据限制与24项裁定逐条保留于本文件。独立复审仍由控制者执行。
+本轮无真实provider、模型、页面、邮箱、配置或生产访问；只用合成输入、协议端口和任务PG。六项证据限制与24项裁定逐条保留于本文件。独立复审已完成，I1/I2/M2关闭，M1按裁定23延期。
 
 最终交付补充：默认与index敏感扫描均exit0；显式`git ls-files --cached --others --exclude-standard -z`全部3130路径（仅排除原无关`.playwright-cli/`与`output/`）扫描exit0，日志`/tmp/tau-final-fix-sensitive-all.log`，没有扫描豁免变更。提交前结构重查通过；任务PG活动client连接0，日志`/tmp/tau-final-fix-release.log`。
+
+
+## 审查归档与交付位置
+
+实现工作区为`/Users/xueziheng/.codex/worktrees/tradeos-agent-upgrade/Auto_customer_acquisition`，本地分支`codex/tradeos-agent-upgrade`。实际基分支为`codex/jslt-enterprise-access`；原工作区分支没有共同祖先，不能把本次交付称为已经直接合并回原分支。
+
+- [最终全分支初审](agent-upgrade-final-review.md)：历史阻断发现与覆盖边界。
+- [最终集中修复报告](agent-upgrade-final-fixes.md)：修复、RED/GREEN及确切验证命令。
+- [最终定向复审](agent-upgrade-fix-review.md)：I1/I2/M2已关闭，0新增问题。
+- [Task6集成审查与复审](agent-upgrade-integration-review.md)。
+- [实施历史记录](agent-upgrade-development-log.md)及[来源保留核查](agent-upgrade-preservation.json)。
+
+临时计划区在这些记录归档后清理；原始资料、配置、现有未跟踪浏览器证据和工作区保留。上述审查为风险与证据驱动的代码审查，不是逐行穷尽全部历史导入的形式化证明。
