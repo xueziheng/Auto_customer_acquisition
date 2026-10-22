@@ -145,3 +145,18 @@ async def test_conflicting_or_unbounded_sent_evidence_never_sends(kind: str) -> 
         await connector(server).send_once(request())
     assert caught.value.category is ToolErrorCategory.RECONCILIATION_REQUIRED
     assert server.sent == []
+
+
+@pytest.mark.asyncio
+async def test_folded_digest_header_reconciles_without_duplicate_send() -> None:
+    server = MailServer()
+    value = request()
+    await connector(server).send_once(value)
+    server.search_ids = b"91"
+    server.headers = server.saved[0].replace(
+        b"X-TradeOS-Content-SHA256: " + value.content_hash.encode(),
+        b"X-TradeOS-Content-SHA256:\r\n\t" + value.content_hash.encode(),
+    )
+    result = await connector(server).reconcile_once(value)
+    assert result.already_existed and result.certainty is DeliveryCertainty.SENT
+    assert len(server.sent) == 1

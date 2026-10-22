@@ -130,7 +130,7 @@ def _expected_headers(request: SMTPReplyRequest) -> dict[str, str]:
 
 def _message(request: SMTPReplyRequest) -> bytes:
     """生成普通回复 MIME，不添加营销列表头。"""
-    message = EmailMessage(policy=SMTP)
+    message = EmailMessage(policy=SMTP.clone(max_line_length=998))
     for key, value in _expected_headers(request).items():
         message[key] = value
     message.set_content(request.body)
@@ -177,7 +177,8 @@ def _has_sent_reply(client: imaplib.IMAP4_SSL, request: SMTPReplyRequest) -> boo
         if headers.defects or any(
             len(headers.get_all(key, [])) != 1
             or getattr(headers[key], "defects", ())
-            or str(headers[key]) != value
+            # 摘要为不透明ASCII token；合法首尾FWS不属于摘要，内部空格仍严格不匹配。
+            or (str(headers[key]).strip(" \t") if key == "X-TradeOS-Content-SHA256" else str(headers[key])) != value
             for key, value in expected.items()
         ):
             raise ToolGatewayError(ToolErrorCategory.RECONCILIATION_REQUIRED)

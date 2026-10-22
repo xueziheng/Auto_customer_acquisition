@@ -32,9 +32,30 @@ def controlled_lifecycle(monkeypatch, tmp_path):
 
 
 def fixture_command(monkeypatch, scenario, artifacts):
+    refresh = lifecycle.ProcessTree.refresh
+
+    async def observed(tree, deadline):
+        await refresh(tree, deadline)
+        for path in artifacts.glob("t10-*/fixture.json"):
+            data = json.loads(path.read_text())
+            if {data["pid"], data["child_pid"]} <= tree.observed.keys():
+                path.with_name("observed").touch()
+
+    monkeypatch.setattr(lifecycle.ProcessTree, "refresh", observed)
+    executable = "-"
+    cache_argument = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
+    if sys.platform == "linux" and scenario.startswith("chromium_"):
+        import playwright
+        metadata = json.loads((Path(playwright.__file__).parent / "driver/package/browsers.json").read_text())
+        revision = next(b["revision"] for b in metadata["browsers"] if b["name"] == "chromium-headless-shell")
+        cache = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", str(Path.home() / ".cache/ms-playwright")))
+        cache_argument = str(cache)
+        executable = str(cache / f"chromium_headless_shell-{revision}/chrome-headless-shell-linux64/chrome-headless-shell")
+        assert Path(executable).is_file(), "生命周期测试需要已安装的真实Chromium"
     monkeypatch.setattr(lifecycle, "_child_command", lambda mode, owner, *_: [
-        sys.executable, str(Path(__file__).resolve()), "--fixture", scenario,
+        sys.executable, str(Path(__file__).resolve().parents[1] / "e2e/costing_quote_lifecycle_fixture.py"), "--fixture", scenario,
         str(artifacts / ("t10-" + owner)),
+        cache_argument, executable,
     ])
 
 
@@ -560,68 +581,6 @@ runpy.run_module('tests.e2e.costing_quote_lifecycle', run_name='__main__')
     assert code == 0 and output == "canonical_ownership=verified\n"
 
 
-def fixture_main(scenario, artifacts):
-    """仅本测试文件私有夹具；不通过真实监督入口接受自定义command。"""
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    listener.listen()
-    child = subprocess.Popen([sys.executable, "-c",
-        "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(20)"],
-        start_new_session=True)
-    evidence = {"pid": os.getpid(), "parent_pgid": os.getpgrp(), "child_pid": child.pid,
-                "child_pgid": os.getpgid(child.pid), "port": listener.getsockname()[1]}
-    (artifacts / "fixture.json").write_text(json.dumps(evidence))
-    (artifacts / "ports.json").write_text(json.dumps([evidence["port"]]))
-    print("private-fixture-log", flush=True)
-    if scenario.startswith("chromium_"):
-        async def chromium_case():
-            from playwright.async_api import async_playwright
-
-            async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch(handle_sigterm=False, handle_sigint=False)
-                await browser.new_page()
-                session = await browser.new_browser_cdp_session()
-                processes = (await session.send("SystemInfo.getProcessInfo"))["processInfo"]
-                (artifacts / "chromium.json").write_text(json.dumps([
-                    {"pid": int(item["id"]), "pgid": os.getpgid(int(item["id"])), "parent": os.getpid()}
-                    for item in processes
-                ]))
-                if scenario == "chromium_forced":
-                    signal.signal(signal.SIGTERM, signal.SIG_IGN)
-                    await asyncio.sleep(20)
-                await asyncio.sleep(.2)
-                await browser.close()
-        asyncio.run(chromium_case())
-    if scenario == "blocked_initialization":
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        time.sleep(20)
-    if scenario == "visual_stop":
-        stopped = False
-
-        def stop(*_args):
-            nonlocal stopped
-            stopped = True
-
-        signal.signal(signal.SIGTERM, stop)
-        while not stopped:
-            time.sleep(.01)
-    time.sleep(.3)
-    if scenario == "partial_failure":
-        return 2
-    child.kill()
-    child.wait(timeout=1)
-    listener.close()
-    if scenario == "missing_receipt":
-        return 0
-    if scenario == "duplicate_receipt":
-        print("t10_child_exit=verified", flush=True)
-    print("t10_child_exit=verified", flush=True)
-    return 2 if scenario == "nonzero_receipt" else 0
-
-
-if __name__ == "__main__":
-    assert sys.argv[1] == "--fixture"
-    raise SystemExit(fixture_main(sys.argv[2], Path(sys.argv[3])))
 
 
 @pytest.mark.parametrize("has_unreaped", [False, True])
@@ -636,3 +595,27 @@ async def test_process_tree_inspection_timeout_never_proves_cleanup(monkeypatch,
     monkeypatch.setattr(tree, "refresh", timed_out)
     assert not await tree.wait_reaped(time.monotonic() + 1)
     assert bool(tree.unreaped) is has_unreaped
+
+
+async def test_output_reader_does_not_bootstrap_docker_runtime():
+    """读取固定回执无需Docker依赖，不能在有界监督循环里启动重型运行环境。"""
+    script = """
+import asyncio, importlib.abc, sys
+class NoDocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == 'docker':
+            raise RuntimeError('docker runtime unavailable in output reader')
+sys.meta_path.insert(0, NoDocker())
+from tests.e2e.costing_quote_lifecycle import _read_output
+async def check():
+    stream = asyncio.StreamReader()
+    stream.feed_data(b't10_child_exit=verified\\nprivate-fixture-log\\n')
+    stream.feed_eof()
+    lines = []
+    await _read_output(stream, lines)
+    assert lines == ['t10_child_exit=verified']
+asyncio.run(check())
+"""
+    child = await asyncio.create_subprocess_exec(sys.executable, '-c', script,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    assert await asyncio.wait_for(child.wait(), 3) == 0

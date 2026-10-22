@@ -214,7 +214,7 @@ def _ports_closed(artifacts, deadline):
 
 
 async def _read_output(stream, lines):
-    from tests.e2e.costing_quote_stack import safe_output
+    from tests.e2e.costing_quote_output import safe_output
 
     pending = b""
     while chunk := await stream.read(4096):

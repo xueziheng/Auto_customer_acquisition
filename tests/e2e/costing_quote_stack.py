@@ -15,7 +15,11 @@ from pathlib import Path
 from uuid import uuid4
 
 import docker
+import httpx
 
+from tests.e2e.costing_quote_output import (
+    safe_output as safe_output,  # noqa: PLC0414 -- 保留原公开入口
+)
 from tests.integration.quote_evidence_linux_support import (
     audited_dependency_image_id,
     build_parser_image,
@@ -51,25 +55,6 @@ class LinuxStack:
         return None
 
 
-def safe_output(raw):
-    """只回传固定诊断/pytest摘要，不暴露Uvicorn和依赖任意日志。"""
-    lines = []
-    for line in raw.decode("utf-8", errors="replace").splitlines():
-        if (re.fullmatch(
-            r"t10_parser_(?:status=unavailable;failure=(?:platform|resource|protocol|runtime|unknown)"
-            r"|probe=(?:cpu|as|wall|ipc|unknown);exit=(?:-?[0-9]{1,3}|unknown)"
-            r";reason=(?:ok|short|timeout|oversized|unknown))", line)
-            or re.fullmatch(r"t10_runtime_stop_exit=-?[0-9]+", line)
-            or re.fullmatch(r"t10_relay_(?:saturated|active|exec_active|completed|reload_cost)=[0-9]+", line)
-            or re.fullmatch(r"(?:runtime_http_error|fixed_exception_type|t10_fixture_error)=[A-Za-z0-9_.]+", line)
-            or re.fullmatch(r"[a-zA-Z0-9_/]+\.py:[0-9]+: in [a-zA-Z0-9_]+", line)
-            or re.fullmatch(r"t10_(?:worker_started_cycles|forbidden_gateway_calls)=[0-9]+", line)
-            or re.fullmatch(r"t10_unit_diag_(?:(?:requests|failed|responses|selection_start|selection_end|text_length)=[0-9]+|disabled=[01])", line)
-            or re.fullmatch(r"t10_unit_probe_(?:initial_response|failed|response|summary_visible|disabled)=[01]", line)
-            or re.fullmatch(r"(?:FAILED|ERROR) tests/[a-zA-Z0-9_/:.\[\]-]+", line)
-            or re.fullmatch(r"[0-9]+ (?:passed|failed|error|errors)(?:, [0-9]+ (?:passed|failed|error|errors))* in [0-9.]+s", line)):
-            lines.append(line)
-    return "\n".join(lines)
 
 
 @contextmanager
@@ -335,10 +320,8 @@ async def browser_stack(artifacts: Path, *, mode="browser"):
 
 async def _wait_for_ready(url, process, deadline):
     """T10专用readiness使用剩余工作预算，不改变其他E2E的共享helper。"""
-    import httpx
-
     deadline = min(deadline, time.monotonic() + 20)
-    async with asyncio.timeout_at(deadline), httpx.AsyncClient() as client:
+    async with asyncio.timeout_at(deadline), httpx.AsyncClient(trust_env=False) as client:
         while True:
             assert process.process.poll() is None, "T10 Vite启动失败"
             try:
