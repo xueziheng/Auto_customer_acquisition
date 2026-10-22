@@ -12,7 +12,7 @@ class KnowledgeSettings(BaseModel):
     enabled: bool = Field(strict=True)
     root: Path
     codex_binary: Path
-    max_upload_bytes: int = Field(default=10 * 1024 * 1024, strict=True, ge=1, le=10 * 1024 * 1024)
+    max_upload_bytes: int = Field(default=10 * 1024 * 1024, strict=True, ge=1, le=25 * 1024 * 1024)
     max_text_chars: int = Field(default=60000, strict=True, ge=100, le=60000)
     timeout_seconds: int = Field(default=180, strict=True, ge=30, le=600)
 

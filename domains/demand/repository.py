@@ -138,6 +138,12 @@ class NeedHypothesisRepository(Protocol):
 
     async def update(self, hypothesis: NeedHypothesis) -> None: ...
 
+    async def list_active_for_account(
+        self, tenant_id: TenantId, account_id: ProspectAccountId, *, limit: int,
+    ) -> list[NeedHypothesis]:
+        """租户和账户SQL过滤后返回有证据的活跃假设。"""
+        ...
+
     async def list_active_categories(
         self,
         tenant_id: TenantId,

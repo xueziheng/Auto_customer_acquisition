@@ -16,7 +16,7 @@ from artifact_store.service_impl import RawArtifactStoreImpl
 from artifact_store.store import BoundedRawArtifactStore
 from connectors.gmail.client import SecretResolver
 from connectors.gmail.inbound import GmailInboundReader
-from connectors.gmail.inbound_cursor import initial_inbound_cursor
+from connectors.gmail.inbound_cursor import decode_cursor, initial_inbound_cursor
 from connectors.gmail.inbound_transport import GmailInboundHttpTransport
 from connectors.object_store.bounded import S3BoundedObjectBlobTransport
 from connectors.object_store.config import S3ObjectStoreSettings
@@ -35,6 +35,7 @@ from infra.db.email_inbound_uow import SqlAlchemyInboundPageUnitOfWork
 from infra.db.repositories.email_inbound import InboundStore
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from infra.email_inbound_artifacts import InboundRawArtifactArchiver
+from infra.standalone.settings import QQReplySettings
 from shared.schemas.email_inbound import (
     MIME_BYTES,
     InboundDTO,
@@ -56,7 +57,12 @@ from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.email_inbound import (
     MANIFEST,
     EmailInboundFetchHandler,
+    InboundProviderReader,
     ToolGatewayEmailInboundReader,
+)
+from tool_gateway.handlers.email_inbound_diagnostics import (
+    GatewayInboundDiagnosticSink,
+    InboundDiagnosticSlot,
 )
 from tool_gateway.handlers.email_inbound_raw import (
     RAW_MANIFEST,
@@ -99,17 +105,27 @@ class InboundMailbox(InboundDTO):
         )
 
 
+@dataclass(frozen=True)
+class InboundProviderAdapter:
+    """受信入口注入 provider 与游标操作；复用同一 Gateway 和整页事务。"""
+    reader: Callable[[InboundRoute], InboundProviderReader]
+    initial: Callable[[InboundRoute, datetime, int], str]
+    validate: Callable[[str, InboundRoute], object]
+
+
 @dataclass(frozen=True, repr=False)
 class InboundRuntimePorts:
     """由进程入口显式提供的唯一邮箱外部端口，不读取环境或建立业务服务。"""
 
     profile: InboundMailbox
-    provider: GmailInboundHttpTransport
+    provider: GmailInboundHttpTransport | None
     secret_resolver: SecretResolver
     secret_ref: str
     object_settings: S3ObjectStoreSettings
     fingerprint_key_ref: str
     lease_owner: str
+    adapter: InboundProviderAdapter | None = None
+    adapter_factory: Callable[[async_sessionmaker[AsyncSession]], InboundProviderAdapter] | None = None
 
 
 class _Employees:
@@ -173,15 +189,20 @@ def build_inbound_composition(
     employees: EmployeeServiceScope,
     employee_actor: EmployeeActor,
     outreach_builder: OutreachServiceBuilder,
-    provider: GmailInboundHttpTransport,
+    provider: GmailInboundHttpTransport | None,
     secret_resolver: SecretResolver,
     secret_ref: str,
     object_settings: S3ObjectStoreSettings,
     fingerprint_key_ref: str,
     lease_owner: str,
     now: Callable[[], datetime],
+    adapter: InboundProviderAdapter | None = None,
 ) -> InboundComposition:
     """构造无IO；只注册本批两个具名工具，各调用共享代码而非运行实例。"""
+    if (provider is None) == (adapter is None):
+        raise InboundError()
+    validate_cursor = adapter.validate if adapter else decode_cursor
+    initial_cursor = adapter.initial if adapter else initial_inbound_cursor
     tenant = profile.tenant_id
     fingerprints = HmacFingerprintProvider(
         "v1", secret_resolver.resolve(fingerprint_key_ref).encode()
@@ -212,7 +233,7 @@ def build_inbound_composition(
     ) -> tuple[InboundRoute, str, int]:
         route = profile.route(sid)
         after = int((stamp - timedelta(days=30)).timestamp())
-        return route, initial_inbound_cursor(route, stamp, after), after
+        return route, initial_cursor(route, stamp, after), after
 
     management = InboundManagement(
         tenant,
@@ -254,19 +275,22 @@ def build_inbound_composition(
         if route != profile.route(route.configured_identity_id):
             raise InboundError()
         page_slot = InboundPageSlot()
+        diagnostics = InboundDiagnosticSlot() if adapter is not None else None
         user = UserId(new_id("usr"))
         page_registry = ToolRegistry()
         page_registry.register(
             MANIFEST,
             EmailInboundFetchHandler(
                 route,
-                lambda: GmailInboundReader(
-                    route, provider, secret_resolver, secret_ref
+                lambda: adapter.reader(route) if adapter else GmailInboundReader(
+                    route, cast(GmailInboundHttpTransport, provider), secret_resolver, secret_ref
                 ),
                 InboundRawArtifactArchiver(raw_store, raw_store),
                 CredentialMarkerGuard(),
                 page_slot,
                 fingerprints,
+                cursor_validator=validate_cursor,
+                diagnostics=diagnostics,
             ),
         )
 
@@ -295,7 +319,13 @@ def build_inbound_composition(
             now=now,
             id_factory=new_id,
         )
-        return ToolGatewayEmailInboundReader(gateway, page_slot, user, route)
+        return ToolGatewayEmailInboundReader(
+            gateway, page_slot, user, route, cursor_validator=validate_cursor,
+            diagnostics=diagnostics,
+            diagnostic_sink=GatewayInboundDiagnosticSink(
+                tenant, user, lambda t: cast(ToolGatewayUnitOfWork, SqlAlchemyToolGatewayUnitOfWork(factory, t, now=now)), now=now,
+            ) if diagnostics is not None else None,
+        )
 
     def actor(sid: SendingIdentityId) -> Actor:
         return Actor(
@@ -327,4 +357,42 @@ def build_inbound_composition(
         reader_for,
         objects,
         raw_store,
+    )
+
+
+def qq_adapter(
+    settings: QQReplySettings, tenant: TenantId,
+    sessions: async_sessionmaker[AsyncSession],
+) -> InboundProviderAdapter:
+    from connectors.qq_mail.inbound import (
+        QQInboundReader,
+        decode_cursor,
+        initial_cursor,
+    )
+    from connectors.qq_mail.inbound_transport import QQImapInboundTransport
+    from domains.conversations.aliyun_connection import AliyunActor
+    from infra.db.qq_inbound import PostgresProjectReplyScope
+    from infra.qq_inbound_binding import CurrentQQBinding
+
+    employee = EmployeeId(settings.employee_id)
+    binding = CurrentQQBinding(
+        settings.mailbox_directory,
+        AliyunActor(tenant_id=tenant, employee_id=employee, user_id=UserId(settings.user_id)),
+        settings.address,
+    )
+    def validate(value: str, route: InboundRoute) -> object:
+        state = decode_cursor(value, route)
+        if settings.attempt_id is None or state.attempt_id != settings.attempt_id:
+            raise InboundError()
+        return state
+
+    return InboundProviderAdapter(
+        reader=lambda route: QQInboundReader(
+            route, employee,
+            QQImapInboundTransport(settings.address, binding, "QQ_INBOUND_AUTH"),
+            PostgresProjectReplyScope(sessions, route, employee, binding, attempt_id=settings.attempt_id),
+            address=settings.address,
+        ),
+        initial=lambda route, stamp, after: initial_cursor(route, attempt_id=settings.attempt_id),
+        validate=validate,
     )

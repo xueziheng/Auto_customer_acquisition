@@ -150,3 +150,31 @@ def validate_employee_provisioning(
         or manager.role not in {Role.BOSS.value, Role.MANAGER.value}
     ):
         raise ValidationError("员工初始化经理无效")
+
+
+def validate_employee_account_creation(
+    tenant_id: TenantId,
+    *,
+    requester: EmployeeView | None,
+    name: str,
+    role: str,
+) -> None:
+    """仅当前企业在职管理员可以创建普通员工，不是通用初始化旁路。
+
+    调用方须在写事务中重新读取并锁定 requester，不能传请求自述的角色。
+    登录凭证与账号写入由认证适配器处理，本函数不接触密码。
+    """
+    from shared.errors import PermissionDenied
+
+    if (
+        requester is None
+        or requester.tenant_id != tenant_id
+        or not requester.is_active
+        or not requester.user_id
+        or requester.role != "boss"
+        or role != "sales"
+    ):
+        raise PermissionDenied("仅本企业在职管理员可创建普通员工账号")
+    validate_employee_provisioning(
+        tenant_id, name=name, role=role, manager=requester
+    )

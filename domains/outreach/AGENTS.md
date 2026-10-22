@@ -143,7 +143,7 @@ Attempt / audit / outbox 只记录安全 ID、typed state/category、provider re
 ## 禁止事项
 
 - 不允许绕过抑制名单（没有任何白名单机制）
-- 不允许未验证联系方式入组
+- 普通业务不允许未验证联系方式入组；仅ADR0098用户授权的精确私有单封manual测试用途例外，不能推广或伪装verified
 - 不允许序列超过 Campaign 的 `max_messages`
 - 不允许移除抑制记录（Phase 1 没有公共 removal API）
 
@@ -157,3 +157,20 @@ Campaign 边界模型与版本化、序列状态机、抑制名单、每日限�
 回复建议使用独立公开只读resolve_reply_source与REPLY_SOURCE_READ（当前boss-only），复用原SENT、双关联键及Enrollment一致性校验，显式授权真实campaign/account/enrollment。原反馈SYSTEM+单一identity权限不变。上层必须先完成真实消息Conversations授权，再匹配target.account；不开放任意Message-ID的独立HTTP入口。Task7扩当前员工owner矩阵时沿该只读action，不能伪造boss或放宽反馈口。
 
 ADR0028扩REPLY_SOURCE_READ到真实manager/MANAGER和sales/SELF，必须精确单account。SELF仅此action可使用account-only scope；其它既有action仍要求原campaign/enrollment scope。下一跳Enrollment另收窄精确ID；无独立HTTP source口。
+
+ADR0093：manager不得提交/改写/暂停/取消Campaign边界；sales与manager的
+Enrollment create/stop必须精确单一account，read/list必须按本人真实归属scope读取。
+`assess_enrollment`仅复用当前门禁读取，不预占额度、不产生Enrollment或Attempt，
+不能当作发送许可。`enroll`重新读取精确当前版本审批，不能仅凭active状态入组。
+
+只读就绪与实际入组共用确定性sender轮转：资格未知立即拒绝，不乐观跳过；首个合格身份
+命中后不读取后续身份。新增Enrollment在Quota预占前核验精确tenant/contact/account回复，
+已回复、等待分类或读取失败均拒绝。原key已有的合法记录只重放，不重复查询新增回复门禁或扣额度。
+
+ADR0094：账户发现请求携带分配时的EnrollmentOwnershipBinding。新入组在原key→account
+advisory锁内读取当前归属并比对owner/locked_at后才能写入；不能在该锁后取归属行锁。
+转交共用account锁并拒绝活动Enrollment、sending Attempt与未决canonical发送事实。
+
+ADR0093单客户手动入组：Enrollment.execution_mode在创建时固定并参与幂等身份；缺省和旧记录
+均为automatic，manual不会进入scheduler到期扫描。手工prepare/send与自动记录共用全部
+当前发送门禁，模式本身不是审批、身份许可或发送授权，不提供模式修改入口。

@@ -32,6 +32,7 @@ from apps.scheduler_worker.assistant import (
 )
 from artifact_store.repository import ArtifactUnitOfWorkFactory
 from artifact_store.service_impl import GeneratedArtifactStoreImpl, RawArtifactStoreImpl
+from artifact_store.store import RawArtifactStore
 from connectors.dns_auth.client import (
     AsyncTxtResolver,
     DnsAuthenticationConnector,
@@ -192,6 +193,7 @@ from tool_gateway.handlers.dns_auth import (
 from tool_gateway.handlers.email_send import (
     DeliveryMaterialProvider,
     EmailSendHandler,
+    OutboundMailArchive,
     UnsubscribeLink,
     UnsubscribeLinkProvider,
 )
@@ -501,6 +503,15 @@ class SchedulerHealthServer:
 
 
 @dataclass(frozen=True)
+class ReplyOutreachFacts:
+    """只注入已有触达事实；不持有外发传输、发送材料或凭证。"""
+    contact_eligibility: ContactEligibilityProvider
+    sending_identity_eligibility: SendingIdentityEligibilityProvider
+    campaign_approvals: CampaignApprovalProvider
+    reply_status: ReplyStatusProvider
+
+
+@dataclass(frozen=True)
 class CampaignMessagingComposition:
     """部署层显式提供的发送事实、材料、凭证与 Gmail 传输（镜像 API 手工发送）。"""
 
@@ -669,6 +680,7 @@ class SchedulerDomainDependencies:
     employee_service: HumanHandoffEmployeeReader
     notification_audience: NotificationAudienceResolver
     campaign_messaging: CampaignMessagingComposition | None = None
+    reply_outreach_facts: ReplyOutreachFacts | None = None
     reply_qualification: ReplyQualificationComposition | None = None
     account_discovery: AccountDiscoveryComposition | None = None
     demand_discovery: DemandDiscoveryComposition | None = None
@@ -839,6 +851,7 @@ def register_complete_scheduler(
         ),
         (CommitmentOverdue, "notification.commitment_overdue"),
         (ApprovalDecided, "notification.approval_decided"),
+        (ReplyReceived, "notification.customer_reply"),
     ):
         if event_type is HandoffRequested and owner_reminder_interval is not None:
             continue
@@ -1062,6 +1075,7 @@ class SchedulerRuntimeFactory:
         standalone_research: bool = False,
         secret_resolver: SecretResolver | None = None,
         unconfigured_dns_step: StepHandler | None = None,
+        qq_dns_enabled: bool = False,
         health_server_factory: Callable[
             [SchedulerHealthState, int], SchedulerHealthServer
         ] = SchedulerHealthServer,
@@ -1079,6 +1093,8 @@ class SchedulerRuntimeFactory:
             )
         ):
             raise ValidationError("scheduler runtime factory 依赖无效")
+        if type(qq_dns_enabled) is not bool or (qq_dns_enabled and pilot_config is None):
+            raise ValidationError("QQ DNS 必须由独立部署显式接线")
         if type(standalone_research) is not bool or (standalone_research and (
             pilot_config is None or bootstrap is None
             or getattr(bootstrap, "research_factory", None) is None
@@ -1099,8 +1115,9 @@ class SchedulerRuntimeFactory:
             or bootstrap is None
             or (getattr(bootstrap, "research_enabled", True) and not standalone_research)
             or getattr(bootstrap, "contacts_enabled", True)
-            or getattr(bootstrap, "campaign_enabled", False) is not pilot_gmail
-            or (inbound_ports is not None) is not pilot_gmail
+            or (pilot_gmail and inbound_ports is None and not getattr(bootstrap, "campaign_enabled", False))
+            or (getattr(bootstrap, "campaign_enabled", False) and not pilot_gmail)
+            or ((inbound_ports is not None) != (getattr(bootstrap, "reply_factory", None) is not None))
         ):
             raise ValidationError("本机 scheduler 外部能力必须未配置")
         if pilot_config is None and (
@@ -1110,6 +1127,7 @@ class SchedulerRuntimeFactory:
         self._pilot_config = pilot_config
         self._secret_resolver = secret_resolver
         self._unconfigured_dns_step = unconfigured_dns_step
+        self._qq_dns_enabled = qq_dns_enabled
         self._environ = environ
         self._dependencies = dependencies
         self._bootstrap = bootstrap
@@ -1459,6 +1477,7 @@ class SchedulerRuntimeFactory:
                 tenant_id=config.tenant_id,
                 audience=dependencies.notification_audience,
                 jobs=jobs,
+                conversations=core.conversations,
                 now=self._now,
             )
             handoff_handlers = build_human_handoff_step_handlers(
@@ -1480,9 +1499,15 @@ class SchedulerRuntimeFactory:
                 ),
                 now=self._now,
             )
-            connector = DnsAuthenticationConnector(
-                self._resolver_factory(), now=self._now
-            )
+            if self._qq_dns_enabled:
+                from apps.composition_support.qq_dns_auth import (
+                    build_qq_dns_authentication_checker,
+                )
+                connector = build_qq_dns_authentication_checker(now=self._now)
+            else:
+                connector = DnsAuthenticationConnector(
+                    self._resolver_factory(), now=self._now
+                )
             dns_handler = DnsAuthenticationCheckHandler(connector, fingerprints)
             tool_registry = ToolRegistry()
             tool_registry.register(DNS_AUTH_MANIFEST, dns_handler)
@@ -1521,33 +1546,38 @@ class SchedulerRuntimeFactory:
                 id_factory=new_id,
             )
             auth_step: StepHandler
-            if self._unconfigured_dns_step is not None:
+            if self._unconfigured_dns_step is not None and not self._qq_dns_enabled:
                 auth_step = FailedAuthenticationStep(sending, self._unconfigured_dns_step)
             else:
-                if config.dkim_selector is None:
+                if self._qq_dns_enabled:
+                    from apps.composition_support.qq_dns_auth import QQ_DKIM_SELECTOR
+                    selector = QQ_DKIM_SELECTOR
+                else:
+                    selector = config.dkim_selector
+                if selector is None:
                     raise ValidationError("DNS 认证未配置")
                 auth_step = DnsAuthenticationStep(
                     sending,
                     ToolGatewayDnsAuthenticationChecker(gateway, tool_user),
-                    dkim_selector=config.dkim_selector,
+                    dkim_selector=selector,
                 )
             campaign_handlers: dict[str, StepHandler] = {}
             campaign_outreach: OutreachService | None = None
-            if dependencies.campaign_messaging is not None:
-                if config.gmail_oauth_token_ref is None:
-                    raise ValidationError("邮件发送未配置")
-                campaign_handlers, campaign_outreach = self._build_campaign_messaging(
-                    factory,
-                    config,
-                    dependencies.campaign_messaging,
-                    sending,
-                    fingerprints,
-                    secrets,
-                    tool_user,
+            reply_facts = dependencies.reply_outreach_facts
+            if campaign_outreach is None and reply_facts is not None:
+                campaign_outreach = OutreachServiceImpl(
+                    lambda tenant: SqlAlchemyOutreachUnitOfWork(factory, tenant, now=self._now),
+                    reply_facts.contact_eligibility,
+                    reply_facts.sending_identity_eligibility,
+                    reply_facts.campaign_approvals,
+                    reply_facts.reply_status,
+                    Phase1OutreachAuthorizer(config.tenant_id),
+                    OutreachStandardAuditLogger(),
+                    now=self._now,
                 )
             if self._inbound_ports is not None:
                 ports = self._inbound_ports
-                messaging = dependencies.campaign_messaging
+                messaging = dependencies.campaign_messaging or reply_facts
                 if ports.profile.tenant_id != config.tenant_id or messaging is None:
                     raise ValidationError("scheduler 入站组合不完整")
 
@@ -1573,12 +1603,34 @@ class SchedulerRuntimeFactory:
                     employee_actor=scheduler_employee_actor,
                     outreach_builder=inbound_outreach,
                     provider=ports.provider,
+                    adapter=ports.adapter_factory(factory) if ports.adapter_factory else ports.adapter,
                     secret_resolver=ports.secret_resolver,
                     secret_ref=ports.secret_ref,
                     object_settings=ports.object_settings,
                     fingerprint_key_ref=ports.fingerprint_key_ref,
                     lease_owner=ports.lease_owner,
                     now=self._now,
+                )
+            sent_archive = None
+            if inbound is not None:
+                from infra.outbound_mail_archive import (
+                    OutboundMailArchive as MailArchive,
+                )
+                sent_archive = MailArchive(
+                    factory, cast(RawArtifactStore, inbound.bounded_raw_store), core.conversations
+                )
+            if dependencies.campaign_messaging is not None:
+                if config.gmail_oauth_token_ref is None:
+                    raise ValidationError("邮件发送未配置")
+                campaign_handlers, campaign_outreach = self._build_campaign_messaging(
+                    factory,
+                    config,
+                    dependencies.campaign_messaging,
+                    sending,
+                    fingerprints,
+                    secrets,
+                    tool_user,
+                    archive=sent_archive,
                 )
             if self._bootstrap is not None:
                 if campaign_outreach is not None:
@@ -1795,6 +1847,11 @@ class SchedulerRuntimeFactory:
                 build_assistant = getattr(self._bootstrap, "build_assistant", None)
                 if build_assistant is not None:
                     assistant_ports = build_assistant(core, factory, dependencies.opportunity_service)
+            inventory_driver = None
+            if self._bootstrap is not None:
+                build_inventory = getattr(self._bootstrap, "build_inventory", None)
+                if build_inventory is not None:
+                    inventory_driver = build_inventory(core, factory)
             knowledge_driver = None
             if self._bootstrap is not None:
                 build_knowledge = getattr(self._bootstrap, "build_knowledge", None)
@@ -1889,7 +1946,7 @@ class SchedulerRuntimeFactory:
                     now=self._now,
                 )
             campaign_driver: CampaignSendDriver | None = None
-            if campaign_outreach is not None:
+            if dependencies.campaign_messaging is not None and campaign_outreach is not None:
                 register_outreach_campaign(
                     workflow,
                     timedelta(seconds=config.campaign_retry_interval_seconds),
@@ -1981,6 +2038,7 @@ class SchedulerRuntimeFactory:
                 ),
                 assistant_driver=assistant_driver,
                 knowledge_driver=knowledge_driver,
+                inventory_driver=inventory_driver,
                 campaign_driver=campaign_driver,
                 activation=runtime_activation,
                 quote_expiry_driver=(
@@ -2115,6 +2173,8 @@ class SchedulerRuntimeFactory:
         fingerprints: HmacFingerprintProvider,
         secrets: SecretResolver,
         tool_user: UserId,
+        *,
+        archive: OutboundMailArchive | None = None,
     ) -> tuple[dict[str, StepHandler], OutreachService]:
         """装配 Campaign 发送链路：outreach 服务、退订链接、email.send 网关。
 
@@ -2224,6 +2284,7 @@ class SchedulerRuntimeFactory:
             outreach=outreach,
             outreach_actor_factory=_scheduler_delivery_binding_actor,
             route_id=config.email_feedback_route_id,
+            archive=archive,
         )
         campaign_registry = ToolRegistry()
         campaign_registry.register(_email_send_manifest(), handler)

@@ -328,6 +328,19 @@ class NeedHypothesisRepositoryImpl(_HypothesisRepository, NeedHypothesisReposito
         ).scalar_one_or_none()
         return _row_to_hypothesis(row) if row is not None else None
 
+    async def list_active_for_account(
+        self, tenant_id: TenantId, account_id: ProspectAccountId, *, limit: int,
+    ) -> list[NeedHypothesis]:
+        self._require_tenant(tenant_id, "account_outreach_hypotheses")
+        rows = (await self._session.scalars(select(NeedHypothesisRow).where(
+            NeedHypothesisRow.tenant_id == self._tenant_id,
+            NeedHypothesisRow.account_id == account_id,
+            NeedHypothesisRow.status.in_(("inferred", "contacting")),
+            NeedHypothesisRow.signal_ids != [],
+            NeedHypothesisRow.reasoning["based_on"] != [],
+        ).order_by(NeedHypothesisRow.hypothesis_id).limit(limit))).all()
+        return [_row_to_hypothesis(row) for row in rows]
+
     async def list_active_categories(
         self,
         tenant_id: TenantId,

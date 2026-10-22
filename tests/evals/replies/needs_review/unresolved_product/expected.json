@@ -1,0 +1,13 @@
+{
+  "category": "needs_review",
+  "must_intercept": [
+    "stop_sequence",
+    "review_reply"
+  ],
+  "must_not_intercept": [
+    "suppress",
+    "handoff",
+    "extract_need_fields",
+    "start_qualification"
+  ]
+}

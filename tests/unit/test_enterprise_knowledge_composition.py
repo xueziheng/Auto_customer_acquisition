@@ -179,6 +179,7 @@ async def test_analyzer_capacity_failures_are_actionable(
     )
     settings = SimpleNamespace(
         model="deepseek-flash", configuration_version="v1", secret_ref="synthetic/model",
+        provider="deepseek", api_key_file=None, model_catalog_directory=None,
         limits=SimpleNamespace(timeout_seconds=60, max_input_bytes=65536, max_output_tokens=2048),
     )
     knowledge = SimpleNamespace(

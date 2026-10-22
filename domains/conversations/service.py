@@ -73,6 +73,13 @@ class ConversationService(Protocol):
         """单次持久快照保守暂停整个企业；未分类不等于无回复。"""
         ...
 
+    async def record_outbound(
+        self, tenant_id: TenantId, account_id: ProspectAccountId,
+        raw_artifact_ref: str, external_message_id: str, sent_at: datetime,
+    ) -> MessageId:
+        """仅由受信发送归档端记录已接受的出站内容；幂等且不发布入站事件。"""
+        ...
+
     async def ingest_inbound(
         self,
         tenant_id: TenantId,
@@ -134,6 +141,12 @@ class ConversationService(Protocol):
         """读取 tenant-bound 分类事实，供动作重试复用其耐久发生时间。"""
         ...
 
+    async def get_effective_reply_category(
+        self, tenant_id: TenantId, message_id: MessageId,
+    ) -> ReplyCategory | None:
+        """内部通知只读：返回当前人工纠正优先的分类，不返回原文。"""
+        ...
+
     async def correct_classification(
         self,
         tenant_id: TenantId,
@@ -166,6 +179,20 @@ class ConversationService(Protocol):
         limit: int,
     ) -> tuple[ReplyWorkActionView, ...]:
         """读取本租户 owner queue；不返回客户正文、主题或地址。"""
+        ...
+
+    async def list_owned_reply_work(
+        self, tenant_id: TenantId, *, actor: InboxActor,
+        status: ReplyWorkStatus, limit: int, account_id: ProspectAccountId | None = None,
+    ) -> tuple[ReplyWorkActionView, ...]:
+        """当前 Inbox 范围过滤在分页之前执行。"""
+        ...
+
+    async def handle_reply_work(
+        self, tenant_id: TenantId, action_id: str, *, actor: InboxActor,
+        expected_status: ReplyWorkStatus, status: ReplyWorkStatus,
+    ) -> ReplyWorkActionView:
+        """仅当前负责人可处理；在同一事务重核员工与归属。"""
         ...
 
     async def suggest_next_questions(
@@ -233,3 +260,12 @@ class ConversationService(Protocol):
 from .source_access import (
     require_reply_internal_access as require_reply_internal_access,  # noqa: PLC0414 公开窄action
 )
+
+
+def reply_requires_owner_attention(category: ReplyCategory) -> bool:
+    """正向回复交负责人确认；继续交流不等于明确采购。"""
+    return category in {
+        ReplyCategory.CLEAR_INTEREST, ReplyCategory.WILLING_TO_CONTINUE,
+        ReplyCategory.REQUESTS_MATERIALS, ReplyCategory.REQUESTS_QUOTE,
+        ReplyCategory.REQUESTS_SAMPLE, ReplyCategory.PROVIDES_SPECIFICATION,
+    }

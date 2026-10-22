@@ -266,11 +266,13 @@ async def test_prepare_send_denies_reply_and_transitions_enrollment(
     replied = ReplyStatusSnapshot(tenant, contact, account, ReplyState.REPLIED, NOW, NOW)
     await _seed_campaign(factory, tenant, campaign_id, (sender,), approval_id)
     clock = MutableClock(NOW)
-    service = _service(factory, tenant, campaign_id, approval_id, (sender,), contacts, {(contact, account): replied}, clock)
+    replies = {(contact, account): _no_reply(tenant, contact, account)}
+    service = _service(factory, tenant, campaign_id, approval_id, (sender,), contacts, replies, clock)
     enrollment, system = await _enroll_and_system(
         service, tenant, campaign_id, contact, account, "seq-enroll-reply"
     )
 
+    replies[(contact, account)] = replied
     decision = await service.prepare_send(  # type: ignore[attr-defined]
         tenant, enrollment.enrollment_id, DRAFT, actor=system
     )

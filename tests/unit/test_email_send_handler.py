@@ -206,6 +206,9 @@ def _handler(
     key: bytes = b"k" * 32,
     link_key_id: str = "current-v1",
     policy_version: str = "unsubscribe-v1",
+    connectors=None,
+    gmail_sender_address=None,
+    archive=None,
 ):
     trace: list[str] = []
     material = _material(preflight)
@@ -228,8 +231,44 @@ def _handler(
         outreach=outreach,
         outreach_actor_factory=lambda attempt: ("bind", attempt),
         route_id="feedback-route-v1",
+        connectors=connectors,
+        gmail_sender_address=gmail_sender_address,
+        archive=archive,
     )
     return handler, materials, link_provider, gmail
+
+
+@pytest.mark.asyncio
+async def test_employee_connector_is_resolved_only_at_execution_and_exact_sender() -> None:
+    preflight = _preflight()
+    connector = _Gmail()
+    calls = []
+
+    class Connectors:
+        async def resolve(self, tenant_id, employee_id, from_address):
+            calls.append((tenant_id, employee_id, from_address))
+            return connector
+
+    handler, _, _, legacy = _handler(preflight, connectors=Connectors())
+    ctx = _context(preflight)
+    prepared = await handler.prepare(ctx, preflight)
+    assert calls == [] and connector.calls == []
+    result = await handler.execute(preflight.tenant_id, prepared)
+    assert calls == [(preflight.tenant_id, ctx.user_id, "sender@example.com")]
+    assert len(connector.calls) == 1 and legacy.calls == []
+    assert result["provider_ref"] == "gmail_ref_01"
+
+
+@pytest.mark.asyncio
+async def test_explicit_configured_gmail_sender_keeps_its_route_without_fallback():
+    class Connectors:
+        async def resolve(self, tenant_id, employee_id, from_address):
+            raise AssertionError("精确配置的Gmail发件地址不进入阿里连接器")
+    preflight = _preflight()
+    handler, _, _, gmail = _handler(preflight, connectors=Connectors(), gmail_sender_address="sender@example.com")
+    prepared = await handler.prepare(_context(preflight), preflight)
+    await handler.execute(preflight.tenant_id, prepared)
+    assert len(gmail.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -501,3 +540,34 @@ async def test_execute_rejects_secret_like_provider_output() -> None:
     prepared = await handler.prepare(_context(preflight), preflight)
     with pytest.raises(ValidationError):
         await handler.execute(preflight.tenant_id, prepared)
+
+
+@pytest.mark.asyncio
+async def test_successful_send_archives_the_exact_request_before_returning():
+    preflight = _preflight()
+    recorded = []
+    class Archive:
+        async def record_sent(self, tenant, attempt, request, provider_ref):
+            recorded.append((tenant, attempt, request, provider_ref))
+    handler, _, _, gmail = _handler(preflight, archive=Archive())
+    prepared = await handler.prepare(_context(preflight), preflight)
+    assert recorded == []
+    result = await handler.execute(preflight.tenant_id, prepared)
+    assert len(gmail.calls) == len(recorded) == 1
+    assert recorded[0] == (preflight.tenant_id, preflight.attempt_id, gmail.calls[0], result["provider_ref"])
+
+
+@pytest.mark.asyncio
+async def test_archive_failure_after_send_requires_reconciliation_not_resend():
+    from tool_gateway.errors import ToolErrorCategory, ToolGatewayError
+    preflight = _preflight()
+    class Archive:
+        async def record_sent(self, *args):
+            raise RuntimeError("private failure must stay hidden")
+    handler, _, _, gmail = _handler(preflight, archive=Archive())
+    prepared = await handler.prepare(_context(preflight), preflight)
+    with pytest.raises(ToolGatewayError) as failure:
+        await handler.execute(preflight.tenant_id, prepared)
+    assert failure.value.category is ToolErrorCategory.RECONCILIATION_REQUIRED
+    assert len(gmail.calls) == 1
+    assert "private" not in str(failure.value)

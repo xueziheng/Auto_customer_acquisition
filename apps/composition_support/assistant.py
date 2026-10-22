@@ -24,7 +24,7 @@ from domains.employees.service import Actor as EmployeeActor
 from domains.opportunities.service import OpportunityService
 from infra.db.assistant import SqlAssistantRepository
 from infra.db.model_configuration import SqlModelConfigurationRepository
-from infra.standalone.settings import StandaloneModelSettings
+from infra.standalone.settings import StandaloneModelSettings, deployment_verification
 from shared.schemas.identifiers import TenantId
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from workflows.assistant.reads import AssistantRunReads
@@ -62,7 +62,7 @@ def build_assistant_core(
     now: Callable[[], datetime],
 ) -> AssistantCore:
     identity = CurrentEmployeeIdentity(employees, lookup)
-    configuration_repo = SqlModelConfigurationRepository(factory, fingerprints, now=now)
+    configuration_repo = SqlModelConfigurationRepository(factory, fingerprints, now=now, deployment_verification=deployment_verification(settings), deployment_provider=settings.provider)
     configuration = ModelConfigurationServiceImpl(configuration_repo, identity, now=now)
 
     @asynccontextmanager

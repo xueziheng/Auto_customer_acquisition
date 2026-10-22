@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -14,6 +15,17 @@ from domains.products.service import EnterpriseKnowledgeService
 from shared.errors import InvalidStateTransition, PermissionDenied, ValidationError
 from shared.schemas.identifiers import TenantId
 from shared.schemas.model_invocation import ModelInputImage
+from workflows.enterprise_knowledge.xlsx_rows import XLSX_MIME, organize_xlsx_rows
+
+_LOGGER = logging.getLogger(__name__)
+_ANALYSIS_STAGES = frozenset({
+    "model_identity", "response_schema", "source_evidence", "output_guard",
+    "response_schema_limit", "response_schema_missing", "response_schema_extra",
+    "response_schema_json", "response_schema_value",
+    "response_schema_limit_facts", "response_schema_limit_title",
+    "response_schema_limit_label", "response_schema_limit_value",
+    "response_schema_limit_source_quote", "response_schema_limit_inferences",
+})
 
 
 class KnowledgeProcessingFailure(RuntimeError):
@@ -69,14 +81,34 @@ class EnterpriseKnowledgeDriver:
             content = await self._reader.read(claim)
             source = await self._parser.parse(content, claim.source.mime_type)
             await self._service.authorize_processing(self._tenant, claim)
+            model_name, extractor = self._model, "codex-cli:enterprise-knowledge-v1"
+            expected_rows = None
+            if claim.source.mime_type == XLSX_MIME:
+                try:
+                    if source.images:
+                        raise ValueError("表格来源结构无效")
+                    expected_rows = organize_xlsx_rows(source.text)
+                except ValueError:
+                    raise KnowledgeProcessingFailure("source_limit_exceeded") from None
             model_started = True
             result = await self._analyzer.analyze(claim, source)
+            if expected_rows is not None:
+                if (
+                    result.source_text != source.text
+                    or result.source_kind != "document_text"
+                    or result.image_count or result.image_source_pages
+                    or result.analysis.inferences
+                    or any(not any(row.value in fact.value for fact in result.analysis.facts)
+                           for row in expected_rows.analysis.facts)
+                ):
+                    raise ValidationError("表格整理未完整保留原文行", context={"knowledge_stage": "source_evidence"})
+                result.analysis.validate_evidence(source.text)
             await self._service.authorize_processing(self._tenant, claim)
             await self._service.complete_processing(
                 self._tenant, claim, source_text=result.source_text, analysis=result.analysis,
                 source_kind=result.source_kind, image_count=result.image_count,
                 image_source_pages=result.image_source_pages, parse_warnings=source.warnings,
-                model=self._model, extracted_by="codex-cli:enterprise-knowledge-v1",
+                model=model_name, extracted_by=extractor,
             )
         except asyncio.CancelledError:
             await self._fail(claim, "model_result_unknown" if model_started else "processing_failed", model_started)
@@ -87,7 +119,18 @@ class EnterpriseKnowledgeDriver:
             await self._fail(claim, "authorization_revoked", False)
         except InvalidStateTransition:
             return
-        except ValidationError:
+        except ValidationError as error:
+            stage = error.context.get("knowledge_stage")
+            # 只记录受信阶段，不记录异常文本、资料正文或模型返回内容。
+            if stage not in _ANALYSIS_STAGES:
+                stage = "processing_validation"
+            # 生产入口禁用通用日志；仅将固定诊断交给已有白名单 handler。
+            # 不重新启用全局日志，不包含原异常或资料正文。
+            _LOGGER.handle(_LOGGER.makeRecord(
+                _LOGGER.name, logging.WARNING, __file__, 0,
+                "enterprise_knowledge_validation_failed stage=%s tenant=%s job=%s",
+                (stage, self._tenant, claim.job_id), None,
+            ))
             await self._fail(claim, "invalid_analysis", False)
         except Exception:  # noqa: BLE001 - 不猜测提交/Provider异常是否发生在效果之前。
             await self._fail(claim, "model_result_unknown" if model_started else "processing_failed", model_started)

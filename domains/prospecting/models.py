@@ -135,7 +135,10 @@ class ProspectAccount:
         _require_utc(self.created_at, "潜在企业时间必须为 UTC")
         if any(not _is_exact_nonblank(item) for item in self.source_signal_refs):
             raise ValidationError("潜在企业来源引用无效")
-        if self.field_provenance and set(self.field_provenance) != {"name", "country"}:
+        if self.field_provenance and (
+            not {"name", "country"} <= set(self.field_provenance)
+            or not set(self.field_provenance) <= {"name", "country", "entity_type", "industry"}
+        ):
             raise ValidationError("潜在企业关键字段来源不完整")
         if any(
             not isinstance(item, Provenance)

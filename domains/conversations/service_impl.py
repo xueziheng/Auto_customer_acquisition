@@ -103,6 +103,41 @@ class ConversationServiceImpl:
             replied_at=replied_at,
         )
 
+    async def record_outbound(
+        self, tenant_id: TenantId, account_id: ProspectAccountId,
+        raw_artifact_ref: str, external_message_id: str, sent_at: datetime,
+    ) -> MessageId:
+        """接收 Gateway 已确认的发送事实，按客户复用会话；绝不伪造入站或分类。"""
+        if not all(isinstance(value, str) and value.strip() for value in
+                   (tenant_id, account_id, raw_artifact_ref, external_message_id)):
+            raise ValidationError("出站消息绑定无效")
+        sent_at = self._validate_utc_input(sent_at, "sent_at")
+        async with self._uow_factory(tenant_id) as uow:
+            conversation = await uow.conversations.find_by_account_channel(tenant_id, account_id, "email")
+            if conversation is None:
+                await uow.conversations.add(Conversation(
+                    conversation_id=ConversationId(new_id("con")), tenant_id=tenant_id,
+                    account_id=account_id, channel="email", created_at=self._validate_now(self._now()),
+                ))
+                conversation = await uow.conversations.find_by_account_channel(tenant_id, account_id, "email")
+            if conversation is None:
+                raise ValidationError("会话创建未完成")
+            existing = await uow.messages.find_by_external_id(tenant_id, external_message_id)
+            if existing is None:
+                await uow.messages.add(Message(
+                    message_id=MessageId(new_id("msg")), tenant_id=tenant_id,
+                    conversation_id=conversation.conversation_id, direction=MessageDirection.OUTBOUND,
+                    sent_at=sent_at, raw_artifact_ref=raw_artifact_ref, external_message_id=external_message_id,
+                ))
+                existing = await uow.messages.find_by_external_id(tenant_id, external_message_id)
+            if existing is None:
+                raise ValidationError("出站记录写入未完成")
+            if existing.direction is not MessageDirection.OUTBOUND:
+                raise ReingestConflictError("消息方向冲突")
+            self._require_semantic_identity(existing, conversation.conversation_id, raw_artifact_ref, sent_at, None)
+            await uow.conversations.advance_last_outbound_at(tenant_id, conversation.conversation_id, sent_at)
+            return existing.message_id
+
     async def ingest_inbound(
         self,
         tenant_id: TenantId,
@@ -316,6 +351,8 @@ class ConversationServiceImpl:
             not isinstance(item, ReplyFieldEvidence) for item in candidate_fields
         ):
             raise ValidationError("回复字段证据无效")
+        if category is ReplyCategory.NEEDS_REVIEW and candidate_fields:
+            raise ValidationError("待核对回复不得携带需求字段")
         if category is ReplyCategory.UNSUBSCRIBE:
             suppress_scope = suppress_scope or ReplySuppressScope.CONTACT
             if not isinstance(suppress_scope, ReplySuppressScope):
@@ -391,13 +428,15 @@ class ConversationServiceImpl:
                 category is not ReplyCategory.AUTO_REPLY
                 and not await uow.has_published_reply(tenant_id, message_id)
             ):
+                # 从同租户持久消息补齐通知深链，不能由分类调用者自报会话。
+                source_message = await uow.messages.get(tenant_id, message_id)
                 await uow.bus.publish(
                     ReplyReceived(
                         tenant_id=tenant_id,
                         occurred_at=now,
                         run_id=None,
                         message_id=message_id,
-                        conversation_id=None,
+                        conversation_id=source_message.conversation_id if source_message is not None else None,
                         reply_category=category.value,
                         outbound_message_id=outbound_message_id,
                     )
@@ -416,6 +455,16 @@ class ConversationServiceImpl:
             raise ValidationError("会话消息无效")
         async with self._uow_factory(tenant_id) as uow:
             return await uow.classifications.get(tenant_id, message_id)
+
+    async def get_effective_reply_category(
+        self, tenant_id: TenantId, message_id: MessageId,
+    ) -> ReplyCategory | None:
+        async with self._uow_factory(tenant_id) as uow:
+            original = await uow.classifications.get(tenant_id, message_id)
+            if original is None:
+                return None
+            corrections = await uow.classifications.list_corrections(tenant_id, message_id)
+            return corrections[-1].corrected_category if corrections else original.category
 
     @staticmethod
     def _reply_work_view(record: ReplyWorkRecord) -> ReplyWorkActionView:
@@ -521,6 +570,63 @@ class ConversationServiceImpl:
                 tenant_id, status, limit=limit
             )
         return tuple(self._reply_work_view(record) for record in records)
+
+    async def list_owned_reply_work(
+        self, tenant_id: TenantId, *, actor: InboxActor,
+        status: ReplyWorkStatus, limit: int, account_id: ProspectAccountId | None = None,
+    ) -> tuple[ReplyWorkActionView, ...]:
+        """当前 Inbox 可见范围在 LIMIT 之前裁剪；不泄露地址或正文。"""
+        require_actor(tenant_id, actor, InboxAction.LIST)
+        if not isinstance(status, ReplyWorkStatus) or type(limit) is not int or not 1 <= limit <= 100:
+            raise ValidationError("回复工作队列参数无效")
+        async with self._uow_factory(tenant_id) as uow:
+            await require_current_access(uow.inbox_facts, tenant_id, actor, InboxAction.LIST)
+            rows = await uow.reply_work.list_owned(
+                tenant_id, actor=actor, status=status, limit=limit, account_id=account_id,
+            )
+            from dataclasses import replace
+            views = []
+            for row in rows:
+                owner = await uow.inbox_facts.read_owner(tenant_id, row.account_id)
+                views.append(replace(self._reply_work_view(row), can_handle=owner == actor.employee_id))
+            return tuple(views)
+
+    async def handle_reply_work(
+        self, tenant_id: TenantId, action_id: str, *, actor: InboxActor,
+        expected_status: ReplyWorkStatus, status: ReplyWorkStatus,
+    ) -> ReplyWorkActionView:
+        """原负责人工作项；转派后旧负责人不能操作，重试不能回退状态。"""
+        require_actor(tenant_id, actor, InboxAction.READ)
+        transitions = {
+            ReplyWorkStatus.PENDING: frozenset({
+                ReplyWorkStatus.IN_PROGRESS, ReplyWorkStatus.COMPLETED, ReplyWorkStatus.CANCELLED,
+            }),
+            ReplyWorkStatus.IN_PROGRESS: frozenset({
+                ReplyWorkStatus.COMPLETED, ReplyWorkStatus.CANCELLED,
+            }),
+        }
+        if status not in transitions.get(expected_status, frozenset()):
+            raise ValidationError("回复工作状态转换无效")
+        async with self._uow_factory(tenant_id) as uow:
+            record = await uow.reply_work.get_action(tenant_id, action_id)
+            if record is None:
+                raise PermissionDenied("回复工作项不可访问")
+            await uow.inbox_facts.lock_account_access(tenant_id, record.account_id, actor.employee_id)
+            await require_current_access(
+                uow.inbox_facts, tenant_id, actor, InboxAction.READ, record.account_id,
+            )
+            if await uow.inbox_facts.read_owner(tenant_id, record.account_id) != actor.employee_id:
+                raise PermissionDenied("只有当前负责人可处理回复工作项")
+            current = await uow.reply_work.get_action(tenant_id, action_id)
+            if current is None:
+                raise PermissionDenied("回复工作项不可访问")
+            if current.status is status:
+                return self._reply_work_view(current)
+            if current.status is not expected_status:
+                raise ValidationError("回复工作状态已变化，请刷新")
+            await uow.reply_work.change_status(tenant_id, action_id, expected_status, status)
+            from dataclasses import replace
+            return self._reply_work_view(replace(current, status=status))
 
     async def suggest_next_questions(
         self,
@@ -693,14 +799,7 @@ class ConversationServiceImpl:
                 messages = await uow.messages.list_for_conversation(
                     tenant_id, conversation.conversation_id
                 )
-                inbound = [
-                    message
-                    for message in messages
-                    if message.direction is MessageDirection.INBOUND
-                ]
-                latest = (
-                    inbound[-1] if inbound else (messages[-1] if messages else None)
-                )
+                latest = messages[-1] if messages else None
                 message_view = (
                     await self._build_message_view(uow, tenant_id, latest)
                     if latest is not None
@@ -764,6 +863,7 @@ class ConversationServiceImpl:
                             if message_view is not None
                             else 0
                         ),
+                        latest_direction=message_view.direction if message_view is not None else None,
                         required_actions=(
                             message_view.required_actions
                             if message_view is not None

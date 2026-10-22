@@ -14,7 +14,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from agent_runtime.model_client import StructuredJsonModelClient
-from apps.composition_support.email_inbound import InboundMailbox
+from apps.composition_support.email_inbound import (
+    InboundMailbox,
+    InboundProviderAdapter,
+)
 from connectors.gmail.client import SecretResolver
 from connectors.gmail.transport import GmailHttpTransport
 from connectors.object_store.config import S3ObjectStoreSettings
@@ -31,9 +34,11 @@ from infra.secrets import EnvironmentSecretResolver
 from shared.authentication import AuthenticationService
 from shared.schemas.identifiers import TenantId
 from shared.schemas.runtime_capabilities import RuntimeCapability
+from tool_gateway.handlers.email_send import OutboundMailConnectors
 
 from .authentication import AuthenticationCookieSettings
 from .composition.assistant import AssistantApiComposition
+from .composition.customer_verification import CustomerVerificationApplication
 from .composition.runtime import ManualSendComposition, build_phase1_dependencies
 from .dependencies import ConfiguredApiDependencies
 from .main import create_app
@@ -114,12 +119,18 @@ def create_runtime_app_from_settings(
     object_store_settings: S3ObjectStoreSettings,
     model_client: StructuredJsonModelClient | None = None,
     manual_send: ManualSendComposition | None = None,
+    automatic_followup_enabled: bool = False,
+    private_reply_tests_enabled: bool = False,
     gmail_transport: GmailHttpTransport | None = None,
+    outbound_mail_connectors: OutboundMailConnectors | None = None,
+    gmail_sender_address: str | None = None,
     inbound_mailbox: InboundMailbox | None = None,
+    inbound_adapter_factory: Callable[[async_sessionmaker[AsyncSession]], InboundProviderAdapter] | None = None,
     authentication: AuthenticationService | None = None,
     authentication_origin: str | None = None,
     authentication_cookie: AuthenticationCookieSettings | None = None,
     assistant_factory: Callable[[async_sessionmaker[AsyncSession], ConfiguredApiDependencies], AssistantApiComposition] | None = None,
+    customer_verification_factory: Callable[[async_sessionmaker[AsyncSession], ConfiguredApiDependencies], CustomerVerificationApplication] | None = None,
     enterprise_knowledge_enabled: bool = False,
     knowledge_maximum_upload_bytes: int = 10 * 1024 * 1024,
 ) -> FastAPI:
@@ -138,12 +149,19 @@ def create_runtime_app_from_settings(
             object_store_settings=object_store_settings,
             model_client=model_client,
             manual_send=manual_send,
+            automatic_followup_enabled=automatic_followup_enabled,
+            private_reply_tests_enabled=private_reply_tests_enabled,
             gmail_transport=gmail_transport,
+            outbound_mail_connectors=outbound_mail_connectors,
+            gmail_sender_address=gmail_sender_address,
             inbound_mailbox=inbound_mailbox,
+            inbound_adapter_factory=inbound_adapter_factory,
             enterprise_knowledge_enabled=enterprise_knowledge_enabled,
             knowledge_maximum_upload_bytes=knowledge_maximum_upload_bytes,
         )
         assistant = assistant_factory(factory, dependencies) if assistant_factory is not None else None
+        if customer_verification_factory is not None:
+            dependencies = replace(dependencies, customer_verification=customer_verification_factory(factory, dependencies))
         if assistant is not None:
             dependencies = replace(
                 dependencies,
@@ -178,6 +196,8 @@ def create_runtime_app_from_settings(
             )
             if assistant is not None:
                 await assistant.lifecycle.startup()
+            if dependencies.customer_verification is not None:
+                await dependencies.customer_verification.startup()
             if dependencies.quotation is not None:
                 await dependencies.quotation.lifecycle.startup()
             yield

@@ -62,7 +62,7 @@ async def _message(service, tenant: TenantId, account: ProspectAccountId):
     )
 
 
-async def test_four_reply_actions_are_durable_idempotent_and_owner_visible(
+async def test_all_reply_actions_are_durable_idempotent_and_owner_visible(
     reply_work_engine: AsyncEngine,
 ) -> None:
     factory = async_sessionmaker(reply_work_engine, expire_on_commit=False)
@@ -80,6 +80,7 @@ async def test_four_reply_actions_are_durable_idempotent_and_owner_visible(
         "mark_future_restart": "future_restart_review",
         "create_follow_up": "follow_up",
         "intake_new_contact": "verified_contact_intake_review",
+        "review_reply": "reply_review",
     }
 
     for action, expected_queue in expected_queues.items():
@@ -121,11 +122,12 @@ async def test_four_reply_actions_are_durable_idempotent_and_owner_visible(
             select(func.count())
             .select_from(rows.ConversationReplyWorkRow)
             .where(rows.ConversationReplyWorkRow.tenant_id == str(tenant))
-        ) == 4
+        ) == 5
 
 
+@pytest.mark.parametrize("action", ["create_follow_up", "review_reply"])
 async def test_reply_work_retries_do_not_duplicate_and_conflicts_fail_closed(
-    reply_work_engine: AsyncEngine,
+    reply_work_engine: AsyncEngine, action: str,
 ) -> None:
     factory = async_sessionmaker(reply_work_engine, expire_on_commit=False)
     tenant = TenantId(new_id("tn"))
@@ -141,8 +143,8 @@ async def test_reply_work_retries_do_not_duplicate_and_conflicts_fail_closed(
         enrollment_id=EnrollmentId(new_id("enr")),
         account_id=account,
         contact_point_id=ContactPointId(new_id("cp")),
-        action=action_type.CREATE_FOLLOW_UP,
-        idempotency_key=IdempotencyKey(f"reply:create_follow_up:{message_id}"),
+        action=action_type(action),
+        idempotency_key=IdempotencyKey(f"reply:{action}:{message_id}"),
     )
 
     results = await asyncio.gather(
@@ -156,8 +158,77 @@ async def test_reply_work_retries_do_not_duplicate_and_conflicts_fail_closed(
         enrollment_id=request.enrollment_id,
         account_id=account,
         contact_point_id=request.contact_point_id,
-        action=action_type.CREATE_FOLLOW_UP,
-        idempotency_key=IdempotencyKey(f"reply:create_follow_up:{message_id}:changed"),
+        action=action_type(action),
+        idempotency_key=IdempotencyKey(f"reply:{action}:{message_id}:changed"),
     )
     with pytest.raises(ValidationError, match="回复工作动作幂等冲突"):
         await service.enqueue_reply_work_action(tenant, conflict)
+
+@pytest.mark.parametrize("action", ["start_qualification", "review_reply"])
+async def test_current_owner_queue_filters_before_limit_and_transfer_revokes(reply_work_engine, action):
+    from sqlalchemy import update
+
+    from domains.conversations.schemas import (
+        ReplyWorkAction,
+        ReplyWorkActionRequest,
+        ReplyWorkStatus,
+    )
+    from domains.conversations.service import InboxActor, InboxScope
+    from infra.db.tables import EmployeeRow, OwnershipLockRow
+    from shared.errors import PermissionDenied
+    from shared.schemas.identifiers import EmployeeId
+
+    factory = async_sessionmaker(reply_work_engine, expire_on_commit=False)
+    tenant = TenantId(new_id("tn"))
+    owner, other = EmployeeId(new_id("emp")), EmployeeId(new_id("emp"))
+    service = _service(factory, tenant)
+    actor = InboxActor(tenant, owner, "sales", InboxScope.SELF, frozenset({owner}))
+    async with factory.begin() as session:
+        for employee in (owner, other):
+            session.add(EmployeeRow(employee_id=employee, tenant_id=tenant,
+                                    name="fixture", role="sales", is_active=True))
+    records = []
+    for employee in (other, other, owner):
+        account = ProspectAccountId(new_id("acc"))
+        async with factory.begin() as session:
+            session.add(OwnershipLockRow(lock_id=new_id("own"), tenant_id=tenant,
+                account_id=account, owner=employee, locked_at=NOW, locked_by_rule="fixture"))
+        message = await _message(service, tenant, account)
+        records.append(await service.enqueue_reply_work_action(tenant, ReplyWorkActionRequest(
+            message_id=message, outbound_message_id=OutboundMessageId(new_id("out")),
+            enrollment_id=EnrollmentId(new_id("enr")), account_id=account,
+            contact_point_id=ContactPointId(new_id("cp")),
+            action=ReplyWorkAction(action),
+            idempotency_key=IdempotencyKey(f"reply:{action}:{message}"),
+        )))
+    visible = await service.list_owned_reply_work(tenant, actor=actor, status=ReplyWorkStatus.PENDING, limit=1)
+    assert len(visible) == 1 and visible[0].action_id == records[2].action_id
+    assert visible[0].can_handle
+    with pytest.raises(PermissionDenied):
+        await service.handle_reply_work(tenant, records[0].action_id, actor=actor,
+            expected_status=ReplyWorkStatus.PENDING, status=ReplyWorkStatus.COMPLETED)
+    changed = await service.handle_reply_work(tenant, records[2].action_id, actor=actor,
+        expected_status=ReplyWorkStatus.PENDING, status=ReplyWorkStatus.IN_PROGRESS)
+    assert changed.status is ReplyWorkStatus.IN_PROGRESS
+    again = await service.handle_reply_work(tenant, records[2].action_id, actor=actor,
+        expected_status=ReplyWorkStatus.PENDING, status=ReplyWorkStatus.IN_PROGRESS)
+    assert again == changed
+    async with factory.begin() as session:
+        await session.execute(update(OwnershipLockRow).where(
+            OwnershipLockRow.tenant_id == tenant, OwnershipLockRow.account_id == records[2].account_id,
+        ).values(owner=other))
+    with pytest.raises(PermissionDenied):
+        await service.handle_reply_work(tenant, records[2].action_id, actor=actor,
+            expected_status=ReplyWorkStatus.IN_PROGRESS, status=ReplyWorkStatus.COMPLETED)
+    assert not await service.list_owned_reply_work(tenant, actor=actor, status=ReplyWorkStatus.IN_PROGRESS, limit=10)
+    current = InboxActor(tenant, other, "sales", InboxScope.SELF, frozenset({other}))
+    done = await service.handle_reply_work(tenant, records[2].action_id, actor=current,
+        expected_status=ReplyWorkStatus.IN_PROGRESS, status=ReplyWorkStatus.COMPLETED)
+    assert done.status is ReplyWorkStatus.COMPLETED
+    # 重建服务仍读取同一完成事实，不创建第二张待办表。
+    restarted = _service(factory, tenant)
+    assert (await restarted.list_owned_reply_work(tenant, actor=current,
+        status=ReplyWorkStatus.COMPLETED, limit=10))[0].action_id == done.action_id
+    with pytest.raises(ValidationError):
+        await service.handle_reply_work(tenant, done.action_id, actor=current,
+            expected_status=ReplyWorkStatus.COMPLETED, status=ReplyWorkStatus.PENDING)

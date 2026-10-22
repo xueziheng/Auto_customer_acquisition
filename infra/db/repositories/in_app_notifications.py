@@ -9,7 +9,7 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from infra.db.tables import InAppNotificationRow
+from infra.db.tables import EmployeeRow, InAppNotificationRow
 from notification_gateway.inbox import (
     InAppNotification,
     InAppNotificationView,
@@ -47,6 +47,14 @@ class PostgresInAppNotificationStore:
 
     async def _append(self, notification: InAppNotification) -> bool:
         async with self._factory() as session:
+            if notification.context.kind is NotificationKind.CUSTOMER_REPLY:
+                current = await session.scalar(select(EmployeeRow).where(
+                    EmployeeRow.tenant_id == notification.tenant_id,
+                    EmployeeRow.employee_id == notification.recipient,
+                    EmployeeRow.is_active.is_(True), EmployeeRow.role == "boss",
+                ).with_for_update(read=True))
+                if current is None:
+                    return False
             result = await session.execute(
                 insert(InAppNotificationRow)
                 .values(

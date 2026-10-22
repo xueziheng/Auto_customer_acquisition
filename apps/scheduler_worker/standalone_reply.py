@@ -14,7 +14,7 @@ from infra.db.model_configuration import SqlModelConfigurationRepository
 from infra.db.model_usage import SqlModelUsageRepository
 from infra.db.reply_model_binding import SqlReplyRunBindingReader
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
-from infra.standalone.settings import StandaloneModelSettings
+from infra.standalone.settings import StandaloneModelSettings, deployment_verification
 from shared.schemas.identifiers import EmployeeId, TenantId
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.model_generate import ModelProvider
@@ -46,7 +46,7 @@ def bind_reply(
     lookup = Actor("system:reply-model", EmployeeScope.SYSTEM, "system")
     current = CurrentEmployeeIdentity(core.employee_scope, lookup)
     configuration = ModelConfigurationServiceImpl(
-        SqlModelConfigurationRepository(sessions, fingerprints, now=resources.now),
+        SqlModelConfigurationRepository(sessions, fingerprints, now=resources.now, deployment_verification=deployment_verification(settings), deployment_provider=settings.provider),
         current,
         now=resources.now,
     )

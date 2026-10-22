@@ -18,6 +18,7 @@ from openai.types.responses import ResponseInputParam
 from pydantic import ValidationError
 
 from connectors.deepseek.sdk_logging import private_sdk_logs
+from shared.schemas.discovery_diagnostic import DiscoveryDiagnostic
 from shared.schemas.model_invocation import ModelRequest, ModelResponse, ModelUsage
 
 FailureCode = Literal[
@@ -47,9 +48,11 @@ class DeepSeekFailure(RuntimeError):
         code: FailureCode,
         dispatched: bool = True,
         retry_after_seconds: int | None = None,
+        diagnostic: DiscoveryDiagnostic | None = None,
     ) -> None:
         super().__init__("模型服务调用失败")
         self.code = code
+        self.diagnostic = diagnostic
         self.dispatched = dispatched
         self.retry_after_seconds = retry_after_seconds
 

@@ -24,10 +24,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from starlette.types import Lifespan
 
+from apps.api.routers.aliyun_web import router as aliyun_web_router
 from apps.api.routers.assistant import router as assistant_router
 from apps.api.routers.gmail_web import router as gmail_web_router
 from apps.api.routers.mailbox import router as mailbox_router
 from apps.api.routers.model_settings import router as model_settings_router
+from apps.api.routers.qq_web import router as qq_web_router
 from shared.authentication import AuthenticationService
 from shared.schemas.runtime_capabilities import CapabilityName, RuntimeCapability
 from workflows.email_feedback.unsubscribe import UnsubscribeService
@@ -62,6 +64,9 @@ from .routers.costing_quotes import router as costing_quotes_router
 from .routers.crm import OpportunityIntakeBody
 from .routers.crm import router as crm_router
 from .routers.customer_discovery import router as customer_discovery_router
+from .routers.customer_followup import router as customer_followup_router
+from .routers.customer_preparation import router as customer_preparation_router
+from .routers.customer_verification import router as customer_verification_router
 from .routers.demand_radar import router as demand_radar_router
 from .routers.email_inbound import router as email_inbound_router
 from .routers.enterprise_knowledge import router as enterprise_knowledge_router
@@ -69,6 +74,7 @@ from .routers.health import ReadinessProbe, build_capability_router, build_healt
 from .routers.inbox import router as inbox_router
 from .routers.notifications import router as notifications_router
 from .routers.products import router as products_router
+from .routers.prospect_inventory import router as prospect_inventory_router
 from .routers.quotation_actions import router as quotation_actions_router
 from .routers.runs import router as runs_router
 from .routers.sending_identities import router as sending_identities_router
@@ -219,6 +225,10 @@ def create_app(
     app.include_router(campaigns_router, prefix="/crm")
     app.include_router(sending_identities_router, prefix="/crm")
     app.include_router(customer_discovery_router, prefix="/prospects")
+    app.include_router(prospect_inventory_router, prefix="/prospects")
+    app.include_router(customer_followup_router, prefix="/prospects")
+    app.include_router(customer_preparation_router, prefix="/prospects")
+    app.include_router(customer_verification_router, prefix="/prospects")
     app.include_router(demand_radar_router, prefix="/demand")
     app.include_router(command_center_router, prefix="/commands")
     app.include_router(assistant_router)
@@ -228,6 +238,8 @@ def create_app(
     app.include_router(inbox_router)
     app.include_router(mailbox_router)
     app.include_router(gmail_web_router)
+    app.include_router(aliyun_web_router)
+    app.include_router(qq_web_router)
     app.include_router(email_inbound_router)
     app.include_router(products_router, prefix="/products")
     app.include_router(sourcing_router)

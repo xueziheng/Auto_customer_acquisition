@@ -213,3 +213,20 @@ async def test_employee_limit_and_independent_workflow_lock(unit_engine):
         identity(tenant, "emp_other"), "c" * 64, policy, now, model="test-model"
     )
     assert allowed.outcome == "reserved"
+
+
+async def test_selected_provider_is_recorded_without_changing_quota_identity(unit_engine):
+    from sqlalchemy import select
+
+    from infra.db.model_usage import SqlModelUsageRepository
+    from infra.db.tables import ModelInvocationRow
+    sessions = async_sessionmaker(unit_engine, expire_on_commit=False)
+    repo = SqlModelUsageRepository(sessions)
+    tenant = TenantId(new_id('tn'))
+    actor = identity(tenant)
+    result = await repo.reserve(actor, 'e'*64, limits(), datetime.now(UTC), model='another-model', provider='compatible')
+    assert result.outcome == 'reserved'
+    async with sessions() as session:
+        row = (await session.scalars(select(ModelInvocationRow).where(ModelInvocationRow.tenant_id == tenant, ModelInvocationRow.invocation_id == result.invocation_id))).one()
+        assert row.provider == 'compatible' and row.model == 'another-model'
+        assert row.configuration_version == actor.configuration_version

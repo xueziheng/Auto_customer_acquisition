@@ -174,6 +174,25 @@ class OutreachService(Protocol):
         actor: Actor,
     ) -> list[CampaignView]: ...
 
+    async def assess_enrollment(
+        self, tenant_id: TenantId, campaign_id: CampaignId,
+        account_id: ProspectAccountId, contact_point_id: ContactPointId,
+        *, campaign_version: int, actor: Actor,
+    ) -> tuple[str, ...]:
+        """只读当前审批/资格/抑制/额度/发件/回复门禁；不预占、不入组。"""
+        ...
+
+    async def replay_enrollment(
+        self,
+        tenant_id: TenantId,
+        campaign_id: CampaignId,
+        request: EnrollmentCreateRequest,
+        *,
+        actor: Actor,
+    ) -> EnrollmentView | None:
+        """按当前资源授权核对原键及完整命令；未命中返回None，不执行新增准入或写入。"""
+        ...
+
     async def enroll(
         self,
         tenant_id: TenantId,

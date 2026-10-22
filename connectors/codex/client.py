@@ -11,6 +11,7 @@ import signal
 import stat
 import struct
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -21,6 +22,7 @@ from connectors.obsidian.workspace import (
     KnowledgeTaskScope,
     TenantKnowledgeWorkspace,
 )
+from shared.schemas.discovery_diagnostic import DiscoveryDiagnostic
 from shared.schemas.model_invocation import ModelRequest, ModelResponse
 
 MAX_HTTP_BYTES = 2 * 1024 * 1024
@@ -250,7 +252,7 @@ class OneShotBroker:
 
 
 def _sandbox_command(
-    settings: CodexRunnerSettings, job: Path, workspace: Path
+    settings: CodexRunnerSettings, job: Path, workspace: Path, runner_path: Path | None = None,
 ) -> list[str]:
     """从空挂载树组装，只挂载系统运行库、固定程序及本任务输入/桥接 socket。"""
     command = [
@@ -288,7 +290,7 @@ def _sandbox_command(
         str(settings.codex_binary.resolve()),
         "/codex",
         "--ro-bind",
-        str(Path(__file__).with_name("runner.py").resolve()),
+        str((runner_path or Path(__file__).with_name("runner.py")).resolve()),
         "/runner.py",
         "--ro-bind",
         str(job / "settings.json"),
@@ -380,10 +382,13 @@ class CodexCliProvider:
         *,
         settings: CodexRunnerSettings,
         scope: KnowledgeTaskScope,
+        broker_factory: Callable[..., OneShotBroker] = OneShotBroker,
+        runner_path: Path | None = None,
     ) -> None:
         self._delegate = delegate
         self._settings = settings
         self._scope = scope
+        self._broker_factory, self._runner_path = broker_factory, runner_path
         self._closed = False
         self._used = False
 
@@ -410,7 +415,7 @@ class CodexCliProvider:
             raise DeepSeekFailure("invalid_request", dispatched=False)
         job = Path(tempfile.mkdtemp(prefix="cx-", dir=self._settings.job_root))
         identity = job.stat().st_ino
-        broker = OneShotBroker(
+        broker = self._broker_factory(
             self._delegate, request, max_output_bytes=self._settings.max_output_bytes
         )
         server: asyncio.Server | None = None
@@ -445,7 +450,7 @@ class CodexCliProvider:
             )
             (job / "broker.sock").chmod(0o600)
             async with workspaces.prepare(self._scope, (document,)) as prepared:
-                command = _sandbox_command(settings, job, prepared.verified_path())
+                command = _sandbox_command(settings, job, prepared.verified_path(), self._runner_path)
                 async with asyncio.timeout(settings.timeout_seconds + 5):
                     spawning = asyncio.create_task(
                         asyncio.create_subprocess_exec(
@@ -468,23 +473,9 @@ class CodexCliProvider:
                         process.stdout, settings.max_output_bytes * 6 + 1024
                     )
                     code = await process.wait()
-                    if broker.failure is not None:
-                        raise broker.failure
-                    if code != 0 or broker.response is None:
-                        raise DeepSeekFailure(
-                            "invalid_response", dispatched=broker.dispatched
-                        )
-                    final = json.loads(output)["final"]
-                    if not isinstance(final, str) or json.dumps(
-                        json.loads(final), sort_keys=True, allow_nan=False
-                    ) != json.dumps(
-                        json.loads(broker.response.text),
-                        sort_keys=True,
-                        allow_nan=False,
-                    ):
-                        raise DeepSeekFailure("invalid_response")
+                    response = _validated_cli_response(code, output, broker)
                     prepared.verified_path()
-                    return broker.response
+                    return response
         except DeepSeekFailure:
             raise
         except asyncio.CancelledError:
@@ -508,3 +499,24 @@ class CodexCliProvider:
     async def aclose(self) -> None:
         self._closed = True
         await self._delegate.aclose()
+
+
+def _validated_cli_response(code: int, output: bytes, broker: OneShotBroker) -> ModelResponse:
+    """核对最终内容时只保留阶段和轮数，不将CLI输出作为诊断写出。"""
+    if broker.failure is not None:
+        raise broker.failure
+    rounds = getattr(broker, "_rounds", 0)
+    stage = "cli_no_final" if broker.response is None else "cli_exit"
+    if code != 0 or broker.response is None:
+        raise DeepSeekFailure("invalid_response", dispatched=broker.dispatched,
+            diagnostic=DiscoveryDiagnostic(stage, "invalid_response", rounds))
+    try:
+        final = json.loads(output)["final"]
+        if not isinstance(final, str) or json.dumps(
+            json.loads(final), sort_keys=True, allow_nan=False
+        ) != json.dumps(json.loads(broker.response.text), sort_keys=True, allow_nan=False):
+            raise ValueError
+    except (ValueError, TypeError, KeyError):
+        raise DeepSeekFailure("invalid_response", dispatched=broker.dispatched,
+            diagnostic=DiscoveryDiagnostic("cli_match", "invalid_response", rounds)) from None
+    return broker.response

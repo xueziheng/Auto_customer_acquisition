@@ -12,7 +12,10 @@ from agent_runtime.enterprise_knowledge.analyze import (
     KnowledgeAnalysisResult,
     analyze_knowledge,
 )
-from apps.composition_support.model import build_model_composition
+from apps.composition_support.model import (
+    build_model_composition,
+    configured_model_provider,
+)
 from artifact_store.repository import ArtifactUnitOfWorkFactory
 from artifact_store.service_impl import RawArtifactStoreImpl
 from artifact_store.store import BoundedRawArtifactStore
@@ -21,7 +24,6 @@ from connectors.codex.client import (
     CodexRunnerSettings,
     encode_codex_input,
 )
-from connectors.deepseek.client import DeepSeekClient
 from connectors.files.knowledge import (
     KnowledgeFileParser,
     KnowledgeParseFailure,
@@ -47,7 +49,8 @@ from infra.db.model_usage import SqlModelUsageRepository
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from infra.pilot.config import PilotConfig
 from infra.standalone.knowledge_settings import KnowledgeSettings
-from infra.standalone.settings import StandaloneModelSettings
+from infra.standalone.settings import StandaloneModelSettings, deployment_verification
+from infra.tenant_model import resolve_task_model
 from shared.errors import InvalidStateTransition, PermissionDenied, ValidationError
 from shared.schemas.evidence_read import ObjectReadLimits
 from shared.schemas.identifiers import EmployeeId, RunId, TenantId, UserId, new_id
@@ -193,10 +196,13 @@ class _Analyzer:
             sequence=0,
         )
         configuration = ModelConfigurationServiceImpl(
-            SqlModelConfigurationRepository(self._sessions, self._fingerprints),
+            SqlModelConfigurationRepository(self._sessions, self._fingerprints, deployment_verification=deployment_verification(settings), deployment_provider=settings.provider),
             _ClaimIdentity(self._service, claim), now=lambda: datetime.now(UTC),
         )
         authority = KnowledgeModelAuthority(self._service, claim, configuration, identity)
+        if settings.model_catalog_directory is not None:
+            await authority.check(identity)
+            settings = resolve_task_model(settings, identity)
         scope = KnowledgeTaskScope(
             tenant_id=str(claim.tenant_id), employee_id=str(claim.actor_id), run_id=claim.job_id,
         )
@@ -215,8 +221,8 @@ class _Analyzer:
             ),
             fingerprints=self._fingerprints, lease_owner=self._instance,
             lease_duration=timedelta(seconds=settings.limits.timeout_seconds + 30),
-            provider_factory=lambda: CodexCliProvider(
-                DeepSeekClient(settings.secret_ref, self._resolver, timeout_seconds=settings.limits.timeout_seconds),
+            provider_factory=None if settings.model_catalog_directory else lambda: CodexCliProvider(
+                configured_model_provider(settings, self._resolver),
                 settings=runner_settings, scope=scope,
             ),
         )
@@ -246,13 +252,18 @@ def build_knowledge_driver(
     """独立启用配置才组装；构造不读取凭证、不联网、不创建任务目录。"""
     if not knowledge.enabled:
         raise ValueError("企业资料未启用")
+    from apps.scheduler_worker.knowledge_diagnostics import (
+        configure_knowledge_diagnostics,
+    )
+
+    configure_knowledge_diagnostics()
     tenant = TenantId(profile.tenant_id)
     service = EnterpriseKnowledgeServiceImpl(lambda requested: SqlAlchemyKnowledgeUnitOfWork(sessions, requested))
     objects = S3ObjectStoreSettings.from_pilot_environ(profile.runtime_environment())
     store = RawArtifactStoreImpl(
         cast(ArtifactUnitOfWorkFactory, lambda requested: SqlAlchemyArtifactUnitOfWork(sessions, requested)),
         DeferredS3ObjectBlobTransport(objects, profile),
-        objects.raw_max_bytes, lambda: datetime.now(UTC), new_id,
+        knowledge.max_upload_bytes, lambda: datetime.now(UTC), new_id,
         bounded_transport=S3BoundedObjectBlobTransport(
             objects, profile, limits=ObjectReadLimits(
                 connect_timeout_ms=5000, read_timeout_ms=10000, total_timeout_ms=20000,

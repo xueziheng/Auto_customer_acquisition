@@ -1,0 +1,9 @@
+{
+  "created_at": "2026-10-15T07:26:32.637890+00:00",
+  "commit": "a9aa29a3c273510d6324505f9ff4928e12b1fe14",
+  "parent_commit": "dff351efa1f2ed621aff4aff3fb82a280a49bd6f",
+  "patch_sha256": "42b3b169bf020b7e2e12421f24c6ed5519ee4ea8ef611e2f6902df46cab1519e",
+  "previous_release": "/srv/tradeos/releases/20261015-qq-private-3521dcf",
+  "schema": "0077",
+  "database_migration": false
+}

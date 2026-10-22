@@ -154,7 +154,10 @@ class BoundReplyClassifier:
         self._generator = generator
         self._model = model
         self._version = configuration_version
-        self._max_output_tokens = max_output_tokens
+        if type(max_output_tokens) is not int or max_output_tokens < 128:
+            raise ValidationError("回复输出上限无效")
+        # 能力上限不能迫使部署改写既有不可变全局配置版本。
+        self._max_output_tokens = min(max_output_tokens, 8192)
 
     @property
     def model(self) -> str:

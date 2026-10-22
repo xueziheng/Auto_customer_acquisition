@@ -70,7 +70,7 @@ onMounted(()=>void load());onBeforeUnmount(()=>{if(timer)clearTimeout(timer);});
   >
     <header>
       <h2 id="model-settings-title">
-        DeepSeek 模型连接
+        模型连接
       </h2><button
         type="button"
         @click="load"
@@ -100,7 +100,7 @@ onMounted(()=>void load());onBeforeUnmount(()=>{if(timer)clearTimeout(timer);});
       >
         连接测试正在后台处理，请等待结果。
       </p>
-      <p>连接测试会发出一次短请求，消耗 DeepSeek 额度；结果未知不会自动重试。</p>
+      <p>连接测试会发出一次短请求，消耗模型服务商额度；结果未知不会自动重试。</p>
       <button
         type="button"
         :disabled="busy||!view.can_probe||['queued','running'].includes(view.probe_state??'')"
@@ -126,7 +126,11 @@ onMounted(()=>void load());onBeforeUnmount(()=>{if(timer)clearTimeout(timer);});
         @submit.prevent="save"
         @input="dirty=true"
       >
-        <label><input v-model="exportEnabled" type="checkbox" :disabled="busy">允许业务资料发送至模型服务（保存新版本）</label>
+        <label><input
+          v-model="exportEnabled"
+          type="checkbox"
+          :disabled="busy"
+        >允许业务资料发送至模型服务（保存新版本）</label>
         <label>模型编号<input
           v-model="model"
           required

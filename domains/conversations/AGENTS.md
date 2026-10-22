@@ -67,3 +67,5 @@ ADR0066：受托 record_classification 必须在原事务内按 Inbox 的 owners
 ADR0075 的本人邮箱镜像与原业务会话独立。租户、active 员工与固定邮箱 owner 同时校验，
 boss/manager 无跨本人读取特权。全邮箱镜像不发布 InboundMessageStored/ReplyReceived，
 不创建客户、需求或商机，不允许进入 Agent 上下文；需要业务提取时另走原证据与审批链。
+
+ADR0095 的阿里邮箱连接契约使用 SecretStr 隔离认证输入，不进入会话、模型或审计正文；连接状态仅投影上次 SMTP/IMAP 认证时间，不表示发件身份通过、已发送或自动回复已开通。

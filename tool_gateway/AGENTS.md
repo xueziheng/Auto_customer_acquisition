@@ -124,6 +124,10 @@ ledger 保留期内必须仍可核验；否则相同幂等键只能固定报冲�
 
 ## Provider readiness
 
+ADR0097允许具名contact.verify的受信持久rate_limit只追加安全reservation/cache_hit技术审计，
+使用租户数据库锁及当前ToolCallId计入显式UTC日预算与原频控；缓存不扣，未知/取消不退款。
+这不授予其他CheckStage业务写入权限，不改变pipeline或stage顺序；记录禁止邮箱、正文和凭证。
+
 `provider_readiness.py` 只拥有 Hunter 联系人能力的安全配置元数据、append-only 事件契约、
 确定性状态推导与运行时 fail-closed guard。它只能依赖 `shared`，不得读取环境、凭证引用、
 密钥值、密钥哈希、网络、Connector、数据库或模型置信度。
@@ -202,3 +206,7 @@ ADR0028新增inbox.message.evidence.read，独立LOW/FREE/NONE插件及task-boun
 ## ADR0079 本人邮箱诊断插件
 
 `email.mailbox.test` 是固定模板的单封本人诊断，仍为 HIGH 并经过全部六个发送阶段，不新增 stage profile、不修改核心管线。私有人工授权绑定租户、在职老板、精确收发邮箱、有效期和唯一幂等键；已有抑制与身份停用状态仍拒绝。只有该具名插件可消费这类本人诊断授权，不能传给 `email.send` 或作为 Campaign/客户触达许可。未知投递结果仍只能按原 Message-ID 搜索对账。
+
+## ADR0095 阿里邮箱连接与邮件传输
+
+email.aliyun.connect 独立插件只认证本人显式授权的固定TLS端点，不发信。email.send 保持六段管线，在 EXECUTING 后按精确配置的 Gmail 地址或当前员工阿里绑定解析连接器，无异常 fallback。SMTP结果未知只对账，查无结果不能重发。

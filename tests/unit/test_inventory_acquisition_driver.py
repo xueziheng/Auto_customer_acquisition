@@ -1,0 +1,238 @@
+"""采集轮次有界且探索槽不可因先命中而跳过。"""
+
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+
+import pytest
+
+from domains.prospecting.collection_result import CollectionResult
+from domains.prospecting.projection_diagnostic import ProjectionSummary, SaveSummary
+from domains.prospecting.service import AcquisitionJob, InventoryQuery, SourceState
+from tests.unit.test_prospect_inventory import candidate
+
+NOW = datetime.now(UTC)
+JOB = AcquisitionJob(
+    tenant_id="tenant",
+    id="acj_test",
+    employee_id="emp",
+    query=InventoryQuery(country="KE", product_tags=("tricycles",)),
+    requested_count=1,
+    remaining_count=1,
+    status="processing",
+    attempts=1,
+    created_at=NOW,
+    updated_at=NOW,
+    lease_until=NOW + timedelta(minutes=10),
+    lease_token="lease",
+)
+
+
+def driver_type():
+    import importlib
+
+    try:
+        return importlib.import_module(
+            "apps.scheduler_worker.inventory_acquisition"
+        ).InventoryAcquisitionDriver
+    except ModuleNotFoundError:
+        pytest.fail("RED: 采集driver尚未实现")
+
+
+class Backend:
+    def __init__(self):
+        self.job = JOB
+        self.calls = []
+        self.remaining = 50
+
+    async def status(self, tenant):
+        return SimpleNamespace(remaining_today=self.remaining)
+
+    async def claim_job(self, tenant, duration):
+        self.calls.append("claim")
+        return self.job
+
+    async def get_job(self, tenant, job):
+        return self.job
+
+    async def fail_job(self, tenant, job, token, reason):
+        self.calls.append(reason)
+
+    async def record_source_attempt(self, tenant, job, token, source, outcome, count, *, diagnostic=None):
+        self.calls.append((source, outcome, count))
+        self.last_diagnostic = diagnostic
+
+    async def save_collected(self, tenant, job, token, candidates):
+        return SaveSummary(total_count=3, inserted_fresh=3, query_match=3, fresh=3)
+
+    async def deliver_job(self, tenant, job, token):
+        self.calls.append("deliver")
+
+
+class Authority:
+    async def current_scope(self, tenant, employee):
+        return SimpleNamespace(
+            tenant_id=tenant, employee_id=employee, allowed_owners={employee}
+        )
+
+
+class Sources:
+    async def list_sources(self, tenant):
+        return tuple(
+            SourceState(
+                source_id=s, availability="available", cost_class="free", relevant=True
+            )
+            for s in ("company_websites", "industry_directories")
+        )
+
+
+class Catalog:
+    async def fresh(self, query, now):
+        return ()
+
+    async def save_public(self, candidates):
+        return 3
+
+
+class Collector:
+    def __init__(self):
+        self.sources = []
+
+    async def collect(self, job, source, guard, **kwargs):
+        await guard()
+        self.sources.append(source)
+        return CollectionResult((candidate(),) * 3, ProjectionSummary(input_shape="valid", raw_count=3, projected_count=3, projection_complete=True))
+
+
+async def test_exploration_and_counts_come_from_saved_new_domains():
+    backend, collector = Backend(), Collector()
+    driver = driver_type()(
+        tenant_id="tenant",
+        backend=backend,
+        catalog=Catalog(),
+        authority=Authority(),
+        sources=Sources(),
+        collector=collector,
+        now=lambda: NOW,
+    )
+    assert await driver.scan() == 1
+    assert len(collector.sources) == 2
+    assert backend.calls[-1] == "deliver"
+    assert [c[2] for c in backend.calls if isinstance(c, tuple)] == [3, 3]
+
+
+async def test_quota_wait_has_no_claim_and_recovery_never_repeats_external_call():
+    backend, collector = Backend(), Collector()
+    driver = driver_type()(
+        tenant_id="tenant",
+        backend=backend,
+        catalog=Catalog(),
+        authority=Authority(),
+        sources=Sources(),
+        collector=collector,
+        now=lambda: NOW,
+    )
+    backend.remaining = 0
+    assert await driver.scan() == 0 and backend.calls == []
+    backend.remaining = 1
+    backend.job = JOB.model_copy(update={"attempts": 2})
+    assert await driver.scan() == 1 and collector.sources == []
+    assert backend.calls[-1] == "budget_exhausted"
+
+
+async def test_expired_lease_does_not_write_or_dispatch():
+    backend, collector = Backend(), Collector()
+    backend.job = JOB.model_copy(update={"lease_until": NOW})
+    driver = driver_type()(
+        tenant_id="tenant",
+        backend=backend,
+        catalog=Catalog(),
+        authority=Authority(),
+        sources=Sources(),
+        collector=collector,
+        now=lambda: NOW,
+    )
+    assert await driver.scan() == 1
+    assert backend.calls == ["claim"] and collector.sources == []
+
+
+def test_canonical_bootstrap_exposes_explicit_inventory_factory():
+    from apps.scheduler_worker.bootstrap import CanonicalSchedulerBootstrap
+
+    assert "inventory_factory" in CanonicalSchedulerBootstrap.__dataclass_fields__, (
+        "RED: standalone库存工厂未接线"
+    )
+
+
+async def test_failed_source_still_attempts_planned_exploration():
+    backend = Backend()
+
+    class FailingCollector(Collector):
+        async def collect(self, job, source, guard, **kwargs):
+            self.sources.append(source)
+            if len(self.sources) == 1:
+                raise ValueError("site unavailable")
+            return CollectionResult((candidate(),) * 3, ProjectionSummary(input_shape="valid", raw_count=3, projected_count=3, projection_complete=True))
+
+    collector = FailingCollector()
+    driver = driver_type()(
+        tenant_id="tenant",
+        backend=backend,
+        catalog=Catalog(),
+        authority=Authority(),
+        sources=Sources(),
+        collector=collector,
+        now=lambda: NOW,
+    )
+    await driver.scan()
+    assert len(collector.sources) == 2
+    assert ("industry_directories", "failed", 0) in backend.calls
+
+
+async def test_failed_sources_preserve_safe_diagnostic_and_finish_without_budget_misreport():
+    from shared.schemas.discovery_diagnostic import DiscoveryDiagnostic
+    from shared.schemas.model_invocation import ModelGenerationError
+
+    class FailedCollector:
+        async def collect(self, *args, **kwargs):
+            raise ModelGenerationError(
+                "invalid_request",
+                diagnostic=DiscoveryDiagnostic("provider", "invalid_request", 3),
+            )
+
+    backend = Backend()
+    driver = driver_type()(
+        tenant_id="tenant",
+        backend=backend,
+        catalog=Catalog(),
+        authority=Authority(),
+        sources=Sources(),
+        collector=FailedCollector(),
+        now=lambda: NOW,
+    )
+    await driver.scan()
+    outcomes = [c[1] for c in backend.calls if isinstance(c, tuple)]
+    assert outcomes == ["failed:provider:req:3", "failed:provider:req:3"]
+    assert backend.calls[-1] == "collector_failed"
+    assert "deliver" not in backend.calls
+
+
+async def test_failed_collection_still_delivers_candidates_already_available():
+    class FailedCollector:
+        async def collect(self, *args, **kwargs):
+            raise ValueError("PRIVATE")
+
+    class ExistingCatalog(Catalog):
+        async def fresh(self, query, now):
+            return (object(),)
+
+    backend = Backend()
+    await driver_type()(
+        tenant_id="tenant",
+        backend=backend,
+        catalog=ExistingCatalog(),
+        authority=Authority(),
+        sources=Sources(),
+        collector=FailedCollector(),
+        now=lambda: NOW,
+    ).scan()
+    assert backend.calls[-1] == "deliver"

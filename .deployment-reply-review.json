@@ -1,0 +1,11 @@
+{
+  "release": "20261016-reply-review-e2dcc968",
+  "source_commit": null,
+  "historical_base_commit": "a7466856ea65c6fb68bcf4824fbc7fe47c1d75c5",
+  "patch_sha256": "e2dcc9687479aebc2d6926663535f47c4afd9ff9add8cdf39f7f99e6836d262d",
+  "source_files": 2979,
+  "built_files": 68,
+  "schema": "0078",
+  "verified_at_utc": "2026-10-16T08:46:25.755218+00:00",
+  "release_spec_sha256": "f780a7a1d1fa7a19741164a00e61950c308962ff53d1f8281d39ecabbb14d06d"
+}

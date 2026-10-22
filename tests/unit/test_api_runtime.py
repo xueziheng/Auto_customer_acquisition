@@ -565,3 +565,21 @@ async def test_local_alembic_metadata_failure_is_mapped_without_marker(
         await module.assert_database_schema_current(object())
     assert marker not in str(exc.value)
     assert exc.value.__cause__ is None
+
+
+def test_manual_send_does_not_imply_automatic_customer_followup():
+    module = importlib.import_module("apps.api.composition.runtime")
+    facts = _ManualFacts()
+    manual = module.ManualSendComposition(facts, facts, facts, facts, _ManualMaterials(), _ManualSecrets(), _ManualTransport())
+    settings = Phase1RuntimeSettings.from_environ(_runtime_environ("postgresql+asyncpg://db.invalid/tradeos"))
+    dependencies = module.build_phase1_dependencies(settings, object(), now=lambda: datetime.now(UTC), manual_send=manual)
+    assert dependencies.customer_followup._automatic_enabled is False
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_automatic_followup_needs_explicit_enablement_and_complete_send_group(configured):
+    module = importlib.import_module("apps.api.composition.runtime")
+    facts = _ManualFacts()
+    manual = module.ManualSendComposition(facts, facts, facts, facts, _ManualMaterials(), _ManualSecrets(), _ManualTransport()) if configured else None
+    settings = Phase1RuntimeSettings.from_environ(_runtime_environ("postgresql+asyncpg://db.invalid/tradeos"))
+    dependencies = module.build_phase1_dependencies(settings, object(), now=lambda: datetime.now(UTC), manual_send=manual, secret_resolver=_ManualSecrets(), automatic_followup_enabled=True)
+    assert dependencies.customer_followup._automatic_enabled is configured

@@ -60,33 +60,59 @@ class PageSnapshot:
 
 
 class _VisibleTextParser(HTMLParser):
+    # Inline 原始字符必须先连接，不能把 HTML text node 当作证据行。
+    _BLOCKS = frozenset(
+        "p div section article address footer header main aside nav h1 h2 h3 h4 h5 h6 "  # noqa: SIM905 -- 固定 HTML 块名单。
+        "li ul ol dl dt dd table thead tbody tfoot tr td th blockquote pre hr br "
+        "figure figcaption form fieldset legend option title".split()
+    )
+    _HIDDEN = frozenset({"script", "style", "noscript", "template"})
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._hidden_depth = 0
         self._parts: list[str] = []
+        self._pending: list[str] = []
+        self._length = 0
+        self._exhausted = False
 
-    def handle_starttag(
-        self, tag: str, attrs: list[tuple[str, str | None]]
-    ) -> None:
+    def _flush(self) -> None:
+        value = " ".join("".join(self._pending).split())
+        self._pending.clear()
+        if not value or self._exhausted:
+            return
+        added = len(value) + bool(self._parts)
+        if self._length + added > _MAX_TEXT_CHARACTERS:
+            # 任一块丢失都可能隐藏相邻反证，整份派生正文必须失败关闭。
+            self._exhausted = True
+            return
+        self._parts.append(value)
+        self._length += added
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         del attrs
-        if tag.casefold() in {"script", "style", "noscript", "template"}:
+        tag = tag.casefold()
+        if tag in self._HIDDEN:
             self._hidden_depth += 1
+        elif not self._hidden_depth and tag in self._BLOCKS:
+            self._flush()
 
     def handle_endtag(self, tag: str) -> None:
-        if (
-            tag.casefold() in {"script", "style", "noscript", "template"}
-            and self._hidden_depth > 0
-        ):
+        tag = tag.casefold()
+        if tag in self._HIDDEN and self._hidden_depth > 0:
             self._hidden_depth -= 1
+        elif not self._hidden_depth and tag in self._BLOCKS:
+            self._flush()
 
     def handle_data(self, data: str) -> None:
-        if self._hidden_depth == 0:
-            value = " ".join(data.split())
-            if value:
-                self._parts.append(value)
+        if not self._hidden_depth and not self._exhausted:
+            self._pending.append(data)
 
     def text(self) -> str:
-        return "\n".join(self._parts)[:_MAX_TEXT_CHARACTERS]
+        self._flush()
+        if self._exhausted:
+            raise ValidationError("公开页面正文超限")
+        return "\n".join(self._parts)
 
 
 class WebSearchConnector:

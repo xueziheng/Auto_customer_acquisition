@@ -165,3 +165,9 @@ def new_id(prefix: str) -> str:
     ts_ms = time.time_ns() // 1_000_000
     ulid = _encode_ulid(ts_ms, secrets.token_bytes(10))
     return f"{cleaned}_{ulid}"
+
+# 公共候选库存与企业独立交付（ADR0091）
+PublicCandidateId = NewType("PublicCandidateId", str)
+CandidateAllocationId = NewType("CandidateAllocationId", str)
+AcquisitionJobId = NewType("AcquisitionJobId", str)
+AcquisitionAttemptId = NewType("AcquisitionAttemptId", str)

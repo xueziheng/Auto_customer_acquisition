@@ -240,6 +240,7 @@ class ModelConfigurationServiceImpl:
             elif runtime.verified_at is not None:
                 status = "verified"
         return ModelSettingsView(
+            provider=snapshot.provider,
             model=snapshot.model,
             configuration_version=snapshot.configuration_version,
             status=status,

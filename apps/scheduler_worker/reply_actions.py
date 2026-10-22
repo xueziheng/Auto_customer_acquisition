@@ -606,6 +606,12 @@ class ComposedReplyActionPorts:
             actor=_identity_actor(target.sending_identity_id),
         )
 
+    async def review_reply(
+        self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
+    ) -> None:
+        self._require_call(tenant_id, context, idempotency_key, "review_reply")
+        await self._enqueue_work(tenant_id, context, idempotency_key, ReplyWorkAction.REVIEW_REPLY)
+
     async def start_qualification(
         self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
     ) -> None:

@@ -1,0 +1,22 @@
+{
+  "shared/schemas/browser_probe.py": "4589c9c143d4a4fdf90bdec2931b3b70f6e2f67110af1d3ae5f2fd2b6b338b6c",
+  "domains/organization/data_source_browser.py": "69f5375183ebde3f5207ab7845bbbda8e053945b149a37787568207ff367ea1f",
+  "domains/organization/data_sources.py": "4ea55f79a557696723c4a2bd4e65e0fa367ce45d211b7d3099688dbd622dbd03",
+  "domains/organization/schemas.py": "e954246705f5af9586b2d10d601d8706f5df524dd67d32a1b9dd42dba85e74c8",
+  "infra/browser_probe.py": "366dff2f614b8d8f8ed9abecd8ddd0a3beb7652cff41f95b3618b17aa8d56056",
+  "connectors/playwright/login_probe.py": "c13130db42bc8fc73f3c80edf09bde285b8aaad7cde8b1bcbf94d2519a654c23",
+  "tool_gateway/handlers/browser_probe.py": "761e90f6957e76c022ac4139674fe6d50877ff2fcf03339acf6ea4a5d131ef29",
+  "apps/api/platform_browser_probe.py": "b2e2c2b6371abe9353286ba392166f842dd547d7a90811ab5fe95f3c4ab524cf",
+  "apps/api/platform_access.py": "89d305ea72f7d22428b6d8e00c337623de698e5b749d4acff798bab00813195f",
+  "apps/api/standalone.py": "cde13632f771d825f6d4858e7d81ac977b5451cd8330a29ddb1f793f49d7d887",
+  "apps/api/routers/platform_data_sources.py": "da10a69ee23b4b65782a98f09dc44679712921e52a7ceefbac6b64b55a821fe1",
+  "apps/web/src/components/PlatformDataSources.vue": "31ddff36b7995aacae4acf5ff1ff4da464a81c40593f8260eceb33c940091848",
+  "apps/web/src/components/DataSourceConnection.vue": "4e4401b1f4614c9471790bf23645cc177c04e80470c32c1da930cb4672323574",
+  "apps/web/src/api/platform-auth.ts": "257373b91c1348074d91ace7622ab63b181a13855955ebf94b6d525e1429b4ed",
+  "apps/web/src/api/platform-api.d.ts": "5d4a4b1bafe55c8940154de0621d8bec051641f46c46843a873e9118fbf6e600",
+  "tests/unit/test_browser_source_status.py": "2c3e59d119ae73f463a63351cced416f4f63c1eaacf5e9f061210d9fb80d71f6",
+  "tests/unit/test_standalone_platform_binding.py": "5a7e45d4432f45a03c1b328178929b94bfee61c9454ab84c3d2f863a22ea7a5a",
+  "apps/web/tests/browser-source-status.test.ts": "8449ee22a7d35c443ceeab124fe22dab572eb6c5cf316ff819da37b7d68db4d3",
+  "docs/adr/0088-source-connection-status.md": "79a7a0beb32d0089d3befb7b677a8c8118b15fba7e90591605fadcbdeaf22810",
+  "apps/web/src/components/DataSourceUsage.vue": "0baafd2717af26fe560d5042cf1c8dc7bbaaf3577c4138b3db308eb76cecb4d0"
+}

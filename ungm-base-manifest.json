@@ -1,0 +1,10 @@
+{
+  "domains/organization/data_sources.py": "597aace834fb213271018c9f51305b569900a392c6b5c2517221cb5c81fae85c",
+  "domains/organization/schemas.py": "942eae47f7321e44eb4b38383654ff852a2b20fad735673d2bb3cd3be70b433c",
+  "apps/api/platform_access.py": "6065ae6f2e0d81c107c6d3b33cfc8cc895ca8067eb2bed098dbb414b302ccd7b",
+  "apps/api/standalone.py": "e4321fd6ab61f743d07f121436aab9e7baae4ea4b3543791986943fd45055261",
+  "apps/api/routers/platform_data_sources.py": "428b5e9b29f3913c5316d8f5ec60a22eb820cdbf366b895782317f24cb7726c8",
+  "apps/web/src/components/PlatformDataSources.vue": "b6f33369f6f084ba821997a262013c1da89babbc34183fa7d0386ae3922191ee",
+  "apps/web/src/api/platform-auth.ts": "ccc336485b390c7d41d18dffd011215bcdb6e2723396f892c1d0a9017a3b638f",
+  "apps/web/src/api/platform-api.d.ts": "b6c1f40f1c99bcdfc6902c98d239ff151c2a8d80dcfe2deeaf638b608c7dc29a"
+}

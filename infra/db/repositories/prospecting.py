@@ -197,6 +197,29 @@ class ProspectAccountRepositoryImpl(_TenantBound, AccountRepository):
         ).scalar_one_or_none()
         return _row_to_account(row) if row is not None else None
 
+    async def get_for_update(
+        self, tenant_id: TenantId, account_id: ProspectAccountId
+    ) -> ProspectAccount | None:
+        self._require_tenant(tenant_id, "prospect_account_profile_lock")
+        row = (await self._session.scalars(select(ProspectAccountRow).where(
+            ProspectAccountRow.tenant_id == self._tenant_id,
+            ProspectAccountRow.account_id == account_id,
+        ).with_for_update())).one_or_none()
+        return _row_to_account(row) if row else None
+
+    async def update_profile(self, account: ProspectAccount) -> None:
+        self._require_tenant(account.tenant_id, "prospect_account_profile_update")
+        row = (await self._session.scalars(select(ProspectAccountRow).where(
+            ProspectAccountRow.tenant_id == self._tenant_id,
+            ProspectAccountRow.account_id == account.account_id,
+        ).with_for_update())).one_or_none()
+        if row is None:
+            raise ValidationError("潜在企业不存在")
+        row.entity_type, row.industry = account.entity_type, account.industry
+        row.field_provenance = {key: _provenance_to_json(value)
+            for key, value in account.field_provenance.items()}
+        await self._session.flush()
+
     async def find_by_domain(
         self, tenant_id: TenantId, website_domain: str
     ) -> ProspectAccount | None:

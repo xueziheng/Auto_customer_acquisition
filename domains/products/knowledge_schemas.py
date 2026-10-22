@@ -48,7 +48,7 @@ class KnowledgeActor(KnowledgeModel):
 class KnowledgeSource(KnowledgeModel):
     filename: str = Field(min_length=1, max_length=240)
     mime_type: str = Field(min_length=1, max_length=120)
-    size_bytes: int = Field(strict=True, ge=1, le=20_000_000)
+    size_bytes: int = Field(strict=True, ge=1, le=25 * 1024 * 1024)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     artifact_id: ArtifactId
 

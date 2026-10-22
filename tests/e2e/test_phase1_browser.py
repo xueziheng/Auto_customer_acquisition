@@ -692,7 +692,7 @@ async def test_phase1_browser_visible_reply_to_handoff_chain(
             await page.screenshot(path=evidence_dir / "02-demand-evidence.png")
 
             await page.goto(f"{stack.web_origin}/prospects/accounts")
-            await assert_surface("/prospects/accounts", "自动找客户")
+            await assert_surface("/prospects/accounts", "客户发现")
             discovery_response = await page.request.post(
                 f"{stack.api_origin}/prospects/discoveries",
                 headers={

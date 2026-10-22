@@ -83,7 +83,10 @@ class BoundResearchModelFactory:
 
 class BoundResearchCapability:
     def __init__(self, factory: BoundResearchModelFactory, model: str, output_limit: int) -> None:
-        self._factory, self._model, self._limit = factory, model, output_limit
+        # 仅收紧研究请求，保留部署模型与其他能力的既有输出上限。
+        if type(output_limit) is not int or output_limit < 128:
+            raise ValidationError('研究输出上限无效')
+        self._factory, self._model, self._limit = factory, model, min(output_limit, 8192)
 
     async def run(self, task: AgentTask, context: object) -> ChangeSet:
         client = await self._factory.for_step(task.tenant_id, task.run_id, 'execute_search', 0)

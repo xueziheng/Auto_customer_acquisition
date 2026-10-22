@@ -48,7 +48,7 @@ class Provider:
         pass
 
 
-def assemble(engine, authority, provider):
+def assemble(engine, authority, provider, *, provider_name="deepseek"):
     from tool_gateway.handlers.model_generate import GatewayModelGenerator
 
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -58,6 +58,7 @@ def assemble(engine, authority, provider):
         provider_factory=lambda: provider,
         limits=limits(),
         model="test-model",
+        provider=provider_name,
         configuration_version="test-v1",
         ledger_factory=lambda tenant: SqlAlchemyToolGatewayUnitOfWork(sessions, tenant),
         fingerprints=HmacFingerprintProvider("v1", b"k" * 32),
@@ -196,3 +197,13 @@ async def test_missing_credential_does_not_consume_call_or_slot(unit_engine):
     generator, _ = assemble(unit_engine, Authority(), provider)
     await generator.generate(identity(tenant), request())
     assert provider.calls == 1
+
+
+async def test_gateway_records_selected_provider_family(unit_engine):
+    from infra.db.tables import ModelInvocationRow
+    tenant = TenantId(new_id("tn"))
+    generator, sessions = assemble(unit_engine, Authority(), Provider(), provider_name="compatible")
+    await generator.generate(identity(tenant), request())
+    async with sessions() as db:
+        row = (await db.scalars(select(ModelInvocationRow).where(ModelInvocationRow.tenant_id == tenant))).one()
+        assert row.provider == "compatible" and row.state == "succeeded"

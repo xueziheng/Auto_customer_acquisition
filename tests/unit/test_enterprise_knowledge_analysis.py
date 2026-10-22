@@ -76,3 +76,30 @@ async def test_invalid_image_mapping_never_calls_provider():
         await analyze_knowledge(model, identity(), "", model_name="deepseek-flash",
                                 max_output_tokens=200, image_source_pages=(1,))
     model.generate.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("body", "stage"), [
+    ({"unexpected": "private-source-marker"}, "response_schema_missing"),
+    (analysis("private-source-marker"), "source_evidence"),
+])
+async def test_failure_stage_is_fixed_and_redacted(body, stage):
+    model = provider(body)
+    with pytest.raises(ValidationError) as caught:
+        await analyze_knowledge(model, identity(), "Model: Valve-A.",
+                                model_name="deepseek-flash", max_output_tokens=200)
+    assert caught.value.context == {"knowledge_stage": stage}
+    assert "private-source-marker" not in str(caught.value)
+    assert "private-source-marker" not in repr(caught.value.context)
+    assert caught.value.__suppress_context__
+    model.generate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_wrong_model_has_distinct_stage():
+    model = provider(analysis())
+    with pytest.raises(ValidationError) as caught:
+        await analyze_knowledge(model, identity(), "Model: Valve-A.",
+                                model_name="other-model", max_output_tokens=200)
+    assert caught.value.context == {"knowledge_stage": "model_identity"}
+    model.generate.assert_awaited_once()

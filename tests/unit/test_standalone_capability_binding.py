@@ -52,6 +52,25 @@ def test_explicit_standalone_research_does_not_hit_legacy_pilot_rejection(tmp_pa
     )
 
 
+def test_explicit_qq_dns_does_not_enable_other_pilot_external_capabilities(tmp_path):
+    profile = make_config(tmp_path)
+    env = profile.runtime_environment()
+    factory = SchedulerRuntimeFactory(
+        env,
+        pilot_config=SchedulerWorkerConfig.from_pilot_environ(env),
+        standalone_research=True,
+        secret_resolver=profile,
+        unconfigured_dns_step=UnconfiguredDnsStep(),
+        bootstrap=bootstrap(),
+        qq_dns_enabled=True,
+    )
+    assert isinstance(factory, SchedulerRuntimeFactory)
+    with pytest.raises(ValidationError):
+        SchedulerRuntimeFactory(
+            env, bootstrap=bootstrap(), qq_dns_enabled=True,
+        )
+
+
 @pytest.mark.parametrize(
     "case", ["legacy", "missing_assistant", "missing_research", "contacts", "gmail"]
 )

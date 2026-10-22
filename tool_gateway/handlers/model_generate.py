@@ -203,7 +203,7 @@ class ModelGenerateHandler:
             self.failure = exc
             raise ToolGatewayError(ToolErrorCategory.PERMISSION_DENIED) from None
         except DeepSeekFailure as exc:
-            self.failure = ModelGenerationError(exc.code)
+            self.failure = ModelGenerationError(exc.code, diagnostic=exc.diagnostic)
             uncertain = dispatched and exc.code in {
                 "unknown",
                 "rate_limit",
@@ -254,6 +254,7 @@ class GatewayModelGenerator:
         lease_owner: str,
         lease_duration: timedelta,
         now: Callable[[], datetime] | None = None,
+        provider: str = "deepseek",
     ) -> None:
         self._authority, self._usage, self._provider_factory = (
             authority,
@@ -261,6 +262,7 @@ class GatewayModelGenerator:
             provider_factory,
         )
         self._limits, self._model, self._version = limits, model, configuration_version
+        self._provider = provider
         self._ledger, self._fingerprints = ledger_factory, fingerprints
         self._owner, self._lease = lease_owner, lease_duration
         self._now = now or (lambda: datetime.now(UTC))
@@ -298,6 +300,7 @@ class GatewayModelGenerator:
             self._now,
             self._owner,
             self._lease,
+            provider=self._provider,
         )
         handler = ModelGenerateHandler(
             identity,

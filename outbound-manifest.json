@@ -1,0 +1,90 @@
+{
+  "baseline": "20261015-qq-diagnostic-a746685",
+  "commit": "c4db46f",
+  "files": {
+    "apps/api/composition/message_content.py": {
+      "before": null,
+      "after": "87427d9f038080a2de89a1debbba955bca95b0805b2707c2b1511a381474beef"
+    },
+    "apps/api/composition/runtime.py": {
+      "before": "cbbed684b50d2f5e9ff4446d017584277a0dbd7da1a5f5e04e2f41a92bb28bd3",
+      "after": "6d55ff90d30948a56923f466bdc89aae65a75b807f509a49ef9778312257a379"
+    },
+    "apps/api/routers/inbox.py": {
+      "before": "0f6599f97366e03039a53cd86f9a7148b778c37b694089235e0cd1abfad6f9ed",
+      "after": "055205ced3748796d780fd247ad19d1db2ed6b72e38f40c9857d9108124a11fd"
+    },
+    "apps/scheduler_worker/runtime.py": {
+      "before": "9bbc2ee7ab4c440082bac88662d8d2068312e00f94b1d9cd25a06b3f455ae444",
+      "after": "c577d39dd9f51b10991452e941991b2492854ceda3b011b1235912807c76609d"
+    },
+    "apps/web/src/api/api.d.ts": {
+      "before": "1c844f7b0bf40f3aad25fe6df01d269509704735f240023282db5ee5b1322c10",
+      "after": "708dc9fb7093d0f19da1ac319e33d342b5ea1ef068237a60f71c750d623e2401"
+    },
+    "apps/web/src/components/MessageContent.vue": {
+      "before": null,
+      "after": "a1eb503ecc8dfb5fdf244bf2aeb96c84458e569e157ad6a287286d027546db69"
+    },
+    "apps/web/src/navigation.ts": {
+      "before": "13624213ff28477bc1163009dfe446daab295c67078cd91b5b15e3f4d71fcef5",
+      "after": "ee6eba4c196e8c6089a16c57573bf6dc4c0772bb0eba14fe4bd236f18e27021b"
+    },
+    "apps/web/src/views/inbox/SmartInbox.vue": {
+      "before": "73915180aae61a54d884eadbc8c87f56e91ce2e4b61b40112b934cf537e6dc2e",
+      "after": "a7609cad2b1e27e55a8b329982f012135d560bbebe1121739785b77a405fadf3"
+    },
+    "apps/web/tests/smart-inbox.test.ts": {
+      "before": "9881791fcf7ca6b2bd402e0a95127c86cd5bc8ad53973d4444e6e240b6358428",
+      "after": "edcd8a2b24ac06cad90fcb3773045bdc8e21cf32b6bfef3dda5b5377cd4b681c"
+    },
+    "docs/adr/0100-outbound-conversation-history.md": {
+      "before": null,
+      "after": "11351095a5c86544b22fff58e03c4a4a49f192e526cd705235d666339e9dfe2e"
+    },
+    "domains/conversations/repository.py": {
+      "before": "eb55047d01aef531c95b4c176e7ccc627cd86143ea4ae9958b0e2043492ebc3a",
+      "after": "334460ca04fbf91941618682869fefa8182023b5bf4c2244bb025678b4fdb80a"
+    },
+    "domains/conversations/schemas.py": {
+      "before": "92ad0474b8a3322aeb57f8b838bf89babed4b9726c8d75c37db2b12b4ae7bd8a",
+      "after": "49ad2cdf66eda971a916d2923a42e6fce7bee030c4dfb53fdd8dd1e5049129a8"
+    },
+    "domains/conversations/service.py": {
+      "before": "ad7b320d74fd94077b31ae97ac273bdb3e5c3e6a7648717332765ac11450782b",
+      "after": "58de0c65b27cd60ca810da838a3ba3d7c29f9ab9479b69e9fcdf34be4ad601c1"
+    },
+    "domains/conversations/service_impl.py": {
+      "before": "90f830efa973707ca1f16f72f15ec57adcb886d7a7fead9b0a78ef4e917d438c",
+      "after": "1b4b02cb7eda2f038309db3025b7f6456ad6cddc3b1aa6f0f68af382af6bb4d9"
+    },
+    "infra/db/repositories/conversations.py": {
+      "before": "56e23986a49b48d1cfb70e79bbe5acab1f5b2db1e67502ada6cca8bf62289ae4",
+      "after": "ff80a3cc696ca607e8c9d044a9fffae2a7129c21b0a9aac3db922d178e7fd10d"
+    },
+    "infra/outbound_mail_archive.py": {
+      "before": null,
+      "after": "972ce4f6827cdca293ee4f587e8d1efeab861d17777e622a025a1a8261aa87b0"
+    },
+    "tests/integration/test_conversations_messages.py": {
+      "before": "e22d727a3d2b594ff4c5ef88083982dabfb3189eb02ff2a73e4a49c25413d115",
+      "after": "efc67b389ce437409cc84e1f29b295f72df7ac9d6859e4b4d213d7dc566c15b2"
+    },
+    "tests/integration/test_inbox_access.py": {
+      "before": "2ba1fde45ef1764ac4086e4fcdf5f4053a516fad1bc500ba6ca0103a341bd8ec",
+      "after": "7e7c1db6e55b04a458adb1169e89c2b55c469004d32879d12428ea0d87eebffa"
+    },
+    "tests/unit/test_email_send_handler.py": {
+      "before": "8f02dcc79c906ab045051034a4c4e52f5f74bd4a8170e387f5ae87cfc79132e7",
+      "after": "371fe4007a38a19b569b7d804affa34b9d77c7210bb7cf2551e67a28c5cdb616"
+    },
+    "tests/unit/test_message_content.py": {
+      "before": null,
+      "after": "8f4fe30eef450d382d6307d572562c192b6826df8762f8d06dd21c61066f8af8"
+    },
+    "tool_gateway/handlers/email_send.py": {
+      "before": "def6b9fc37b3cf45d19ebb7e0d3a7f9a9ef4fe85f9b789cff41ec9666ee9e6e5",
+      "after": "308f452ca9570cd25265275b53f15c711be3f01043c91971a537491c83bbaf4d"
+    }
+  }
+}

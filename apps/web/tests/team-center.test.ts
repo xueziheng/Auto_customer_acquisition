@@ -102,6 +102,7 @@ describe("TeamCenter", () => {
       requested.push(path);
       if (path === "/team/employees") return jsonResponse(employees);
       if (path === "/team/territory") return jsonResponse(territory);
+      if (path === "/team/account-creation") return jsonResponse(false);
       return jsonResponse({ code: "unexpected", message: "unexpected" }, 500);
     });
 
@@ -115,6 +116,7 @@ describe("TeamCenter", () => {
       expect(root.textContent).toContain("优先级 1");
     });
     expect(requested.filter((path) => path.startsWith("/team/")).sort()).toEqual([
+      "/team/account-creation",
       "/team/employees",
       "/team/territory",
     ]);

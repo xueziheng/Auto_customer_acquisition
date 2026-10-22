@@ -1,0 +1,11 @@
+{
+  "created_at": "2026-10-15T05:06:49.290681+00:00",
+  "source_commit": "dff351efa1f2ed621aff4aff3fb82a280a49bd6f",
+  "source_baseline": "7d76a14794835648f86441647c0ef5b5f0027a0a",
+  "live_baseline_commit": "c2f67efdc8e9a553704fc2fcc7fb82461fe9e794",
+  "patch_sha256": "3521dcf4fff51d1fd683978d22575fd57db6f94a6d648b2f49f288e963b897c1",
+  "release": "/srv/tradeos/releases/20261015-qq-private-3521dcf",
+  "reply_enabled": false,
+  "automatic_send_enabled": false,
+  "qq_reply_configured": false
+}

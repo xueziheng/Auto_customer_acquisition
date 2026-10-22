@@ -79,7 +79,7 @@ class Provider:
         pass
 
 
-async def configured_reply(engine, *, gate="ready", provider=None):
+async def configured_reply(engine, *, gate="ready", provider=None, max_output_tokens=512):
     from apps.scheduler_worker.reply_model_binding import (
         BoundReplyClassifier,
         ReplyModelAuthority,
@@ -118,7 +118,7 @@ async def configured_reply(engine, *, gate="ready", provider=None):
         repo, CurrentEmployeeIdentity(scope, lookup), now=lambda: NOW
     )
     policy = limits(
-        tenant_calls=1, employee_calls=1, max_input_bytes=65536, max_output_tokens=512
+        tenant_calls=1, employee_calls=1, max_input_bytes=65536, max_output_tokens=max_output_tokens
     )
     if gate != "missing_config":
         await repo.initialize(
@@ -227,8 +227,9 @@ async def invocation_rows(runtime):
         )
 
 
-async def test_reply_identity_comes_from_current_employee_and_run(integration_engine):
-    r = await configured_reply(integration_engine)
+@pytest.mark.parametrize("tokens,expected", [(512,512),(8192,8192),(32768,8192)])
+async def test_reply_identity_comes_from_current_employee_and_run(integration_engine,tokens,expected):
+    r = await configured_reply(integration_engine,max_output_tokens=tokens)
     identity = await r.authority.identity_for_message(r.message_id, "reply-v1")
     assert identity.capability == "reply_qualification"
     assert (
@@ -246,7 +247,8 @@ async def test_reply_identity_comes_from_current_employee_and_run(integration_en
     }
     assert len(r.provider.calls) == 1
     assert r.provider.calls[0].payload == {"subject": "(current reply)", "body": BODY}
-    assert r.provider.calls[0].max_output_tokens == 512
+    assert r.provider.calls[0].max_output_tokens == expected
+    assert r.policy.max_output_tokens == tokens
     rows = await invocation_rows(r)
     assert len(rows) == 1 and rows[0].state == "succeeded" and rows[0].run_id == r.run
     async with r.sessions() as db:

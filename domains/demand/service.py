@@ -476,6 +476,12 @@ class DemandService(Protocol):
         limit: int = 50,
     ) -> list[ValidatedNeedView]: ...
 
+    async def list_account_outreach_hypotheses(
+        self, tenant_id: TenantId, account_id: ProspectAccountId,
+    ) -> list[HypothesisView]:
+        """精确账户下真实活跃且有证据的假设；超限拒绝，不先截断全公司。"""
+        ...
+
     async def get_hypothesis_for_discovery(
         self, tenant_id: TenantId, hypothesis_id: NeedHypothesisId
     ) -> HypothesisDiscoveryView:

@@ -77,6 +77,7 @@ class ReplyWorkActionView:
     status: ReplyWorkStatus
     idempotency_key: IdempotencyKey
     created_at: datetime
+    can_handle: bool = False
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,7 @@ class ConversationInboxItem:
     classified_at: datetime | None
     correction_count: int
     required_actions: tuple[str, ...]
+    latest_direction: str | None = None
 
 
 @dataclass(frozen=True)
@@ -190,3 +192,14 @@ class InboxEvidenceRef(BaseModel):
     conversation_id: str
     account_id: str
     artifact_id: str
+
+
+class MessageContentView(BaseModel):
+    """当前授权下的邮件内容投影；只在请求中返回，不写日志或模型。"""
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    subject: str
+    sender: str
+    recipients: str
+    body_text: str | None
+    html_only: bool = False
+    truncated: bool = False

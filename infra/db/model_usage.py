@@ -58,12 +58,14 @@ class SqlModelUsageRepository:
         now: datetime,
         *,
         model: str,
+        provider: str = "deepseek",
         owner_id: str | None = None,
         lease_expires_at: datetime | None = None,
     ) -> Reservation:
         """租户锁→员工锁→幂等→两级额度，全部在一笔独立事务内完成。"""
         if (
             not re.fullmatch(r"[0-9a-f]{64}", request_hmac)
+            or provider not in {"deepseek", "compatible"}
             or not model
             or len(model) > 128
         ):
@@ -146,7 +148,7 @@ class SqlModelUsageRepository:
                     **identity.model_dump(),
                     invocation_id=invocation_id,
                     request_hmac=request_hmac,
-                    provider="deepseek",
+                    provider=provider,
                     model=model,
                     owner_id=owner_id,
                     lease_expires_at=lease_expires_at,

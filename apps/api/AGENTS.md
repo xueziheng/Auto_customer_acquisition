@@ -74,3 +74,28 @@ API报价结果仅经原structured_log通知出口，不宣称站内已投递，
 `gmail_web` 仅接受已认证用户及原会话，授权 state 与企业、员工、用户、会话共同绑定。
 OAuth 交换只经 `email.gmail.connect`；固定诊断仍经 ADR0079 的 HIGH 六阶段。
 回调不是匿名 API，不得放宽 Cookie、CSRF 或来源校验；授权码、令牌和客户端密钥不进入日志与模型。
+
+## ADR0093 企业客户分配
+
+候选搜索、分配、任务、额度和来源状态只允许当前在职 boss；manager/sales 的取得记录
+只限本人。操作者和企业必须来自认证会话，分配 body 仅接受唯一的1至100个取得记录 ID
+与目标员工 ID。服务门面必须重读员工权限，真实库存装配必须提供同事务客户归属桥接。
+新取得记录负责人可空，不能在响应中用搜索者填补；历史审计空值不能编造。
+
+## ADR0093 本人客户跟进
+
+`/prospects/customers`始终只列本人，`/access`必须现查员工。详情与动作在
+当前员工→取得记录→真实归属的guard内执行；已关联账户的员工读取也必须与归属锁求交，
+旧取得负责人不能绕过转派。boss可看公司详情，启动/停止仍只允许本人的真实客户。
+跟进选项只读，`can_start`与合格联系方式来自真实审批/资格/抑制/额度/发件/回复门禁，
+执行仍现查。启动强制同客户活跃有证据假设及原Idempotency-Key，回复来源不得空缺。
+普通manager的所有客户身份范围仅本人；旧Enrollment入口按真实归属账户过滤，
+开发任务配置与批准边界只允许boss修改。
+
+自动跟进组合必须由受信入口显式声明启用，默认false；manual_send存在只证明手动发件组。
+standalone与scheduler共享reply_enabled和Gmail/员工绑定条件；缺回复/自动执行组合保持
+`automatic_followup_disabled`，不能用消息表为空或NO_REPLY代替运行配置，也不探测实时worker健康。
+
+单客户follow-up支持显式execution_mode=manual，只有该模式不依赖自动装配开关；其余归属、
+证据、精确Campaign审批与入组门禁保持。缺省automatic兼容旧客户端。只读options按请求模式
+展示就绪状态；实际人工发信仍由原Gateway重查事实，不因manual而放宽任何发送许可。

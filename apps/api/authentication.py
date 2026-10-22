@@ -60,6 +60,24 @@ class LoginRequest(BaseModel):
         except AuthenticationInputInvalid:
             raise ValueError("登录用户名无效") from None
 
+class EmployeeAccountCreateRequest(LoginRequest):
+    """仅管理员网页开户；不接受企业、角色、用户编号或弱密码例外。"""
+
+    name: str = Field(min_length=1, max_length=200)
+
+    @field_validator("password")
+    @classmethod
+    def validate_new_password(cls, value: SecretStr) -> SecretStr:
+        raw = value.get_secret_value()
+        try:
+            valid = 10 <= len(raw) <= 128 and len(raw.encode("utf-8")) <= 512
+        except UnicodeError:
+            valid = False
+        if not valid:
+            raise ValueError("新账号密码须为10至128字符")
+        return value
+
+
 
 class SessionResponse(BaseModel):
     """私有 no-store 会话视图；禁止将此响应记录到日志。"""

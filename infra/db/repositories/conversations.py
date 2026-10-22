@@ -306,6 +306,51 @@ class ReplyWorkRepositoryImpl(_ConversationsRepository, ReplyWorkRepository):
         return [_row_to_reply_work(row) for row in rows]
 
 
+    async def list_owned(
+        self, tenant_id: TenantId, *, actor: InboxActor,
+        status: ReplyWorkStatus, limit: int, account_id: ProspectAccountId | None = None,
+    ) -> list[ReplyWorkRecord]:
+        self._require_tenant(tenant_id, "conversation_reply_work_owned")
+        rows = (await self._session.execute(
+            select(ConversationReplyWorkRow)
+            .join(MessageRow, (MessageRow.tenant_id == tenant_id)
+                  & (MessageRow.message_id == ConversationReplyWorkRow.message_id))
+            .join(ConversationRow, (ConversationRow.tenant_id == tenant_id)
+                  & (ConversationRow.conversation_id == MessageRow.conversation_id)
+                  & (ConversationRow.account_id == ConversationReplyWorkRow.account_id))
+            .where(ConversationReplyWorkRow.tenant_id == tenant_id,
+                   ConversationReplyWorkRow.status == status.value,
+                   inbox_predicate(tenant_id, actor),
+                   *([ConversationReplyWorkRow.account_id == account_id] if account_id else []))
+            .order_by(ConversationReplyWorkRow.created_at, ConversationReplyWorkRow.action_id)
+            .limit(limit)
+        )).scalars().all()
+        return [_row_to_reply_work(row) for row in rows]
+
+    async def get_action(
+        self, tenant_id: TenantId, action_id: str,
+    ) -> ReplyWorkRecord | None:
+        self._require_tenant(tenant_id, "conversation_reply_work_get_action")
+        row = (await self._session.execute(select(ConversationReplyWorkRow).where(
+            ConversationReplyWorkRow.tenant_id == tenant_id,
+            ConversationReplyWorkRow.action_id == action_id,
+        ).execution_options(populate_existing=True))).scalar_one_or_none()
+        return _row_to_reply_work(row) if row is not None else None
+
+    async def change_status(
+        self, tenant_id: TenantId, action_id: str,
+        expected: ReplyWorkStatus, status: ReplyWorkStatus,
+    ) -> None:
+        self._require_tenant(tenant_id, "conversation_reply_work_change")
+        result = await self._session.execute(update(ConversationReplyWorkRow).where(
+            ConversationReplyWorkRow.tenant_id == tenant_id,
+            ConversationReplyWorkRow.action_id == action_id,
+            ConversationReplyWorkRow.status == expected.value,
+        ).values(status=status.value))
+        if result.rowcount != 1:
+            raise ValidationError("回复工作状态已变化，请刷新")
+
+
 def _conversation_to_row(
     conversation: Conversation,
 ) -> ConversationRow:
@@ -358,6 +403,31 @@ class ConversationRepositoryImpl(_ConversationsRepository, ConversationRepositor
     async def update(self, conversation: Conversation) -> None:
         self._require_tenant(conversation.tenant_id, "conversation.update")
         await self._session.merge(_conversation_to_row(conversation))
+
+    async def advance_last_outbound_at(
+        self,
+        tenant_id: TenantId,
+        conversation_id: ConversationId,
+        sent_at: datetime,
+    ) -> None:
+        """单条原子 UPDATE：last_outbound_at = GREATEST(COALESCE(既有, sent_at),
+        sent_at)。NULL 首写与并发不同 sent_at 均单调不回退；不覆盖其他字段。"""
+        self._require_tenant(tenant_id, "conversation.advance_last_outbound_at")
+        result = await self._session.execute(
+            update(ConversationRow)
+            .where(
+                ConversationRow.tenant_id == str(tenant_id),
+                ConversationRow.conversation_id == str(conversation_id),
+            )
+            .values(
+                last_outbound_at=func.greatest(
+                    func.coalesce(ConversationRow.last_outbound_at, sent_at),
+                    sent_at,
+                )
+            )
+        )
+        if cast(CursorResult, result).rowcount != 1:
+            raise ValidationError("会话不存在")
 
     async def advance_last_inbound_at(
         self,

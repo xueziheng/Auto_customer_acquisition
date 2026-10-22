@@ -83,6 +83,27 @@ async def test_failed_exchange_does_not_register_mailbox(integration_engine, tmp
     assert not service.store.credentials_file(pending.operation_id).exists()
 
 
+async def test_outbound_connector_uses_only_current_employees_exact_binding(integration_engine, tmp_path, monkeypatch):
+    service, actor, _, command, _ = await setup(integration_engine, tmp_path)
+    await service.complete(actor, SecretStr("synthetic-session"), command)
+    configured = []
+    async def configure(self, resolver):
+        configured.append(self)
+    monkeypatch.setattr("connectors.gmail.client.GmailConnector.configure", configure)
+    assert await service.outbound_connector(actor.tenant_id, actor.employee_id, "other@gmail.com") is None
+    assert configured == []
+    assert await service.outbound_connector(actor.tenant_id, actor.employee_id, "owner@gmail.com") is not None
+    assert len(configured) == 1
+    async with service.sessions.begin() as db:
+        db.add(EmployeeRow(tenant_id=actor.tenant_id, employee_id=new_id("emp"), user_id=new_id("usr"),
+                           name="其他员工", role="sales", is_active=True))
+        await db.execute(update(EmployeeRow).where(EmployeeRow.tenant_id == actor.tenant_id,
+            EmployeeRow.employee_id == actor.employee_id).values(is_active=False))
+    with pytest.raises(PermissionDenied):
+        await service.outbound_connector(actor.tenant_id, actor.employee_id, "owner@gmail.com")
+    assert len(configured) == 1
+
+
 async def test_send_uses_real_gateway_and_preserves_same_grant(integration_engine, tmp_path, monkeypatch):
     import apps.api.composition.gmail_web as module
     from domains.sending_identity.permissions import (

@@ -17,6 +17,7 @@ from domains.outreach.models import (
     CampaignVersion,
     DailyQuotaUsage,
     Enrollment,
+    EnrollmentExecutionMode,
     EnrollmentState,
     EnrollmentStopReason,
     MessageAttempt,
@@ -39,7 +40,7 @@ from domains.outreach.repository import (
     QuotaReservationStatus,
     SuppressionAppendResult,
 )
-from domains.outreach.schemas import SuppressionTarget
+from domains.outreach.schemas import EnrollmentOwnershipBinding, SuppressionTarget
 from infra.db.base import TenantScopedRepository
 from infra.db.tables import (
     OutreachActionRow,
@@ -50,6 +51,7 @@ from infra.db.tables import (
     OutreachMessageAttemptRow,
     OutreachSequenceStepRow,
     OutreachSuppressionRow,
+    OwnershipLockRow,
 )
 from shared.errors import TenantIsolationViolation
 from shared.schemas.identifiers import (
@@ -183,6 +185,7 @@ def _enrollment_row(enrollment: Enrollment) -> OutreachEnrollmentRow:
         contact_point_id=str(enrollment.contact_point_id),
         sending_identity_id=str(enrollment.sending_identity_id),
         state=enrollment.state.value,
+        execution_mode=enrollment.execution_mode.value,
         current_step=enrollment.current_step,
         next_send_at=enrollment.next_send_at,
         enrolled_at=enrollment.enrolled_at,
@@ -207,6 +210,7 @@ def _row_to_enrollment(row: OutreachEnrollmentRow) -> Enrollment:
         contact_point_id=ContactPointId(row.contact_point_id),
         sending_identity_id=SendingIdentityId(row.sending_identity_id),
         state=EnrollmentState(row.state),
+        execution_mode=EnrollmentExecutionMode(row.execution_mode),
         current_step=row.current_step,
         next_send_at=row.next_send_at,
         enrolled_at=row.enrolled_at,
@@ -442,6 +446,31 @@ class CampaignRepositoryImpl(_OutreachRepository):
 
 
 class EnrollmentRepositoryImpl(_OutreachRepository):
+    async def lock_account_ownership(
+        self, tenant_id: TenantId, account_id: ProspectAccountId, key: IdempotencyKey
+    ) -> EnrollmentOwnershipBinding | None:
+        """与转交共用账户锁；MVCC读取避免advisory→归属行锁的反序。"""
+        self._require_tenant(tenant_id, "outreach_enrollment_owner")
+        for lock_key in (
+            f"{self._tenant_id}:enrollment-key:{key}",
+            f"{self._tenant_id}:account:{account_id}",
+        ):
+            await self._session.execute(
+                select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0)))
+            )
+        row = (
+            await self._session.execute(
+                select(OwnershipLockRow.owner, OwnershipLockRow.locked_at).where(
+                    OwnershipLockRow.tenant_id == self._tenant_id,
+                    OwnershipLockRow.account_id == account_id,
+                )
+            )
+        ).one_or_none()
+        return (
+            EnrollmentOwnershipBinding(EmployeeId(row.owner), row.locked_at)
+            if row else None
+        )
+
     async def insert_if_absent(self, enrollment: Enrollment) -> EnrollmentInsertResult:
         self._require_tenant(enrollment.tenant_id, "outreach_enrollment_insert")
         key_lock = f"{self._tenant_id}:enrollment-key:{enrollment.idempotency_key}"
@@ -660,6 +689,8 @@ class EnrollmentRepositoryImpl(_OutreachRepository):
                     .where(
                         OutreachEnrollmentRow.tenant_id == self._tenant_id,
                         OutreachCampaignRow.state == CampaignState.ACTIVE.value,
+                        OutreachEnrollmentRow.execution_mode
+                        == EnrollmentExecutionMode.AUTOMATIC.value,
                         OutreachEnrollmentRow.state.in_(
                             [
                                 EnrollmentState.ENROLLED.value,

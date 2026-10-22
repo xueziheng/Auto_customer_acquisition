@@ -33,6 +33,12 @@ class ConversationRepository(Protocol):
 
     async def update(self, conversation: Conversation) -> None: ...
 
+    async def advance_last_outbound_at(
+        self, tenant_id: TenantId, conversation_id: ConversationId, sent_at: datetime,
+    ) -> None:
+        """原子单调推进出站活动时间，不能改写入站时间。"""
+        ...
+
     async def advance_last_inbound_at(
         self,
         tenant_id: TenantId,
@@ -118,6 +124,21 @@ class ReplyWorkRepository(Protocol):
         *,
         limit: int,
     ) -> list[ReplyWorkRecord]: ...
+
+
+    async def list_owned(
+        self, tenant_id: TenantId, *, actor: InboxActor,
+        status: ReplyWorkStatus, limit: int, account_id: ProspectAccountId | None = None,
+    ) -> list[ReplyWorkRecord]: ...
+
+    async def get_action(
+        self, tenant_id: TenantId, action_id: str,
+    ) -> ReplyWorkRecord | None: ...
+
+    async def change_status(
+        self, tenant_id: TenantId, action_id: str,
+        expected: ReplyWorkStatus, status: ReplyWorkStatus,
+    ) -> None: ...
 
 
 @runtime_checkable

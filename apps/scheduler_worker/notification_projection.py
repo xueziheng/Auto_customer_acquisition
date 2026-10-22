@@ -13,6 +13,11 @@ from typing import Protocol
 from apps.composition_support.handoff_notifications import (
     NotificationJobHandoffNotifier as NotificationJobHandoffNotifier,  # noqa: PLC0414 -- 旧公开导出兼容
 )
+from domains.conversations.schemas import ReplyCategory
+from domains.conversations.service import (
+    ConversationService,
+    reply_requires_owner_attention,
+)
 from infra.db.outbox import serialize
 from notification_gateway.jobs import (
     NotificationContext,
@@ -28,6 +33,7 @@ from shared.events.catalog import (
     DomainEvent,
     HandoffQueueBacklogged,
     HandoffRequested,
+    ReplyReceived,
     ReputationThresholdBreached,
     SendingIdentitySuspended,
 )
@@ -47,6 +53,7 @@ _OPPORTUNITY_ID = re.compile(rf"opp_{_ULID}\Z")
 _SENDING_IDENTITY_ID = re.compile(rf"sid_{_ULID}\Z")
 _COMMITMENT_ID = re.compile(rf"com_{_ULID}\Z")
 _SUPPORTED_EVENTS = (
+    ReplyReceived,
     HandoffRequested,
     HandoffQueueBacklogged,
     SendingIdentitySuspended,
@@ -96,6 +103,7 @@ class NotificationProjectionHandler:
         tenant_id: TenantId,
         audience: NotificationAudienceResolver,
         jobs: NotificationJobStore,
+        conversations: ConversationService | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         id_factory: Callable[[str], str] = new_id,
     ) -> None:
@@ -104,6 +112,7 @@ class NotificationProjectionHandler:
         self._tenant_id = tenant_id
         self._audience = audience
         self._jobs = jobs
+        self._conversations = conversations
         self._now = now
         self._id_factory = id_factory
 
@@ -113,6 +122,23 @@ class NotificationProjectionHandler:
             raise ValidationError("通知事件类型不受支持")
         if event.tenant_id != self._tenant_id:
             raise TenantIsolationViolation("跨租户通知投影被拒绝")
+        if isinstance(event, ReplyReceived):
+            if not reply_requires_owner_attention(ReplyCategory(event.reply_category)):
+                return
+            if self._conversations is None:
+                raise ValidationError("回复通知缺少当前消息事实")
+            classification = await self._conversations.get_classification(self._tenant_id, event.message_id)
+            messages = await self._conversations.list_messages(self._tenant_id, event.conversation_id)
+            matching = [m for m in messages if m.message_id == event.message_id]
+            if (classification is None or classification.category.value != event.reply_category
+                or len(matching) != 1 or matching[0].direction.value != "inbound"
+                or not event.outbound_message_id
+                or matching[0].outbound_message_id != event.outbound_message_id):
+                raise ValidationError("回复通知关联不一致")
+            effective = await self._conversations.get_effective_reply_category(self._tenant_id, event.message_id)
+            # 旧正向事件不得覆盖后来的人工纠正；新分类由当前消息页展示。
+            if effective is None or effective.value != event.reply_category:
+                return
         context, priority = _project_context(event)
         fingerprint = notification_source_fingerprint(event)
         recipients = await self._audience.recipients_for(self._tenant_id, event)
@@ -153,6 +179,15 @@ class NotificationProjectionHandler:
 def _project_context(
     event: DomainEvent,
 ) -> tuple[NotificationContext, NotificationPriority]:
+    if isinstance(event, ReplyReceived):
+        if (re.fullmatch(rf"msg_{_ULID}", str(event.message_id)) is None
+            or re.fullmatch(rf"con_{_ULID}", str(event.conversation_id)) is None):
+            raise ValidationError("回复通知关联编号无效")
+        return (
+            NotificationContext(NotificationKind.CUSTOMER_REPLY, str(event.message_id),
+                str(event.conversation_id), event.reply_category, None),
+            NotificationPriority.LOW,
+        )
     if isinstance(event, HandoffRequested):
         if (
             not isinstance(event.handoff_id, str)
