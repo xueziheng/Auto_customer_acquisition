@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref } from "vue";
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
 import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
@@ -26,7 +26,13 @@ const labels: Record<View["status"], string> = { pending: "待处理", in_progre
 const disabled = computed(() => loading.value || saving.value || !view.value || unresolved.value !== null || !gate.hasIdentity.value);
 const draftDisabled = computed(() => disabled.value || props.sourceKind !== "full_mime");
 const draftDirty = computed(() => draftSubject.value !== (view.value?.draft?.subject ?? "") || bodyText.value !== (view.value?.draft?.body_text ?? ""));
+let pollTimer: ReturnType<typeof globalThis.setInterval> | undefined;
+function stopPolling(): void {
+  if (pollTimer !== undefined) globalThis.clearInterval(pollTimer);
+  pollTimer = undefined;
+}
 function reset(): void {
+  stopPolling();
   view.value = null; draftSubject.value = ""; bodyText.value = ""; note.value = "";
   status.value = handlingBaseline.value = "in_progress"; error.value = ""; notice.value = ""; unresolved.value = null;
   loading.value = false; saving.value = false;
@@ -133,7 +139,14 @@ function saveHandling(): void {
   if (disabled.value || !note.value.trim()) return;
   void submit({ kind: "handling", key: globalThis.crypto.randomUUID(), body: { expected_revision: view.value!.revision, status: status.value, note: note.value.trim() } });
 }
-onMounted(() => { void load(); });
+onMounted(() => {
+  void load();
+  pollTimer = globalThis.setInterval(() => {
+    if (gate.hasIdentity.value && !loading.value && !saving.value && !unresolved.value
+        && !draftDirty.value && !note.value && status.value === handlingBaseline.value) void load();
+  }, 30000);
+});
+onBeforeUnmount(stopPolling);
 </script>
 
 <template>

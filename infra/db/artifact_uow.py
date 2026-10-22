@@ -8,6 +8,7 @@ from typing import Self
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from artifact_store.repository import GeneratedArtifactRepository, RawArtifactRepository
 from infra.db.repositories.artifacts import (
     GeneratedArtifactRepositoryImpl,
     RawArtifactRepositoryImpl,
@@ -31,8 +32,8 @@ class SqlAlchemyArtifactUnitOfWork:
     async def __aenter__(self) -> Self:
         session = self._factory()
         self._session = session
-        self.raw = RawArtifactRepositoryImpl(session, self._tenant_id)
-        self.generated = GeneratedArtifactRepositoryImpl(session, self._tenant_id)
+        self.raw: RawArtifactRepository = RawArtifactRepositoryImpl(session, self._tenant_id)
+        self.generated: GeneratedArtifactRepository = GeneratedArtifactRepositoryImpl(session, self._tenant_id)
         return self
 
     async def __aexit__(

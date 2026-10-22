@@ -154,7 +154,7 @@ def build_model_composition(
 
 def configured_model_provider(
     settings: StandaloneModelSettings, resolver: SecretResolver
-) -> ModelProvider:
+) -> DeepSeekClient:
     """显式部署版本决定模型与凭证，不改变 Gateway 授权和限额。"""
     if settings.api_key_file is not None:
         if settings.api_control_tenant is None:

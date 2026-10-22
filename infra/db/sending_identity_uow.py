@@ -9,6 +9,16 @@ from typing import Self
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from domains.sending_identity.repository import (
+    AuthenticationCheckRepository,
+    AuthenticationCheckRequestRepository,
+    IdentityActionRepository,
+    ReputationRepository,
+    SendCounterRepository,
+    SendingDomainRepository,
+    SendingIdentityRepository,
+    SendReservationRepository,
+)
 from infra.db.outbox import PostgresEventBus
 from infra.db.repositories.sending_identities import (
     AuthenticationCheckRepositoryImpl,
@@ -20,6 +30,7 @@ from infra.db.repositories.sending_identities import (
     SendingIdentityRepositoryImpl,
     SendReservationRepositoryImpl,
 )
+from shared.events.bus import EventBus
 from shared.schemas.identifiers import TenantId
 
 _cleanup_logger = logging.getLogger("infra.db.sending_identity.uow")
@@ -42,17 +53,17 @@ class SqlAlchemySendingIdentityUnitOfWork:
     async def __aenter__(self) -> Self:
         session = self._factory()
         self._session = session
-        self.domains = SendingDomainRepositoryImpl(session, self._tenant_id)
-        self.identities = SendingIdentityRepositoryImpl(session, self._tenant_id)
-        self.auth_checks = AuthenticationCheckRepositoryImpl(session, self._tenant_id)
-        self.auth_check_requests = AuthenticationCheckRequestRepositoryImpl(
+        self.domains: SendingDomainRepository = SendingDomainRepositoryImpl(session, self._tenant_id)
+        self.identities: SendingIdentityRepository = SendingIdentityRepositoryImpl(session, self._tenant_id)
+        self.auth_checks: AuthenticationCheckRepository = AuthenticationCheckRepositoryImpl(session, self._tenant_id)
+        self.auth_check_requests: AuthenticationCheckRequestRepository = AuthenticationCheckRequestRepositoryImpl(
             session, self._tenant_id
         )
-        self.reputation = ReputationRepositoryImpl(session, self._tenant_id)
-        self.counters = SendCounterRepositoryImpl(session, self._tenant_id)
-        self.reservations = SendReservationRepositoryImpl(session, self._tenant_id)
-        self.actions = IdentityActionRepositoryImpl(session, self._tenant_id)
-        self.bus = PostgresEventBus(session, self._tenant_id, now=self._now)
+        self.reputation: ReputationRepository = ReputationRepositoryImpl(session, self._tenant_id)
+        self.counters: SendCounterRepository = SendCounterRepositoryImpl(session, self._tenant_id)
+        self.reservations: SendReservationRepository = SendReservationRepositoryImpl(session, self._tenant_id)
+        self.actions: IdentityActionRepository = IdentityActionRepositoryImpl(session, self._tenant_id)
+        self.bus: EventBus = PostgresEventBus(session, self._tenant_id, now=self._now)
         return self
 
     async def __aexit__(

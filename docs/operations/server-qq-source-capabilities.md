@@ -6,7 +6,7 @@
 
 ## 配置与 UI 保留
 
-逐文件忽略 CRLF 比较，以下目录/组件/接口/配置存储在 QQ 与昨日升级之间内容一致；集成结果仍需回核：
+逐文件忽略 CRLF 比较，以下目录/组件/接口/配置存储在 QQ 与昨日升级之间内容一致；已对整合提交 e8fa19f 回核下述11项来源配置文件，CRLF归一后均与QQ基线一致：
 
 - `shared/schemas/discovery_sources.py`
 - `apps/web/src/components/PlatformDataSources.vue`

@@ -7,10 +7,12 @@ import logging
 import signal
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from artifact_store.repository import ArtifactUnitOfWork
 from artifact_store.service_impl import RawArtifactStoreImpl
 from connectors.object_store.bounded import S3BoundedObjectBlobTransport
 from connectors.object_store.config import S3ObjectStoreSettings
@@ -42,7 +44,12 @@ from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from infra.pilot.config import PilotConfig, private_read
 from shared.errors import PermissionDenied
 from shared.schemas.evidence_read import ObjectReadLimits
-from shared.schemas.identifiers import IdempotencyKey, SendingIdentityId, new_id
+from shared.schemas.identifiers import (
+    IdempotencyKey,
+    SendingIdentityId,
+    TenantId,
+    new_id,
+)
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.business_reply import (
     MANIFEST,
@@ -52,7 +59,8 @@ from tool_gateway.handlers.business_reply import (
 )
 from tool_gateway.handlers.business_reply_evidence import BusinessReplyEvidenceReader
 from tool_gateway.manifest import ToolRegistry
-from tool_gateway.pipeline import ToolGateway
+from tool_gateway.pipeline import ToolGateway, _GatewayRegistry
+from tool_gateway.repository import ToolGatewayUnitOfWork
 from workflows.business_reply.flow import BusinessReplyDriver
 
 
@@ -104,10 +112,11 @@ async def run(args) -> int:
                 (b"contact-value-v1", value.encode())
             )[0],
         )
+        def identity_uow(tenant_id: TenantId) -> SqlAlchemySendingIdentityUnitOfWork:
+            return SqlAlchemySendingIdentityUnitOfWork(sessions, tenant_id, now=lambda: datetime.now(UTC))
+
         identity_service = SendingIdentityServiceImpl(
-            lambda tenant: SqlAlchemySendingIdentityUnitOfWork(
-                sessions, tenant, now=lambda: datetime.now(UTC)
-            ),
+            identity_uow,
             Phase1SendingIdentityAuthorizer(scope.actor.tenant_id),
             StandardAuditLogger(),
             now=lambda: datetime.now(UTC),
@@ -120,13 +129,17 @@ async def run(args) -> int:
             ),
             "system",
         )
-        ledger = lambda tenant: SqlAlchemyToolGatewayUnitOfWork(sessions, tenant)
+        def ledger(tenant_id: TenantId) -> ToolGatewayUnitOfWork:
+            return SqlAlchemyToolGatewayUnitOfWork(sessions, tenant_id)
+
+        def artifact_uow(tenant_id: TenantId) -> ArtifactUnitOfWork:
+            return SqlAlchemyArtifactUnitOfWork(sessions, tenant_id)
         settings = S3ObjectStoreSettings.from_pilot_environ(
             profile.runtime_environment()
         )
         objects = DeferredS3ObjectBlobTransport(settings, profile)
         store = RawArtifactStoreImpl(
-            lambda tenant: SqlAlchemyArtifactUnitOfWork(sessions, tenant),
+            artifact_uow,
             objects,
             4 * 1024 * 1024,
             lambda: datetime.now(UTC),
@@ -166,8 +179,9 @@ async def run(args) -> int:
         handler = BusinessReplyHandler(scope, fingerprints, connector)
         registry = ToolRegistry()
         registry.register(MANIFEST, handler)
+        # 此具名注册只含上述已校验manifest/handler；Pipeline使用只读的结构化端口。
         gateway = ToolGateway(
-            registry,
+            cast(_GatewayRegistry, registry),
             {n: BusinessReplyCheck(n, scope, policy) for n in STAGES},
             ledger,
             lease_duration=timedelta(seconds=120),

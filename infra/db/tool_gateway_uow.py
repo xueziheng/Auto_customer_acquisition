@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.db.repositories.tool_calls import ToolCallRepositoryImpl
 from shared.schemas.identifiers import TenantId
+from tool_gateway.repository import ToolCallRepository
 
 _cleanup_logger = logging.getLogger("infra.db.tool_gateway.uow")
 
@@ -33,7 +34,7 @@ class SqlAlchemyToolGatewayUnitOfWork:
     async def __aenter__(self) -> Self:
         session = self._factory()
         self._session = session
-        self.calls = ToolCallRepositoryImpl(
+        self.calls: ToolCallRepository = ToolCallRepositoryImpl(
             session,
             self._tenant_id,
             now=self._now,
