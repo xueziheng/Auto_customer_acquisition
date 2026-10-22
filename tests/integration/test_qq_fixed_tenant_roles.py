@@ -17,9 +17,18 @@ from infra.db.qq_trial_tables import QQSentAliasRow, QQTrialEventRow, QQTrialRow
 from infra.db.session import create_engine_from
 from infra.db.tables import RawArtifactRow, ToolCallRow
 from infra.db.tenant_security import (
+    _POLICIES_QUERY,
+    _POLICY_NAMES,
+    _PREDICATE,
+    _ROLE_QUERY,
+    _TABLES_QUERY,
+    _check_role,
+    _check_table_privileges,
+    _expression_tokens,
     assert_tenant_database_isolation,
     tenant_database_role,
 )
+from shared.errors import TenantIsolationViolation
 from shared.schemas.identifiers import new_id
 from tests.integration.test_qq_inbound_scope import seed
 from tests.integration.test_reply_review_migration import migrate
@@ -183,12 +192,28 @@ async def schema(connection):
 async def assert_historical_0080_security(engine, tenant):
     """只按0080三张QQ表验证实际角色/策略，不用当前全库metadata校验旧schema。"""
     async with engine.begin() as connection:
-        flags = dict((await connection.execute(text(
-            "SELECT current_user::text AS role, rolsuper, rolinherit, rolbypassrls, rolcreaterole, rolcreatedb "
-            "FROM pg_roles WHERE rolname=current_user"
-        ))).mappings().one())
-        assert flags.pop("role") == tenant_database_role(tenant)
-        assert not any(flags.values())
+        role = tenant_database_role(tenant)
+        row = (await connection.execute(_ROLE_QUERY, {"role":role})).mappings().one()
+        _check_role(row, role, runtime=True)
+        tables = [dict(row) for row in (await connection.execute(_TABLES_QUERY)).mappings()
+                  if row["relname"] in TABLES]
+        assert {row["relname"] for row in tables} == set(TABLES)
+        assert all(row[key] for row in tables for key in
+                   ("attnotnull", "relrowsecurity", "relforcerowsecurity"))
+        await _check_table_privileges(connection, role, tables)
+        entries = [dict(row) for row in (await connection.execute(_POLICIES_QUERY)).mappings()
+                   if row["relname"] in TABLES]
+        predicate = _expression_tokens(_PREDICATE)
+        for table in TABLES:
+            policies = [entry for entry in entries if entry["relname"] == table]
+            assert len(policies) == 2
+            assert {entry["polname"] for entry in policies} == set(_POLICY_NAMES)
+            for entry in policies:
+                assert entry["polcmd"] == "*"
+                assert entry["polpermissive"] == _POLICY_NAMES[entry["polname"]]
+                assert entry["public_policy"]
+                assert _expression_tokens(entry["using_expression"] or "") == predicate
+                assert _expression_tokens(entry["check_expression"] or "") == predicate
         for guc in ("app.tenant_id", "tradeos.tenant_id"):
             await connection.execute(text("SELECT set_config(:guc,:foreign,true)"), {"guc":guc,"foreign":new_id("tn")})
         for table in TABLES:
@@ -211,6 +236,34 @@ async def assert_historical_0080_security(engine, tenant):
         ))).all()]
         assert len(rls) == 3 and all(enabled and forced for _,enabled,forced in rls)
     return policies, rls
+
+
+async def assert_historical_privilege_regressions(admin, engine, tenant):
+    """真实撤授权限验证历史检查不会把缺少INSERT权限误判为RLS隔离。"""
+    role = tenant_database_role(tenant)
+    for table in TABLES:
+        async with admin.begin() as connection:
+            await connection.execute(text(f'REVOKE INSERT, UPDATE, DELETE ON {table} FROM "{role}"'))
+        try:
+            with pytest.raises(TenantIsolationViolation):
+                await assert_historical_0080_security(engine, tenant)
+        finally:
+            async with admin.begin() as connection:
+                await connection.execute(text(f'GRANT INSERT, UPDATE, DELETE ON {table} TO "{role}"'))
+        for privilege in ("TRUNCATE", "REFERENCES", "TRIGGER", "SELECT WITH GRANT OPTION",
+                          "INSERT WITH GRANT OPTION", "UPDATE WITH GRANT OPTION", "DELETE WITH GRANT OPTION"):
+            async with admin.begin() as connection:
+                action = privilege.removesuffix(" WITH GRANT OPTION")
+                option = " WITH GRANT OPTION" if privilege.endswith(" WITH GRANT OPTION") else ""
+                await connection.execute(text(f'GRANT {action} ON {table} TO "{role}"{option}'))
+            try:
+                with pytest.raises(TenantIsolationViolation):
+                    await assert_historical_0080_security(engine, tenant)
+            finally:
+                revoke = ("GRANT OPTION FOR " + privilege.removesuffix(" WITH GRANT OPTION")
+                          if privilege.endswith(" WITH GRANT OPTION") else privilege)
+                async with admin.begin() as connection:
+                    await connection.execute(text(f'REVOKE {revoke} ON {table} FROM "{role}"'))
 
 
 async def test_0080_nonempty_roundtrip_retains_evidence_and_revokes_rollback_access(db_url):
@@ -238,7 +291,17 @@ async def test_0080_nonempty_roundtrip_retains_evidence_and_revokes_rollback_acc
                 values = await seed_qq(engine, tenant)
                 await assert_tenant_database_isolation(engine, tenant)
                 assert migrate(url, "downgrade", "0080") == 0
+                await assert_historical_privilege_regressions(target, engine, tenant)
                 policies_before, _ = await assert_historical_0080_security(engine, tenant)
+                # 相同表和INSERT形状先证明本企业可写；回滚合成增量，保留原件行数断言。
+                local_event = new_id("qqe")
+                async with engine.begin() as connection:
+                    result = await connection.execute(insert(QQTrialEventRow).values(**{
+                        **values[2], "event_id":local_event,
+                    }).returning(QQTrialEventRow.event_id))
+                    assert result.scalar_one() == local_event
+                    assert await connection.scalar(text("SELECT count(*) FROM qq_reply_trial_events")) == 2
+                    await connection.rollback()
                 await rejected(engine, insert(QQTrialEventRow).values(**{
                     **values[2], "tenant_id":new_id("tn"), "event_id":new_id("qqe"),
                 }), state="42501")
