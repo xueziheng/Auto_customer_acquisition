@@ -4,7 +4,7 @@
 
 **Goal:** 在服务器 QQ 精确备份上合并昨日升级并验证功能保留。
 
-**Architecture:** QQ 快照是基线，昨日分支是增量输入。合并冲突按真实入口与接口逐项解决，测试证明两边可共存。服务器始终只读。
+**Architecture:** QQ 快照是基线，昨日分支是增量输入。合并冲突按真实入口与接口逐项解决，测试证明两边可共存。按用户后续明确要求，在服务器QQ独立checkout完成修复和验证，冷备份后切换QQ；原主环境保持运行。
 
 **Tech Stack:** Python 3.12、FastAPI、SQLAlchemy、Postgres、Vue 3、TypeScript、Vitest。
 
@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - 不使用 T7 为源码基线，不改两个已推送备份分支。
-- 不读真实凭证/业务数据，不进行真实邮件/模型/Provider 调用或服务器部署。
+- 真实凭证仅由受信宿主解析，不输出给模型/Git；允许QQ备份/配置保留/迁移/切换及有界免费来源诊断。禁止真实邮件测试；真实模型未作为本轮测试内容。
 - 保留 QQ UI、知识、平台配置引用、获客源注册与执行，九条硬边界不放宽。
 - 不用登记数或合成测试声称真实来源全部可用。
 
@@ -38,8 +38,21 @@
 - Consumes: QQ `5b6474a`、升级 `682c541`、共同基础 `22ece5a`、冻结的两个服务器 manifest。
 - Produces: QQ 为第一父提交的合并结果、保持原始 SourceDefinition/配置协议的获客路径、兼容的询盘/回复/普通对话装配、单 head 迁移、UI 与后端组合回归证据。
 
-- [ ] Step 1: 比较两边实际 tree 与入口，记录归并方案；读取所有适用 AGENTS/HANDBOOK。先运行 QQ 独有/迁移相关测试，记录既有失败，不静默修改原始备份。
-- [ ] Step 2: 在新分支开始合并 `origin/codex/tradeos-agent-upgrade`，按来源逐项解决；合并既有实现无需伪造新 TDD 失败，任何新修复先补/运行确实失败的回归。Expected: 两边已授权能力都保留，无未解决冲突。
-- [ ] Step 3: 跑上列组合测试与获客源配置、调度、执行测试。Expected: PASS；具体未覆盖真实来源逐项记为未实测。
-- [ ] Step 4: 跑结构、ruff、mypy、完整 unit/evals、相关隔离 PG 集成、Web test/lint/typecheck/build 与 API 生成一致性。Expected: PASS 或明确列出确切环境阻塞，不能隐藏失败。
-- [ ] Step 5: 生成保留矩阵与限制，结构自检后提交合并及必要修复。使用临时 git identity `Codex <codex@localhost>`；不要 push（控制者审查后推送）。Expected: clean branch，QQ 和升级都是祖先，无凭证。
+- [x] Step 1: 比较两边实际 tree 与入口，记录归并方案；读取所有适用 AGENTS/HANDBOOK。先运行 QQ 独有/迁移相关测试，记录既有失败，不静默修改原始备份。
+- [x] Step 2: 在新分支开始合并 `origin/codex/tradeos-agent-upgrade`，按来源逐项解决；合并既有实现无需伪造新 TDD 失败，任何新修复先补/运行确实失败的回归。Expected: 两边已授权能力都保留，无未解决冲突。
+- [x] Step 3: 跑上列组合测试与获客源配置、调度、执行测试。Expected: PASS；具体未覆盖真实来源逐项记为未实测。
+- [x] Step 4: 跑结构、ruff、mypy、完整 unit/evals、相关隔离 PG 集成、Web test/lint/typecheck/build 与 API 生成一致性。Expected: PASS 或明确列出确切环境阻塞，不能隐藏失败。
+- [x] Step 5: 生成保留矩阵与限制，结构自检后提交合并及必要修复。使用临时 git identity `Codex <codex@localhost>`；实现者不自行 push；控制者审查、服务器验收及文档完成后按用户授权推送。Expected: clean branch，QQ 和升级都是祖先，无凭证。
+
+
+### 最终服务器验收与切换
+
+- [x] QQ跟进安全轮询及968文件类型检查修复。
+- [x] Linux浏览器/生命周期/MIME兼容问题修复，保留原失败日志并运行208项受影响回归。
+- [x] 0080历史角色测试修复，0086→0102现有租户角色验证通过；并行临时库teardown干扰由独占重试闭合。
+- [x] 33来源逐项审计，88项受控来源测试；免费TED/Hunter诊断及DeepSeek/Tavily门禁结果逐项记录。
+- [x] QQ冷备份、原配置保留、4组来源设置与23条备注迁入、迁移0102、源码切换与健康检查。
+- [x] 自动收发关闭，任务临时PostgreSQL清理，原主环境未切换。
+- [x] 最终报告与回退说明完成；控制者在文档提交后推送并单独核对GitHub SHA。
+
+完整结果见[最终验收报告](../../operations/server-qq-acceptance-20261023.md)。18项待接入来源、缺少真实搜索配置及尚未执行的真实邮箱验收是明确保留的限制，不记为已完成的生产功能。

@@ -1,0 +1,423 @@
+{
+  "date": "2026-10-23 Asia/Shanghai",
+  "scope": "33 selected来源逐项检查；不是33个联网采集均通过",
+  "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+  "selected_count": 33,
+  "planned_count": 18,
+  "web_strategy_count": 11,
+  "credential_configurations_imported": [
+    "apollo",
+    "hunter",
+    "sam_gov",
+    "snov"
+  ],
+  "notes_imported": 23,
+  "real_email_tests": false,
+  "controlled_source_tests": 88,
+  "live_diagnostics": {
+    "diagnostic_scope": "system_source_smoke",
+    "supplier_http_total": 3,
+    "http_cap": 6,
+    "results": {
+      "tavily": {
+        "status": "not_run",
+        "reason": "exclusive_free_config_missing",
+        "supplier_http_requests": 0,
+        "gateway_status": "succeeded"
+      },
+      "deepseek": {
+        "status": "metadata_only",
+        "reason": "free_grant_not_proven",
+        "query_count": 0,
+        "supplier_http_requests": 1,
+        "gateway_status": "succeeded"
+      },
+      "ted": {
+        "status": "sample",
+        "query_count": 1,
+        "result_count": 1,
+        "sample_fields_present": {
+          "publication-number": true,
+          "notice-title": true
+        },
+        "result_urls": [
+          "https://ted.europa.eu/en/notice/674225-2026/xml",
+          "https://ted.europa.eu/bg/notice/674225-2026/pdf",
+          "https://ted.europa.eu/es/notice/674225-2026/pdf"
+        ],
+        "free_qualification": "official_no_account_public_API",
+        "workflow": "source_sample_only",
+        "supplier_http_requests": 1,
+        "gateway_status": "succeeded"
+      },
+      "hunter": {
+        "status": "account_verified",
+        "query_count": 0,
+        "workflow": "account_metadata_only",
+        "usage": {
+          "outcome": "success",
+          "checked_at": "2026-10-22T18:13:14.199110Z",
+          "counters": [
+            {
+              "kind": "credits",
+              "used": "0.5",
+              "limit": "50.0",
+              "remaining": "49.5"
+            },
+            {
+              "kind": "searches",
+              "used": "0",
+              "limit": "50",
+              "remaining": "49"
+            },
+            {
+              "kind": "verifications",
+              "used": "1",
+              "limit": "100",
+              "remaining": "99"
+            }
+          ],
+          "reset_date": "2026-11-11",
+          "retry_after_seconds": null
+        },
+        "supplier_http_requests": 1,
+        "gateway_status": "succeeded"
+      }
+    },
+    "page_requests": 0,
+    "model_requests": 0,
+    "business_writes": 0
+  },
+  "sources": [
+    {
+      "source_id": "hunter",
+      "name": "Hunter",
+      "declared_status": "partial",
+      "configuration_imported": true,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "账户、Domain Search、Verifier连接器及Gateway受控测试通过",
+      "live": "免费账户接口认证/额度通过；未调用真实Domain Search或Verifier",
+      "readiness": "contact_helpers_only"
+    },
+    {
+      "source_id": "apollo",
+      "name": "Apollo",
+      "declared_status": "planned",
+      "configuration_imported": true,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "pdl",
+      "name": "People Data Labs",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "snov",
+      "name": "Snov.io",
+      "declared_status": "planned",
+      "configuration_imported": true,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "ocp",
+      "name": "OCP Data Registry",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "ted",
+      "name": "TED",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "有界公共公告诊断测试通过；未装配库存链",
+      "live": "公开API返回1条样本，公告号/标题存在；未验证产品适配",
+      "readiness": "diagnostic_only"
+    },
+    {
+      "source_id": "find_a_tender",
+      "name": "英国 Find a Tender",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "contracts_finder",
+      "name": "英国 Contracts Finder",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "sam_gov",
+      "name": "SAM.gov Opportunities",
+      "declared_status": "planned",
+      "configuration_imported": true,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "canadabuys",
+      "name": "CanadaBuys",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "pncp",
+      "name": "巴西 PNCP",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "compras_gov_br",
+      "name": "巴西 Compras.gov.br",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "world_bank",
+      "name": "World Bank Procurement Notices",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "ungm",
+      "name": "UNGM",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "浏览器登录状态检查受控测试通过；未装配库存链",
+      "live": "未运行：部署绑定未启用",
+      "readiness": "not_integrated_inventory"
+    },
+    {
+      "source_id": "importyeti",
+      "name": "ImportYeti",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "volza",
+      "name": "Volza",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "panjiva",
+      "name": "Panjiva",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "importgenius",
+      "name": "ImportGenius",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "company_websites",
+      "name": "企业官网、联系页与公开店铺",
+      "declared_status": "partial",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "逐ID实际Collector/DiscoverySession调度、产品/地区绑定、官网证据投影通过",
+      "live": "未运行真实搜索",
+      "readiness": "blocked_search_configuration"
+    },
+    {
+      "source_id": "industry_directories",
+      "name": "行业企业名录",
+      "declared_status": "partial",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "逐ID实际Collector/DiscoverySession调度、产品/地区绑定、官网证据投影通过",
+      "live": "未运行真实搜索",
+      "readiness": "blocked_search_configuration"
+    },
+    {
+      "source_id": "trade_associations",
+      "name": "行业协会会员目录",
+      "declared_status": "partial",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "逐ID实际Collector/DiscoverySession调度、产品/地区绑定、官网证据投影通过",
+      "live": "未运行真实搜索",
+      "readiness": "blocked_search_configuration"
+    },
+    {
+      "source_id": "chambers",
+      "name": "商会会员网络",
+      "declared_status": "partial",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "逐ID实际Collector/DiscoverySession调度、产品/地区绑定、官网证据投影通过",
+      "live": "未运行真实搜索",
+      "readiness": "blocked_search_configuration"
+    },
+    {
+      "source_id": "trade_fairs",
+      "name": "展会展商目录",
+      "declared_status": "partial",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "逐ID实际Collector/DiscoverySession调度、产品/地区绑定、官网证据投影通过",
+      "live": "未运行真实搜索",
+      "readiness": "blocked_search_configuration"
+    },
+    {
+      "source_id": "dealer_networks",
+      "name": "品牌授权经销商网络",
+      "declared_status": "partial",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "逐ID实际Collector/DiscoverySession调度、产品/地区绑定、官网证据投影通过",
+      "live": "未运行真实搜索",
+      "readiness": "blocked_search_configuration"
+    },
+    {
+      "source_id": "company_procurement",
+      "name": "企业采购、供应商招募与 RFQ",
+      "declared_status": "partial",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "逐ID实际Collector/DiscoverySession调度、产品/地区绑定、官网证据投影通过",
+      "live": "未运行真实搜索",
+      "readiness": "blocked_search_configuration"
+    },
+    {
+      "source_id": "public_procurement_pages",
+      "name": "公开采购公告网页检索",
+      "declared_status": "partial",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "逐ID实际Collector/DiscoverySession调度、产品/地区绑定、官网证据投影通过",
+      "live": "未运行真实搜索",
+      "readiness": "blocked_search_configuration"
+    },
+    {
+      "source_id": "company_news",
+      "name": "企业新闻、公告与公开媒体",
+      "declared_status": "partial",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "逐ID实际Collector/DiscoverySession调度、产品/地区绑定、官网证据投影通过",
+      "live": "未运行真实搜索",
+      "readiness": "blocked_search_configuration"
+    },
+    {
+      "source_id": "rss",
+      "name": "企业与公告 RSS 订阅",
+      "declared_status": "planned",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "目录/配置契约通过；无完整库存采集实现",
+      "live": "未运行",
+      "readiness": "not_integrated"
+    },
+    {
+      "source_id": "linkedin_public",
+      "name": "公开 LinkedIn 公司页面",
+      "declared_status": "partial",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "逐ID实际Collector/DiscoverySession调度、产品/地区绑定、官网证据投影通过",
+      "live": "未运行真实搜索",
+      "readiness": "blocked_search_configuration"
+    },
+    {
+      "source_id": "trade_record_indexes",
+      "name": "公开贸易记录索引",
+      "declared_status": "partial",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "逐ID实际Collector/DiscoverySession调度、产品/地区绑定、官网证据投影通过",
+      "live": "未运行真实搜索",
+      "readiness": "blocked_search_configuration"
+    },
+    {
+      "source_id": "codex_cli",
+      "name": "Codex CLI",
+      "declared_status": "partial",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "真实Linux Codex CLI/bwrap + 合成本地Provider：5项通过",
+      "live": "未调用真实模型",
+      "readiness": "runner_verified_search_configuration_missing"
+    },
+    {
+      "source_id": "brave",
+      "name": "Brave Search",
+      "declared_status": "available",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "独立搜索连接器/Gateway受控测试通过；未装配库存链",
+      "live": "未运行：无来源配置",
+      "readiness": "not_integrated_inventory"
+    },
+    {
+      "source_id": "tavily",
+      "name": "Tavily",
+      "declared_status": "available",
+      "configuration_imported": false,
+      "code_commit": "f60563024997e01b8fa6d6cc12f66e47f9888f3e",
+      "controlled": "搜索/配额预留/恢复契约通过",
+      "live": "未运行：缺少专用免费账户配置",
+      "readiness": "not_configured"
+    }
+  ]
+}
