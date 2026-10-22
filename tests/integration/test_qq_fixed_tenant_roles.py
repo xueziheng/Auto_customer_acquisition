@@ -180,6 +180,39 @@ async def schema(connection):
     }
 
 
+async def assert_historical_0080_security(engine, tenant):
+    """只按0080三张QQ表验证实际角色/策略，不用当前全库metadata校验旧schema。"""
+    async with engine.begin() as connection:
+        flags = dict((await connection.execute(text(
+            "SELECT current_user::text AS role, rolsuper, rolinherit, rolbypassrls, rolcreaterole, rolcreatedb "
+            "FROM pg_roles WHERE rolname=current_user"
+        ))).mappings().one())
+        assert flags.pop("role") == tenant_database_role(tenant)
+        assert not any(flags.values())
+        for guc in ("app.tenant_id", "tradeos.tenant_id"):
+            await connection.execute(text("SELECT set_config(:guc,:foreign,true)"), {"guc":guc,"foreign":new_id("tn")})
+        for table in TABLES:
+            assert list((await connection.execute(text(f"SELECT tenant_id FROM {table}"))).scalars()) == [tenant]
+        policies = [tuple(row) for row in (await connection.execute(text(
+            "SELECT tablename,policyname,permissive,qual,with_check FROM pg_policies "
+            "WHERE tablename IN ('qq_sent_aliases','qq_reply_trials','qq_reply_trial_events') ORDER BY 1,2"
+        ))).all()]
+        assert len(policies) == 6
+        for table in TABLES:
+            assert {(name, mode) for t,name,mode,_,_ in policies if t == table} == {
+                ("tradeos_tenant_allow", "PERMISSIVE"), ("tradeos_tenant_guard", "RESTRICTIVE")}
+        for _,_,_,using,check in policies:
+            for predicate in (using,check):
+                assert all(part in predicate for part in ("CURRENT_USER", "sha256", "tenant_id"))
+                assert "current_setting" not in predicate
+        rls = [tuple(row) for row in (await connection.execute(text(
+            "SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid IN "
+            "('qq_sent_aliases'::regclass,'qq_reply_trials'::regclass,'qq_reply_trial_events'::regclass) ORDER BY 1"
+        ))).all()]
+        assert len(rls) == 3 and all(enabled and forced for _,enabled,forced in rls)
+    return policies, rls
+
+
 async def test_0080_nonempty_roundtrip_retains_evidence_and_revokes_rollback_access(db_url):
     name = "qq_fixed_roles_"+uuid4().hex
     admin = create_engine_from(db_url)
@@ -196,19 +229,27 @@ async def test_0080_nonempty_roundtrip_retains_evidence_and_revokes_rollback_acc
         async with target.connect() as connection:
             before = await schema(connection)
         assert migrate(url, "upgrade", "0080") == 0
+        # 当前provision只服务当前schema；先在head创建受限角色和合成原件，再回到待验0080。
+        assert migrate(url, "upgrade", "head") == 0
         async with runtime_database_scope(url.render_as_string(False)) as provision:
             tenant = new_id("tn")
             engine = create_engine_from(await provision(tenant))
             try:
-                await seed_qq(engine, tenant)
+                values = await seed_qq(engine, tenant)
                 await assert_tenant_database_isolation(engine, tenant)
+                assert migrate(url, "downgrade", "0080") == 0
+                policies_before, _ = await assert_historical_0080_security(engine, tenant)
+                await rejected(engine, insert(QQTrialEventRow).values(**{
+                    **values[2], "tenant_id":new_id("tn"), "event_id":new_id("qqe"),
+                }), state="42501")
                 assert migrate(url, "downgrade", "0079") == 0
                 for table in TABLES:
                     await rejected(engine, text(f"SELECT * FROM {table}"), state="42501")
                 # 0079 自己的非空证据回退保护仍有效，不能删除数据强制通过。
                 assert migrate(url, "downgrade", "0078") != 0
                 assert migrate(url, "upgrade", "0080") == 0
-                await assert_tenant_database_isolation(engine, tenant)
+                policies_after, _ = await assert_historical_0080_security(engine, tenant)
+                assert policies_after == policies_before
                 async with engine.connect() as connection:
                     assert [await connection.scalar(text(f"SELECT count(*) FROM {t}")) for t in TABLES] == [1,1,1]
                     assert await schema(connection) == before
@@ -221,10 +262,58 @@ async def test_0080_nonempty_roundtrip_retains_evidence_and_revokes_rollback_acc
                         "('qq_sent_aliases'::regclass,'qq_reply_trials'::regclass,'qq_reply_trial_events'::regclass) ORDER BY 1"
                     ))).all()]
                     assert all(enabled and forced for _, enabled, forced in rls)
-                evidence("qq-0080-roundtrip", {"path":["empty","0079","0080","0079","0080"],
+                evidence("qq-0080-roundtrip", {"path":["empty","0079","0080","head_fixture_setup","0080","0079","0080"],
                     "nonempty_0078_downgrade_refused":True, "rollback_runtime_read_sqlstate":"42501",
                     "preserved_rows_per_table":[1,1,1], "columns_constraints_triggers":before,
                     "final_policies":policies, "final_rls":rls})
+            finally:
+                await engine.dispose()
+    finally:
+        if target is not None:
+            await target.dispose()
+        try:
+            if created:
+                async with admin.connect() as connection:
+                    connection = await connection.execution_options(isolation_level="AUTOCOMMIT")
+                    await connection.execute(text(f'DROP DATABASE "{name}" WITH (FORCE)'))
+        finally:
+            await admin.dispose()
+
+
+async def test_0086_existing_runtime_role_retains_privileges_after_upgrade(db_url):
+    """只测本次QQ实际前向路径；旧表授权不会因未来表曾经存在而残留。"""
+    name = "qq_upgrade_roles_" + uuid4().hex
+    admin = create_engine_from(db_url)
+    url = make_url(str(db_url)).set(database=name)
+    target = None
+    created = False
+    try:
+        async with admin.connect() as connection:
+            connection = await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await connection.execute(text(f'CREATE DATABASE "{name}"'))
+            created = True
+        assert migrate(url, "upgrade", "head") == 0
+        target = create_engine_from(url.render_as_string(False))
+        async with runtime_database_scope(url.render_as_string(False)) as provision:
+            tenant = new_id("tn")
+            engine = create_engine_from(await provision(tenant))
+            try:
+                await assert_tenant_database_isolation(engine, tenant)
+                assert migrate(url, "downgrade", "0086") == 0
+                async with engine.connect() as connection:
+                    assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "0086"
+                    for table in ("reply_classification_resumptions", "reply_classification_retries"):
+                        assert await connection.scalar(text(
+                            "SELECT has_table_privilege(current_user,:table,'SELECT') AND "
+                            "has_table_privilege(current_user,:table,'INSERT') AND "
+                            "has_table_privilege(current_user,:table,'UPDATE') AND "
+                            "has_table_privilege(current_user,:table,'DELETE')"
+                        ), {"table":table})
+                    assert await connection.scalar(text("SELECT to_regclass('public.dialogue_executions')")) is None
+                assert migrate(url, "upgrade", "head") == 0
+                await assert_tenant_database_isolation(engine, tenant)
+                evidence("qq-0086-forward-role", {"path":["head_role_fixture","0086","head"],
+                    "current_role_and_all_table_privileges_verified":True})
             finally:
                 await engine.dispose()
     finally:
