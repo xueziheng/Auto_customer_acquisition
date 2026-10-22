@@ -22,7 +22,7 @@ from infra.db.model_configuration import SqlModelConfigurationRepository
 from infra.db.model_usage import SqlModelUsageRepository
 from infra.db.research_model_binding import ResearchRunBindingReader
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
-from infra.standalone.settings import StandaloneModelSettings
+from infra.standalone.settings import StandaloneModelSettings, deployment_verification
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.model_generate import ModelProvider
 from tool_gateway.repository import ToolGatewayUnitOfWork
@@ -33,7 +33,7 @@ def bind_research(core: SchedulerCoreServices, sessions: async_sessionmaker[Asyn
                   ports: ResearchRuntimePorts, provider_factory: Callable[[], ModelProvider] | None) -> ResearchRuntimePorts:
     lookup = Actor('system:research-model', EmployeeScope.SYSTEM, 'system')
     current = CurrentEmployeeIdentity(core.employee_scope, lookup)
-    configuration = ModelConfigurationServiceImpl(SqlModelConfigurationRepository(sessions, fingerprints), current, now=lambda: datetime.now(UTC))
+    configuration = ModelConfigurationServiceImpl(SqlModelConfigurationRepository(sessions, fingerprints, deployment_verification=deployment_verification(settings), deployment_provider=settings.provider), current, now=lambda: datetime.now(UTC))
     authority = ResearchModelAuthority(ResearchRunBindingReader(sessions), core.directives, core.employee_scope, lookup, configuration)
     composition = build_model_composition(settings=settings, resolver=resolver, authority=authority, usage=SqlModelUsageRepository(sessions),
         ledger_factory=lambda tenant_id: cast(ToolGatewayUnitOfWork, SqlAlchemyToolGatewayUnitOfWork(sessions, tenant_id)), fingerprints=fingerprints,

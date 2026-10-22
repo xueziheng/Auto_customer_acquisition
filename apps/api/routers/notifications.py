@@ -26,7 +26,8 @@ from ..middleware import ApiErrorResponse
 
 router = APIRouter()
 
-_NOTIFICATION_ID_RE = re.compile(r"ntf_[0-7][0-9A-HJKMNP-TV-Z]{25}")
+# 站内渠道生成 not_；兼容既有 ntf_，不放宽 ULID 与本人收件箱校验。
+_NOTIFICATION_ID_RE = re.compile(r"(?:not|ntf)_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _KNOWN_EMPLOYEE_ROLES = frozenset(
     {"boss", "manager", "sales", "sourcing", "product", "finance", "viewer"}
 )

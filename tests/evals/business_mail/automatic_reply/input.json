@@ -1,0 +1,9 @@
+{
+  "subject": "Automatic reply",
+  "body": "This is an automatic reply. I am out of office until next week.",
+  "candidate_response": {
+    "category": "other",
+    "reason": "自动回复中没有业务需求表达",
+    "evidence_quote": "This is an automatic reply"
+  }
+}

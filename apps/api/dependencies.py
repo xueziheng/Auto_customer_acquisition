@@ -25,6 +25,7 @@ from domains.demand.schemas import (
     NeedClusterView,
     ValidatedNeedView,
 )
+from domains.demand.service import DemandService
 from domains.directives.service import DirectiveService
 from domains.employees.permissions import (
     Actor as EmployeeActor,
@@ -77,6 +78,7 @@ from shared.schemas.identifiers import (
     EmployeeId,
     NeedClusterId,
     NeedHypothesisId,
+    ProspectAccountId,
     TenantId,
     UserId,
     ValidatedNeedId,
@@ -105,11 +107,15 @@ from workflows.employee_work_intake.schemas import (
 from workflows.engine.audit import RunAuditService
 from workflows.engine.runner import WorkflowEngine
 from workflows.reply_qualification.questions import ReplySuggestionApplication
+from workflows.reply_qualification.retry import ReplyRetryApplication
 from workflows.sourcing_case.application import (
     SourcingAdmissionApplication,
     SourcingCaseApplication,
 )
 
+from .composition.customer_followup import CustomerFollowupApplication
+from .composition.customer_preparation import CustomerPreparationApplication
+from .composition.customer_verification import CustomerVerificationApplication
 from .composition.enterprise_knowledge import EnterpriseKnowledgeApplication
 from .composition.quotations import QuotationHttpComposition
 from .composition.research_accounts import ResearchEvidenceReader
@@ -285,8 +291,12 @@ class ConfiguredApiDependencies:
     provider_readiness_actor: ProviderReadinessActor
     assistant: AssistantService | None = None
     model_configuration: ModelConfigurationService | None = None
+    customer_followup: CustomerFollowupApplication | None = None
+    customer_preparation: CustomerPreparationApplication | None = None
+    customer_verification: CustomerVerificationApplication | None = None
     prospecting: ProspectingService | None = None
     demand_radar: DemandRadarService | None = None
+    demand_service: DemandService | None = None
     directives: DirectiveService | None = None
     trade_manager: TradeManagerAgent | None = None
     approvals: ApprovalService | None = None
@@ -296,6 +306,7 @@ class ConfiguredApiDependencies:
     conversations: ConversationService | None = None
     mailbox: MailboxService | None = None
     reply_suggestions: ReplySuggestionApplication | None = None
+    reply_retry: ReplyRetryApplication | None = None
     commitments: CommitmentService | None = None
     costing: CostingService | None = None
     work_uploads: WorkUploadApplicationService | None = None
@@ -398,7 +409,9 @@ def get_api_dependencies(request: Request) -> ConfiguredApiDependencies:
 def get_identity_dependencies(request: Request) -> IdentityApiDependencies:
     """登录和本人邮箱只需真实员工依赖；不放宽完整业务 getter。"""
     dependencies = request.app.state.dependencies
-    if not isinstance(dependencies, (ConfiguredApiDependencies, MailboxApiDependencies)):
+    if not isinstance(
+        dependencies, (ConfiguredApiDependencies, MailboxApiDependencies)
+    ):
         raise TransientError("API 身份服务尚未配置")
     return dependencies
 
@@ -439,7 +452,9 @@ from .identity import RequestIdentity, resolve_request_identity
 async def get_request_identity(
     request: Request,
     settings: Annotated[ApiSettings, Depends(get_api_settings)],
-    dependencies: Annotated[IdentityApiDependencies, Depends(get_identity_dependencies)],
+    dependencies: Annotated[
+        IdentityApiDependencies, Depends(get_identity_dependencies)
+    ],
 ) -> RequestIdentity:
     """经 dev assertion 和 public EmployeeService DTO 解析请求身份。"""
     return await resolve_request_identity(request, settings, dependencies)
@@ -502,7 +517,11 @@ def require_employee_action(
 
 
 class CampaignScopeResolver(Protocol):
-    """把员工（含 manager 直系下属）映射到其创建/管辖的 Campaign 集合。"""
+    """把当前员工本人映射到其开发任务与真实归属账户。"""
+
+    async def account_ids_for(self, *, owner: str) -> frozenset[str]:
+        """读取当前员工本人的真实OwnershipLock账户，不扩大到下属。"""
+        ...
 
     async def campaign_ids_for(
         self, *, created_by: frozenset[str]
@@ -512,16 +531,16 @@ class CampaignScopeResolver(Protocol):
 async def resolve_outreach_scope(
     identity: RequestIdentity,
     dependencies: ConfiguredApiDependencies,
+    action: OutreachAction | None = None,
 ) -> OutreachScope:
     """按角色与员工机会所有权推导不可变触达作用域。
 
-    boss 直接 TENANT；manager/sales 用机会域已推导的 allowed_owners
-    （self + manager 直系下属）解析其创建/管辖的 Campaign 集合。
+    boss 使用TENANT；manager/sales的开发任务仅本人创建，Enrollment
+    仅读取本人真实OwnershipLock账户，不能借创建Campaign扩大客户范围。
     """
     if identity.employee.role == "boss":
         return OutreachScope(level=OutreachScopeLevel.TENANT)
-    owners = identity.opportunity_actor.scope.allowed_owners
-    created_by = frozenset(str(owner) for owner in (owners or frozenset()))
+    created_by = frozenset({str(identity.employee.employee_id)})
     campaign_ids = await dependencies.campaign_scope_resolver.campaign_ids_for(
         created_by=created_by
     )
@@ -530,6 +549,14 @@ async def resolve_outreach_scope(
         if identity.employee.role == "manager"
         else OutreachScopeLevel.SELF
     )
+    if action is not None and action.value.startswith("enrollment:"):
+        accounts = await dependencies.campaign_scope_resolver.account_ids_for(
+            owner=str(identity.employee.employee_id)
+        )
+        return OutreachScope(
+            level=level,
+            allowed_account_ids=frozenset(ProspectAccountId(v) for v in accounts),
+        )
     return OutreachScope(level=level, allowed_campaign_ids=campaign_ids)
 
 
@@ -545,7 +572,7 @@ async def resolve_outreach_access(
         raise ValidationError("API outreach gate 必须显式声明 typed action 与角色")
     if identity.employee.role not in allowed_roles:
         raise PermissionDenied("API role gate 默认拒绝")
-    scope = await resolve_outreach_scope(identity, dependencies)
+    scope = await resolve_outreach_scope(identity, dependencies, action)
     actor = OutreachActor(
         str(identity.employee.employee_id), scope, identity.employee.role
     )

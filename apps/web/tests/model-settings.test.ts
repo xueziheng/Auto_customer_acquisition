@@ -64,3 +64,36 @@ it('编辑期间后台版本变化时阻止覆盖，放弃旧修改后可基于�
   expect(writes[0]?.limits).toEqual({...limits,tenant_calls:3});
  } finally {app.unmount();}
 });
+
+it('显式取消调用次数上限保留其他限制并可恢复有限次数',async()=>{
+ const limits={window_seconds:86400,tenant_calls:3 as number|null,employee_calls:3 as number|null,tenant_concurrency:1,employee_concurrency:1,max_input_bytes:1024,max_output_tokens:128,timeout_seconds:10};
+ const current={provider:'deepseek',status:'verified',model:'test-model',configuration_version:'v1',can_probe:true,worker_available:true,model_data_export_enabled:true,limits};
+ const writes:Record<string,unknown>[]=[];
+ const provider={generation:()=>0,current:()=>({employeeId:'emp',tenantId:'tn',mode:'authenticated' as const}),subscribe:()=>()=>{}};
+ const client=createApiClient({baseUrl:'https://test.local',fetch:async input=>{
+  const request=input as Request;
+  if(request.url.endsWith('/health/capabilities'))return new Response(JSON.stringify([{name:'model',status:'enabled'}]),{headers:{'content-type':'application/json'}});
+  if(request.method==='POST')writes.push(await request.json());
+  return new Response(JSON.stringify(current),{headers:{'content-type':'application/json'}});
+ }},provider);
+ const host=document.createElement('div'),app=createApp(ModelSettingsPanel);app.provide('tradeos-api-client',client);
+ const flush=async()=>{for(let i=0;i<6;i++){await nextTick();await new Promise(r=>setTimeout(r,0));}};
+ try{
+  document.body.append(host);app.mount(host);await flush();
+  const company=host.querySelector('input[aria-label="公司调用上限不限次数"]') as HTMLInputElement;
+  const employee=host.querySelector('input[aria-label="每人调用上限不限次数"]') as HTMLInputElement;
+  expect(company).not.toBeNull();expect(employee).not.toBeNull();expect(writes).toHaveLength(0);
+  company.click();employee.click();await flush();
+  expect(host.textContent).toContain('模型服务商费用');
+  host.querySelector('form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await flush();
+  expect(writes[0]?.limits).toEqual({...limits,tenant_calls:null,employee_calls:null});
+  current.limits={...limits,tenant_calls:null,employee_calls:null};
+  [...host.querySelectorAll('button')].find(b=>b.textContent?.includes('刷新连接状态'))!.click();await flush();
+  expect(company.checked).toBe(true);expect(employee.checked).toBe(true);
+  company.click();await flush();
+  const input=host.querySelector('input[aria-label="公司调用上限"]') as HTMLInputElement;
+  input.value='12';input.dispatchEvent(new Event('input',{bubbles:true}));await flush();
+  host.querySelector('form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await flush();
+  expect(writes[1]?.limits).toEqual({...limits,tenant_calls:12,employee_calls:null});
+ }finally{app.unmount();host.remove();}
+});

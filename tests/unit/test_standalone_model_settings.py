@@ -66,7 +66,7 @@ def test_reply_switch_requires_explicit_valid_configuration():
 
 
 @pytest.mark.parametrize(
-    "tokens,valid", [(127, False), (128, True), (8192, True), (8193, False)]
+    "tokens,valid", [(127, False), (128, True), (8192, True), (8193, True), (32768, True)]
 )
 def test_reply_output_limits_match_existing_classifier(tokens, valid):
     config = {

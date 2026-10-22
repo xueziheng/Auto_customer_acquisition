@@ -8,6 +8,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from shared.schemas.discovery_diagnostic import DiscoveryDiagnostic
 from shared.schemas.identifiers import AgentTurnId, EmployeeId, RunId, TenantId, UserId
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
@@ -19,7 +20,10 @@ ModelCapability = Literal[
     "research",
     "model_probe",
     "reply_qualification",
+    "business_mail_triage",
+    "business_mail_followup",
     "knowledge_ingest",
+    "inventory_discovery",
 ]
 
 
@@ -60,8 +64,8 @@ class ModelLimits(ModelDTO):
     """部署方必须逐项提供，不能用测试阈值开启付费服务。"""
 
     window_seconds: PositiveInt
-    tenant_calls: PositiveInt
-    employee_calls: PositiveInt
+    tenant_calls: PositiveInt | None = Field(description="null表示不限制窗口调用次数")
+    employee_calls: PositiveInt | None = Field(description="null表示不限制窗口调用次数")
     tenant_concurrency: PositiveInt
     employee_concurrency: PositiveInt
     max_input_bytes: PositiveInt
@@ -78,16 +82,31 @@ class ModelInputImage(ModelDTO):
     """进程内受信图像；仅适配器显式编码，默认投影不包含原件。"""
 
     mime_type: Literal["image/png", "image/jpeg", "image/webp"]
-    data: bytes = Field(strict=True, repr=False, exclude=True, min_length=1, max_length=MAX_MODEL_IMAGE_BYTES)
+    data: bytes = Field(
+        strict=True,
+        repr=False,
+        exclude=True,
+        min_length=1,
+        max_length=MAX_MODEL_IMAGE_BYTES,
+    )
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     byte_length: int = Field(strict=True, gt=0, le=MAX_MODEL_IMAGE_BYTES)
 
     @model_validator(mode="after")
     def validate_content(self) -> ModelInputImage:
         magic_matches = (
-            (self.mime_type == "image/png" and self.data.startswith(b"\x89PNG\r\n\x1a\n"))
-            or (self.mime_type == "image/jpeg" and self.data.startswith(b"\xff\xd8\xff"))
-            or (self.mime_type == "image/webp" and self.data.startswith(b"RIFF") and self.data[8:12] == b"WEBP")
+            (
+                self.mime_type == "image/png"
+                and self.data.startswith(b"\x89PNG\r\n\x1a\n")
+            )
+            or (
+                self.mime_type == "image/jpeg" and self.data.startswith(b"\xff\xd8\xff")
+            )
+            or (
+                self.mime_type == "image/webp"
+                and self.data.startswith(b"RIFF")
+                and self.data[8:12] == b"WEBP"
+            )
         )
         if (
             self.byte_length != len(self.data)
@@ -105,7 +124,9 @@ class ModelRequest(ModelDTO):
     system_prompt: str = Field(min_length=1, repr=False, exclude=True)
     payload: dict[str, object] = Field(repr=False, exclude=True)
     max_output_tokens: PositiveInt
-    images: tuple[ModelInputImage, ...] = Field(default=(), repr=False, exclude=True, max_length=MAX_MODEL_IMAGES)
+    images: tuple[ModelInputImage, ...] = Field(
+        default=(), repr=False, exclude=True, max_length=MAX_MODEL_IMAGES
+    )
 
     @model_validator(mode="after")
     def bounded_images(self) -> ModelRequest:
@@ -177,6 +198,9 @@ ModelFailureCode = Literal[
 class ModelGenerationError(RuntimeError):
     """固定安全失败分类；不能据此自动重新发送可能已经执行的请求。"""
 
-    def __init__(self, code: ModelFailureCode) -> None:
+    def __init__(
+        self, code: ModelFailureCode, *, diagnostic: DiscoveryDiagnostic | None = None
+    ) -> None:
         super().__init__("模型调用未能交付可用结果")
         self.code = code
+        self.diagnostic = diagnostic

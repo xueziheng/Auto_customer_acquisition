@@ -114,7 +114,7 @@ it("生产根节点恢复前不挂业务，身份变化重建页面，失效卸�
   const app = createApp(App); app.use(router); app.provide("tradeos-api-client", shellClient); app.mount(host);
   expect(host.textContent).not.toContain("合成业务页面");
   const flush = async () => { for (let i = 0; i < 5; i++) { await nextTick(); await new Promise(resolve => setTimeout(resolve, 0)); } };
-  await flush(); expect(host.textContent).toContain("登录内部运营台");
+  await flush(); expect(host.querySelector('[aria-label="员工登录"] h1')?.textContent).toBe("登录 TradeOS");
   expect(shellRequests).toHaveLength(0);
   await auth.login("synthetic", crypto.randomUUID()); await flush();
   expect(pages).toBe(1);
@@ -122,9 +122,9 @@ it("生产根节点恢复前不挂业务，身份变化重建页面，失效卸�
   configureAuthenticatedIdentity("tn_other", "emp_other"); await flush();
   expect(pages).toBe(2);
   expect(host.querySelector('[aria-label="通知，0 条未读"]')).not.toBeNull();
-  expect(shellRequests.map(request => [request.method, new URL(request.url).pathname])).toEqual([
-    ["GET", "/api/notifications"], ["GET", "/api/auth/session"],
-    ["GET", "/api/notifications"], ["GET", "/api/auth/session"],
+  expect(shellRequests.filter(request => !request.url.endsWith("/prospects/customers/access")).map(request => [request.method, new URL(request.url).pathname])).toEqual([
+    ["GET", "/api/notifications"],
+    ["GET", "/api/notifications"],
   ]);
   clearAuthenticatedIdentity(); await flush();
   expect(host.textContent).not.toContain("合成业务页面");
@@ -250,11 +250,11 @@ it("I2 生产App在退出挂起且身份先失效时隐藏登录与业务入口"
   const pending = auth.logout(); await flush();
   clearAuthenticatedIdentity(); await flush();
   expect(host.textContent).toContain("正在完成退出");
-  expect(host.textContent).not.toContain("登录内部运营台");
+  expect(host.querySelector('[aria-label="员工登录"]')).toBeNull();
   expect(host.textContent).not.toContain("合成业务页面");
   expect(host.textContent).not.toContain("合成通知");
   release(new Response(null, { status: 204 })); await pending; await flush();
-  expect(host.textContent).toContain("登录内部运营台");
+  expect(host.querySelector('[aria-label="员工登录"] h1')?.textContent).toBe("登录 TradeOS");
   app.unmount(); host.remove(); vi.doUnmock("../components/NotificationBadge.vue");
 });
 

@@ -66,7 +66,7 @@ from domains.outreach.service import OutreachService
 from infra.db.artifact_uow import SqlAlchemyArtifactUnitOfWork
 from infra.db.unit_of_work import SqlAlchemyOpportunityUnitOfWork
 from shared.errors import ValidationError
-from shared.events.catalog import DomainEvent, HandoffRequested
+from shared.events.catalog import DomainEvent, HandoffRequested, ReplyReceived
 from shared.schemas.identifiers import (
     EmployeeId,
     ProspectAccountId,
@@ -85,13 +85,14 @@ from .account_discovery import (
 from .config import SchedulerWorkerConfig
 from .contact_binding import ContactRuntimeResources
 from .directive_reader import DirectiveDemandDiscoveryTaskReader
-from .main import EnterpriseKnowledgeDriverProtocol
+from .main import EnterpriseKnowledgeDriverProtocol, InventoryDriverProtocol
 from .notification_projection import NotificationAudienceMember
 from .reply_binding import ReplyRuntimeResources
 from .runtime import (
     AccountDiscoveryComposition,
     CampaignMessagingComposition,
     DemandDiscoveryComposition,
+    ReplyOutreachFacts,
     ReplyQualificationComposition,
     SchedulerCoreServices,
     SchedulerDomainDependencies,
@@ -162,7 +163,7 @@ class CurrentNotificationAudience:
             for e in employees
             if e.tenant_id == tenant_id
             and e.is_active
-            and e.role in {"boss", "manager"}
+            and e.role in ({"boss"} if isinstance(event, ReplyReceived) else {"boss", "manager"})
         }
         if ownership is not None:
             ids.add(ownership)
@@ -280,6 +281,12 @@ class CanonicalSchedulerBootstrap:
         | None
     ) = None
 
+    inventory_factory: Callable[[SchedulerCoreServices, async_sessionmaker[AsyncSession]], InventoryDriverProtocol] | None = None
+
+    def build_inventory(self, core: SchedulerCoreServices, sessions: async_sessionmaker[AsyncSession]) -> InventoryDriverProtocol | None:
+        """独立库存组合只在显式配置控制库与来源端口时构建。"""
+        return self.inventory_factory(core, sessions) if self.inventory_factory is not None else None
+
     knowledge_factory: Callable[[async_sessionmaker[AsyncSession]], EnterpriseKnowledgeDriverProtocol] | None = None
 
     def __post_init__(self) -> None:
@@ -320,8 +327,6 @@ class CanonicalSchedulerBootstrap:
             or not isinstance(self.secret_resolver, SecretResolver)
         ):
             raise ValidationError("scheduler Campaign 发送依赖未完整配置")
-        if self.reply_factory is not None and not self.campaign_enabled:
-            raise ValidationError("scheduler 回复依赖未完整配置")
 
     def build_knowledge(self, sessions: async_sessionmaker[AsyncSession]) -> EnterpriseKnowledgeDriverProtocol | None:
         """只构造处理驱动，不在装配时领取任务或触碰外部服务。"""
@@ -449,6 +454,15 @@ class CanonicalSchedulerBootstrap:
             RequestScopedHandoffEmployeeReader(employees),
             CurrentNotificationAudience(tenant, employees, opportunities),
             campaign_messaging=campaign,
+            reply_outreach_facts=(
+                ReplyOutreachFacts(
+                    CurrentContactEligibilityReader(tenant, core.prospecting, core.demand, now=now),
+                    CurrentSendingIdentityReader(tenant, core.sending, now=now),
+                    CurrentCampaignApprovalReader(tenant, core.approvals, now=now),
+                    CurrentReplyStatusReader(tenant, core.prospecting, core.conversations, now=now),
+                )
+                if self.reply_factory is not None and campaign is None else None
+            ),
             account_discovery=account,
             demand_discovery=discovery,
             sourcing_case=sourcing,

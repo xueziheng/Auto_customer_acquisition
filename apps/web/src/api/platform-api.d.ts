@@ -55,6 +55,265 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/company-models/{company_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Bind */
+        put: operations["bind_company_models__company_id__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data-sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Sources */
+        get: operations["list_sources_data_sources_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data-sources/{source_id}/browser-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Check Browser */
+        post: operations["check_browser_data_sources__source_id__browser_check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data-sources/{source_id}/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Save Credentials */
+        put: operations["save_credentials_data_sources__source_id__credentials_put"];
+        post?: never;
+        /** Delete Credentials */
+        delete: operations["delete_credentials_data_sources__source_id__credentials_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data-sources/{source_id}/note": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Save Note */
+        put: operations["save_note_data_sources__source_id__note_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data-sources/{source_id}/usage-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Check Usage */
+        post: operations["check_usage_data_sources__source_id__usage_check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inventory/companies/{tenant_id}/quota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read */
+        get: operations["read_inventory_companies__tenant_id__quota_get"];
+        /** Update */
+        put: operations["update_inventory_companies__tenant_id__quota_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/model-api": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get */
+        get: operations["get_model_api_get"];
+        /** Save */
+        put: operations["save_model_api_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/model-api/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply */
+        post: operations["apply_model_api_apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/model-api/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test */
+        post: operations["test_model_api_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/model-catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get */
+        get: operations["get_model_catalog_get"];
+        put?: never;
+        /** Create */
+        post: operations["create_model_catalog_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/model-catalog/{entry_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Save */
+        put: operations["save_model_catalog__entry_id__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/model-catalog/{entry_id}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Delete */
+        post: operations["delete_model_catalog__entry_id__delete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/model-catalog/{entry_id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test */
+        post: operations["test_model_catalog__entry_id__test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/model-catalog/{entry_id}/test-agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test Agent */
+        post: operations["test_agent_model_catalog__entry_id__test_agent_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/overview": {
         parameters: {
             query?: never;
@@ -76,6 +335,204 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * BrowserSourceView
+         * @description 过去的检查结果；stale 表示需要复测，不代表登录已经过期。
+         */
+        BrowserSourceView: {
+            /** Checked At */
+            checked_at?: string | null;
+            /** Next Check At */
+            next_check_at?: string | null;
+            /**
+             * Status
+             * @default not_checked
+             * @enum {string}
+             */
+            status: "not_checked" | "available" | "stale" | "login_required" | "blocked" | "rate_limited" | "unavailable";
+        };
+        /**
+         * CredentialField
+         * @description 声明管理界面允许填写的凭证字段名称，不承载字段值。
+         */
+        CredentialField: {
+            /** Label */
+            label: string;
+            /** Name */
+            name: string;
+        };
+        /**
+         * DataSourceNoteView
+         * @description 人工管理备注及修改人、时间；与供应商验证事实分开。
+         */
+        DataSourceNoteView: {
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Updated By */
+            updated_by?: string | null;
+        };
+        /**
+         * DataSourceUsageView
+         * @description 管理员额度投影；检查成功、额度可用和业务可用是不同事实。
+         */
+        DataSourceUsageView: {
+            /** Checked At */
+            checked_at?: string | null;
+            /**
+             * Counters
+             * @default []
+             */
+            counters: components["schemas"]["ProviderUsageCounter"][];
+            /** Next Check At */
+            next_check_at?: string | null;
+            /** Reset Date */
+            reset_date?: string | null;
+            /**
+             * Stale
+             * @default false
+             */
+            stale: boolean;
+            /**
+             * Status
+             * @default not_checked
+             * @enum {string}
+             */
+            status: "not_checked" | "available" | "low" | "partial_exhausted" | "exhausted" | "credential_invalid" | "payment_required" | "rate_limited" | "unavailable" | "unknown";
+        };
+        /**
+         * DataSourceView
+         * @description 目录能力与配置状态分开，保存不能表示接口已经启用。
+         */
+        DataSourceView: {
+            browser?: components["schemas"]["BrowserSourceView"] | null;
+            /**
+             * Can Check Browser
+             * @default false
+             */
+            can_check_browser: boolean;
+            /**
+             * Can Check Usage
+             * @default false
+             */
+            can_check_usage: boolean;
+            /** Can Edit */
+            can_edit: boolean;
+            /**
+             * Can Edit Note
+             * @default false
+             */
+            can_edit_note: boolean;
+            /** Configuration Version */
+            configuration_version?: string | null;
+            /**
+             * Configured
+             * @default false
+             */
+            configured: boolean;
+            definition: components["schemas"]["DiscoverySourceDefinition"];
+            /** Last Test Scope */
+            last_test_scope?: ("account" | "sample") | null;
+            note?: components["schemas"]["DataSourceNoteView"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
+             * Status Kind
+             * @default api
+             * @enum {string}
+             */
+            status_kind: "api" | "session" | "website";
+            /**
+             * Test Status
+             * @default not_run
+             * @enum {string}
+             */
+            test_status: "not_run" | "passed" | "failed" | "inconclusive";
+            /** Tested At */
+            tested_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Updated By */
+            updated_by?: string | null;
+            usage?: components["schemas"]["DataSourceUsageView"];
+        };
+        /**
+         * DataSourcesView
+         * @description 平台当前获客来源目录与非秘密配置投影。
+         */
+        DataSourcesView: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Sources */
+            sources: components["schemas"]["DataSourceView"][];
+        };
+        /**
+         * DiscoverySourceDefinition
+         * @description 来源静态说明；接口存在、凭证已保存与运行可用分别判断。
+         */
+        DiscoverySourceDefinition: {
+            /** Access Methods */
+            access_methods: string[];
+            /** Category */
+            category: string;
+            /** Coverage */
+            coverage: string;
+            /**
+             * Credential Fields
+             * @default []
+             */
+            credential_fields: components["schemas"]["CredentialField"][];
+            /**
+             * Credential Mode
+             * @default public
+             * @enum {string}
+             */
+            credential_mode: "public" | "api_key" | "oauth_client" | "access_token" | "commercial_pending" | "managed_session" | "authentication_pending";
+            /** Description */
+            description: string;
+            /** Docs Url */
+            docs_url?: string | null;
+            /**
+             * Integration Note
+             * @default 采集待接入；配置凭证不代表接口权限或运行可用。
+             */
+            integration_note: string;
+            /**
+             * Integration Status
+             * @default planned
+             * @enum {string}
+             */
+            integration_status: "available" | "partial" | "planned";
+            /** Name */
+            name: string;
+            /** Registration Url */
+            registration_url?: string | null;
+            /**
+             * Selection
+             * @default selected
+             * @enum {string}
+             */
+            selection: "selected" | "backup" | "example";
+            /** Source Id */
+            source_id: string;
+            /** Website Url */
+            website_url: string | null;
+        };
         /**
          * EnterpriseOverview
          * @description 不可取得的统计保留 null，不把故障或未配置表示为零。
@@ -108,6 +565,250 @@ export interface components {
             tenant_id: string;
             /** Validated Needs */
             validated_needs?: number | null;
+        };
+        /** HTTPValidationError */
+        HTTPValidationError: {
+            /** Detail */
+            detail?: components["schemas"]["ValidationError"][];
+        };
+        /** InventoryQuotaView */
+        InventoryQuotaView: {
+            /** Daily Limit */
+            daily_limit: number;
+            /** Remaining Today */
+            remaining_today: number;
+            /**
+             * Reset At
+             * Format: date-time
+             */
+            reset_at: string;
+            /** Tenant Id */
+            tenant_id: string;
+            /** Used Today */
+            used_today: number;
+        };
+        /** ModelApiView */
+        ModelApiView: {
+            /** Active Model */
+            active_model?: string | null;
+            /** Active Provider */
+            active_provider?: string | null;
+            /** Active Version */
+            active_version?: string | null;
+            /**
+             * Apply Status
+             * @default draft
+             * @enum {string}
+             */
+            apply_status: "draft" | "pending" | "applied" | "failed";
+            /**
+             * Base Url
+             * @default https://api.deepseek.com
+             */
+            base_url: string;
+            /** Configuration Version */
+            configuration_version?: string | null;
+            /**
+             * Configured
+             * @default false
+             */
+            configured: boolean;
+            /** Failure Code */
+            failure_code?: string | null;
+            /**
+             * Model
+             * @default
+             */
+            model: string;
+            /**
+             * Protocol
+             * @default responses
+             * @enum {string}
+             */
+            protocol: "responses" | "chat_completions";
+            /**
+             * Provider
+             * @default deepseek
+             * @enum {string}
+             */
+            provider: "deepseek" | "compatible";
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
+             * Supported Endpoints
+             * @default [
+             *       "https://api.deepseek.com",
+             *       "https://api.deepseek.com/v1",
+             *       "https://dashscope.aliyuncs.com/compatible-mode/v1",
+             *       "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+             *       "https://api.moonshot.cn/v1",
+             *       "https://api.moonshot.ai/v1",
+             *       "https://open.bigmodel.cn/api/paas/v4",
+             *       "https://api.siliconflow.cn/v1",
+             *       "https://api.siliconflow.com/v1",
+             *       "https://api.openai.com/v1",
+             *       "https://openrouter.ai/api/v1"
+             *     ]
+             */
+            supported_endpoints: string[];
+            /**
+             * Test Status
+             * @default not_run
+             * @enum {string}
+             */
+            test_status: "not_run" | "passed" | "failed";
+            /** Tested At */
+            tested_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /** ModelCatalogEntry */
+        ModelCatalogEntry: {
+            /** Active Model */
+            active_model?: string | null;
+            /** Active Provider */
+            active_provider?: string | null;
+            /** Active Version */
+            active_version?: string | null;
+            /** Agent Failure Code */
+            agent_failure_code?: string | null;
+            /**
+             * Agent Test Status
+             * @default not_run
+             * @enum {string}
+             */
+            agent_test_status: "not_run" | "passed" | "failed";
+            /** Agent Tested At */
+            agent_tested_at?: string | null;
+            /**
+             * Apply Status
+             * @default draft
+             * @enum {string}
+             */
+            apply_status: "draft" | "pending" | "applied" | "failed";
+            /**
+             * Base Url
+             * @default https://api.deepseek.com
+             */
+            base_url: string;
+            /** Configuration Version */
+            configuration_version?: string | null;
+            /**
+             * Configured
+             * @default false
+             */
+            configured: boolean;
+            /** Failure Code */
+            failure_code?: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Model
+             * @default
+             */
+            model: string;
+            /** Name */
+            name: string;
+            /**
+             * Protocol
+             * @default responses
+             * @enum {string}
+             */
+            protocol: "responses" | "chat_completions";
+            /**
+             * Provider
+             * @default deepseek
+             * @enum {string}
+             */
+            provider: "deepseek" | "compatible";
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
+             * Supported Endpoints
+             * @default [
+             *       "https://api.deepseek.com",
+             *       "https://api.deepseek.com/v1",
+             *       "https://dashscope.aliyuncs.com/compatible-mode/v1",
+             *       "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+             *       "https://api.moonshot.cn/v1",
+             *       "https://api.moonshot.ai/v1",
+             *       "https://open.bigmodel.cn/api/paas/v4",
+             *       "https://api.siliconflow.cn/v1",
+             *       "https://api.siliconflow.com/v1",
+             *       "https://api.openai.com/v1",
+             *       "https://openrouter.ai/api/v1"
+             *     ]
+             */
+            supported_endpoints: string[];
+            /**
+             * Test Status
+             * @default not_run
+             * @enum {string}
+             */
+            test_status: "not_run" | "passed" | "failed";
+            /** Tested At */
+            tested_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /**
+             * Used By
+             * @default []
+             */
+            used_by: string[];
+        };
+        /** ModelCatalogView */
+        ModelCatalogView: {
+            /** Companies */
+            companies: components["schemas"]["ModelCompanyBinding"][];
+            /** Models */
+            models: components["schemas"]["ModelCatalogEntry"][];
+            /**
+             * Supported Endpoints
+             * @default [
+             *       "https://api.deepseek.com",
+             *       "https://api.deepseek.com/v1",
+             *       "https://dashscope.aliyuncs.com/compatible-mode/v1",
+             *       "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+             *       "https://api.moonshot.cn/v1",
+             *       "https://api.moonshot.ai/v1",
+             *       "https://open.bigmodel.cn/api/paas/v4",
+             *       "https://api.siliconflow.cn/v1",
+             *       "https://api.siliconflow.com/v1",
+             *       "https://api.openai.com/v1",
+             *       "https://openrouter.ai/api/v1"
+             *     ]
+             */
+            supported_endpoints: string[];
+        };
+        /** ModelCompanyBinding */
+        ModelCompanyBinding: {
+            /** Configuration Name */
+            configuration_name?: string | null;
+            /** Configuration Version */
+            configuration_version?: string | null;
+            /** Enabled */
+            enabled: boolean;
+            /** Model */
+            model?: string | null;
+            /** Model Id */
+            model_id?: string | null;
+            /** Name */
+            name: string;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /** Runtime Available */
+            runtime_available: boolean;
+            /** Tenant Id */
+            tenant_id: string;
         };
         /**
          * PlatformMember
@@ -157,6 +858,36 @@ export interface components {
             role: "platform_admin";
             /** Username */
             username: string;
+        };
+        /**
+         * ProviderUsageCounter
+         * @description remaining 是供应商明确返回的余额，缺失不根据套餐总量猜测。
+         */
+        ProviderUsageCounter: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "credits" | "searches" | "verifications";
+            /** Limit */
+            limit?: string | null;
+            /** Remaining */
+            remaining?: string | null;
+            /** Used */
+            used?: string | null;
+        };
+        /** ValidationError */
+        ValidationError: {
+            /** Context */
+            ctx?: Record<string, never>;
+            /** Input */
+            input?: unknown;
+            /** Location */
+            loc: (string | number)[];
+            /** Message */
+            msg: string;
+            /** Error Type */
+            type: string;
         };
     };
     responses: never;
@@ -233,6 +964,682 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlatformSessionResponse"];
+                };
+            };
+        };
+    };
+    bind_company_models__company_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                company_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Expected Revision */
+                    expected_revision: number;
+                    /** Model Id */
+                    model_id: string;
+                    /** Model Revision */
+                    model_revision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCatalogView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sources_data_sources_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataSourcesView"];
+                };
+            };
+        };
+    };
+    check_browser_data_sources__source_id__browser_check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataSourceView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_credentials_data_sources__source_id__credentials_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Credentials */
+                    credentials: {
+                        [key: string]: string;
+                    };
+                    /** Expected Revision */
+                    expected_revision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataSourceView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_credentials_data_sources__source_id__credentials_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Expected Revision */
+                    expected_revision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataSourceView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_note_data_sources__source_id__note_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Expected Revision */
+                    expected_revision: number;
+                    /** Text */
+                    text: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataSourceNoteView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    check_usage_data_sources__source_id__usage_check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Expected Revision */
+                    expected_revision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DataSourceView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_inventory_companies__tenant_id__quota_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryQuotaView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_inventory_companies__tenant_id__quota_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Daily Limit */
+                    daily_limit: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryQuotaView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_model_api_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelApiView"];
+                };
+            };
+        };
+    };
+    save_model_api_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Api Key */
+                    api_key?: string | null;
+                    /** Base Url */
+                    base_url: string;
+                    /** Expected Revision */
+                    expected_revision: number;
+                    /** Model */
+                    model: string;
+                    /**
+                     * Protocol
+                     * @enum {string}
+                     */
+                    protocol: "responses" | "chat_completions";
+                    /**
+                     * Provider
+                     * @enum {string}
+                     */
+                    provider: "deepseek" | "compatible";
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelApiView"];
+                };
+            };
+        };
+    };
+    apply_model_api_apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Expected Revision */
+                    expected_revision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelApiView"];
+                };
+            };
+        };
+    };
+    test_model_api_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Expected Revision */
+                    expected_revision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelApiView"];
+                };
+            };
+        };
+    };
+    get_model_catalog_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCatalogView"];
+                };
+            };
+        };
+    };
+    create_model_catalog_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Api Key */
+                    api_key?: string | null;
+                    /** Base Url */
+                    base_url: string;
+                    /** Expected Revision */
+                    expected_revision: number;
+                    /** Model */
+                    model: string;
+                    /** Name */
+                    name: string;
+                    /**
+                     * Protocol
+                     * @enum {string}
+                     */
+                    protocol: "responses" | "chat_completions";
+                    /**
+                     * Provider
+                     * @enum {string}
+                     */
+                    provider: "deepseek" | "compatible";
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCatalogEntry"];
+                };
+            };
+        };
+    };
+    save_model_catalog__entry_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Api Key */
+                    api_key?: string | null;
+                    /** Base Url */
+                    base_url: string;
+                    /** Expected Revision */
+                    expected_revision: number;
+                    /** Model */
+                    model: string;
+                    /** Name */
+                    name: string;
+                    /**
+                     * Protocol
+                     * @enum {string}
+                     */
+                    protocol: "responses" | "chat_completions";
+                    /**
+                     * Provider
+                     * @enum {string}
+                     */
+                    provider: "deepseek" | "compatible";
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCatalogEntry"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_model_catalog__entry_id__delete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Expected Revision */
+                    expected_revision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCatalogView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_model_catalog__entry_id__test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Expected Revision */
+                    expected_revision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCatalogEntry"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_agent_model_catalog__entry_id__test_agent_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Expected Revision */
+                    expected_revision: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCatalogEntry"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

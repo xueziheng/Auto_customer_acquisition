@@ -20,7 +20,7 @@ from domains.products.service import EnterpriseKnowledgeService
 from shared.errors import ValidationError
 from shared.schemas.identifiers import TenantId, UserId
 
-MAXIMUM_KNOWLEDGE_UPLOAD_BYTES = 10 * 1024 * 1024
+MAXIMUM_KNOWLEDGE_UPLOAD_BYTES = 25 * 1024 * 1024
 _MIME_BY_EXTENSION = {
     "txt": ("text/plain", "text"),
     "md": ("text/markdown", "text"),

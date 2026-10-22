@@ -1,0 +1,13 @@
+# ADR 0113：普通测试询盘的单封接力回复
+
+2026-10-21用户明确要求接力跑通老板第四项：同一封sales测试询盘，收信、必要追问、带来源需求信息及负责人处理。范围只限已指定的TEST-04；本批不开放普通历史邮件自动发送。
+
+ADR0112已完成普通收件及分类，但未产生原业务Campaign出站关联。因此不能伪造旧SENT出站、验证联系人或把bmi消息塞入reply_qualification。老板准备的0086负责草稿与处理留痕，继续复用。
+
+新增独立email.business.reply HIGH插件，仍走tenant→permission→suppression→approval→idempotency→rate_limit。原件、当前邮箱owner、连接版本、发件身份版本、精确收件人和最多一封的私有scope逐次重核。scope最多24小时，同原信永远使用稳定幂等键。普通automatic_send_enabled不变。本范围是对指定内部测试来信的直接回复，不是Campaign或发送序列，不改变根第6条或ADR0098。
+
+本批固定正文只问用途与数量，不编造规格、MOQ或商业承诺；无生成模型调用。SMTP接受不代表对方收到，未知结果仅原键对账，不自动重发。收信仍用现有business_mail进程。只有原件From/To及In-Reply-To/References与指定线程匹配才记录回信。
+
+所有信息保留原件ID、hash、原话和测试目的。测试字段只作customer_test_statement，confirmed_by为空；不创建真实ValidatedNeed或Opportunity。负责人处理状态必须明确区分自动分配、等待人工核对、实际人工完成。
+
+本入口默认不启用，只有明确单封scope可运行；不发布共享生产或全量自动经营能力。停止独立服务即可停推进，原账本与处理历史保留。

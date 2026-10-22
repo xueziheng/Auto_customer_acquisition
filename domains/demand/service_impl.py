@@ -1217,6 +1217,24 @@ class DemandServiceImpl:
             )
         ]
 
+    async def list_account_outreach_hypotheses(
+        self, tenant_id: TenantId, account_id: ProspectAccountId,
+    ) -> list[HypothesisView]:
+        self._validate_radar_query(tenant_id, 1)
+        async with self._uow_factory(tenant_id) as uow:
+            values = await uow.hypotheses.list_active_for_account(tenant_id, account_id, limit=201)
+        if len(values) > 200:
+            raise ValidationError("客户需求假设超出读取上限")
+        result = []
+        for value in values:
+            # 复用完整信号/证据校验；不会把陈旧或损坏来源转成就绪选项。
+            view = await self.get_hypothesis(tenant_id, value.hypothesis_id)
+            if view.account_id != account_id:
+                raise ValidationError("客户需求假设关联损坏")
+            if view.status in {"inferred", "contacting"} and view.evidence:
+                result.append(view)
+        return result
+
     async def get_hypothesis(
         self,
         tenant_id: TenantId,

@@ -795,3 +795,83 @@ async def test_evidence_cannot_combine_old_principal_with_new_ownership(
             )
     finally:
         await c.aclose()
+
+
+async def test_sent_mail_is_visible_with_content_without_reply_ingestion(page_runtime):
+    """真实发送 Gateway→对象库→会话→HTTP；无入站配置也可见，不导入邮箱历史。"""
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy import select
+
+    from apps.api.composition.runtime import build_phase1_dependencies
+    from apps.api.main import create_app
+    from apps.api.middleware import ApiSettings
+    from apps.api.runtime_config import Phase1RuntimeSettings
+    from connectors.object_store.config import S3ObjectStoreSettings
+    from domains.conversations.errors import ReingestConflictError
+    from infra.db.tables import OutreachMessageAttemptRow
+    from infra.outbound_mail_archive import OutboundMailArchive
+    from shared.errors import ValidationError
+    from tests.integration.test_email_inbound_page import prepare_sent
+
+    runtime = page_runtime
+    c = await composition(runtime)
+    config = runtime['config']
+    deps = build_phase1_dependencies(
+        Phase1RuntimeSettings.from_environ(config.runtime_environment()),
+        runtime['factory'], now=lambda: NOW, secret_resolver=config,
+        gmail_transport=runtime['provider'],
+        object_store_settings=S3ObjectStoreSettings.from_environ(config.runtime_environment()),
+    )
+    runtime['deps'] = deps
+    try:
+        await prepare_sent(runtime, initialized_staff=runtime['staff'])
+        assert deps.email_inbound is None
+        boss, sales = inbox_actor(runtime, 'boss'), inbox_actor(runtime, 'sales')
+        tenant = boss.tenant_id
+        rows = await deps.conversations.list_inbox(tenant, actor=boss, category=None, limit=200)
+        assert len(rows) == 1 and rows[0].latest_direction == 'outbound'
+        assert rows[0].effective_category is None
+        detail = await deps.conversations.get_inbox_detail(tenant, rows[0].conversation_id, actor=boss)
+        assert len(detail.messages) == 1 and detail.messages[0].direction == 'outbound'
+        status = await deps.conversations.get_account_reply_status(tenant, rows[0].account_id)
+        assert status.state == "no_reply"
+        message_id = rows[0].latest_message_id
+        app = create_app(settings=ApiSettings(tenant_id=tenant, dev_mode=True, retry_after_seconds=2), dependencies=deps)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url='http://controlled.test',
+                               headers={'X-Tenant-Id': tenant, 'X-Employee-Id': boss.employee_id}) as client:
+            path = f'/inbox/messages/{message_id}/content'
+            response = await client.get(path)
+            assert response.status_code == 200, response.json()
+            assert response.headers['cache-control'] == 'private, no-store'
+            assert response.json()['subject'] == 'Current supply needs'
+            assert response.json()['recipients'] == 'buyer0@example.test'
+            assert 'Which components' in response.json()['body_text']
+            assert (await client.get(path, headers={'X-Employee-Id': sales.employee_id})).status_code == 403
+            assert (await client.get(path, params={'artifact_id': 'forged'})).status_code == 400
+        async with runtime['factory']() as session:
+            attempt = await session.scalar(select(OutreachMessageAttemptRow).where(
+                OutreachMessageAttemptRow.tenant_id == tenant,
+                OutreachMessageAttemptRow.deterministic_message_id == runtime['outbound']))
+        archive = OutboundMailArchive(runtime['factory'], c.bounded_raw_store, deps.conversations)
+        assert await archive.recover_sent(tenant, attempt.attempt_id, 'Current supply needs',
+            'Which components are you currently looking for?', attempt.provider_ref) == message_id
+        with pytest.raises(ReingestConflictError):
+            await archive.recover_sent(tenant, attempt.attempt_id, 'changed', 'changed', attempt.provider_ref)
+        with pytest.raises(ValidationError):
+            await archive.recover_sent(tenant, attempt.attempt_id, 'Current supply needs', 'body', 'wrong-receipt')
+        with pytest.raises(ValidationError):
+            await archive.recover_sent(TenantId(new_id('tn')), attempt.attempt_id, 'subject', 'body', attempt.provider_ref)
+        from datetime import timedelta
+        await deps.conversations.ingest_inbound(
+            tenant, rows[0].conversation_id, rows[0].account_id, "art_old_reply",
+            "<older-reply@qq.com>", detail.messages[0].sent_at - timedelta(days=1),
+        )
+        refreshed = await deps.conversations.list_inbox(tenant, actor=boss, category=None, limit=200)
+        assert refreshed[0].latest_message_id == message_id
+        assert refreshed[0].latest_direction == "outbound"
+        full = await deps.conversations.get_inbox_detail(tenant, rows[0].conversation_id, actor=boss)
+        assert len(full.messages) == 2
+    finally:
+        await c.aclose()
+        if deps.object_store_lifecycle:
+            await deps.object_store_lifecycle.aclose()

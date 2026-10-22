@@ -46,10 +46,17 @@ async def test_platform_uses_current_storage_port_with_independent_identity(
     def platform_factory(
         *, control_tenant: TenantId, engine: AsyncEngine, origin: str,
         readers: tuple[EnterpriseReaderBinding, ...],
+        data_sources_directory: Path | None = None,
+        model_api_directory: Path | None = None,
+        model_catalog_settings: StandaloneModelSettings | None = None,
+        data_sources_fingerprints: object | None = None,
+        ungm_browser_probe: bool = False,
     ) -> FastAPI:
         platform_engines.append(engine)
         bindings.append((control_tenant, readers))
-        return FastAPI()
+        result = FastAPI()
+        result.state.runtime_engine = engine
+        return result
 
     monkeypatch.setattr(
         standalone, "create_runtime_app_from_settings", lambda *args, **kwargs: business,
@@ -79,3 +86,44 @@ async def test_platform_uses_current_storage_port_with_independent_identity(
     finally:
         for engine in (*platform_engines, business_engine):
             await engine.dispose()
+
+@pytest.mark.parametrize("reply_enabled", [False, True])
+def test_api_and_scheduler_agree_on_explicit_automatic_followup_binding(tmp_path, monkeypatch, reply_enabled):
+    from apps.scheduler_worker.standalone import _reply_ports
+    from infra.pilot.config import PilotGmailConfig
+    base = make_config(tmp_path).model_copy(update={"object_port": 44553})
+    profile = base.model_copy(update={"gmail": PilotGmailConfig(address="controlled@example.test", credentials_file=tmp_path / "unread-test-credentials.json", employee_id=new_id("emp"))})
+    configured = settings()
+    configured["reply_enabled"] = reply_enabled
+    configured["limits"]["max_output_tokens"] = 128
+    model = StandaloneModelSettings.model_validate(configured)
+    business = FastAPI()
+    business.state.runtime_engine = object()
+    captured = {}
+    def runtime_factory(*args, **kwargs):
+        captured.update(kwargs)
+        return business
+    monkeypatch.setattr(standalone, "create_runtime_app_from_settings", runtime_factory)
+    monkeypatch.setattr(standalone, "mount_web", lambda business, *args, **kwargs: business)
+    standalone.create_standalone_app(profile, model, tmp_path)
+    ports = _reply_ports(profile, model, None)
+    assert captured["automatic_followup_enabled"] is reply_enabled
+    assert (ports is not None) is reply_enabled
+    assert captured["gmail_transport"] is not None  # 手动发件组存在不能代替自动配置。
+
+
+def test_enabled_reply_without_gmail_binding_fails_both_standalone_compositions(tmp_path, monkeypatch):
+    from apps.scheduler_worker.standalone import _reply_ports
+    base = make_config(tmp_path).model_copy(update={"object_port": 44553})
+    configured = settings()
+    configured["reply_enabled"] = True
+    configured["limits"]["max_output_tokens"] = 128
+    model = StandaloneModelSettings.model_validate(configured)
+    business = FastAPI()
+    business.state.runtime_engine = object()
+    monkeypatch.setattr(standalone, "create_runtime_app_from_settings", lambda *args, **kwargs: business)
+    monkeypatch.setattr(standalone, "mount_web", lambda business, *args, **kwargs: business)
+    with pytest.raises(ValueError, match="Gmail.*员工绑定"):
+        standalone.create_standalone_app(base, model, tmp_path)
+    with pytest.raises(ValueError, match="Gmail.*员工绑定"):
+        _reply_ports(base, model, None)

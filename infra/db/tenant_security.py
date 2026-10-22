@@ -106,12 +106,28 @@ def _check_role(row: Mapping[str, Any], role: str, *, runtime: bool) -> None:
 
 def _tenant_table_names() -> set[str]:
     """完整注册分文件 ORM 映射，不能依赖进程恰好已加载某个业务入口。"""
+    from infra.db.business_mail_followup_tables import BusinessMailFollowupRow, BusinessMailReplyDraftRow, BusinessMailFollowupEventRow
+    from infra.db.business_mail_tables import (
+        BusinessMailboxRow,
+        BusinessMailClassificationRow,
+        BusinessMailReceiptRow,
+        BusinessMailRow,
+    )
     from infra.db.mailbox_tables import MailboxAccountRow, MailboxMessageRow
+    from infra.db.qq_trial_tables import QQSentAliasRow, QQTrialEventRow, QQTrialRow
+    from infra.db.reply_resume_tables import ReplyResumeRow
+    from infra.db.reply_retry_tables import ReplyRetryRow
     from infra.db.tables import Base
 
     if any(
         not isinstance(model.__table__, Table) or model.__table__.metadata is not Base.metadata
-        for model in (MailboxAccountRow, MailboxMessageRow)
+        for model in (
+            ReplyRetryRow, ReplyResumeRow, MailboxAccountRow, MailboxMessageRow,
+            QQSentAliasRow, QQTrialRow, QQTrialEventRow,
+            BusinessMailFollowupRow, BusinessMailReplyDraftRow, BusinessMailFollowupEventRow,
+            BusinessMailboxRow, BusinessMailRow, BusinessMailReceiptRow,
+            BusinessMailClassificationRow,
+        )
     ):
         _reject()
     return set(Base.metadata.tables)

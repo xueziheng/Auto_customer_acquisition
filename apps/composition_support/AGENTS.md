@@ -1,6 +1,6 @@
 # composition_support —— 非进程机械装配库
 
-只服务apps/api与apps/scheduler_worker的报价装配及下述四个当前事实 reader；不是第八个进程，不读取环境或启动循环。
+服务apps/api与apps/scheduler_worker的报价装配及下述四个当前事实 reader；ADR0112另仅允许普通收件模式引用model.py机械工厂。不是可运行进程，不读取环境或启动循环。
 允许依赖下层及本库，禁止绝对或相对导入任何apps进程模块。各进程不得互相导入。
 共享代码不共享运行对象：每次调用创建独立parser、slot、Gateway、域服务与闭包；不缓存全局实例。
 参数必须由进程入口显式提供，特别是tenant、来源/文件lease_owner和已构造的唯一approvals/engine。
@@ -38,8 +38,31 @@ scheduler 保留原导出以兼容现有调用；当前事实与并发边界仍�
 构造不做 IO，不读环境、不建 engine/workflow、不判断业务角色、不导入任何进程模块。
 各进程独立创建并对称关闭资源，不缓存跨请求或跨进程的正文、凭证与可变身份。
 
+## QQ 公共 DNS 机械装配
+
+允许 qq_dns_auth.py 为既有 dns.auth.check handler 组装独立 resolver/checker；
+仅接受有公开签名来源的 qq.com 与 s201512，查询固定三个 TXT 名称并限制时长。
+所有通过/失败事实仍由原 DnsAuthenticationConnector 判定，不覆盖原策略或缓存通过结果。
+构造不做外部 IO、不读环境、不建立 Gateway/registry/engine/workflow、不读取邮箱凭证。
+调用进程仍须保留原 tenant、permission、idempotency、rate_limit 与账本，不能直接绕过 Gateway 查询。
+
+## Hunter 双工具机械装配
+
+允许 hunter_contacts.py 复用原 scheduler 的具名 contact.enrich/contact.verify 装配；
+API 与 scheduler 每次独立构造 Gateway、registry、typed slot 和闭包，不共享运行身份。
+只消费入口显式传入的当前政策、抑制、配额、精确配置、readiness守卫、凭证resolver与账本；
+不得读取环境、凭证文件或把账户验证事实直接当作 runtime_composed。
+原检查顺序、缓存和错误语义不变；scheduler 原模块只作同类型重导出。
+
 ## ADR0071 会话机械装配
 
 允许 assistant.py 构造独立会话/配置仓储、公开服务 scope 映射与上下文 builder。
 只消费显式受信参数，不导入任何 apps 进程，不建 engine，不读环境，不启动循环。
 权限与配置启用规则委托具名领域/运行时接口；不得在这里复制角色或范围判断。
+
+## ADR0112 普通收件的最窄模型装配入口
+
+`apps.email_feedback_worker.business_mail`仅可引用`model.py`里原有的机械工厂与绑定类型。
+该白名单不允许新模式引用其他进程、共享运行对象、读取composition_support中的环境、
+创建全局engine或自行更改模型配置、配额。business_mail_triage的当前owner与持久消息run
+授权由独立模式显式注入，模型出口仍为原model.generate；不扩大其他模式的权限。

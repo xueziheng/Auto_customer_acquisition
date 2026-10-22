@@ -57,3 +57,25 @@ class SqlAlchemyProspectingUnitOfWork:
                 await self._session.rollback()
         finally:
             await self._session.close()
+
+
+class BorrowedProspectingUnitOfWork:
+    """调用方管理的同事务端口；退出只 flush，绝不 commit/rollback/close。"""
+
+    accounts: AccountRepository
+    contacts: ContactRepository
+    bus: EventBus
+
+    def __init__(self, session: AsyncSession, tenant_id: TenantId) -> None:
+        self._session = session
+        self.accounts = ProspectAccountRepositoryImpl(session, tenant_id)
+        self.contacts = ProspectContactRepositoryImpl(session, tenant_id)
+        self.bus = PostgresEventBus(session, tenant_id)
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, exc_type: type[BaseException] | None,
+                        exc: BaseException | None, tb: object) -> None:
+        if exc_type is None:
+            await self._session.flush()

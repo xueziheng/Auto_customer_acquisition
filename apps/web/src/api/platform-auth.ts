@@ -1,11 +1,32 @@
-import type { components as PlatformComponents } from "./platform-api";
+import type { components as PlatformComponents, paths as PlatformPaths } from "./platform-api";
 import type { components } from "./api";
 
 type PlatformSession = PlatformComponents["schemas"]["PlatformSessionResponse"];
 export type PlatformOverview = PlatformComponents["schemas"]["PlatformOverview"];
+export type PlatformDataSources = PlatformComponents["schemas"]["DataSourcesView"];
+export type PlatformDataSource = PlatformComponents["schemas"]["DataSourceView"];
+export type PlatformCredentialUpdate = PlatformPaths["/data-sources/{source_id}/credentials"]["put"]["requestBody"]["content"]["application/json"];
+export type PlatformCredentialDelete = PlatformPaths["/data-sources/{source_id}/credentials"]["delete"]["requestBody"]["content"]["application/json"];
+export type PlatformUsageCheck = PlatformPaths["/data-sources/{source_id}/usage-check"]["post"]["requestBody"]["content"]["application/json"];
+export type PlatformDataSourceNote = PlatformComponents["schemas"]["DataSourceNoteView"];
+export type PlatformNoteUpdate = PlatformPaths["/data-sources/{source_id}/note"]["put"]["requestBody"]["content"]["application/json"];
+type BrowserCheck = PlatformPaths["/data-sources/{source_id}/browser-check"]["post"]["requestBody"]["content"]["application/json"];
+export type PlatformModelApi = PlatformComponents["schemas"]["ModelApiView"];
+export type PlatformModelUpdate = PlatformPaths["/model-api"]["put"]["requestBody"]["content"]["application/json"];
+export type PlatformModelCommand = PlatformPaths["/model-api/test"]["post"]["requestBody"]["content"]["application/json"];
+export type ModelCatalog = PlatformComponents["schemas"]["ModelCatalogView"];
+export type ModelEntry = PlatformComponents["schemas"]["ModelCatalogEntry"];
+export type ModelSave = PlatformPaths["/model-catalog"]["post"]["requestBody"]["content"]["application/json"];
+export type CompanyModelUpdate = PlatformPaths["/company-models/{company_id}"]["put"]["requestBody"]["content"]["application/json"];
+export type InventoryQuota = PlatformComponents["schemas"]["InventoryQuotaView"];
+type InventoryQuotaCommand = PlatformPaths["/inventory/companies/{tenant_id}/quota"]["put"]["requestBody"]["content"]["application/json"];
 type LoginRequest = components["schemas"]["LoginRequest"];
 type PlatformIdentity = Pick<PlatformSession, "username" | "display_name" | "role" | "expires_at">;
 type Mutation = "login" | "logout" | null;
+
+export class PlatformDataSourceError extends Error {
+  constructor(readonly status: number) { super("数据来源请求未完成"); }
+}
 
 export function createPlatformClient(fetcher: typeof fetch = (input, init) => fetch(input, init)) {
   let identity: PlatformIdentity | null = null;
@@ -62,18 +83,19 @@ export function createPlatformClient(fetcher: typeof fetch = (input, init) => fe
       if (channel === owned) channel = null;
     };
   }
-  async function request(path: string, method = "GET", body?: LoginRequest, token = csrf): Promise<Response> {
+  async function request(path: string, method = "GET", body?: LoginRequest | PlatformCredentialUpdate | PlatformCredentialDelete | PlatformNoteUpdate | BrowserCheck | PlatformModelUpdate | PlatformModelCommand | ModelSave | CompanyModelUpdate | InventoryQuotaCommand, token = csrf): Promise<Response> {
+    const expected = revision;
     const headers = new Headers({ "X-TradeOS-Request": "1" });
     if (method !== "GET") headers.set("Content-Type", "application/json");
     if (method !== "GET" && token) headers.set("X-CSRF-Token", token);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
+    const timeout = setTimeout(() => controller.abort(), path.endsWith("/browser-check") || path.endsWith("/test") || path.endsWith("/test-agent") ? 120_000 : 15_000);
     try {
       const response = await fetcher(`/api/platform${path}`, {
         method, headers, credentials: "same-origin", cache: "no-store",
         signal: controller.signal, ...(body ? { body: JSON.stringify(body) } : {}),
       });
-      if (response.status === 401) clear();
+      if (response.status === 401 && expected === revision) clear();
       return response;
     } finally { clearTimeout(timeout); }
   }
@@ -150,8 +172,104 @@ export function createPlatformClient(fetcher: typeof fetch = (input, init) => fe
       || !Number.isFinite(Date.parse(result.generated_at))) throw new Error("企业概览暂不可用，请重试");
     return result;
   }
+  async function dataSources(): Promise<PlatformDataSources> {
+    if (!identity || mutation) throw new PlatformDataSourceError(401);
+    const expected = revision;
+    const response = await request("/data-sources");
+    if (expected !== revision) throw new PlatformDataSourceError(401);
+    if (!response.ok) throw new PlatformDataSourceError(response.status);
+    const result = await response.json() as PlatformDataSources;
+    if (expected !== revision || !Array.isArray(result.sources)
+      || !Number.isFinite(Date.parse(result.generated_at))) throw new PlatformDataSourceError(503);
+    return result;
+  }
+  async function saveDataSourceCredentials(sourceId: string, update: PlatformCredentialUpdate): Promise<PlatformDataSource> {
+    if (!identity || mutation) throw new PlatformDataSourceError(401);
+    const expected = revision;
+    const response = await request(`/data-sources/${encodeURIComponent(sourceId)}/credentials`, "PUT", update);
+    if (expected !== revision) throw new PlatformDataSourceError(401);
+    if (!response.ok) throw new PlatformDataSourceError(response.status);
+    const result = await response.json() as PlatformDataSource;
+    if (expected !== revision || result.definition?.source_id !== sourceId
+      || !Number.isSafeInteger(result.revision) || result.revision <= update.expected_revision) throw new PlatformDataSourceError(503);
+    return result;
+  }
+  async function deleteDataSourceCredentials(sourceId: string, update: PlatformCredentialDelete): Promise<PlatformDataSource> {
+    if (!identity || mutation) throw new PlatformDataSourceError(401);
+    const expected = revision;
+    const response = await request(`/data-sources/${encodeURIComponent(sourceId)}/credentials`, "DELETE", update);
+    if (expected !== revision) throw new PlatformDataSourceError(401);
+    if (!response.ok) throw new PlatformDataSourceError(response.status);
+    const result = await response.json() as PlatformDataSource;
+    if (expected !== revision || result.definition?.source_id !== sourceId || result.configured
+      || !Number.isSafeInteger(result.revision) || result.revision <= update.expected_revision) throw new PlatformDataSourceError(503);
+    return result;
+  }
+  async function checkDataSourceUsage(sourceId: string, command: PlatformUsageCheck): Promise<PlatformDataSource> {
+    if (!identity || mutation) throw new PlatformDataSourceError(401);
+    const expected = revision;
+    const response = await request(`/data-sources/${encodeURIComponent(sourceId)}/usage-check`, "POST", command);
+    if (expected !== revision) throw new PlatformDataSourceError(401);
+    if (!response.ok) throw new PlatformDataSourceError(response.status);
+    const result = await response.json() as PlatformDataSource;
+    if (expected !== revision || result.definition?.source_id !== sourceId
+      || result.revision !== command.expected_revision || !result.configured) throw new PlatformDataSourceError(503);
+    return result;
+  }
+  async function checkDataSourceBrowser(sourceId: string): Promise<PlatformDataSource> {
+    if (!identity || mutation) throw new PlatformDataSourceError(401);
+    const expected = revision;
+    const response = await request(`/data-sources/${encodeURIComponent(sourceId)}/browser-check`, "POST", {});
+    if (expected !== revision) throw new PlatformDataSourceError(401);
+    if (!response.ok) throw new PlatformDataSourceError(response.status);
+    const result = await response.json() as PlatformDataSource;
+    if (expected !== revision || result.definition?.source_id !== sourceId || !result.browser)
+      throw new PlatformDataSourceError(503);
+    return result;
+  }
+  async function saveDataSourceNote(sourceId: string, command: PlatformNoteUpdate): Promise<PlatformDataSourceNote> {
+    if (!identity || mutation) throw new PlatformDataSourceError(401);
+    const expected = revision;
+    const response = await request(`/data-sources/${encodeURIComponent(sourceId)}/note`, "PUT", command);
+    if (expected !== revision) throw new PlatformDataSourceError(401);
+    if (!response.ok) throw new PlatformDataSourceError(response.status);
+    const result = await response.json() as PlatformDataSourceNote;
+    if (expected !== revision || typeof result.text !== "string" || result.text.length > 2000
+      || result.revision !== command.expected_revision + 1
+      || !Number.isFinite(Date.parse(result.updated_at ?? ""))) throw new PlatformDataSourceError(503);
+    return result;
+  }
+  async function modelApi(action: "get" | "save" | "test" | "apply" = "get", body?: PlatformModelUpdate | PlatformModelCommand): Promise<PlatformModelApi> {
+    if (!identity || mutation) throw new PlatformDataSourceError(401);
+    const expected = revision;
+    const path = "/model-api" + (action === "test" || action === "apply" ? `/${action}` : "");
+    const response = await request(path, action === "get" ? "GET" : action === "save" ? "PUT" : "POST", body);
+    if (expected !== revision) throw new PlatformDataSourceError(401);
+    if (!response.ok) throw new PlatformDataSourceError(response.status);
+    const value = await response.json() as PlatformModelApi;
+    if (expected !== revision || !Number.isSafeInteger(value.revision) || typeof value.configured !== "boolean") throw new PlatformDataSourceError(503);
+    return value;
+  }
+  async function catalogRequest<T>(path: string, method = "GET", body?: ModelSave | PlatformModelCommand | CompanyModelUpdate | InventoryQuotaCommand): Promise<T> {
+    if (!identity || mutation) throw new PlatformDataSourceError(401);
+    const expected = revision;
+    const response = await request(path, method, body);
+    if (expected !== revision) throw new PlatformDataSourceError(401);
+    if (!response.ok) throw new PlatformDataSourceError(response.status);
+    const value = await response.json() as T;
+    if (expected !== revision) throw new PlatformDataSourceError(401);
+    return value;
+  }
+  const inventoryQuota = (company: string) => catalogRequest<InventoryQuota>(`/inventory/companies/${encodeURIComponent(company)}/quota`);
+  const setInventoryQuota = (company: string, daily_limit: number) => catalogRequest<InventoryQuota>(`/inventory/companies/${encodeURIComponent(company)}/quota`, "PUT", { daily_limit });
+  const modelCatalog = () => catalogRequest<ModelCatalog>("/model-catalog");
+  const saveModel = (id: string | null, body: ModelSave) => catalogRequest<ModelEntry>("/model-catalog" + (id ? `/${encodeURIComponent(id)}` : ""), id ? "PUT" : "POST", body);
+  const testModel = (id: string, revision: number, agent = false) => catalogRequest<ModelEntry>(`/model-catalog/${encodeURIComponent(id)}/${agent ? 'test-agent' : 'test'}`, "POST", { expected_revision: revision });
+  const deleteModel = (id: string, revision: number) => catalogRequest<ModelCatalog>(`/model-catalog/${encodeURIComponent(id)}/delete`, "POST", { expected_revision: revision });
+  const bindModel = (company: string, body: CompanyModelUpdate) => catalogRequest<ModelCatalog>(`/company-models/${encodeURIComponent(company)}`, "PUT", body);
   return {
-    snapshot, supportsAuthentication, listen, restore, login, logout, overview,
+    inventoryQuota, setInventoryQuota, modelCatalog, saveModel, testModel, deleteModel, bindModel, modelApi, snapshot, supportsAuthentication, listen, restore, login, logout, overview,
+    dataSources, saveDataSourceCredentials, deleteDataSourceCredentials, checkDataSourceUsage, checkDataSourceBrowser, saveDataSourceNote,
     subscribe(listener: () => void): () => void {
       listeners.add(listener);
       return () => { listeners.delete(listener); };

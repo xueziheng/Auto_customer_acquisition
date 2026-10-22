@@ -4,6 +4,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from apps.composition_support.employee_readers import EmployeeServiceScope
+from connectors.qq_mail.inbound import ProjectReplyScope
+from domains.assistant.schemas import AssistantActor
+from domains.assistant.service import ModelConfigurationService
 from domains.conversations.service import (
     ConversationsUnitOfWork,
     InboxActor,
@@ -12,6 +15,7 @@ from domains.conversations.service import (
 )
 from domains.employees.errors import EmployeeNotFoundError
 from domains.employees.permissions import Actor, EmployeeScope
+from infra.db.reply_retry import SqlReplyRetryRepository
 from shared.errors import PermissionDenied
 from shared.schemas.identifiers import (
     EmployeeId,
@@ -19,7 +23,42 @@ from shared.schemas.identifiers import (
     OutboundMessageId,
     TenantId,
 )
+from shared.schemas.qq_trial import QQTrialGate, QQTrialScope
 from shared.schemas.quote_facts import QuoteEmployeeFact
+
+
+@dataclass(frozen=True)
+class QQTrialCurrentAccess:
+    """拉取前也使用原邮箱事实和模型配置公开授权；不等待已有消息才能查许可。"""
+
+    scope: QQTrialScope
+    mailbox: ProjectReplyScope
+    configuration: ModelConfigurationService
+
+    async def __call__(self) -> bool:
+        scope = self.scope
+        target = await self.mailbox.target(scope.route, scope.employee_id)
+        if (
+            target is None
+            or target.attempt_id != scope.attempt_id
+            or target.outbound_message_header != scope.canonical_header
+            or (target.sender, target.recipient) != (scope.sender, scope.recipient)
+        ):
+            return False
+        actor = AssistantActor(
+            tenant_id=scope.route.tenant_id,
+            employee_id=scope.classifier_employee_id,
+            user_id=scope.classifier_user_id,
+        )
+        await self.configuration.authorize(
+            actor, scope.model_configuration_version, probe=False
+        )
+        view = await self.configuration.get_public(actor)
+        return (
+            view.status == "verified"
+            and view.model == scope.model
+            and view.configuration_version == scope.model_configuration_version
+        )
 
 
 @dataclass(frozen=True)
@@ -30,6 +69,9 @@ class CurrentReplyAccess:
     employee_id: EmployeeId
     employee_scope: EmployeeServiceScope
     uow_factory: Callable[[TenantId], ConversationsUnitOfWork]
+    trial_gate: QQTrialGate | None = None
+    retries: SqlReplyRetryRepository | None = None
+    recovery_only: bool = False
 
     async def actor(self, tenant_id: TenantId) -> InboxActor:
         """读当前 Employee 后执行原 qualify 纯规则，再构造 Inbox 上界。"""
@@ -64,6 +106,14 @@ class CurrentReplyAccess:
         outbound_message_id: OutboundMessageId | None,
     ) -> InboxActor:
         """读取/模型前检查真实同租户入站与原出站关联，拒绝 context 替换消息。"""
+        if self.retries is not None and await self.retries.exists(
+            tenant_id, message_id
+        ):
+            await self.retries.require_message(tenant_id, message_id)
+        elif self.recovery_only:
+            raise PermissionDenied("该消息没有人工恢复授权")
+        elif self.trial_gate is not None:
+            await self.trial_gate.require_message(str(message_id))
         await self.actor(tenant_id)
         async with self.uow_factory(tenant_id) as uow:
             message = await uow.messages.get(tenant_id, message_id)

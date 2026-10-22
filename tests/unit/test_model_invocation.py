@@ -44,6 +44,25 @@ def test_limits_have_no_defaults_and_reject_coercion():
                 ModelLimits(**(fields | {name: invalid}))
 
 
+def test_unlimited_call_counts_are_explicit_and_other_limits_remain_required():
+    from shared.schemas.model_invocation import ModelLimits
+
+    fields = {"window_seconds": 86400, "tenant_calls": None, "employee_calls": None,
+              "tenant_concurrency": 1, "employee_concurrency": 1, "max_input_bytes": 4096,
+              "max_output_tokens": 64, "timeout_seconds": 10}
+    result = ModelLimits.model_validate(fields)
+    assert result.tenant_calls is None and result.employee_calls is None
+    assert result.model_dump() == fields
+    for name in fields:
+        missing = dict(fields)
+        missing.pop(name)
+        with pytest.raises(ValidationError):
+            ModelLimits.model_validate(missing)
+        if name not in {"tenant_calls", "employee_calls"}:
+            with pytest.raises(ValidationError):
+                ModelLimits.model_validate(fields | {name: None})
+
+
 def test_identity_cannot_contain_untrusted_authority_or_credentials():
     from shared.schemas.model_invocation import InvocationIdentity
 

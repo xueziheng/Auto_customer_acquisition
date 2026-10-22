@@ -334,6 +334,18 @@ class PostgresSearchQuotaRepository(TenantScopedRepository):
                 row.updated_at,
             )
 
+    async def observe_usage(self, usage: SearchUsage) -> None:
+        """受信usage工具冷启动快照，不预留搜索；观察不得抬高已有保守上限。"""
+        available = verified_free_remaining(usage)
+        async with self._factory() as session, session.begin():
+            account = await self._locked_account(session)
+            account.checked_at = self._timestamp()
+            account.cost_status = usage.cost_status.value
+            account.usage_limit, account.usage_used = usage.limit, usage.used
+            account.paygo_enabled, account.included_credits_free = usage.paygo_enabled, usage.included_credits_free
+            if available is not None:
+                account.ceiling = available if account.ceiling is None else min(account.ceiling, available)
+
     async def snapshot(self) -> SearchQuotaSnapshot | None:
         """读取 tenant-scoped 安全状态；未声明账户返回 None，不创建账户。"""
         async with self._factory() as session:

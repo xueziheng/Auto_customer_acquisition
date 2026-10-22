@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import GmailConnectionPanel from "./GmailConnectionPanel.vue";
+import QQConnectionPanel from "./QQConnectionPanel.vue";
+import AliyunConnectionPanel from "./AliyunConnectionPanel.vue";
 import type { components } from "../../api/api";
 import { apiClient, createApiClient } from "../../api/client";
 import { useQuoteRequestScope } from "../costing-quotes/quote-request-scope";
@@ -138,6 +140,8 @@ onBeforeUnmount(() => { disposed = true; if (timer) globalThis.clearInterval(tim
         客户回复工作台
       </RouterLink>
     </header>
+    <QQConnectionPanel />
+    <AliyunConnectionPanel />
     <GmailConnectionPanel @connected="refresh" />
     <p
       v-if="error"

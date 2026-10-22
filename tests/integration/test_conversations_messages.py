@@ -531,3 +531,42 @@ async def test_message_repository_rejects_blank_external_message_id(
                 await repo.add(bad)
         await session.rollback()
     assert len(await _message_rows(factory, tenant)) == 1  # 仅 seed，无坏行
+
+
+async def test_outbound_record_is_visible_without_inbound_and_is_idempotent(conversations_db, tenant, account):
+    factory = async_sessionmaker(conversations_db, expire_on_commit=False)
+    service = _service(factory, tenant, MutableClock(NOW))
+    first = await service.record_outbound(tenant, account, REF_MARKER, "<outbound@example.test>", NOW)
+    again = await service.record_outbound(tenant, account, REF_MARKER, "<outbound@example.test>", NOW)
+    assert first == again
+    rows = await _message_rows(factory, tenant)
+    convs = await _conversation_rows(factory, tenant)
+    assert len(rows) == len(convs) == 1
+    assert rows[0].direction == "outbound"
+    assert convs[0].last_outbound_at == NOW
+    assert convs[0].last_inbound_at is None
+    assert await _outbox_payloads(factory, tenant) == []
+    assert (await service.get_account_reply_status(tenant, account)).state == "no_reply"
+
+
+async def test_outbound_and_reply_share_conversation_without_losing_direction(conversations_db, tenant, account):
+    factory = async_sessionmaker(conversations_db, expire_on_commit=False)
+    service = _service(factory, tenant, MutableClock(NOW))
+    await service.record_outbound(tenant, account, REF_MARKER, "<sent@example.test>", NOW)
+    await service.ingest_inbound(tenant, None, account, REF_MARKER, "<reply@example.test>", NOW + timedelta(minutes=1), outbound_message_id=OutboundMessageId("<sent@example.test>"))
+    rows = await _message_rows(factory, tenant)
+    assert len(rows) == 2
+    assert len({row.conversation_id for row in rows}) == 1
+    assert {row.direction for row in rows} == {"inbound", "outbound"}
+    assert len(await _outbox_payloads(factory, tenant)) == 1
+
+
+async def test_outbound_archive_rejects_changed_content_and_preserves_last_activity(conversations_db, tenant, account):
+    from domains.conversations.errors import ReingestConflictError
+    factory = async_sessionmaker(conversations_db, expire_on_commit=False)
+    service = _service(factory, tenant, MutableClock(NOW))
+    await service.record_outbound(tenant, account, REF_MARKER, "<new@example.test>", NOW)
+    await service.record_outbound(tenant, account, REF_MARKER, "<old@example.test>", NOW-timedelta(days=1))
+    with pytest.raises(ReingestConflictError):
+        await service.record_outbound(tenant, account, "art_other", "<new@example.test>", NOW)
+    assert (await _conversation_rows(factory, tenant))[0].last_outbound_at == NOW

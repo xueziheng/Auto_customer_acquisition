@@ -40,6 +40,7 @@ from apps.scheduler_worker.adapters.reply_evidence_reader import (
 from apps.scheduler_worker.adapters.reply_opportunity_intake import (
     DurableReplyOpportunityIntake,
 )
+from apps.scheduler_worker.bootstrap import ScopedDiscoveryEmployees
 from apps.scheduler_worker.directive_reader import DirectiveDemandDiscoveryTaskReader
 from apps.scheduler_worker.reply_actions import ComposedReplyActionPorts
 from artifact_store.service_impl import RawArtifactStoreImpl
@@ -697,6 +698,11 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
         account_model = _ControlledAccountModel()
         enricher = _ControlledEnricher()
         verifier = _ControlledVerifier()
+        # 与生产一致：分配步骤提交归属，后续独立Outreach事务才能核对持久版本。
+        discovery_employees = ScopedDiscoveryEmployees(partial(
+            employee_service_scope, factory, now=lambda: NOW,
+            authorizer=Phase1EmployeeAuthorizer(tenant), audit=EmployeeAuditLogger(),
+        ))
         account_handlers = build_account_discovery_handlers(
             task_reader=DemandAccountDiscoveryTaskReader(
                 demand, allowed_countries=("US",)
@@ -710,9 +716,9 @@ async def test_phase1_postgres_closed_loop_is_durable_tenant_bound_and_replay_sa
             prospecting=prospecting,
             enricher=enricher,
             verifier=verifier,
-            employees=employees,
+            employees=discovery_employees,
             outreach=outreach,
-            actor_resolver=BossAccountDiscoveryActorResolver(employees),
+            actor_resolver=BossAccountDiscoveryActorResolver(discovery_employees),
             now=lambda: NOW,
         )
         demand_model = _ControlledDemandModel()

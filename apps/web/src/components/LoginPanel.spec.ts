@@ -31,7 +31,7 @@ it("接受邮箱登录并且不猜测尚未读取的服务配置", async () => {
   await nextTick(); await nextTick();
   expect(fields[0]!.maxLength).toBe(254);
   expect(login.mock.calls.at(-1)?.[0]).toBe(email);
-  expect(host.textContent).toContain("邮箱或用户名");
+  expect(host.textContent).toContain("TradeOS 员工账号");
   expect(host.textContent).not.toContain("邮件未配置");
   app.unmount();
 });

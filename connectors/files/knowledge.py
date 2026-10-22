@@ -84,7 +84,7 @@ class KnowledgeParseLimits:
 
     def validate(self) -> None:
         for value, maximum in (
-            (self.max_bytes, 10 * 1024 * 1024),
+            (self.max_bytes, 25 * 1024 * 1024),
             (self.max_chars, 60000),
             (self.max_pages, 100),
             (self.timeout_seconds, 30),

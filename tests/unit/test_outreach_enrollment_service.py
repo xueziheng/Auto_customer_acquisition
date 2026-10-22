@@ -16,6 +16,7 @@ from domains.outreach.errors import (
     ContactNotEligibleError,
     IdempotencyConflictError,
     MessageAttemptConflictError,
+    OutreachProviderUnavailableError,
     ReplyAlreadyReceivedError,
     SendingIdentityUnavailableError,
     SuppressedError,
@@ -465,6 +466,9 @@ async def test_enroll_round_robin_is_canonical_persistent_and_idempotent() -> No
         contact = ContactPointId(new_id("cp"))
         harness.contacts.snapshots[(contact, account)] = _contact(
             harness.tenant, contact, account
+        )
+        harness.replies.snapshots[(contact, account)] = ReplyStatusSnapshot(
+            harness.tenant, contact, account, ReplyState.NO_REPLY, None, NOW,
         )
         result = await harness.service.enroll(
             harness.tenant,
@@ -1117,3 +1121,82 @@ async def test_stop_get_and_list_enrollments_return_copies_and_commit_then_allow
     assert fetched == stopped
     assert listed == [stopped]
     assert harness.trace.calls[-1] == ("audit", "enrollment:list", "allow:enrollment:list")
+
+@pytest.mark.parametrize("unreadable_first", [True, False])
+async def test_assessment_matches_fail_closed_round_robin_sender_reads(unreadable_first):
+    from domains.outreach.errors import OutreachProviderUnavailableError
+    from shared.errors import TransientError
+    h = _build()
+    campaign = h.store.campaigns[h.campaign_id]
+    senders = sorted((h.sender_a, h.sender_b))
+    first = senders[(campaign.round_robin_cursor + 1) % len(senders)]
+    unreadable = first if unreadable_first else next(i for i in senders if i != first)
+    original = h.senders.get_sending_identity_eligibility
+    reads = []
+    async def partial(tenant, identity):
+        reads.append(identity)
+        if identity == unreadable:
+            raise TransientError("controlled sender unavailable")
+        return await original(tenant, identity)
+    h.senders.get_sending_identity_eligibility = partial
+    reasons = await h.service.assess_enrollment(h.tenant, h.campaign_id, h.account, h.contact, campaign_version=1, actor=h.boss)
+    if unreadable_first:
+        assert "sending_identity_status_unavailable" in reasons
+        with pytest.raises(OutreachProviderUnavailableError):
+            await h.service.enroll(h.tenant, h.campaign_id, _request(h), actor=h.boss)
+        assert not h.store.enrollments and not h.store.quotas
+    else:
+        assert reasons == () and unreadable not in reads
+        result = await h.service.enroll(h.tenant, h.campaign_id, _request(h), actor=h.boss)
+        assert result.sending_identity_id == first and unreadable not in reads
+
+@pytest.mark.parametrize("reply_fact", ["replied", "unknown", "unavailable", "wrong_account", "wrong_contact", "wrong_tenant"])
+async def test_new_enrollment_rechecks_exact_reply_before_reserving_quota(reply_fact, monkeypatch):
+    from shared.errors import TransientError
+    from tests.outreach_fakes import FakeQuotaRepository
+    reservations = []
+    original_reserve = FakeQuotaRepository.reserve_new_contact
+    async def observe_reserve(self, *args):
+        reservations.append(args)
+        return await original_reserve(self, *args)
+    monkeypatch.setattr(FakeQuotaRepository, "reserve_new_contact", observe_reserve)
+    h = _build()
+    snapshot = h.replies.snapshots[(h.contact, h.account)]
+    if reply_fact in {"unknown", "unavailable"}:
+        async def unavailable(*args):
+            raise TransientError("当前回复等待分类" if reply_fact == "unknown" else "controlled reply unavailable")
+        h.replies.get_reply_status = unavailable
+    else:
+        changes = {}
+        if reply_fact == "replied":
+            changes = {"state": ReplyState.REPLIED, "replied_at": NOW}
+        elif reply_fact == "unknown":
+            changes = {"state": ReplyState.UNKNOWN}
+        elif reply_fact == "wrong_account":
+            changes = {"account_id": ProspectAccountId(new_id("acc"))}
+        elif reply_fact == "wrong_contact":
+            changes = {"contact_point_id": ContactPointId(new_id("cp"))}
+        else:
+            changes = {"tenant_id": TenantId(new_id("tn"))}
+        h.replies.snapshots[(h.contact, h.account)] = replace(snapshot, **changes)
+    expected = ReplyAlreadyReceivedError if reply_fact == "replied" else TenantIsolationViolation if reply_fact == "wrong_tenant" else ValidationError if reply_fact in {"wrong_account", "wrong_contact"} else OutreachProviderUnavailableError
+    with pytest.raises(expected):
+        await h.service.enroll(h.tenant, h.campaign_id, _request(h), actor=h.boss)
+    assert not h.store.enrollments and not h.store.quotas
+    assert not reservations
+
+@pytest.mark.parametrize("reply_fact", ["replied", "unknown", "unavailable"])
+async def test_original_enrollment_key_replays_after_reply_changes(reply_fact):
+    from shared.errors import TransientError
+    h = _build()
+    command = _request(h, key="same-original-key")
+    first = await h.service.enroll(h.tenant, h.campaign_id, command, actor=h.boss)
+    original_quota = dict(h.store.quotas)
+    if reply_fact in {"unknown", "unavailable"}:
+        async def unavailable(*args):
+            raise TransientError("当前回复等待分类" if reply_fact == "unknown" else "controlled reply unavailable")
+        h.replies.get_reply_status = unavailable
+    else:
+        h.replies.snapshots[(h.contact, h.account)] = replace(h.replies.snapshots[(h.contact, h.account)], state=ReplyState(reply_fact), replied_at=NOW if reply_fact == "replied" else None)
+    assert await h.service.enroll(h.tenant, h.campaign_id, command, actor=h.boss) == first
+    assert h.store.quotas == original_quota and len(h.store.enrollments) == 1

@@ -184,3 +184,7 @@ True 账户并输出固定 mixed display code。数量只纳入正整数、人�
 Provenance 元数据和绑定事实值的内容哈希，不得带值、原话、URL 内容或 reasoning。`facts_observed_at`
 取所有参与持久事实的最新时间，不使用读取时钟；`facts_hash` 对稳定排序后的决策字段做 canonical
 SHA-256，排除展示文案和读取时间。Demand 不读取 Catalog Policy，也不决定是否创建提案或 Product。
+
+ADR0093：`list_account_outreach_hypotheses`先按租户和精确account在SQL过滤，
+只返回当前有证据的inferred/contacting假设。超过200项拒绝，不先截断全公司后过滤。
+客户跟进入组强制关联这个客户的真实假设，不能用公开候选标签编造回复事实来源。

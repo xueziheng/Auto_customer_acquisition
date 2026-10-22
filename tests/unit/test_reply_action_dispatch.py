@@ -83,6 +83,10 @@ class _Actions:
         del tenant_id
         await self._record("handoff", context, idempotency_key)
 
+    async def review_reply(self, tenant_id, context, idempotency_key) -> None:
+        del tenant_id
+        await self._record("review_reply", context, idempotency_key)
+
     async def start_qualification(self, tenant_id, context, idempotency_key) -> None:
         del tenant_id
         await self._record("start_qualification", context, idempotency_key)
@@ -159,6 +163,7 @@ def _run(
         ("record_complaint", "record_complaint"),
         ("handoff", "handoff"),
         ("start_qualification", "start_qualification"),
+        ("review_reply", "review_reply"),
         ("extract_need_fields", "extract_need_fields"),
         ("mark_future_restart", "mark_future_restart"),
         ("create_follow_up", "create_follow_up"),

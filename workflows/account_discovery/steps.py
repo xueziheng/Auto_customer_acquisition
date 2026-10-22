@@ -14,7 +14,11 @@ from agent_runtime.base import AgentTask
 from connectors.contact_enrichment.client import ContactEmailKind
 from connectors.email_verification.client import EmailVerificationOutcome
 from domains.employees.service import EmployeeService
-from domains.outreach.schemas import CampaignState, EnrollmentCreateRequest
+from domains.outreach.schemas import (
+    CampaignState,
+    EnrollmentCreateRequest,
+    EnrollmentOwnershipBinding,
+)
 from domains.outreach.service import OutreachService
 from domains.prospecting.schemas import (
     ContactPointKind,
@@ -31,6 +35,7 @@ from shared.errors import TenantIsolationViolation, ValidationError
 from shared.schemas.identifiers import (
     CampaignId,
     ContactPointId,
+    EmployeeId,
     IdempotencyKey,
     NeedHypothesisId,
     ProspectAccountId,
@@ -397,7 +402,10 @@ class AssignOwnerStep:
         return (
             "advance",
             "await_campaign_activation",
-            {"owner_id": str(owner.owner)},
+            {
+                "owner_id": str(owner.owner),
+                "owner_locked_at": owner.locked_at.isoformat(),
+            },
         )
 
 
@@ -510,6 +518,18 @@ class EnrollCampaignStep:
         raw_ids = run.context.get("verified_contact_point_ids")
         if not isinstance(raw_ids, list):
             raise ValidationError("账户发现已验证联系方式集合无效")
+        owner_id = _exact_text(
+            run.context.get("owner_id"), "账户发现归属绑定缺失", max_len=40
+        )
+        locked_at = _exact_text(
+            run.context.get("owner_locked_at"), "账户发现归属版本缺失", max_len=40
+        )
+        try:
+            ownership = EnrollmentOwnershipBinding(
+                EmployeeId(owner_id), datetime.fromisoformat(locked_at)
+            )
+        except (ValueError, ValidationError):
+            raise ValidationError("账户发现归属版本无效") from None
         actors = await self._actor_resolver.resolve(run.tenant_id, acting_user)
         enrollment_ids: list[str] = []
         for raw_id in dict.fromkeys(raw_ids):
@@ -527,6 +547,7 @@ class EnrollCampaignStep:
                     ),
                     source_hypothesis_id=hypothesis_id,
                     campaign_version=campaign_version,
+                    ownership=ownership,
                 ),
                 actor=actors.outreach,
             )

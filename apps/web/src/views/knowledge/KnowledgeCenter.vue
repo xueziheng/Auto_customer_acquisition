@@ -23,7 +23,7 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const acknowledgeUnknown = ref(false);
 const pollingPaused = ref(false);
 const limit = 20;
-const maximumBytes = 10 * 1024 * 1024;
+const maximumBytes = 25 * 1024 * 1024;
 const formats: Readonly<Record<string, string>> = Object.freeze({
   txt: "text/plain", md: "text/markdown", csv: "text/csv", pdf: "application/pdf",
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp",
@@ -90,7 +90,7 @@ function safeError(status: number): string {
   if (status === 403) return "当前账号无权执行此操作。";
   if (status === 404) return "资料不存在或不属于当前企业。";
   if (status === 409) return "资料状态已变化，请刷新后核对最新版本。";
-  if (status === 413) return "文件超过 10 MiB，请拆分后上传。";
+  if (status === 413) return "文件超过服务器上传上限（最高 25 MiB），请拆分后上传。";
   if (status === 429) return "请求过于频繁，请稍后手动重试。";
   if (status === 503) return "企业资料整理服务暂不可用。";
   return "请求未完成，请刷新核对资料状态。";
@@ -117,7 +117,7 @@ function selectFile(event: Event): void {
   clearFile(); error.value = ""; notice.value = "";
   if (!file) return;
   if (!mime(file)) { error.value = "请选择 TXT、Markdown、PDF、DOCX、XLSX、CSV 或 PNG、JPEG、WebP 图片。"; return; }
-  if (file.size < 1 || file.size > maximumBytes) { error.value = "文件不能为空，且不能超过 10 MiB。"; return; }
+  if (file.size < 1 || file.size > maximumBytes) { error.value = "文件不能为空，且不能超过 25 MiB。"; return; }
   selectedFile.value = file; uploadKey = globalThis.crypto.randomUUID();
 }
 function schedulePoll(): void {
@@ -240,7 +240,7 @@ onMounted(() => { mounted = true; void refresh(); });
     <p v-if="error" class="safe-banner danger" role="alert">{{ error }}</p>
     <p v-if="notice" class="safe-banner success" role="status">{{ notice }}</p>
     <section class="knowledge-panel intake">
-      <div><h2>上传企业资料</h2><p>产品规格、公司介绍和业务说明，上传后由 Codex 调用 DeepSeek 整理；文字证据与图片判断分别保留。</p><p class="muted">TXT、Markdown、PDF（含扫描件）、DOCX、XLSX、CSV、PNG、JPEG、WebP；每份最多 10 MiB。PDF 中需要看图的页面最多 10 页。</p></div>
+      <div><h2>上传企业资料</h2><p>资料由服务器 Codex 调用 DeepSeek 整理；XLSX 先提取原表文字，再按产品行整理并核对完整性，不新增推断。原件保留，需管理员核对。</p><p class="muted">TXT、Markdown、PDF（含扫描件）、DOCX、XLSX、CSV、PNG、JPEG、WebP；每份最高 25 MiB，以服务器配置为准。PDF 中需要看图的页面最多 10 页。XLSX 图片仅保留在原件中，公式不计算。</p></div>
       <div class="upload-controls"><input ref="fileInput" type="file" accept=".txt,.md,.pdf,.docx,.xlsx,.csv,.png,.jpg,.jpeg,.webp" aria-label="选择企业资料" :disabled="busy" @change="selectFile"><button class="btn-primary" type="button" :disabled="!selectedFile || busy" @click="upload">{{ busy ? "提交中…" : "上传并整理" }}</button></div>
     </section>
     <div class="knowledge-layout">
@@ -262,7 +262,7 @@ onMounted(() => { mounted = true; void refresh(); });
           <header><div><h2>{{ detail.revision?.analysis.title ?? detail.document.source.filename }}</h2><p class="muted">{{ statusLabels[detail.document.status] }} · 版本 {{ detail.document.version }}</p></div><button type="button" :disabled="busy" @click="downloadSource">下载原件</button></header>
           <p v-if="detail.document.failure_reason" class="safe-banner danger">{{ failureLabels[detail.document.failure_reason] ?? "处理未完成，请核对记录后重试。" }}</p>
           <template v-if="detail.revision">
-            <p class="safe-banner" :class="{ success: detail.revision.confirmed_at }">{{ detail.revision.confirmed_at ? "管理员已确认此版本；下方推断仍是推断，不代表客户需求已验证。" : "AI 整理草稿，等待管理员核对；不代表正式产品或可对外承诺的价格、认证、交期。" }}</p>
+            <p class="safe-banner" :class="{ success: detail.revision.confirmed_at }">{{ detail.revision.confirmed_at ? "管理员已确认此版本；下方推断仍是推断，不代表客户需求已验证。" : detail.revision.extracted_by === "deterministic:xlsx-rows-v1" ? "表格原文逐行整理，未调用模型、未新增推断。等待管理员核对；不构成客户报价或对外承诺。" : "AI 整理草稿，等待管理员核对；不代表正式产品或可对外承诺的价格、认证、交期。" }}</p>
             <p v-if="detail.revision.source_kind === 'vision_transcription'" class="safe-banner">AI 看图转录，需对照原件；图中文字可能识别有误。已处理 {{ detail.revision.image_count }} 张图像。</p>
             <section class="fact-section"><h3>原文资料事实</h3><p v-if="!detail.revision.analysis.facts.length" class="muted">没有可核验的文字事实；图片判断单列为推断。</p><article v-for="(fact, index) in detail.revision.analysis.facts" :key="index" class="fact-card"><strong>{{ fact.label }}</strong><p>{{ fact.value }}</p><blockquote>{{ fact.source_quote }}</blockquote></article></section>
             <section v-if="detail.revision.analysis.inferences.length" class="inference-section"><h3>AI 推断 · 尚未验证</h3><article v-for="(inference, index) in detail.revision.analysis.inferences" :key="index" class="inference-card"><p>{{ inference.text }}</p><blockquote v-for="(quote, quoteIndex) in inference.evidence_quotes" :key="quoteIndex">{{ quote }}</blockquote><p v-for="page in inference.image_pages" :key="page" class="muted">图像证据：{{ imageEvidence(page) }}</p></article></section>

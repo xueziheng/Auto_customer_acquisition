@@ -65,7 +65,7 @@ router = APIRouter()
 _ATTEMPT_ID_RE = re.compile(r"mat_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _ENROLLMENT_ID_RE = re.compile(r"enr_[0-7][0-9A-HJKMNP-TV-Z]{25}")
 _OUTREACH_ROLES = frozenset({"boss", "manager", "sales"})
-_CAMPAIGN_WRITER_ROLES = frozenset({"boss", "manager"})
+_CAMPAIGN_WRITER_ROLES = frozenset({"boss"})
 _BOSS_ROLES = frozenset({"boss"})
 
 

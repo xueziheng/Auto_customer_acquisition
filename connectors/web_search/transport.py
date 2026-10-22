@@ -20,6 +20,7 @@ from shared.public_page_url import (
 from shared.public_page_url import (
     is_public_unicast_ip,
 )
+from shared.schemas.page_failure import PageReadFailure
 
 from .page_policy import restricted_page_reason, robots_allows
 
@@ -268,7 +269,7 @@ class SafePublicPageHttpTransport:
                 or len(body) > _MAX_PAGE_BYTES
             ):
                 if status >= 500:
-                    raise TransientError("公开页面暂时不可用")
+                    raise PageReadFailure("page_http", "http_error")
                 raise PublicPageRejectedError()
             restricted_reason = restricted_page_reason(body)
             if restricted_reason is not None:
@@ -287,13 +288,16 @@ class SafePublicPageHttpTransport:
             parsed = _validated_public_split(_validate_public_url_sync(current))
             if (parsed.scheme, parsed.netloc) != (origin.scheme, origin.netloc):
                 raise PublicPageRejectedError(PublicPageRejectedReason.UNSAFE_REDIRECT)
-            status, location, content_type, encoding, body = self._request_once(parsed)
+            try:
+                status, location, content_type, encoding, body = self._request_once(parsed)
+            except PageReadFailure as failure:
+                raise PageReadFailure("page_robots", failure.reason) from None
             if status in {404, 410}:
                 return None
             if status == 429:
                 raise WebSearchRateLimitedError()
             if status >= 500:
-                raise TransientError("公开页面暂时不可用")
+                raise PageReadFailure("page_robots", "http_error")
             if status in _REDIRECT_STATUSES and location and count < _MAX_REDIRECTS:
                 try:
                     current = _validate_public_url_sync(urljoin(current, location))
@@ -360,7 +364,7 @@ class SafePublicPageHttpTransport:
         except PublicPageRejectedError:
             raise
         except (OSError, TimeoutError, http.client.HTTPException):
-            raise TransientError("公开页面暂时不可用") from None
+            raise PageReadFailure("page_http", "network_unknown") from None
         finally:
             connection.close()
 

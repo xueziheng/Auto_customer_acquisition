@@ -35,7 +35,7 @@ def load_live_settings(environ: Mapping[str, str]) -> LiveReplySettings:
     if not config.reply_enabled or not config.model_data_export_enabled:
         pytest.fail("真实验收需要启用回复模型和模型数据外发许可", pytrace=False)
     if (
-        min(maximum, config.limits.tenant_calls, config.limits.employee_calls)
+        min(value for value in (maximum, config.limits.tenant_calls, config.limits.employee_calls) if value is not None)
         < REQUIRED_CALLS
     ):
         pytest.fail(

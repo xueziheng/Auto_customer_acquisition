@@ -29,19 +29,25 @@ from domains.opportunities.service import OpportunityService
 from domains.opportunities.service_impl import HandoffPolicy
 from infra.db.model_usage import SqlModelUsageRepository
 from infra.db.run_audit import PostgresRunAuditRepository
+from infra.db.schema import assert_database_schema_current
+from infra.db.session import create_engine_from
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from infra.pilot.config import PILOT_GMAIL_MAILBOX_ALIAS, PilotConfig
 from infra.secrets import EnvironmentSecretResolver
+from infra.standalone.automatic_followup import reply_employee_binding
 from infra.standalone.knowledge_settings import (
     KnowledgeSettings,
     load_knowledge_settings,
 )
+from infra.standalone.platform_settings import load_platform_settings
 from infra.standalone.runtime import ModelRuntimeLifecycle
 from infra.standalone.settings import StandaloneModelSettings, load_model_settings
-from shared.schemas.identifiers import EmployeeId, TenantId, UserId, new_id
+from shared.schemas.identifiers import TenantId, UserId, new_id
+from shared.schemas.model_invocation import InvocationIdentity
 from shared.schemas.money import CurrencyCode, Money
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.model_generate import ModelProvider
+from tool_gateway.qq_trial_model import TrialProviderBudget
 from tool_gateway.repository import ToolGatewayUnitOfWork
 from workflows.assistant.ports import AssistantRuntimePorts
 from workflows.engine.audit import Phase1RunAuditAuthorizer, RunAuditService
@@ -66,13 +72,52 @@ def _reply_ports(
     provided: InboundRuntimePorts | None,
 ) -> InboundRuntimePorts | None:
     """沿用原 Gmail 路由；端口注入不能跨租户、换邮箱或重置版本。"""
-    if not settings.reply_enabled:
+    if reply_employee_binding(profile, settings) is None:
         if provided is not None:
             raise ValueError("回复未启用时不能注入入站端口")
         return None
+    qq = settings.qq_reply
+    if qq is not None:
+        from apps.composition_support.email_inbound import qq_adapter
+        if qq.trial is not None:
+            from .qq_trial_startup import QQTrialRuntimePorts, QQTrialStartup
+            if provided is not None:
+                raise ValueError("受控 QQ 必须经过原启动采集装配")
+            startup = QQTrialStartup(profile,settings)
+            route = qq.trial.route
+            return QQTrialRuntimePorts(startup=startup,
+                profile=InboundMailbox(tenant_id=route.tenant_id,mailbox_alias=route.mailbox_alias,
+                    route_id=route.route_id,config_version=route.config_version),
+                provider=None,secret_resolver=profile,secret_ref="QQ_INBOUND_AUTH",
+                object_settings=S3ObjectStoreSettings.from_pilot_environ(profile.runtime_environment()),
+                fingerprint_key_ref="PILOT_FINGERPRINT",lease_owner="standalone-qq-trial-"+profile.owner,
+                adapter_factory=startup.compose, activate_adapter=startup.activate)
+        mailbox = InboundMailbox(
+            tenant_id=TenantId(profile.tenant_id), mailbox_alias="qq-project-reply",
+            route_id="pilot", config_version="qq-private-test-v1",
+        )
+        if qq.continuous is not None:
+            route = qq.continuous.route
+            if route.tenant_id != profile.tenant_id:
+                raise ValueError("持续收信不能跨企业")
+            mailbox = InboundMailbox(tenant_id=route.tenant_id, mailbox_alias=route.mailbox_alias,
+                route_id=route.route_id, config_version=route.config_version)
+        if provided is not None:
+            if provided.profile != mailbox or provided.provider is not None or provided.activate_adapter is not None or provided.scan_enabled != (not qq.recovery_only) or (provided.adapter is None) == (provided.adapter_factory is None):
+                raise ValueError("QQ回复端口与明确配置不一致")
+            return provided
+        return InboundRuntimePorts(
+            profile=mailbox, provider=None, secret_resolver=profile,
+            secret_ref="QQ_INBOUND_AUTH",
+            object_settings=S3ObjectStoreSettings.from_pilot_environ(profile.runtime_environment()),
+            fingerprint_key_ref="PILOT_FINGERPRINT",
+            lease_owner="standalone-qq-inbound-" + profile.owner,
+            adapter_factory=lambda sessions: qq_adapter(qq, TenantId(profile.tenant_id), sessions),
+            scan_enabled=not qq.recovery_only,
+            poll_interval_seconds=qq.continuous.poll_interval_seconds if qq.continuous else 0,
+        )
     gmail = profile.gmail
-    if gmail is None or not gmail.employee_id or not gmail.employee_id.strip():
-        raise ValueError("回复模型缺少明确 Gmail 与员工绑定")
+    assert gmail is not None
     mailbox = InboundMailbox(
         tenant_id=TenantId(profile.tenant_id),
         mailbox_alias=PILOT_GMAIL_MAILBOX_ALIAS,
@@ -117,19 +162,26 @@ def _create_standalone_factory(
     model_resolver: SecretResolver,
     *,
     provider_factory: Callable[[], ModelProvider] | None = None,
+    trial_provider_factory: Callable[[TrialProviderBudget, InvocationIdentity], ModelProvider] | None = None,
     research_ports: ResearchRuntimePorts | None = None,
     reply_inbound: InboundRuntimePorts | None = None,
     instance_id: str,
     knowledge_settings: KnowledgeSettings | None = None,
+    inventory_control: tuple[async_sessionmaker[AsyncSession], TenantId] | None = None,
+    qq_dns_enabled: bool = False,
 ) -> SchedulerRuntimeFactory:
+    if settings.qq_reply is not None and settings.qq_reply.trial is not None:
+        if not settings.model_data_export_enabled:
+            raise ValueError("受控回复必须保留显式模型数据许可")
+        if trial_provider_factory is None and (settings.model_catalog_directory is None or settings.codex_job_root is None):
+            raise ValueError("受控回复必须配置原租户 Codex 模型入口")
     inbound = _reply_ports(profile, settings, reply_inbound)
     send_transport: GmailHttpTransport | None = None
-    reply_employee: EmployeeId | None = None
-    if inbound is not None:
-        if not isinstance(inbound.provider, GmailHttpTransport) or profile.gmail is None:
-            raise ValueError("回复入站端口与部署绑定不一致")
+    reply_employee = reply_employee_binding(profile, settings)
+    if settings.automatic_send_enabled:
+        if settings.qq_reply is not None or profile.gmail is None or inbound is None or not isinstance(inbound.provider, GmailHttpTransport):
+            raise ValueError("自动发送必须具有独立启用与完整Gmail配置")
         send_transport = inbound.provider
-        reply_employee = EmployeeId(profile.gmail.employee_id)
     env = profile.runtime_environment()
     tenant = TenantId(profile.tenant_id)
     fingerprints = HmacFingerprintProvider(
@@ -205,6 +257,13 @@ def _create_standalone_factory(
             fingerprints=fingerprints, instance_id=instance_id,
         )
 
+    def inventory_driver(core, sessions):
+        from .standalone_inventory import build_inventory_driver
+        assert inventory_control is not None and research_ports is not None
+        return build_inventory_driver(core=core,sessions=sessions,control_sessions=inventory_control[0],
+            control_tenant=inventory_control[1],tenant_id=tenant,settings=settings,resolver=model_resolver,
+            fingerprints=fingerprints,research=research_ports,owner=instance_id)
+
     scoring, handoff = profile.policy.scoring_policy, profile.policy.handoff_policy
     return SchedulerRuntimeFactory(
         env,
@@ -213,6 +272,7 @@ def _create_standalone_factory(
         secret_resolver=inbound.secret_resolver if inbound is not None else profile,
         inbound_ports=inbound,
         unconfigured_dns_step=UnconfiguredDnsStep(),
+        qq_dns_enabled=qq_dns_enabled,
         bootstrap=CanonicalSchedulerBootstrap(
             ScoringPolicy(
                 scoring.version,
@@ -224,6 +284,7 @@ def _create_standalone_factory(
             ),
             HandoffPolicy(handoff.sla_seconds, handoff.backlog_threshold),
             assistant_factory=assistant,
+            inventory_factory=inventory_driver if inventory_control is not None and research_ports is not None else None,
             knowledge_factory=knowledge_driver if knowledge_settings is not None and knowledge_settings.enabled else None,
             research_enabled=research_ports is not None,
             research_factory=(
@@ -240,7 +301,7 @@ def _create_standalone_factory(
             )
             if research_ports is not None
             else None,
-            campaign_enabled=inbound is not None,
+            campaign_enabled=settings.automatic_send_enabled,
             gmail_transport=send_transport,
             secret_resolver=inbound.secret_resolver if inbound is not None else None,
             reply_factory=(
@@ -255,6 +316,8 @@ def _create_standalone_factory(
                     fingerprints=fingerprints,
                     owner=instance_id,
                     provider_factory=provider_factory,
+                    trial_gate=resources.trial_gate,
+                    trial_provider_factory=trial_provider_factory,
                 )
             )
             if reply_employee is not None
@@ -280,8 +343,10 @@ def create_standalone_factory(
     model_resolver: SecretResolver,
     *,
     provider_factory: Callable[[], ModelProvider] | None = None,
+    trial_provider_factory: Callable[[TrialProviderBudget, InvocationIdentity], ModelProvider] | None = None,
     research_ports: ResearchRuntimePorts | None = None,
     reply_inbound: InboundRuntimePorts | None = None,
+    qq_dns_enabled: bool = False,
 ) -> Callable[[], AbstractAsyncContextManager[SchedulerRuntime]]:
     """构造无 IO；对象 SDK 在进入进程生命周期后拥有并对称关闭。"""
 
@@ -298,6 +363,8 @@ def create_standalone_factory(
         )
         ports = research_ports
         owned: S3ObjectBlobTransport | None = None
+        control_engine = None
+        inventory_control = None
         research = settings.research
         if ports is not None and research is None:
             raise ValueError("研究端口缺少显式部署配置")
@@ -325,19 +392,31 @@ def create_standalone_factory(
                     model_resolver,
                     research.exclusive_account_confirmed,
                 )
+            if profile.platform_settings_file is not None and ports is not None:
+                platform = load_platform_settings(profile.platform_settings_file).model_copy(update={"database_port":profile.database_port})
+                if platform.control_tenant_id == profile.tenant_id:
+                    raise ValueError('库存控制租户必须独立')
+                control_engine = create_engine_from(platform.database_url.get_secret_value())
+                await assert_database_schema_current(control_engine)
+                inventory_control = (async_sessionmaker(control_engine,expire_on_commit=False),TenantId(platform.control_tenant_id))
             factory = _create_standalone_factory(
                 profile,
                 settings,
                 model_resolver,
                 provider_factory=provider_factory,
+                trial_provider_factory=trial_provider_factory,
                 research_ports=ports,
                 reply_inbound=reply_inbound,
                 instance_id=new_id("mrt").lower(),
                 knowledge_settings=knowledge_settings,
+                inventory_control=inventory_control,
+                qq_dns_enabled=qq_dns_enabled,
             )
             async with factory() as runtime:
                 yield runtime
         finally:
+            if control_engine is not None:
+                await control_engine.dispose()
             if owned is not None:
                 await owned.aclose()
 
@@ -355,7 +434,8 @@ def main() -> int:
         settings = load_model_settings(args.model_settings)
         return run_worker(
             create_standalone_factory(
-                profile, settings, EnvironmentSecretResolver(os.environ)
+                profile, settings, EnvironmentSecretResolver(os.environ),
+                qq_dns_enabled=(args.profile.absolute().parent / "qq-mail").is_dir(),
             )
         )
     except BaseException:  # noqa: BLE001 - 进程边界只返回固定安全失败

@@ -66,13 +66,18 @@ class SqlReplyRunBindingReader:
         return rows[0]
 
     async def _validate(
-        self, session: AsyncSession, tenant_id: TenantId, run: WorkflowRunRow
+        self,
+        session: AsyncSession,
+        tenant_id: TenantId,
+        run: WorkflowRunRow,
+        *,
+        allowed_statuses: frozenset[str] | set[str] = frozenset({"pending", "running"}),
     ) -> MessageId:
         context = run.context
         if (
             run.workflow_type != "reply_qualification"
             or run.current_step != "classify"
-            or run.status not in {"pending", "running"}
+            or run.status not in allowed_statuses
             or run.idempotency_key != f"reply:{run.subject_ref}"
             or not isinstance(context, dict)
             or context.get("message_id") != run.subject_ref
@@ -145,7 +150,6 @@ class SqlReplyRunBindingReader:
                         ModelInvocationRow.tenant_id == tenant_id,
                         ModelInvocationRow.run_id == run_id,
                         ModelInvocationRow.capability == "reply_qualification",
-                        ModelInvocationRow.sequence == 0,
                     )
                     .order_by(
                         ModelInvocationRow.created_at, ModelInvocationRow.invocation_id
@@ -155,16 +159,18 @@ class SqlReplyRunBindingReader:
         try:
             return tuple(
                 (
-                    InvocationIdentity.model_validate({
-                        "tenant_id": row.tenant_id,
-                        "user_id": row.user_id,
-                        "employee_id": row.employee_id,
-                        "run_id": row.run_id,
-                        "turn_id": row.turn_id,
-                        "capability": row.capability,
-                        "configuration_version": row.configuration_version,
-                        "sequence": row.sequence,
-                    }),
+                    InvocationIdentity.model_validate(
+                        {
+                            "tenant_id": row.tenant_id,
+                            "user_id": row.user_id,
+                            "employee_id": row.employee_id,
+                            "run_id": row.run_id,
+                            "turn_id": row.turn_id,
+                            "capability": row.capability,
+                            "configuration_version": row.configuration_version,
+                            "sequence": row.sequence,
+                        }
+                    ),
                     row.model,
                 )
                 for row in rows

@@ -63,8 +63,8 @@ it("clears private mail on identity change and rejects late responses", async ()
 
 it("does not turn a server failure into an empty mailbox", async () => {
   await mount(async () => json({}, 503));
-  expect(root.querySelector('[role="alert"]')?.textContent).toContain("暂不可用");
-  expect(root.textContent).not.toContain("尚未连接邮箱");
+  expect(root.querySelector('.mailbox-page > .mailbox-error[role="alert"]')?.textContent).toContain("邮箱服务暂不可用，请重试");
+  expect(root.querySelector('.mailbox-page > .mailbox-empty')).toBeNull();
 });
 
 it("refreshes the current page after background label changes without interrupting the open message", async () => {

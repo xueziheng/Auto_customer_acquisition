@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+from domains.prospecting.customer_preparation import AccountProfilePatch
 from domains.prospecting.errors import (
     ContactPointNotFoundError,
     ErasedContactPointError,
@@ -48,6 +49,7 @@ from shared.schemas.identifiers import (
     TenantId,
     new_id,
 )
+from shared.schemas.provenance import Provenance, SourceType
 
 _DOMAIN_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _HASH = re.compile(r"[0-9a-f]{64}")
@@ -204,6 +206,33 @@ class ProspectingServiceImpl:
         self._uow_factory = uow_factory
         self._hasher = contact_value_hasher
         self._now = now or (lambda: datetime.now(UTC))
+
+    async def fill_missing_account_profile(
+        self, tenant_id: TenantId, account_id: ProspectAccountId,
+        request: AccountProfilePatch,
+    ) -> ProspectAccountView:
+        """人工确认的公开资料只补空字段，行锁下拒绝与现存事实冲突。"""
+        _require_text(request.entity_type, "客户类型无效")
+        _require_text(request.industry, "客户行业无效")
+        provenance = request.provenance
+        if (not isinstance(provenance, Provenance)
+            or provenance.source_type is not SourceType.WEB_PAGE
+            or not provenance.is_human_confirmed or not provenance.source_quote):
+            raise ValidationError("客户类型和行业必须有人工确认的公开来源")
+        async with self._uow_factory(tenant_id) as uow:
+            account = await uow.accounts.get_for_update(tenant_id, account_id)
+            if account is None:
+                raise ProspectAccountNotFoundError("潜在企业不存在")
+            for key in ("entity_type", "industry"):
+                existing, incoming = getattr(account, key), getattr(request, key)
+                if existing is not None and existing != incoming:
+                    raise ProspectingConflictError("客户资料与已有字段冲突，拒绝覆盖")
+            for key in ("entity_type", "industry"):
+                if getattr(account, key) is None:
+                    setattr(account, key, getattr(request, key))
+                    account.field_provenance[key] = provenance
+            await uow.accounts.update_profile(account)
+            return _account_view(account)
 
     async def resolve_account(
         self, tenant_id: TenantId, request: AccountResolveRequest

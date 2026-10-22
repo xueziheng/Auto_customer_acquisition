@@ -29,6 +29,10 @@ from shared.schemas.identifiers import (
 )
 
 
+class ReplyContentNeedsReview(ValidationError):
+    """完整内容已通过安全护栏，但当前表达无法可靠区分；不得用于读取或权限错误。"""
+
+
 @dataclass(frozen=True)
 class ReplyMessageContent:
     """只读消息内容视图（仅进程内存，绝不持久化）。
@@ -104,6 +108,10 @@ class ReplyActionContext:
 @runtime_checkable
 class ReplyActionPorts(Protocol):
     """非基础回复动作的窄编排出口；每个方法必须自行保持幂等。"""
+
+    async def review_reply(
+        self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str
+    ) -> None: ...
 
     async def route_bounce(
         self, tenant_id: TenantId, context: ReplyActionContext, idempotency_key: str

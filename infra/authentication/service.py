@@ -328,6 +328,12 @@ class PostgresAuthentication:
         except AuthenticationInputInvalid:
             return False
 
+    async def lock_account_management(self, session: AsyncSession) -> None:
+        """可信开户适配器先获取共同租户锁，保持与登录及撤销相同锁序。"""
+        if not session.in_transaction():
+            raise AuthenticationInputInvalid()
+        await self._bucket(session, "attempts")
+
     async def create_account(
         self,
         username: str,

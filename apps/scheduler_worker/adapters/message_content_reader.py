@@ -19,6 +19,7 @@ from shared.errors import ValidationError
 from shared.schemas.email_inbound import InboundDisposition
 from shared.schemas.identifiers import ArtifactId, MessageId, TenantId
 from workflows.reply_qualification.ports import (
+    ReplyContentNeedsReview,
     ReplyMessageContent,
 )
 
@@ -129,7 +130,7 @@ def project_reply_content(
     if len(view.subject or "") > max_subject_chars or len(view.body) > max_body_chars:
         raise ValidationError("回复内容超过模型读取预算，需人工核对")
     if not view.evidence_available or not view.evidence_segments:
-        raise ValidationError("回复当前表达无法可靠区分，需人工核对")
+        raise ReplyContentNeedsReview("回复当前表达无法可靠区分，需人工核对")
     return ReplyMessageContent(
         subject="(current reply)",
         body="\n[current expression boundary]\n".join(

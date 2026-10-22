@@ -2,39 +2,27 @@
 
 这是 TradeOS 的 Vue 3 + TypeScript + Vite 网页应用，已有业务页面、登录会话与后端 API 接线。页面可打开不等于其中的外部服务已配置，也不等于真实获客、发信或成交流程已验收。
 
-当前路由表有 28 条记录，其中根路径 `/` 转到工作台 `/crm/handoffs`，其余 27 条记录共用 25 个页面组件。接管详情和报价版本分别复用对应列表/工作台组件。平台控制台 `/platform` 是独立入口，不属于企业的五组日常导航。
+默认入口 `/` 转到 `/customers`，显示本人客户；`/customers/:allocationId` 用明确的取得记录 ID 加载详情。`/platform` 继续使用独立平台认证与控制台。
 
 ## 页面入口
 
-顶层导航只有五个业务入口，分组页面直接显示在二级导航栏，没有“更多”折叠菜单。需求、寻源、接管和报价详情由页面内的链接打开。分组与导航文案定义在 `src/navigation.ts`，由 `components/WorkspaceNavigation.vue` 渲染；表中“页面组件”默认位于 `src/views/`；平台控制台的组件路径相对于 `src/`。独立路由以 `src/router.ts` 为准。
+日常入口为找客户（boss）、我的客户、消息、产品资料，boss 另有企业管理。导航由 `/prospects/customers/access` 的能力响应决定，读取失败关闭管理员入口；单一页面分组不重复显示二级导航。
 
-| 主入口 | 页面 / 用途 | 路由 | 页面组件 |
-|---|---|---|---|
-| 工作台 | 待跟进与人工接管 | `/crm/handoffs`、`/crm/handoffs/:handoffId` | `crm/HandoffQueue.vue` |
-| 工作台 | 审批 | `/approvals` | `approvals/ApprovalCenter.vue` |
-| 工作台 | 承诺与待办 | `/commitments` | `commitments/CommitmentCenter.vue` |
-| 工作台 | 本人通知 | `/notifications` | `NotificationCenter.vue` |
-| 工作台 | 助手与指挥提案 | `/commands` | `command-center/CommandCenter.vue` |
-| 工作台 | 员工工作上传与提取确认 | `/work-uploads` | `work-uploads/WorkUploads.vue` |
-| 产品资料 | 企业资料上传、AI 整理与管理员确认 | `/knowledge` | `knowledge/KnowledgeCenter.vue` |
-| 产品资料 | 内部供应卡、目录候选产品管理 | `/products` | `products/ProductSupplyCenter.vue` |
-| 客户 | 客户发现 | `/prospects/accounts` | `customer-discovery/CustomerDiscovery.vue` |
-| 客户 | 开发任务与活动状态 | `/campaigns` | `campaigns/CampaignCenter.vue` |
-| 客户 | 贸易机会与机会详情 | `/crm/opportunities` | `crm/OpportunityList.vue` |
-| 客户 | 需求信号、假设与已验证需求 | `/demand` | `demand-radar/DemandRadar.vue` |
-| 客户 | 已验证需求详情 | `/demand/needs/:needId` | `demand-radar/ValidatedNeedDetail.vue` |
-| 客户 | 寻源案例列表与准入状态 | `/sourcing` | `sourcing/SourcingCenter.vue` |
-| 客户 | 寻源案例计划、候选、审核与恢复 | `/sourcing/:caseId` | `sourcing/SourcingCaseDetail.vue` |
-| 客户 | 成本、报价与报价版本 | `/costing-quotes`、`/costing-quotes/quotes/:quoteId` | `costing-quotes/CostingQuotes.vue` |
-| 消息 | 已纳入业务流程的客户会话 | `/inbox` | `inbox/SmartInbox.vue` |
-| 消息 | 本人邮箱的历史往来 | `/inbox/mailbox` | `inbox/MyMailbox.vue` |
-| 企业设置 | 企业配置与服务就绪信息 | `/settings` | `settings/SettingsCenter.vue` |
-| 企业设置 | 员工与业务分配 | `/team` | `team/TeamCenter.vue` |
-| 企业设置 | 发件身份、认证、预热与入站绑定 | `/crm/sending-identities` | `SendingIdentityCenter.vue` |
-| 企业设置 | 运行记录与证据概览 | `/runs` | `runs/RunCenter.vue` |
-| 企业设置 | 手工发送与发送结果核对 | `/crm/outreach` | `OutreachWorkbench.vue` |
-| 独立平台入口 | 平台管理 | `/platform` | `components/PlatformConsole.vue` |
-| 非日常导航 | 订阅计费“未开通”兼容页 | `/billing` | `billing/BillingUnavailable.vue` |
+| 入口 | 路由 | 页面组件 |
+|---|---|---|
+| 找客户（boss） | `/prospects/accounts` | `customer-discovery/CustomerDiscovery.vue` |
+| 我的客户 | `/customers` | `customers/MyCustomers.vue` |
+| 客户详情与跟进 | `/customers/:allocationId` | `customers/CustomerDetail.vue` |
+| 客户回复 / 我的邮箱 | `/inbox`、`/inbox/mailbox` | `inbox/SmartInbox.vue`、`inbox/MyMailbox.vue` |
+| 产品资料 | `/knowledge` | `knowledge/KnowledgeCenter.vue` |
+| 企业管理（boss） | `/settings`、`/team`、`/crm/sending-identities` | `settings/SettingsCenter.vue`、`team/TeamCenter.vue`、`SendingIdentityCenter.vue` |
+| 独立平台管理 | `/platform` | `components/PlatformConsole.vue` |
+
+保留的上下文和历史深链：`/crm/handoffs`、`/crm/handoffs/:handoffId`、`/approvals`、`/commitments`、`/notifications`、`/commands`、`/work-uploads`、`/products`、`/campaigns`、`/crm/opportunities`、`/demand`、`/demand/needs/:needId`、`/sourcing`、`/sourcing/:caseId`、`/costing-quotes`、`/costing-quotes/quotes/:quoteId`、`/runs`、`/crm/outreach`、`/billing`。这些页面不再作为并列日常入口；客户详情提供回复、接管、证据工作台和管理员开发任务配置入口。
+
+找客户先搜索进入公司待分配，再批量分配给本公司在职员工，分配不重复消耗额度。列表以服务端 `unassigned_only=true` 分页，最多选择100条，仅覆盖已加载范围。员工直达搜索页只读取权限并显示说明，不请求公司搜索任务或平台来源。
+
+我的客户只读取本人范围；详情承接公开来源、真实验证和跟进状态。历史缺档案时由boss显式同原owner关联，公开邮箱不会变成已验证联系人。自动跟进仅使用服务端提供的实际任务版本、合格联系方式和该客户的来源假设，未就绪显示具体原因。批量逐客户提交、显示每条结果；未知结果保留原请求供显式核对，刷新和换账号不会自动发送。默认关闭的自动运行配置不因按钮出现就被视为已启用。
 
 审批页在生产和开发构建中都使用实际审批组件。页面显示哪些数据、能执行哪些操作，由现有后端会话和权限检查决定；导航可见不是操作授权。
 

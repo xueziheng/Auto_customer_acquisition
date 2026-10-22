@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from domains.employees.permissions import EmployeeAction
 from domains.employees.schemas import EmployeeView, TerritoryAssignmentView
+from shared.errors import TransientError
+from workflows.employee_accounts import EmployeeAccountCreation
 
+from ..authentication import EmployeeAccountCreateRequest
 from ..dependencies import (
     ConfiguredApiDependencies,
     get_api_dependencies,
@@ -31,6 +34,43 @@ _territory_list_gate = Depends(
         allowed_roles=_BOSS_ONLY,
     )
 )
+_account_create_gate = Depends(
+    require_employee_action(
+        EmployeeAction.ACCOUNT_CREATE,
+        allowed_roles=_BOSS_ONLY,
+    )
+)
+
+
+@router.get("/account-creation", response_model=bool)
+async def account_creation_available(
+    request: Request,
+    identity: Annotated[RequestIdentity, _account_create_gate],
+) -> bool:
+    del identity
+    return isinstance(
+        getattr(request.app.state, "employee_accounts", None), EmployeeAccountCreation
+    )
+
+
+@router.post("/employees", response_model=EmployeeView, status_code=201)
+async def create_team_employee(
+    request: Request,
+    command: EmployeeAccountCreateRequest,
+    identity: Annotated[RequestIdentity, _account_create_gate],
+) -> EmployeeView:
+    service = getattr(request.app.state, "employee_accounts", None)
+    if not isinstance(service, EmployeeAccountCreation):
+        raise TransientError("员工开户未装配")
+    result = await service.create(
+        tenant_id=identity.tenant_id,
+        actor_id=identity.employee.employee_id,
+        user_id=identity.employee.user_id,
+        username=command.username,
+        name=command.name,
+        password=command.password,
+    )
+    return result
 
 
 @router.get("/employees", response_model=list[EmployeeView])

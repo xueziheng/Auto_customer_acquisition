@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from connectors.web_search.client import PageSnapshot, WebSearchResult
 from shared.errors import ValidationError
 from shared.schemas.identifiers import TenantId
+from shared.schemas.page_failure import PageReadFailure
 from tool_gateway.checks.web_discovery import ApprovedSearchBatch
 
 _ULID = r"[0-7][0-9A-HJKMNP-TV-Z]{25}"
@@ -179,3 +180,31 @@ __all__ = (
     "WebPageSnapshotSlot",
     "WebSearchResultSlot",
 )
+
+
+class WebPageFailureSlot:
+    """一次调用的安全失败槽；绑定task及tenant/run/user/URL，不进入账本。"""
+
+    def __init__(self) -> None:
+        self._entry: ContextVar[tuple[object, tuple[str, ...], PageReadFailure | None] | None] = ContextVar("page_failure", default=None)
+
+    def begin(self, key: tuple[str, ...]) -> None:
+        owner = _current_task()
+        if owner is None:
+            raise ValidationError("页面失败槽缺少任务")
+        self._entry.set((owner, key, None))
+
+    def put(self, key: tuple[str, ...], failure: PageReadFailure) -> None:
+        entry = self._entry.get()
+        if entry is not None and entry[0] is _current_task() and entry[1] == key and entry[2] is None:
+            self._entry.set((entry[0], key, failure))
+
+    def take(self, key: tuple[str, ...]) -> PageReadFailure | None:
+        entry = self._entry.get()
+        if entry is None or entry[0] is not _current_task() or entry[1] != key:
+            return None
+        self._entry.set(None)
+        return entry[2]
+
+    def clear(self) -> None:
+        self._entry.set(None)

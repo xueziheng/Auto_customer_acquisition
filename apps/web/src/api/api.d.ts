@@ -1595,6 +1595,142 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/inbox/aliyun/connect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Connect */
+        post: operations["connect_inbox_aliyun_connect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/aliyun/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Status */
+        get: operations["status_inbox_aliyun_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/business-mail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Business Mail */
+        get: operations["list_business_mail_inbox_business_mail_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/business-mail/{message_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Detail Business Mail */
+        get: operations["detail_business_mail_inbox_business_mail__message_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/business-mail/{message_id}/correct-classification": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Correct Business Mail */
+        post: operations["correct_business_mail_inbox_business_mail__message_id__correct_classification_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/business-mail/{message_id}/followup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Followup */
+        get: operations["get_followup_inbox_business_mail__message_id__followup_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/business-mail/{message_id}/handling": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Handle */
+        post: operations["handle_inbox_business_mail__message_id__handling_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/business-mail/{message_id}/reply-draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Save Draft */
+        post: operations["save_draft_inbox_business_mail__message_id__reply_draft_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/inbox/conversations": {
         parameters: {
             query?: never;
@@ -1800,6 +1936,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/inbox/messages/{message_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Message Content
+         * @description 沿原件 Gateway 当前授权返回纯文本；禁止 HTML 执行与响应缓存。
+         */
+        get: operations["get_message_content_inbox_messages__message_id__content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/inbox/messages/{message_id}/correct-classification": {
         parameters: {
             query?: never;
@@ -1831,6 +1987,160 @@ export interface paths {
         get: operations["get_message_evidence_inbox_messages__message_id__evidence_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/messages/{message_id}/retry-classification": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Reply Retry */
+        get: operations["read_reply_retry_inbox_messages__message_id__retry_classification_get"];
+        put?: never;
+        /** Retry Reply Classification */
+        post: operations["retry_reply_classification_inbox_messages__message_id__retry_classification_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/messages/{message_id}/retry-classification/failed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Failed Reply Classification */
+        post: operations["retry_failed_reply_classification_inbox_messages__message_id__retry_classification_failed_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/messages/{message_id}/retry-classification/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume Reply Classification */
+        post: operations["resume_reply_classification_inbox_messages__message_id__retry_classification_resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/private-reply-test/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Private Reply Test Options */
+        get: operations["private_reply_test_options_inbox_private_reply_test_options_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/private-reply-test/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Prepare Private Reply Test */
+        post: operations["prepare_private_reply_test_inbox_private_reply_test_prepare_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/qq/connect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Connect */
+        post: operations["connect_inbox_qq_connect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/qq/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Status */
+        get: operations["status_inbox_qq_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/reply-work": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Reply Work */
+        get: operations["list_reply_work_inbox_reply_work_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/reply-work/{action_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Handle Reply Work */
+        post: operations["handle_reply_work_inbox_reply_work__action_id__post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2236,6 +2546,128 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/prospects/customers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Customers */
+        get: operations["customers_prospects_customers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/customers/access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Access */
+        get: operations["access_prospects_customers_access_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/customers/{allocation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Detail */
+        get: operations["detail_prospects_customers__allocation_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/customers/{allocation_id}/follow-up": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Options */
+        get: operations["options_prospects_customers__allocation_id__follow_up_get"];
+        put?: never;
+        /** Start */
+        post: operations["start_prospects_customers__allocation_id__follow_up_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/customers/{allocation_id}/follow-up/{enrollment_id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop */
+        post: operations["stop_prospects_customers__allocation_id__follow_up__enrollment_id__stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/customers/{allocation_id}/preparation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read */
+        get: operations["read_prospects_customers__allocation_id__preparation_get"];
+        put?: never;
+        /** Prepare */
+        post: operations["prepare_prospects_customers__allocation_id__preparation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/customers/{allocation_id}/verification": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read */
+        get: operations["read_prospects_customers__allocation_id__verification_get"];
+        put?: never;
+        /** Verify */
+        post: operations["verify_prospects_customers__allocation_id__verification_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/prospects/discoveries": {
         parameters: {
             query?: never;
@@ -2247,6 +2679,142 @@ export interface paths {
         put?: never;
         /** Start Discovery */
         post: operations["start_discovery_prospects_discoveries_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/inventory/allocations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Allocations */
+        get: operations["allocations_prospects_inventory_allocations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/inventory/allocations/{allocation_id}/transfer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Transfer Allocation */
+        post: operations["transfer_allocation_prospects_inventory_allocations__allocation_id__transfer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/inventory/assignments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Assign Allocations */
+        post: operations["assign_allocations_prospects_inventory_assignments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/inventory/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Jobs */
+        get: operations["jobs_prospects_inventory_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/inventory/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Job */
+        get: operations["job_prospects_inventory_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/inventory/requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Candidates */
+        post: operations["request_candidates_prospects_inventory_requests_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/inventory/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sources */
+        get: operations["sources_prospects_inventory_sources_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/prospects/inventory/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Status */
+        get: operations["status_prospects_inventory_status_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2704,6 +3272,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/team/account-creation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Account Creation Available */
+        get: operations["account_creation_available_team_account_creation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/team/employees": {
         parameters: {
             query?: never;
@@ -2714,7 +3299,8 @@ export interface paths {
         /** List Team Employees */
         get: operations["list_team_employees_team_employees_get"];
         put?: never;
-        post?: never;
+        /** Create Team Employee */
+        post: operations["create_team_employee_team_employees_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2840,6 +3426,45 @@ export interface components {
          * @enum {string}
          */
         AdmissionState: "waiting" | "starting" | "admitted" | "blocked";
+        /** AliyunConnectCommand */
+        AliyunConnectCommand: {
+            /**
+             * Confirm Connect
+             * @constant
+             */
+            confirm_connect: true;
+            /** Email */
+            email: string;
+            /**
+             * Password
+             * Format: password
+             */
+            password: string;
+        };
+        /** AliyunConnectionStatus */
+        AliyunConnectionStatus: {
+            /**
+             * Automatic Reply Enabled
+             * @default false
+             */
+            automatic_reply_enabled: boolean;
+            /** Configured */
+            configured: boolean;
+            /** Connected At */
+            connected_at?: string | null;
+            /** Email */
+            email?: string | null;
+            /**
+             * Imap Authenticated
+             * @default false
+             */
+            imap_authenticated: boolean;
+            /**
+             * Smtp Authenticated
+             * @default false
+             */
+            smtp_authenticated: boolean;
+        };
         /**
          * ApiErrorResponse
          * @description 所有 HTTP 错误共用的扁平外部契约。
@@ -3046,6 +3671,265 @@ export interface components {
             /** Text */
             text: string;
         };
+        /** BusinessMailClassification */
+        BusinessMailClassification: {
+            /** Actor Id */
+            actor_id: string | null;
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "business" | "other" | "review";
+            /** Classification Id */
+            classification_id: string;
+            /** Configuration Version */
+            configuration_version: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Evidence Quote */
+            evidence_quote: string | null;
+            /** Model */
+            model: string | null;
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "model" | "human" | "system";
+            /** Reason */
+            reason: string;
+        };
+        /** BusinessMailCorrection */
+        BusinessMailCorrection: {
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "business" | "other" | "review";
+            /** Expected Revision */
+            expected_revision: number;
+            /** Note */
+            note: string;
+        };
+        /** BusinessMailDetail */
+        BusinessMailDetail: {
+            /** Body Text */
+            body_text: string;
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "pending" | "business" | "other" | "review";
+            /** Classification History */
+            classification_history: components["schemas"]["BusinessMailClassification"][];
+            /**
+             * Classification Status
+             * @enum {string}
+             */
+            classification_status: "pending" | "classifying" | "classified" | "failed";
+            /**
+             * Contact Status
+             * @default unconfirmed
+             * @constant
+             */
+            contact_status: "unconfirmed";
+            /** Failure Code */
+            failure_code: string | null;
+            /** Mailbox Address */
+            mailbox_address: string;
+            /** Mailbox Id */
+            mailbox_id: string;
+            /** Message Id */
+            message_id: string;
+            /** Owner Id */
+            owner_id: string;
+            /**
+             * Received At
+             * Format: date-time
+             */
+            received_at: string;
+            /** Revision */
+            revision: number;
+            /** Sender */
+            sender: string;
+            /** Snippet */
+            snippet: string;
+            source: components["schemas"]["BusinessMailSource"];
+            /** Subject */
+            subject: string;
+        };
+        /** BusinessMailDraftCommand */
+        BusinessMailDraftCommand: {
+            /** Body Text */
+            body_text: string;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Subject */
+            subject: string;
+        };
+        /** BusinessMailFollowupEvent */
+        BusinessMailFollowupEvent: {
+            /** Actor Id */
+            actor_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Draft Id */
+            draft_id: string | null;
+            /** Event Id */
+            event_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "draft_saved" | "handling_updated";
+            /** Note */
+            note: string;
+            /** Request Key */
+            request_key: string;
+            /** Revision */
+            revision: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "in_progress" | "waiting_customer" | "completed";
+        };
+        /** BusinessMailFollowupView */
+        BusinessMailFollowupView: {
+            draft: components["schemas"]["BusinessMailReplyDraftView"] | null;
+            /** History */
+            history: components["schemas"]["BusinessMailFollowupEvent"][];
+            /** Message Id */
+            message_id: string;
+            /** Owner Id */
+            owner_id: string;
+            /** Revision */
+            revision: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "in_progress" | "waiting_customer" | "completed";
+        };
+        /** BusinessMailHandlingCommand */
+        BusinessMailHandlingCommand: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Note */
+            note: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "in_progress" | "waiting_customer" | "completed";
+        };
+        /** BusinessMailItem */
+        BusinessMailItem: {
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "pending" | "business" | "other" | "review";
+            /**
+             * Classification Status
+             * @enum {string}
+             */
+            classification_status: "pending" | "classifying" | "classified" | "failed";
+            /**
+             * Contact Status
+             * @default unconfirmed
+             * @constant
+             */
+            contact_status: "unconfirmed";
+            /** Failure Code */
+            failure_code: string | null;
+            /** Mailbox Address */
+            mailbox_address: string;
+            /** Mailbox Id */
+            mailbox_id: string;
+            /** Message Id */
+            message_id: string;
+            /** Owner Id */
+            owner_id: string;
+            /**
+             * Received At
+             * Format: date-time
+             */
+            received_at: string;
+            /** Revision */
+            revision: number;
+            /** Sender */
+            sender: string;
+            /** Snippet */
+            snippet: string;
+            /** Subject */
+            subject: string;
+        };
+        /** BusinessMailPage */
+        BusinessMailPage: {
+            /** Items */
+            items: components["schemas"]["BusinessMailItem"][];
+            /** Next Offset */
+            next_offset: number | null;
+        };
+        /** BusinessMailReplyDraftView */
+        BusinessMailReplyDraftView: {
+            /** Body Text */
+            body_text: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+            /** Draft Id */
+            draft_id: string;
+            /** Source Sha256 */
+            source_sha256: string;
+            /** Subject */
+            subject: string;
+        };
+        /** BusinessMailSource */
+        BusinessMailSource: {
+            /** Artifact Id */
+            artifact_id: string;
+            /**
+             * Folder
+             * @default INBOX
+             * @constant
+             */
+            folder: "INBOX";
+            /** Mime Sha256 */
+            mime_sha256: string | null;
+            /**
+             * Provider
+             * @default qq
+             * @constant
+             */
+            provider: "qq";
+            /**
+             * Received At
+             * Format: date-time
+             */
+            received_at: string;
+            /**
+             * Source Kind
+             * @enum {string}
+             */
+            source_kind: "full_mime" | "headers_only";
+            /** Source Sha256 */
+            source_sha256: string;
+            /** Uid */
+            uid: number;
+            /** Uidvalidity */
+            uidvalidity: number;
+        };
         /**
          * CalculationSnapshot
          * @description 一次可重现计算的不可变输出快照。
@@ -3062,9 +3946,9 @@ export interface components {
             context_hash: string;
             /** Cost Sheet Id */
             cost_sheet_id: string;
-            displayed_total: components["schemas"]["Money-Output"];
-            displayed_unit_price: components["schemas"]["Money-Output"];
-            effective_unit_revenue: components["schemas"]["Money-Output"];
+            displayed_total: components["schemas"]["Money"];
+            displayed_unit_price: components["schemas"]["Money"];
+            effective_unit_revenue: components["schemas"]["Money"];
             /** Inputs Hash */
             inputs_hash: string;
             metrics: components["schemas"]["ProfitMetrics"];
@@ -3687,6 +4571,8 @@ export interface components {
              * Format: date-time
              */
             last_activity_at: string;
+            /** Latest Direction */
+            latest_direction?: string | null;
             /** Latest Message At */
             latest_message_at: string | null;
             /** Latest Message Id */
@@ -3715,7 +4601,7 @@ export interface components {
             /** Quote Fx Ref */
             quote_fx_ref: string | null;
             rounding: components["schemas"]["RoundingPolicy"];
-            unit_price: components["schemas"]["Money-Input"] | null;
+            unit_price: components["schemas"]["Money"] | null;
         };
         /**
          * CostCoverageCreate
@@ -3783,7 +4669,7 @@ export interface components {
          * @description 无可信usage和费率时未知；费用只允许原Money/Decimal契约。
          */
         CostInputObservation: {
-            cost_per_qualified_opportunity?: components["schemas"]["Money-Output"] | null;
+            cost_per_qualified_opportunity?: components["schemas"]["Money"] | null;
             /** Human Work Seconds */
             human_work_seconds?: number | null;
             /**
@@ -3800,7 +4686,7 @@ export interface components {
             model_input_tokens?: number | null;
             /** Model Output Tokens */
             model_output_tokens?: number | null;
-            total_cost?: components["schemas"]["Money-Output"] | null;
+            total_cost?: components["schemas"]["Money"] | null;
         };
         /**
          * CostItemBinding
@@ -3838,7 +4724,7 @@ export interface components {
         };
         /** CostItemView */
         CostItemView: {
-            amount: components["schemas"]["Money-Output"];
+            amount: components["schemas"]["Money"];
             /** Entered By Id */
             entered_by_id?: string | null;
             /** Entered By Name */
@@ -4002,7 +4888,7 @@ export interface components {
             items: components["schemas"]["CostItemView"][];
             /** Margin Rate */
             margin_rate?: string | null;
-            minimum_sellable_price?: components["schemas"]["Money-Output"] | null;
+            minimum_sellable_price?: components["schemas"]["Money"] | null;
             /** Opportunity Id */
             opportunity_id: string;
             /** Quantity */
@@ -4023,7 +4909,7 @@ export interface components {
             source_tier_minimum_quantity?: number | null;
             /** Source Unit */
             source_unit?: string | null;
-            unit_full_cost?: components["schemas"]["Money-Output"] | null;
+            unit_full_cost?: components["schemas"]["Money"] | null;
             /** Version Number */
             version_number: number;
             /** Version Type */
@@ -4212,6 +5098,269 @@ export interface components {
             /** Version Number */
             version_number: number;
         };
+        /** CustomerAccessView */
+        CustomerAccessView: {
+            /** Can Assign */
+            can_assign: boolean;
+            /** Can Search */
+            can_search: boolean;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "boss" | "manager" | "sales";
+        };
+        /** CustomerAllocationView */
+        CustomerAllocationView: {
+            /** Account Id */
+            account_id: string | null;
+            /**
+             * Allocated At
+             * Format: date-time
+             */
+            allocated_at: string;
+            /** Assigned At */
+            assigned_at: string | null;
+            /** Assigned By */
+            assigned_by: string | null;
+            candidate: components["schemas"]["PublicCandidate"];
+            /**
+             * Email Verification
+             * @default unverified
+             * @constant
+             */
+            email_verification: "unverified";
+            /** Employee Id */
+            employee_id: string | null;
+            /** Id */
+            id: string;
+        };
+        /** CustomerCampaignOption */
+        CustomerCampaignOption: {
+            /** Allowed Categories */
+            allowed_categories: string[];
+            /** Blocking Reasons */
+            blocking_reasons: string[];
+            /** Campaign Id */
+            campaign_id: string;
+            /** Campaign Version */
+            campaign_version: number;
+            /**
+             * Can Start
+             * @default false
+             */
+            can_start: boolean;
+            /**
+             * Eligible Contact Point Ids
+             * @default []
+             */
+            eligible_contact_point_ids: string[];
+            /** Markets */
+            markets: string[];
+            /** Name */
+            name: string;
+            /** Target Entity Types */
+            target_entity_types: string[];
+        };
+        /** CustomerDetailView */
+        CustomerDetailView: {
+            account: components["schemas"]["ProspectAccountView"] | null;
+            allocation: components["schemas"]["CustomerAllocationView"];
+            /** Blocking Reasons */
+            blocking_reasons: string[];
+            /**
+             * Can Stop
+             * @default false
+             */
+            can_stop: boolean;
+            /** Contacts */
+            contacts: components["schemas"]["ProspectContactDetailView"][];
+            /** Enrollments */
+            enrollments: components["schemas"]["CustomerEnrollmentView"][];
+            /** Owner */
+            owner: string | null;
+        };
+        /** CustomerEnrollmentView */
+        CustomerEnrollmentView: {
+            /** Account Id */
+            account_id: string;
+            /** Campaign Id */
+            campaign_id: string;
+            /** Campaign Version */
+            campaign_version: number;
+            /** Contact Point Id */
+            contact_point_id: string;
+            /** Current Step */
+            current_step: number;
+            /**
+             * Enrolled At
+             * Format: date-time
+             */
+            enrolled_at: string;
+            /** Enrollment Id */
+            enrollment_id: string;
+            /**
+             * Execution Mode
+             * @default automatic
+             * @enum {string}
+             */
+            execution_mode: "automatic" | "manual";
+            /** Next Send At */
+            next_send_at: string | null;
+            /** Source Hypothesis Id */
+            source_hypothesis_id: string | null;
+            /** State */
+            state: string;
+            /** Stop Reason */
+            stop_reason: string | null;
+            /** Stopped At */
+            stopped_at: string | null;
+        };
+        /** CustomerFollowupCommand */
+        CustomerFollowupCommand: {
+            /** Campaign Id */
+            campaign_id: string;
+            /** Campaign Version */
+            campaign_version: number;
+            /** Contact Point Id */
+            contact_point_id: string;
+            /**
+             * Execution Mode
+             * @default automatic
+             * @enum {string}
+             */
+            execution_mode: "automatic" | "manual";
+            /** Source Hypothesis Id */
+            source_hypothesis_id: string;
+        };
+        /** CustomerFollowupOptions */
+        CustomerFollowupOptions: {
+            /** Account Id */
+            account_id: string | null;
+            /** Allocation Id */
+            allocation_id: string;
+            /** Blocking Reasons */
+            blocking_reasons: string[];
+            /** Campaigns */
+            campaigns: components["schemas"]["CustomerCampaignOption"][];
+            /** Contacts */
+            contacts: components["schemas"]["ProspectContactDetailView"][];
+            /**
+             * Execution Mode
+             * @default automatic
+             * @enum {string}
+             */
+            execution_mode: "automatic" | "manual";
+            /** Hypotheses */
+            hypotheses: components["schemas"]["CustomerHypothesisOption"][];
+        };
+        /** CustomerHypothesisOption */
+        CustomerHypothesisOption: {
+            /** Category */
+            category: string;
+            /** Hypothesis Id */
+            hypothesis_id: string;
+            /**
+             * Is Inference
+             * @default true
+             * @constant
+             */
+            is_inference: true;
+            /** Status */
+            status: string;
+        };
+        /** CustomerPreparationCommand */
+        CustomerPreparationCommand: {
+            /** Entity Type */
+            entity_type: string;
+            /** Fit Reasoning */
+            fit_reasoning: string;
+            /** Industry */
+            industry: string;
+            legal_basis?: components["schemas"]["LegalBasisInput"] | null;
+            /**
+             * Legal Basis Confirmed
+             * @default false
+             */
+            legal_basis_confirmed: boolean;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Page Hash */
+            page_hash: string;
+            /** Product Category */
+            product_category: string;
+            /** Public Email */
+            public_email?: string | null;
+            /** Public Observation */
+            public_observation: string;
+            /** Snapshot Artifact Ref */
+            snapshot_artifact_ref: string;
+            /** Source Url */
+            source_url: string;
+        };
+        /** CustomerPreparationView */
+        CustomerPreparationView: {
+            account: components["schemas"]["ProspectAccountView"];
+            /** Allocation Id */
+            allocation_id: string;
+            /** Can Prepare */
+            can_prepare: boolean;
+            /** Contacts */
+            contacts: components["schemas"]["ProspectContactDetailView"][];
+            /** Hypotheses */
+            hypotheses: components["schemas"]["CustomerHypothesisOption"][];
+        };
+        /** CustomerVerificationCommand */
+        CustomerVerificationCommand: {
+            /** Contact Point Id */
+            contact_point_id: string;
+        };
+        /** CustomerVerificationOption */
+        CustomerVerificationOption: {
+            /** Blocking Reasons */
+            blocking_reasons: string[];
+            /** Can Verify */
+            can_verify: boolean;
+            contact: components["schemas"]["ContactPointDetailView"];
+        };
+        /** CustomerVerificationResult */
+        CustomerVerificationResult: {
+            /** Allocation Id */
+            allocation_id: string;
+            /** Cache Hit */
+            cache_hit: boolean;
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /** Contact Point Id */
+            contact_point_id: string;
+            /**
+             * Privacy Erased
+             * @default false
+             */
+            privacy_erased: boolean;
+            /** Provider */
+            provider: string;
+            result: components["schemas"]["VerificationStatus"];
+        };
+        /** CustomerVerificationView */
+        CustomerVerificationView: {
+            /** Account Id */
+            account_id: string;
+            /** Allocation Id */
+            allocation_id: string;
+            /** Blocking Reasons */
+            blocking_reasons: string[];
+            /** Can Verify */
+            can_verify: boolean;
+            /** Contacts */
+            contacts: components["schemas"]["CustomerVerificationOption"][];
+        };
         /**
          * DemandSignalView
          * @description 需求雷达信号视图；事实观察与可能需求保持结构分离。
@@ -4360,6 +5509,21 @@ export interface components {
          */
         DomainRole: "cold_outreach" | "primary_business" | "transactional";
         /**
+         * EmployeeAccountCreateRequest
+         * @description 仅管理员网页开户；不接受企业、角色、用户编号或弱密码例外。
+         */
+        EmployeeAccountCreateRequest: {
+            /** Name */
+            name: string;
+            /**
+             * Password
+             * Format: password
+             */
+            password: string;
+            /** Username */
+            username: string;
+        };
+        /**
          * EmployeeConfirmationView
          * @description 追加式人工版本；payload 不覆盖 Agent 原始提取。
          */
@@ -4414,6 +5578,11 @@ export interface components {
          */
         EmptyAssistantCommand: Record<string, never>;
         /**
+         * EnrollmentExecutionMode
+         * @enum {string}
+         */
+        EnrollmentExecutionMode: "automatic" | "manual";
+        /**
          * EnrollmentState
          * @enum {string}
          */
@@ -4442,6 +5611,8 @@ export interface components {
             enrolled_at: string;
             /** Enrollment Id */
             enrollment_id: string;
+            /** @default automatic */
+            execution_mode: components["schemas"]["EnrollmentExecutionMode"];
             /** Next Send At */
             next_send_at: string | null;
             /** Sending Identity Id */
@@ -5288,6 +6459,151 @@ export interface components {
             /** Unit */
             unit: string;
         };
+        /**
+         * InventoryAllocationView
+         * @description 只含已授权归属与公开事实；不公开内部幂等键。
+         */
+        InventoryAllocationView: {
+            /** Account Id */
+            account_id?: string | null;
+            /**
+             * Allocated At
+             * Format: date-time
+             */
+            allocated_at: string;
+            /** Assigned At */
+            assigned_at?: string | null;
+            /** Assigned By */
+            assigned_by?: string | null;
+            candidate: components["schemas"]["PublicCandidate"];
+            /**
+             * Email Verification
+             * @default unverified
+             * @constant
+             */
+            email_verification: "unverified";
+            /** Employee Id */
+            employee_id: string | null;
+            /** Id */
+            id: string;
+        };
+        /**
+         * InventoryAssignmentRequest
+         * @description 只包含目标记录和负责人；公司与操作者必须来自受信会话。
+         */
+        InventoryAssignmentRequest: {
+            /** Allocation Ids */
+            allocation_ids: string[];
+            /** Employee Id */
+            employee_id: string;
+        };
+        /**
+         * InventoryJobView
+         * @description 任务租约、并发令牌和底层异常永不进入HTTP。
+         */
+        InventoryJobView: {
+            /** Attempts */
+            attempts: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Employee Id */
+            employee_id: string;
+            /** Failure Reason */
+            failure_reason?: ("sources_unavailable" | "budget_exhausted" | "collector_failed") | null;
+            /** Id */
+            id: string;
+            query: components["schemas"]["InventoryQuery"];
+            /** Remaining Count */
+            remaining_count: number;
+            /** Requested Count */
+            requested_count: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "processing" | "complete" | "failed";
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * InventoryQuery
+         * @description 只接受公开市场与产品标签；不承载企业私有原件。
+         */
+        InventoryQuery: {
+            /** Country */
+            country?: string | null;
+            /** Product Tags */
+            product_tags: string[];
+            /** Region */
+            region?: "africa" | null;
+        };
+        /** InventoryRequestBody */
+        InventoryRequestBody: {
+            /** Count */
+            count: number;
+            query: components["schemas"]["InventoryQuery"];
+        };
+        /** InventoryRequestView */
+        InventoryRequestView: {
+            /** Allocations */
+            allocations: components["schemas"]["InventoryAllocationView"][];
+            job: components["schemas"]["InventoryJobView"] | null;
+        };
+        /** InventorySourceView */
+        InventorySourceView: {
+            /** Access Methods */
+            access_methods: string[];
+            /** Category */
+            category: string;
+            /** Name */
+            name: string;
+            /** Source Id */
+            source_id: string;
+            state: components["schemas"]["SourceState"];
+            /** Website Url */
+            website_url: string | null;
+        };
+        /**
+         * InventoryStatus
+         * @description 当前企业额度与公共库存摘要。
+         */
+        InventoryStatus: {
+            /** Daily Limit */
+            daily_limit: number;
+            /** Fresh Candidates */
+            fresh_candidates: number;
+            /** Remaining Today */
+            remaining_today: number;
+            /**
+             * Reset At
+             * Format: date-time
+             */
+            reset_at: string;
+            /** Tenant Id */
+            tenant_id: string;
+            /** Used Today */
+            used_today: number;
+        };
+        /**
+         * InventoryTransferRequest
+         * @description 显式转交命令，以原负责人和分配时间拒绝陈旧页面覆盖。
+         */
+        InventoryTransferRequest: {
+            /** Employee Id */
+            employee_id: string;
+            /** Expected Assigned At */
+            expected_assigned_at: string | null;
+            /** Expected Employee Id */
+            expected_employee_id: string;
+            /** Reason */
+            reason: string;
+        };
         /** KnowledgeAnalysis */
         KnowledgeAnalysis: {
             /** Facts */
@@ -5475,6 +6791,23 @@ export interface components {
             expected_version: number;
             /** Revision Id */
             revision_id: string;
+        };
+        /** LegalBasisInput */
+        LegalBasisInput: {
+            /** Assessment Ref */
+            assessment_ref?: string | null;
+            basis: components["schemas"]["LegalBasisType"];
+            /**
+             * Collected At
+             * Format: date-time
+             */
+            collected_at: string;
+            contact_type: components["schemas"]["ContactType"];
+            /** Source */
+            source: string;
+            /** Source Url */
+            source_url?: string | null;
+            subject_type: components["schemas"]["SubjectType"];
         };
         /**
          * LegalBasisType
@@ -5676,20 +7009,50 @@ export interface components {
             updated_at: string;
         };
         /**
+         * MessageContentView
+         * @description 当前授权下的邮件内容投影；只在请求中返回，不写日志或模型。
+         */
+        MessageContentView: {
+            /** Body Text */
+            body_text: string | null;
+            /**
+             * Html Only
+             * @default false
+             */
+            html_only: boolean;
+            /** Recipients */
+            recipients: string;
+            /** Sender */
+            sender: string;
+            /** Subject */
+            subject: string;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
+        /**
          * ModelLimits
          * @description 部署方必须逐项提供，不能用测试阈值开启付费服务。
          */
         ModelLimits: {
-            /** Employee Calls */
-            employee_calls: number;
+            /**
+             * Employee Calls
+             * @description null表示不限制窗口调用次数
+             */
+            employee_calls: number | null;
             /** Employee Concurrency */
             employee_concurrency: number;
             /** Max Input Bytes */
             max_input_bytes: number;
             /** Max Output Tokens */
             max_output_tokens: number;
-            /** Tenant Calls */
-            tenant_calls: number;
+            /**
+             * Tenant Calls
+             * @description null表示不限制窗口调用次数
+             */
+            tenant_calls: number | null;
             /** Tenant Concurrency */
             tenant_concurrency: number;
             /** Timeout Seconds */
@@ -5733,9 +7096,9 @@ export interface components {
             /**
              * Provider
              * @default deepseek
-             * @constant
+             * @enum {string}
              */
-            provider: "deepseek";
+            provider: "deepseek" | "compatible";
             /**
              * Status
              * @enum {string}
@@ -5767,52 +7130,6 @@ export interface components {
          *     - 舍入必须显式指定策略和精度，不依赖默认值。
          */
         Money: {
-            /** Amount */
-            amount: string;
-            /** Currency */
-            currency: string;
-        };
-        /**
-         * Money
-         * @description 金额。不可变。
-         *
-         *     字段：
-         *         amount:   金额，必须是 ``Decimal``
-         *         currency: 币种
-         *
-         *     实现要求：
-         *     - ``__post_init__`` 校验 ``amount`` 是 ``Decimal``，传入 ``float``
-         *       直接抛错。不要"友好地"自动转换——静默转换会让错误留到生产。
-         *     - 算术运算（加减）要求币种一致，不一致抛错，**不自动换算**。
-         *       自动换算会隐藏"用了哪个时点的汇率"这个关键信息。
-         *     - 乘除只允许乘 ``Decimal`` 或 ``int``（数量、比例），不允许
-         *       两个 Money 相乘。
-         *     - 舍入必须显式指定策略和精度，不依赖默认值。
-         */
-        "Money-Input": {
-            /** Amount */
-            amount: string;
-            /** Currency */
-            currency: string;
-        };
-        /**
-         * Money
-         * @description 金额。不可变。
-         *
-         *     字段：
-         *         amount:   金额，必须是 ``Decimal``
-         *         currency: 币种
-         *
-         *     实现要求：
-         *     - ``__post_init__`` 校验 ``amount`` 是 ``Decimal``，传入 ``float``
-         *       直接抛错。不要"友好地"自动转换——静默转换会让错误留到生产。
-         *     - 算术运算（加减）要求币种一致，不一致抛错，**不自动换算**。
-         *       自动换算会隐藏"用了哪个时点的汇率"这个关键信息。
-         *     - 乘除只允许乘 ``Decimal`` 或 ``int``（数量、比例），不允许
-         *       两个 Money 相乘。
-         *     - 舍入必须显式指定策略和精度，不依赖默认值。
-         */
-        "Money-Output": {
             /** Amount */
             amount: string;
             /** Currency */
@@ -6014,7 +7331,7 @@ export interface components {
          * NotificationKind
          * @enum {string}
          */
-        NotificationKind: "handoff_escalation" | "handoff_queue_backlogged" | "sending_identity_suspended" | "reputation_threshold_breached" | "commitment_overdue" | "approval_decided" | "quote_approval_result";
+        NotificationKind: "customer_reply" | "handoff_escalation" | "handoff_queue_backlogged" | "sending_identity_suspended" | "reputation_threshold_breached" | "commitment_overdue" | "approval_decided" | "quote_approval_result";
         /**
          * NotificationPriority
          * @enum {string}
@@ -6194,8 +7511,8 @@ export interface components {
             destination?: string | null;
             /** Died At State */
             died_at_state?: string | null;
-            estimated_cost?: components["schemas"]["Money-Output"] | null;
-            estimated_profit?: components["schemas"]["Money-Output"] | null;
+            estimated_cost?: components["schemas"]["Money"] | null;
+            estimated_profit?: components["schemas"]["Money"] | null;
             /**
              * Has Pending Handoff
              * @default false
@@ -6228,7 +7545,7 @@ export interface components {
             spec_summary?: string | null;
             /** State */
             state: string;
-            target_price?: components["schemas"]["Money-Output"] | null;
+            target_price?: components["schemas"]["Money"] | null;
         };
         /**
          * PlanReferenceBody
@@ -6459,6 +7776,61 @@ export interface components {
              */
             source_type: "upload" | "conversation" | "web_page" | "employee_input" | "external_api";
         };
+        /** PrivateReplyTestOption */
+        PrivateReplyTestOption: {
+            /** Campaign Id */
+            campaign_id: string;
+            /** Name */
+            name: string;
+            /** Sending Identity Id */
+            sending_identity_id: string;
+        };
+        /** PrivateReplyTestOptions */
+        PrivateReplyTestOptions: {
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /**
+             * Options
+             * @default []
+             */
+            options: components["schemas"]["PrivateReplyTestOption"][];
+        };
+        /** PrivateReplyTestPrepare */
+        PrivateReplyTestPrepare: {
+            /** Campaign Id */
+            campaign_id: string;
+            /**
+             * Confirm Controlled Recipient
+             * @constant
+             */
+            confirm_controlled_recipient: true;
+            /** Sending Identity Id */
+            sending_identity_id: string;
+        };
+        /** PrivateReplyTestPrepared */
+        PrivateReplyTestPrepared: {
+            /** Account Id */
+            account_id: string;
+            /** Contact Point Id */
+            contact_point_id: string;
+            /** Enrollment Id */
+            enrollment_id: string;
+            /**
+             * Purpose
+             * @default private_reply_test
+             * @constant
+             */
+            purpose: "private_reply_test";
+            /**
+             * Sent
+             * @default false
+             * @constant
+             */
+            sent: false;
+        };
         /**
          * ProductCandidateSource
          * @description 候选产品卡的域内来源聚合；不依赖 sourcing 域内部类型。
@@ -6520,7 +7892,7 @@ export interface components {
             candidate_status?: string | null;
             /** Category */
             category: string;
-            internal_cost: components["schemas"]["Money-Output"] | null;
+            internal_cost: components["schemas"]["Money"] | null;
             /** Internal Cost Basis */
             internal_cost_basis: string | null;
             /** Internal Cost Source Ref */
@@ -6551,8 +7923,8 @@ export interface components {
          * @description 销售视图。没有供应商、没有成本字段——不是隐藏，是不存在。
          */
         ProductSalesView: {
-            allowed_price_max: components["schemas"]["Money-Output"] | null;
-            allowed_price_min: components["schemas"]["Money-Output"] | null;
+            allowed_price_max: components["schemas"]["Money"] | null;
+            allowed_price_min: components["schemas"]["Money"] | null;
             /** Category */
             category: string;
             /** Faq */
@@ -6692,6 +8064,39 @@ export interface components {
             /** State */
             state: string;
         };
+        /** ProspectAccountView */
+        ProspectAccountView: {
+            /** Account Id */
+            account_id: string;
+            /** Country */
+            country: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Entity Type */
+            entity_type?: string | null;
+            /** Field Provenance */
+            field_provenance?: {
+                [key: string]: components["schemas"]["Provenance"];
+            };
+            /** Industry */
+            industry?: string | null;
+            /** Name */
+            name: string;
+            /** Size Hint */
+            size_hint?: string | null;
+            /**
+             * Source Signal Refs
+             * @default []
+             */
+            source_signal_refs: string[];
+            /** Tenant Id */
+            tenant_id: string;
+            /** Website Domain */
+            website_domain?: string | null;
+        };
         /**
          * ProspectContactDetailView
          * @description 联系人及其联系方式；仅供已判权的内部员工视图。
@@ -6778,6 +8183,44 @@ export interface components {
              * @default null
              */
             source_url: string | null;
+        };
+        /**
+         * PublicCandidate
+         * @description 受信采集器白名单；公共网页/API事实不授予触达权。
+         */
+        PublicCandidate: {
+            /** Canonical Domain */
+            canonical_domain: string;
+            /** Country */
+            country: string;
+            /** Evidence Text */
+            evidence_text: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /** Product Tags */
+            product_tags: string[];
+            provenance: components["schemas"]["Provenance"];
+            /**
+             * Public Emails
+             * @default []
+             */
+            public_emails: string[];
+            /** Source Id */
+            source_id: string;
+            /** Source Url */
+            source_url: string;
         };
         /**
          * PublicSourcingPlanCommand
@@ -6917,9 +8360,9 @@ export interface components {
             context_hash: string;
             /** Cost Sheet Id */
             cost_sheet_id: string;
-            displayed_total: components["schemas"]["Money-Output"];
-            displayed_unit_price: components["schemas"]["Money-Output"];
-            effective_unit_revenue: components["schemas"]["Money-Output"];
+            displayed_total: components["schemas"]["Money"];
+            displayed_unit_price: components["schemas"]["Money"];
+            effective_unit_revenue: components["schemas"]["Money"];
             /** Inputs Hash */
             inputs_hash: string;
             metrics: components["schemas"]["QuoteProfitMetrics"];
@@ -6939,7 +8382,7 @@ export interface components {
             description: string;
             /** Line Number */
             line_number: number;
-            line_total: components["schemas"]["Money-Output"];
+            line_total: components["schemas"]["Money"];
             /** Quantity */
             quantity: number;
             rounding: components["schemas"]["QuoteRoundingInput"];
@@ -6947,7 +8390,7 @@ export interface components {
             specification: string;
             /** Unit */
             unit: string;
-            unit_price: components["schemas"]["Money-Output"];
+            unit_price: components["schemas"]["Money"];
         };
         /**
          * QuoteCustomerFileEntry
@@ -7026,7 +8469,7 @@ export interface components {
             scope_confirmation_id: string;
             /** Terms */
             terms: components["schemas"]["QuoteTerm"][];
-            unit_price: components["schemas"]["Money-Input"];
+            unit_price: components["schemas"]["Money"];
             /**
              * Valid Until
              * Format: date-time
@@ -7321,7 +8764,7 @@ export interface components {
             size_spec: string | null;
             /** Status */
             status: string;
-            target_price: components["schemas"]["Money-Output"] | null;
+            target_price: components["schemas"]["Money"] | null;
             /** Unit */
             unit: string | null;
             /** Unit Confirmation Id */
@@ -7513,7 +8956,7 @@ export interface components {
         };
         /**
          * ReplyCategory
-         * @description 回复分类 —— 设计稿第十二节的 14 类，每类对应确定的系统动作。
+         * @description 回复分类 —— 原 14 类业务结果加中性人工核对，每类对应确定动作。
          *
          *     分类由 ``agent_runtime/qualification_agent`` 做，**动作映射是
          *     确定性代码**（``REPLY_ACTIONS``）——模型判断类别，代码决定做什么。
@@ -7522,7 +8965,14 @@ export interface components {
          *     要偏保守（宁可误判为退订）。
          * @enum {string}
          */
-        ReplyCategory: "clear_interest" | "willing_to_continue" | "requests_materials" | "requests_quote" | "requests_sample" | "provides_specification" | "no_current_need" | "future_need_possible" | "refers_other_contact" | "rejection" | "unsubscribe" | "bounce" | "auto_reply" | "complaint";
+        ReplyCategory: "clear_interest" | "willing_to_continue" | "requests_materials" | "requests_quote" | "requests_sample" | "provides_specification" | "no_current_need" | "future_need_possible" | "refers_other_contact" | "rejection" | "unsubscribe" | "bounce" | "auto_reply" | "needs_review" | "complaint";
+        /** ReplyFailedRetryCommand */
+        ReplyFailedRetryCommand: {
+            /** Acknowledge Cost */
+            acknowledge_cost: boolean;
+            /** Expected Sequence */
+            expected_sequence: number;
+        };
         /**
          * ReplyNextQuestionsView
          * @description 受权只读建议；真实引用和队列状态不被英文措辞替代。
@@ -7545,6 +8995,143 @@ export interface components {
             suggestions: string[];
             /** Topics */
             topics: string[];
+        };
+        /** ReplyRetryCommand */
+        ReplyRetryCommand: Record<string, never>;
+        /** ReplyRetryView */
+        ReplyRetryView: {
+            /**
+             * Can Resume
+             * @default false
+             */
+            can_resume: boolean;
+            /**
+             * Can Retry
+             * @default false
+             */
+            can_retry: boolean;
+            /** Expected Sequence */
+            expected_sequence?: number | null;
+            /** Message Id */
+            message_id: string;
+            /**
+             * Original Failure Preserved
+             * @default true
+             */
+            original_failure_preserved: boolean;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "not_recoverable" | "not_dispatched" | "quota_exhausted" | "model_unavailable" | "manual_recovery" | "stopped_failure";
+            /**
+             * Requires Cost Confirmation
+             * @default false
+             */
+            requires_cost_confirmation: boolean;
+            /**
+             * Resumed
+             * @default false
+             */
+            resumed: boolean;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "unavailable" | "eligible" | "queued" | "running" | "classified" | "completed" | "failed" | "expired";
+        };
+        /**
+         * ReplyWorkAction
+         * @description 由回复产生、需要内部员工继续处理的耐久业务动作。
+         * @enum {string}
+         */
+        ReplyWorkAction: "start_qualification" | "mark_future_restart" | "create_follow_up" | "intake_new_contact" | "review_reply";
+        /**
+         * ReplyWorkActionView
+         * @description Owner queue 只读项；内容通过 message/artifact 授权链另行读取。
+         */
+        ReplyWorkActionView: {
+            /** Account Id */
+            account_id: string;
+            action: components["schemas"]["ReplyWorkAction"];
+            /** Action Id */
+            action_id: string;
+            /**
+             * Can Handle
+             * @default false
+             */
+            can_handle: boolean;
+            /** Contact Point Id */
+            contact_point_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Enrollment Id */
+            enrollment_id: string;
+            /**
+             * History
+             * @default []
+             */
+            history: components["schemas"]["ReplyWorkHandlingView"][];
+            /** Idempotency Key */
+            idempotency_key: string;
+            /** Message Id */
+            message_id: string;
+            /** Outbound Message Id */
+            outbound_message_id: string;
+            owner_queue: components["schemas"]["ReplyWorkQueue"];
+            status: components["schemas"]["ReplyWorkStatus"];
+        };
+        /**
+         * ReplyWorkHandlingView
+         * @description 仅向当前有权查看会话的员工公开处理历史。
+         */
+        ReplyWorkHandlingView: {
+            /** Disposition */
+            disposition: string;
+            expected_status: components["schemas"]["ReplyWorkStatus"];
+            /**
+             * Handled At
+             * Format: date-time
+             */
+            handled_at: string;
+            /** Handled By */
+            handled_by: string;
+            /** Note */
+            note: string;
+            /** Sequence */
+            sequence: number;
+            status: components["schemas"]["ReplyWorkStatus"];
+        };
+        /**
+         * ReplyWorkQueue
+         * @description Owner 可消费的明确队列；referral 只能进入核验准入队列。
+         * @enum {string}
+         */
+        ReplyWorkQueue: "need_qualification" | "future_restart_review" | "follow_up" | "reply_review" | "verified_contact_intake_review";
+        /**
+         * ReplyWorkStatus
+         * @enum {string}
+         */
+        ReplyWorkStatus: "pending" | "in_progress" | "completed" | "cancelled";
+        /**
+         * ReplyWorkUpdate
+         * @description 操作者、时间和来源由服务端确定；不接收客户端采购确认事实。
+         */
+        ReplyWorkUpdate: {
+            /** Disposition */
+            disposition?: ("started" | "waiting_customer" | "handled" | "cancelled") | null;
+            expected_status: components["schemas"]["ReplyWorkStatus"];
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Request Id */
+            request_id?: string | null;
+            status: components["schemas"]["ReplyWorkStatus"];
         };
         /**
          * ReputationView
@@ -8237,6 +9824,50 @@ export interface components {
             duplicate_receipt_count: number;
             /** Tool Id */
             tool_id: string;
+        };
+        /**
+         * SourceState
+         * @description 运行检查结果与历史事实；不能以静态selected当可用。
+         */
+        SourceState: {
+            /**
+             * Attempts
+             * @default 0
+             */
+            attempts: number;
+            /**
+             * Availability
+             * @enum {string}
+             */
+            availability: "available" | "not_configured" | "not_integrated" | "permission_denied" | "quota_exhausted" | "unhealthy";
+            /**
+             * Cost Class
+             * @enum {string}
+             */
+            cost_class: "free" | "included" | "paid" | "unknown";
+            /**
+             * Inventory Capability
+             * @default not_integrated
+             * @enum {string}
+             */
+            inventory_capability: "not_integrated" | "web_discovery" | "search_backend" | "model_runner";
+            /** Last Used At */
+            last_used_at?: string | null;
+            /** Relevant */
+            relevant: boolean;
+            /** Source Id */
+            source_id: string;
+            /**
+             * Source Role
+             * @description 按实际用途区分来源与支持工具，不以目录名称推断就绪。
+             * @enum {string}
+             */
+            readonly source_role: "company_discovery" | "procurement_signal" | "contact_enrichment" | "incremental_subscription" | "base_search" | "model_executor";
+            /**
+             * Valid New Count
+             * @default 0
+             */
+            valid_new_count: number;
         };
         /**
          * SourceType
@@ -9102,7 +10733,7 @@ export interface components {
             required_by?: string | null;
             /** Status */
             status: string;
-            target_price?: components["schemas"]["Money-Output"] | null;
+            target_price?: components["schemas"]["Money"] | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -14779,6 +16410,275 @@ export interface operations {
             };
         };
     };
+    connect_inbox_aliyun_connect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AliyunConnectCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AliyunConnectionStatus"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    status_inbox_aliyun_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AliyunConnectionStatus"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_business_mail_inbox_business_mail_get: {
+        parameters: {
+            query?: {
+                bucket?: "all" | "pending" | "business" | "other" | "review";
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BusinessMailPage"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    detail_business_mail_inbox_business_mail__message_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BusinessMailDetail"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    correct_business_mail_inbox_business_mail__message_id__correct_classification_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessMailCorrection"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BusinessMailDetail"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+            /** @description 分类版本已变化 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_followup_inbox_business_mail__message_id__followup_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BusinessMailFollowupView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    handle_inbox_business_mail__message_id__handling_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessMailHandlingCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BusinessMailFollowupView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    save_draft_inbox_business_mail__message_id__reply_draft_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessMailDraftCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BusinessMailFollowupView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
     list_inbox_conversations_inbox_conversations_get: {
         parameters: {
             query?: {
@@ -15211,6 +17111,37 @@ export interface operations {
             };
         };
     };
+    get_message_content_inbox_messages__message_id__content_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageContentView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
     correct_inbox_classification_inbox_messages__message_id__correct_classification_post: {
         parameters: {
             query?: never;
@@ -15286,6 +17217,340 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    read_reply_retry_inbox_messages__message_id__retry_classification_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplyRetryView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    retry_reply_classification_inbox_messages__message_id__retry_classification_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplyRetryCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplyRetryView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    retry_failed_reply_classification_inbox_messages__message_id__retry_classification_failed_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplyFailedRetryCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplyRetryView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    resume_reply_classification_inbox_messages__message_id__retry_classification_resume_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplyRetryCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplyRetryView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    private_reply_test_options_inbox_private_reply_test_options_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateReplyTestOptions"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    prepare_private_reply_test_inbox_private_reply_test_prepare_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PrivateReplyTestPrepare"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateReplyTestPrepared"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    connect_inbox_qq_connect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AliyunConnectCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AliyunConnectionStatus"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    status_inbox_qq_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AliyunConnectionStatus"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    list_reply_work_inbox_reply_work_get: {
+        parameters: {
+            query?: {
+                status?: components["schemas"]["ReplyWorkStatus"];
+                limit?: number;
+                account_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplyWorkActionView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    handle_reply_work_inbox_reply_work__action_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                action_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplyWorkUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplyWorkActionView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16697,6 +18962,332 @@ export interface operations {
             };
         };
     };
+    customers_prospects_customers_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerAllocationView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    access_prospects_customers_access_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerAccessView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    detail_prospects_customers__allocation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                allocation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerDetailView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    options_prospects_customers__allocation_id__follow_up_get: {
+        parameters: {
+            query?: {
+                execution_mode?: "automatic" | "manual";
+            };
+            header?: never;
+            path: {
+                allocation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerFollowupOptions"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    start_prospects_customers__allocation_id__follow_up_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                allocation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CustomerFollowupCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerEnrollmentView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    stop_prospects_customers__allocation_id__follow_up__enrollment_id__stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                allocation_id: string;
+                enrollment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerEnrollmentView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    read_prospects_customers__allocation_id__preparation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                allocation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerPreparationView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    prepare_prospects_customers__allocation_id__preparation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                allocation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CustomerPreparationCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerPreparationView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    read_prospects_customers__allocation_id__verification_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                allocation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerVerificationView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    verify_prospects_customers__allocation_id__verification_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                allocation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CustomerVerificationCommand"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerVerificationResult"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
     start_discovery_prospects_discoveries_post: {
         parameters: {
             query?: never;
@@ -16717,6 +19308,262 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AccountDiscoveryStartResponse"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    allocations_prospects_inventory_allocations_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+                unassigned_only?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryAllocationView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    transfer_allocation_prospects_inventory_allocations__allocation_id__transfer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                allocation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InventoryTransferRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryAllocationView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    assign_allocations_prospects_inventory_assignments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InventoryAssignmentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryAllocationView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    jobs_prospects_inventory_jobs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryJobView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    job_prospects_inventory_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryJobView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    request_candidates_prospects_inventory_requests_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InventoryRequestBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryRequestView"];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    sources_prospects_inventory_sources_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventorySourceView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    status_prospects_inventory_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryStatus"];
                 };
             };
             /** @description 请求参数无效 */
@@ -18437,6 +21284,35 @@ export interface operations {
             };
         };
     };
+    account_creation_available_team_account_creation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": boolean;
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
     list_team_employees_team_employees_get: {
         parameters: {
             query?: never;
@@ -18453,6 +21329,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EmployeeView"][];
+                };
+            };
+            /** @description 请求参数无效 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorResponse"];
+                };
+            };
+        };
+    };
+    create_team_employee_team_employees_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmployeeAccountCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmployeeView"];
                 };
             };
             /** @description 请求参数无效 */

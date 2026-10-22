@@ -294,10 +294,6 @@ _BOSS_ACTIONS = frozenset(
 _MANAGER_ACTIONS = frozenset(
     {
         OutreachAction.REPLY_SOURCE_READ,
-        OutreachAction.CAMPAIGN_SUBMIT,
-        OutreachAction.CAMPAIGN_REVISE,
-        OutreachAction.CAMPAIGN_PAUSE,
-        OutreachAction.CAMPAIGN_CANCEL,
         OutreachAction.CAMPAIGN_READ,
         OutreachAction.CAMPAIGN_LIST,
         OutreachAction.ENROLLMENT_CREATE,
@@ -328,6 +324,8 @@ _SALES_ACTIONS = frozenset(
         OutreachAction.REPLY_SOURCE_READ,
         OutreachAction.CAMPAIGN_READ,
         OutreachAction.CAMPAIGN_LIST,
+        OutreachAction.ENROLLMENT_CREATE,
+        OutreachAction.ENROLLMENT_STOP,
         OutreachAction.ENROLLMENT_READ,
         OutreachAction.ENROLLMENT_LIST,
     }
@@ -392,12 +390,23 @@ class Phase1OutreachAuthorizer:
             )
         ):
             raise PermissionDenied("Phase 1 触达授权拒绝")
+        if level in {ScopeLevel.SELF, ScopeLevel.MANAGER} and (
+            (action.value.startswith("campaign:") and scope.allowed_campaign_ids is None)
+            or (action in {OutreachAction.ENROLLMENT_READ, OutreachAction.ENROLLMENT_LIST}
+                and scope.allowed_account_ids is None)
+        ):
+            raise PermissionDenied("Phase 1 触达授权拒绝")
+        if level in {ScopeLevel.SELF, ScopeLevel.MANAGER} and action in {
+            OutreachAction.ENROLLMENT_CREATE, OutreachAction.ENROLLMENT_STOP,
+        } and (scope.allowed_account_ids is None or len(scope.allowed_account_ids) != 1):
+            raise PermissionDenied("客户跟进必须限定单一账户")
         if (
             level is ScopeLevel.SELF
             and action is not OutreachAction.REPLY_SOURCE_READ
             and (
                 scope.allowed_campaign_ids is None
                 and scope.allowed_enrollment_ids is None
+                and scope.allowed_account_ids is None
             )
         ):
             raise PermissionDenied("Phase 1 触达授权拒绝")

@@ -44,6 +44,7 @@ class ModelUsageRepository(Protocol):
         now: datetime,
         *,
         model: str,
+        provider: str = "deepseek",
         owner_id: str | None = None,
         lease_expires_at: datetime | None = None,
     ) -> Reservation: ...

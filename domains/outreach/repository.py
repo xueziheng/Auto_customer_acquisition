@@ -21,7 +21,7 @@ from domains.outreach.models import (
     SuppressionEntry,
 )
 from domains.outreach.permissions import OutreachScope
-from domains.outreach.schemas import SuppressionTarget
+from domains.outreach.schemas import EnrollmentOwnershipBinding, SuppressionTarget
 from shared.errors import ValidationError
 from shared.events.bus import EventBus
 from shared.schemas.identifiers import (
@@ -159,6 +159,12 @@ class CampaignRepository(Protocol):
 
 @runtime_checkable
 class EnrollmentRepository(Protocol):
+    async def lock_account_ownership(
+        self, tenant_id: TenantId, account_id: ProspectAccountId, key: IdempotencyKey
+    ) -> EnrollmentOwnershipBinding | None:
+        """持入组账户互斥锁到提交，并读取同租户当前归属版本；不取归属行锁。"""
+        ...
+
     async def insert_if_absent(
         self, enrollment: Enrollment
     ) -> EnrollmentInsertResult: ...

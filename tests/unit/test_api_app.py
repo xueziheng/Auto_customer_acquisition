@@ -62,9 +62,27 @@ _SALES_READ_GATE = Depends(
     )
 )
 _EXPECTED_API_PATHS = {
+    "/prospects/customers/access",
+    "/prospects/customers",
+    "/prospects/customers/{allocation_id}",
+    "/prospects/customers/{allocation_id}/follow-up",
+    "/prospects/customers/{allocation_id}/follow-up/{enrollment_id}/stop",
+    "/prospects/inventory/assignments",
+    "/team/account-creation",
+    "/prospects/inventory/status",
+    "/prospects/inventory/requests",
+    "/prospects/inventory/allocations",
+    "/prospects/inventory/allocations/{allocation_id}/transfer",
+    "/prospects/inventory/jobs",
+    "/prospects/inventory/jobs/{job_id}",
+    "/prospects/inventory/sources",
     "/inbox/gmail/complete",
     "/inbox/gmail/start",
     "/inbox/gmail/status",
+    "/inbox/aliyun/status",
+    "/inbox/aliyun/connect",
+    "/inbox/qq/status",
+    "/inbox/qq/connect",
     "/inbox/gmail/template",
     "/inbox/gmail/test",
     "/inbox/mailboxes",
@@ -909,7 +927,7 @@ def test_sales_identity_comes_from_employee_view_and_ignores_spoof_headers() -> 
     assert service.calls[0][3] is dependencies.employee_lookup_actor
 
 
-def test_manager_scope_uses_only_self_and_active_direct_reports() -> None:
+def test_manager_scope_uses_only_self() -> None:
     manager = _employee(employee_id="emp-manager", role="manager")
     active = [
         manager,
@@ -936,8 +954,8 @@ def test_manager_scope_uses_only_self_and_active_direct_reports() -> None:
     assert response.status_code == 200
     assert response.json()["employee_scope"] == "manager"
     assert response.json()["opportunity_scope"] == "manager"
-    assert response.json()["allowed_owners"] == ["emp-direct", "emp-manager"]
-    assert [call[0] for call in service.calls] == ["get", "list"]
+    assert response.json()["allowed_owners"] == ["emp-manager"]
+    assert [call[0] for call in service.calls] == ["get"]
     assert all(call[3] is dependencies.employee_lookup_actor for call in service.calls)
     assert scope.entered == scope.exited == 1
 

@@ -11,19 +11,34 @@ from __future__ import annotations
 import re
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from domains.conversations.schemas import (
     ConversationInboxDetail,
     ConversationInboxItem,
+    MessageContentView,
     ReplyCategory,
     ReplyNextQuestionsView,
+    ReplyWorkActionView,
+    ReplyWorkUpdate,
+    ReplyWorkStatus,
 )
 from domains.conversations.service import ConversationService
+from domains.prospecting.private_reply_test import (
+    PrivateReplyTestOptions,
+    PrivateReplyTestPrepare,
+    PrivateReplyTestPrepared,
+)
 from shared.errors import PermissionDenied, TransientError, ValidationError
-from shared.schemas.identifiers import ConversationId, MessageId
+from shared.schemas.identifiers import ConversationId, MessageId, ProspectAccountId
+from workflows.reply_qualification.retry import (
+    ReplyFailedRetryCommand,
+    ReplyRetryCommand,
+    ReplyRetryView,
+)
 
+from ..composition.message_content import parse_message_content
 from ..dependencies import (
     ConfiguredApiDependencies,
     get_api_dependencies,
@@ -211,4 +226,207 @@ async def get_message_evidence(
             "X-Content-Type-Options": "nosniff",
             "Content-Disposition": f'attachment; filename="{typed_id}.eml"',
         },
+    )
+
+
+@router.get("/inbox/reply-work", response_model=list[ReplyWorkActionView])
+async def list_reply_work(
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    status: ReplyWorkStatus = ReplyWorkStatus.PENDING,
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    account_id: Annotated[str | None, Query(min_length=1, max_length=32)] = None,
+) -> list[ReplyWorkActionView]:
+    _require_inbox_role(identity)
+    return list(
+        await _conversation_service(dependencies).list_owned_reply_work(
+            identity.tenant_id,
+            actor=identity.conversation_inbox_actor,
+            status=status,
+            limit=limit,
+            account_id=ProspectAccountId(account_id) if account_id else None,
+        )
+    )
+
+
+@router.post("/inbox/reply-work/{action_id}", response_model=ReplyWorkActionView)
+async def handle_reply_work(
+    action_id: str,
+    body: ReplyWorkUpdate,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> ReplyWorkActionView:
+    _require_inbox_role(identity)
+    if re.fullmatch(r"rwa_[0-7][0-9A-HJKMNP-TV-Z]{25}", action_id) is None:
+        raise ValidationError("回复工作项编号无效")
+    return await _conversation_service(dependencies).handle_reply_work(
+        identity.tenant_id,
+        action_id,
+        actor=identity.conversation_inbox_actor,
+        expected_status=body.expected_status,
+        status=body.status,
+        disposition=body.disposition, note=body.note, request_id=body.request_id,
+    )
+
+
+@router.get("/inbox/private-reply-test/options", response_model=PrivateReplyTestOptions)
+async def private_reply_test_options(
+    request: Request,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+) -> PrivateReplyTestOptions:
+    _require_inbox_role(identity)
+    application = getattr(request.app.state, "private_reply_test", None)
+    if application is None:
+        return PrivateReplyTestOptions()
+    return await application.options(identity)
+
+
+@router.post(
+    "/inbox/private-reply-test/prepare", response_model=PrivateReplyTestPrepared
+)
+async def prepare_private_reply_test(
+    request: Request,
+    body: PrivateReplyTestPrepare,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+) -> PrivateReplyTestPrepared:
+    _require_inbox_role(identity)
+    application = getattr(request.app.state, "private_reply_test", None)
+    if application is None:
+        raise PermissionDenied("当前部署未开启私有回信测试")
+    return await application.prepare(identity, body)
+
+
+@router.get("/inbox/messages/{message_id}/content", response_model=MessageContentView)
+async def get_message_content(
+    request: Request,
+    response: Response,
+    message_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> MessageContentView:
+    """沿原件 Gateway 当前授权返回纯文本；禁止 HTML 执行与响应缓存。"""
+    _require_inbox_role(identity)
+    if request.query_params or await request.body():
+        raise ValidationError("消息内容不接受额外参数")
+    if dependencies.inbox_evidence is None:
+        raise TransientError("消息原件服务未配置")
+    content = await dependencies.inbox_evidence.read(
+        identity.tenant_id,
+        _message_id(message_id),
+        actor=identity.conversation_inbox_actor,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return parse_message_content(content)
+
+
+@router.get(
+    "/inbox/messages/{message_id}/retry-classification", response_model=ReplyRetryView
+)
+async def read_reply_retry(
+    request: Request,
+    message_id: str,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+) -> ReplyRetryView:
+    _require_inbox_role(identity)
+    if request.query_params or await request.body():
+        raise ValidationError("恢复状态不接受额外参数")
+    if dependencies.reply_retry is None:
+        raise TransientError("回复恢复服务未配置")
+    return await dependencies.reply_retry.read(
+        identity.tenant_id, _message_id(message_id), identity.conversation_inbox_actor
+    )
+
+
+@router.post(
+    "/inbox/messages/{message_id}/retry-classification", response_model=ReplyRetryView
+)
+async def retry_reply_classification(
+    request: Request,
+    message_id: str,
+    body: ReplyRetryCommand,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> ReplyRetryView:
+    _require_inbox_role(identity)
+    if (
+        request.query_params
+        or len(request.headers.getlist("Idempotency-Key")) != 1
+        or idempotency_key is None
+        or idempotency_key != idempotency_key.strip()
+        or not 8 <= len(idempotency_key) <= 128
+    ):
+        raise ValidationError("重新识别只接受空命令和唯一原始幂等键")
+    if dependencies.reply_retry is None:
+        raise TransientError("回复恢复服务未配置")
+    return await dependencies.reply_retry.request(
+        identity.tenant_id,
+        _message_id(message_id),
+        identity.conversation_inbox_actor,
+        idempotency_key,
+    )
+
+
+@router.post(
+    "/inbox/messages/{message_id}/retry-classification/resume",
+    response_model=ReplyRetryView,
+)
+async def resume_reply_classification(
+    request: Request,
+    message_id: str,
+    body: ReplyRetryCommand,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> ReplyRetryView:
+    _require_inbox_role(identity)
+    if (
+        request.query_params
+        or len(request.headers.getlist("Idempotency-Key")) != 1
+        or idempotency_key is None
+        or idempotency_key != idempotency_key.strip()
+        or not 8 <= len(idempotency_key) <= 128
+    ):
+        raise ValidationError("重新识别只接受空命令和唯一原始幂等键")
+    if dependencies.reply_retry is None:
+        raise TransientError("回复恢复服务未配置")
+    return await dependencies.reply_retry.resume(
+        identity.tenant_id,
+        _message_id(message_id),
+        identity.conversation_inbox_actor,
+        idempotency_key,
+    )
+
+
+@router.post(
+    "/inbox/messages/{message_id}/retry-classification/failed",
+    response_model=ReplyRetryView,
+)
+async def retry_failed_reply_classification(
+    request: Request,
+    message_id: str,
+    body: ReplyFailedRetryCommand,
+    identity: Annotated[RequestIdentity, Depends(get_request_identity)],
+    dependencies: Annotated[ConfiguredApiDependencies, Depends(get_api_dependencies)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> ReplyRetryView:
+    _require_inbox_role(identity)
+    if (
+        request.query_params
+        or len(request.headers.getlist("Idempotency-Key")) != 1
+        or idempotency_key is None
+        or idempotency_key != idempotency_key.strip()
+        or not 8 <= len(idempotency_key) <= 128
+    ):
+        raise ValidationError("重新识别只接受空命令和唯一原始幂等键")
+    if dependencies.reply_retry is None:
+        raise TransientError("回复恢复服务未配置")
+    return await dependencies.reply_retry.retry_failed(
+        identity.tenant_id,
+        _message_id(message_id),
+        identity.conversation_inbox_actor,
+        idempotency_key,
+        body,
     )

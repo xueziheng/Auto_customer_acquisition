@@ -39,6 +39,7 @@ const priorityLabels: Record<string, { icon: string; label: string }> = {
 };
 
 const kindLabels: Record<string, string> = {
+  customer_reply: "客户回复待跟进",
   handoff_escalation: "人工接管升级",
   handoff_queue_backlogged: "接管队列积压",
   sending_identity_suspended: "发件身份已熔断",

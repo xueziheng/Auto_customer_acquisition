@@ -56,7 +56,7 @@ def load_smoke_settings(
             not config.reply_enabled
             or not config.model_data_export_enabled
             or config.research is not None
-            or min(config.limits.tenant_calls, config.limits.employee_calls) < 3
+            or any(value is not None and value < 3 for value in (config.limits.tenant_calls, config.limits.employee_calls))
         ):
             raise ValueError
         resolver = EnvironmentSecretResolver(environ)

@@ -3668,6 +3668,7 @@ async def test_0018_conversation_classifications_roundtrip_and_guards(
             "ck_conversation_classifications_category",
             "ck_conversation_classifications_candidate_fields",
             "ck_conversation_classifications_suppress_scope",
+            "ck_conversation_classifications_review_fields",
         }
         # CHECK 语义 parity（不比较 raw SQL：Postgres 会把 IN 规范化为 ANY，
         # TextClause 不能直接等于字符串）：从 ReplyCategory 枚举取完整 14 类词表，
@@ -3675,7 +3676,7 @@ async def test_0018_conversation_classifications_roundtrip_and_guards(
         from domains.conversations.schemas import ReplyCategory
 
         expected_categories = {item.value for item in ReplyCategory}
-        assert len(expected_categories) == 14
+        assert len(expected_categories) == 15 and "needs_review" in expected_categories
         db_check = contract["checks"]["ck_conversation_classifications_category"]
         orm_check = str(orm_category_check)
         db_values = set(re.findall(r"'([a-z_]+)'(?=::)", db_check))
@@ -3813,7 +3814,7 @@ async def test_0020_classification_corrections_contract_matches_orm(
     from domains.conversations.schemas import ReplyCategory
 
     expected_categories = {item.value for item in ReplyCategory}
-    assert len(expected_categories) == 14
+    assert len(expected_categories) == 15 and "needs_review" in expected_categories
     db_check = db_contract["checks"][
         "ck_conversation_classification_corrections_category"
     ]

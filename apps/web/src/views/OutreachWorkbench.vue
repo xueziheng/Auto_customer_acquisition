@@ -1,14 +1,17 @@
 <script setup lang="ts">
 /* global document, HTMLButtonElement, KeyboardEvent, Response */
-import { computed, inject, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 
 import { apiClient, createApiClient } from "../api/client";
+import PrivateReplyTestSetup from "../components/PrivateReplyTestSetup.vue";
 import type { components } from "../api/api";
 
 type ApiClient = ReturnType<typeof createApiClient>;
 type EnrollmentView = components["schemas"]["EnrollmentView"];
 
 const client = inject<ApiClient>("tradeos-api-client", apiClient);
+const route = useRoute();
 
 const enrollments = ref<EnrollmentView[]>([]);
 const selectedId = ref<string | null>(null);
@@ -69,7 +72,21 @@ async function loadEnrollments(): Promise<void> {
   if (selectedId.value !== null && !items.some((item) => item.enrollment_id === selectedId.value)) {
     selectedId.value = null;
   }
+  if (route.query.enrollment_id !== undefined) selectQueryEnrollment();
 }
+
+async function selectPrivateTest(enrollmentId: string): Promise<void> {
+  await loadEnrollments();
+  selectedId.value = enrollments.value.some(item => item.enrollment_id === enrollmentId) ? enrollmentId : null;
+}
+
+function selectQueryEnrollment(): void {
+  if (drawerBusy.value || drawerOpen.value) return;
+  const requested = route.query.enrollment_id;
+  selectedId.value = typeof requested === "string" &&
+    enrollments.value.some(item => item.enrollment_id === requested) ? requested : null;
+}
+watch(() => route.query.enrollment_id, selectQueryEnrollment);
 
 const selectedEnrollment = computed(() =>
   enrollments.value.find((item) => item.enrollment_id === selectedId.value) ?? null,
@@ -195,13 +212,14 @@ onBeforeUnmount(() => {
 <template>
   <div class="shell">
     <div class="page-head">
-      <h1>手工发送（故障恢复）</h1>
-      <span class="meta">正常发送请在“活动”中一次启动</span>
+      <h1>撰写客户邮件</h1>
+      <span class="meta">选择跟进记录后，准备单封邮件</span>
     </div>
     <div class="recovery-notice">
-      <strong>正常情况下无需在这里逐封发送。</strong>
-      <span>活动批准并启动后，系统会自动生成草稿、安全检查、发送和跟进；本页仅用于诊断或人工恢复。</span>
+      <strong>每次发送前会重新检查权限、联系方式与额度。</strong>
+      <span>手动跟进只发送你在这里提交的邮件，不会由后台自动继续。邮箱服务接受发送后，仍需核对实际送达与回复。</span>
     </div>
+    <PrivateReplyTestSetup @prepared="selectPrivateTest" />
     <section
       class="workbench"
       aria-label="触达任务"

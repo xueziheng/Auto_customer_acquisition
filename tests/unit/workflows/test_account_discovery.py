@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
+import pytest
+
 from agent_runtime.account_discovery.agent import AccountDiscoveryAgent
 from agent_runtime.guardrails.input_guard import CredentialMarkerGuard
 from apps.scheduler_worker.account_discovery import DemandAccountDiscoveryTaskReader
@@ -27,6 +29,7 @@ from domains.prospecting.schemas import (
     ProspectAccountView,
     VerificationStatus,
 )
+from shared.errors import ValidationError
 from shared.schemas.identifiers import (
     ContactPointId,
     NeedHypothesisId,
@@ -116,6 +119,8 @@ def _run(**context: object) -> WorkflowRun:
         "role_hints": ["procurement"],
         "assessment_ref": "lia:synthetic-v1",
         "account_id": new_id("acc"),
+        "owner_id": new_id("emp"),
+        "owner_locked_at": NOW.isoformat(),
         "need_category": "industrial hinges",
         "account_candidate": {"country": "US"},
     }
@@ -287,6 +292,18 @@ class _Outreach:
     async def get_campaign(self, tenant_id, campaign_id, *, actor):
         del tenant_id, campaign_id, actor
         return SimpleNamespace(state=CampaignState.PENDING_APPROVAL, version=3)
+
+
+@pytest.mark.parametrize("missing", ["owner_id", "owner_locked_at"])
+async def test_legacy_enroll_rejects_missing_persisted_ownership(missing):
+    run = _run(verified_contact_point_ids=[new_id("cp")],
+               owner_id=new_id("emp"), owner_locked_at=NOW.isoformat())
+    run.context.pop(missing)
+    outreach = _Outreach()
+    from workflows.account_discovery.steps import LegacyEnrollCampaignStep
+    with pytest.raises(ValidationError, match="归属"):
+        await LegacyEnrollCampaignStep(outreach, _ActorResolver()).execute(run)
+    assert not outreach.calls
 
 
 async def test_definition_discovers_and_verifies_before_durable_campaign_wait() -> None:

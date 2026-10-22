@@ -154,6 +154,11 @@ class StepIntent(str, Enum):
     FOLLOW_UP = "follow_up"
 
 
+class EnrollmentExecutionMode(str, Enum):
+    AUTOMATIC = "automatic"
+    MANUAL = "manual"
+
+
 class EnrollmentState(str, Enum):
     ENROLLED = "enrolled"
     IN_SEQUENCE = "in_sequence"
@@ -527,8 +532,11 @@ class Enrollment:
     stop_reason: EnrollmentStopReason | None
     idempotency_key: IdempotencyKey
     source_hypothesis_id: NeedHypothesisId | None = None
+    execution_mode: EnrollmentExecutionMode = EnrollmentExecutionMode.AUTOMATIC
 
     def __post_init__(self) -> None:
+        if not isinstance(self.execution_mode, EnrollmentExecutionMode):
+            raise ValidationError("Enrollment execution_mode 无效")
         _require_id(self.enrollment_id, "enr", "enrollment_id")
         _require_id(self.campaign_id, "cmp", "campaign_id")
         _require_id(self.account_id, "acc", "account_id")

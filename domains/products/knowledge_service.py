@@ -57,7 +57,10 @@ class EnterpriseKnowledgeService(Protocol):
 def _permissions(document: KnowledgeDocumentView, role: str, actor: KnowledgeActor) -> KnowledgeDocumentView:
     retry = role == "boss" or document.uploader_id == actor.employee_id
     return document.model_copy(update={
-        "can_retry": retry and document.status in {"failed", "unknown"},
+        "can_retry": (retry and document.status in {"failed", "unknown"}) or (
+            role == "boss" and document.status == "awaiting_confirmation"
+            and document.source.mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
         "can_confirm": role == "boss" and document.status == "awaiting_confirmation",
         "can_sync": document.current_revision_id is not None and document.export_state != "synced",
     })
@@ -86,6 +89,11 @@ class EnterpriseKnowledgeServiceImpl:
 
     async def _detail(self, repo: KnowledgeRepository, document: KnowledgeDocumentView) -> KnowledgeDocumentDetail:
         revision = await repo.get_revision(document.current_revision_id) if document.current_revision_id else None
+        if revision is not None:
+            # 展示标题只用原件名；不把模型自译的专名当作企业身份，也不改历史分析记录。
+            revision = revision.model_copy(update={
+                "analysis": revision.analysis.model_copy(update={"title": document.source.filename}),
+            })
         return KnowledgeDocumentDetail(document=document, revision=revision)
 
     def _changed(self, document: KnowledgeDocumentView, **changes: object) -> KnowledgeDocumentView:
@@ -207,7 +215,7 @@ class EnterpriseKnowledgeServiceImpl:
             await repo.save_job(job.model_copy(update={"state": "complete"}))
             document = self._changed(document, status="awaiting_confirmation", current_revision_id=revision.revision_id, export_state="pending", failure_reason=None)
             await repo.save_document(document)
-            return KnowledgeDocumentDetail(document=document, revision=revision)
+            return await self._detail(repo, document)
 
     async def fail_processing(self, tenant_id: TenantId, claim: KnowledgeClaim, *, reason: str, uncertain: bool) -> KnowledgeDocumentView:
         if reason not in _SAFE_FAILURES:
@@ -259,7 +267,7 @@ class EnterpriseKnowledgeServiceImpl:
             await repo.save_revision(revision)
             document = self._changed(document, status="confirmed", export_state="pending")
             await repo.save_document(document)
-            return KnowledgeDocumentDetail(document=_permissions(document, role, actor), revision=revision)
+            return await self._detail(repo, _permissions(document, role, actor))
 
     async def request_sync(self, tenant_id: TenantId, actor: KnowledgeActor, document_id: str, *, revision_id: str, expected_version: int) -> KnowledgeDocumentView:
         async with self._uow_factory(tenant_id) as uow:

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { platformClient, type PlatformOverview } from "../api/platform-auth";
+import PlatformModelSettings from "./PlatformModelSettings.vue";
+import PlatformDataSources from "./PlatformDataSources.vue";
+import PlatformInventoryQuota from "./PlatformInventoryQuota.vue";
 
 const state = ref(platformClient.snapshot());
 const supported = platformClient.supportsAuthentication();
@@ -11,6 +14,7 @@ const password = ref("");
 const error = ref("");
 const logoutFailed = ref(false);
 const overview = ref<PlatformOverview | null>(null);
+const activeTab = ref<"overview" | "sources" | "models">("overview");
 let requestGeneration = 0;
 const busy = computed(() => restoring.value || state.value.mutation !== null);
 const unsubscribe = platformClient.subscribe(() => {
@@ -19,6 +23,7 @@ const unsubscribe = platformClient.subscribe(() => {
     overview.value = null;
     requestGeneration += 1;
     refreshing.value = false;
+    activeTab.value = "overview";
   }
   state.value = next;
 });
@@ -152,7 +157,7 @@ onMounted(() => {
         </p>
         <h1>平台管理员登录</h1>
         <p class="meta">
-          查看已注册企业、账号层级和使用情况。
+          管理企业账号、获客数据来源和连接配置。
         </p>
         <label for="platform-username">平台账号</label>
         <input
@@ -182,8 +187,43 @@ onMounted(() => {
         <a href="/">企业账号登录</a>
       </form>
 
-      <section
+      <nav
         v-if="state.identity && !state.mutation"
+        class="platform-tabs"
+        aria-label="平台管理功能"
+      >
+        <button
+          type="button"
+          :aria-pressed="activeTab === 'overview'"
+          @click="activeTab = 'overview'"
+        >
+          企业与账号
+        </button>
+        <button
+          type="button"
+          :aria-pressed="activeTab === 'sources'"
+          @click="activeTab = 'sources'"
+        >
+          获客数据来源
+        </button>
+        <button
+          type="button"
+          :aria-pressed="activeTab === 'models'"
+          @click="activeTab = 'models'"
+        >
+          模型 API 设置
+        </button>
+      </nav>
+      <PlatformModelSettings
+        v-if="state.identity && !state.mutation && activeTab === 'models'"
+        :key="state.revision"
+      />
+      <PlatformDataSources
+        v-if="state.identity && !state.mutation && activeTab === 'sources'"
+        :key="state.revision"
+      />
+      <section
+        v-if="state.identity && !state.mutation && activeTab === 'overview'"
         class="platform-overview"
         aria-label="企业使用概览"
       >
@@ -253,6 +293,7 @@ onMounted(() => {
                   <div><dt>贸易机会</dt><dd>{{ count(enterprise.opportunities) }}</dd></div>
                   <div><dt>运行中流程</dt><dd>{{ count(enterprise.active_tasks) }}</dd></div>
                 </dl>
+                <PlatformInventoryQuota :company="enterprise.tenant_id" />
                 <section class="enterprise-members">
                   <h3>账号层级</h3>
                   <p
@@ -288,6 +329,8 @@ onMounted(() => {
 .platform-header button { background: transparent; color: var(--topbar-text); }
 .platform-content { width: min(100%, 1200px); margin: 0 auto; padding: 24px var(--gutter); min-width: 0; }
 .platform-message { margin-bottom: 16px; }
+.platform-tabs { display: flex; gap: 8px; margin-bottom: 24px; flex-wrap: wrap; }
+.platform-tabs button[aria-pressed="true"] { background: var(--action); color: white; border-color: var(--action); }
 .platform-error { margin-bottom: 20px; flex-wrap: wrap; }
 .platform-login { display: grid; gap: 12px; width: min(100%, 420px); margin: 5vh auto; padding: 28px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
 .platform-login input { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }

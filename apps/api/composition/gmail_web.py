@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from pydantic import SecretStr
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from connectors.gmail.client import GmailConnector
@@ -24,11 +25,18 @@ from domains.conversations.gmail_connection import (
 from domains.conversations.mailbox import MailboxActor
 from infra.db.gmail_web_access import SqlGmailWebAccess
 from infra.db.mailbox import SqlMailboxRepository
+from infra.db.tables import EmployeeRow
 from infra.db.tool_gateway_uow import SqlAlchemyToolGatewayUnitOfWork
 from infra.gmail_web_store import GmailBinding, GmailTestRecord, GmailWebStore
 from infra.standalone.gmail_settings import GmailWebSettings
 from shared.errors import PermissionDenied
-from shared.schemas.identifiers import IdempotencyKey, UserId, new_id
+from shared.schemas.identifiers import (
+    EmployeeId,
+    IdempotencyKey,
+    TenantId,
+    UserId,
+    new_id,
+)
 from tool_gateway.errors import ToolCallStatus
 from tool_gateway.fingerprint import HmacFingerprintProvider
 from tool_gateway.handlers.gmail_connect import MANIFEST as CONNECT
@@ -132,6 +140,27 @@ class GmailWebService:
                                      email=binding.email if binding else None,
                                      mailbox_id=binding.mailbox_id if binding else None,
                                      can_test=binding is not None and role == "boss")
+
+    async def outbound_connector(
+        self, tenant_id: TenantId, employee_id: EmployeeId, address: str
+    ) -> GmailConnector | None:
+        """仅供发送 Gateway EXECUTING 后调用；精确绑定本人邮箱才解析 OAuth。"""
+        async with self.sessions() as session:
+            user_id = await session.scalar(select(EmployeeRow.user_id).where(
+                EmployeeRow.tenant_id == tenant_id, EmployeeRow.employee_id == employee_id,
+                EmployeeRow.is_active.is_(True), EmployeeRow.role.in_(("boss", "manager", "sales")),
+            ))
+        if user_id is None:
+            raise PermissionDenied("当前员工或邮箱绑定已失效")
+        actor = GmailActor(tenant_id=tenant_id, employee_id=employee_id, user_id=UserId(user_id))
+        binding = self.store.binding(actor)
+        if binding is None or binding.email != address:
+            return None
+        binding = await self._binding(actor)
+        source = GmailOAuthTokenSource(self.store.credentials_file(binding.operation_id), binding.email)
+        connector = GmailConnector(GmailApiHttpTransport(timeout_seconds=30))
+        await connector.configure(_MailboxSecrets(source))
+        return connector
 
     async def start(self, actor: GmailActor, session: SecretStr, email: str) -> GmailAuthorizationStart:
         await self.access.role(actor)

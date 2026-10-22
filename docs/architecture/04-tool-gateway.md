@@ -107,6 +107,23 @@ failed_transient / failed_permanent
 tool、同幂等键、同 HMAC 请求指纹才能复用 canonical 行。相同键但指纹不同是
 `idempotency_conflict`，绝不覆盖旧请求。
 
+### 不可自动恢复的模型未知结果
+
+受信 `GatewayModelGenerator` 显式选择 `manual_reconciliation_only=True`。该策略复用
+`failed_permanent + reconciliation_required` 表达“调用终止、结果待人工核对”，不是
+Provider 已明确失败；不带 provider_ref 或 retry-after，清除租约并保留原键、调用 ID、
+attempt_count 和已预留成本。相同键在旧实例、新实例或原租约到期后都只返回终态，
+不得重新领取或再次执行。其他 Gateway 的默认只读对账恢复策略不变，不按 tool_id 分支。
+
+进入执行/完成段后发生取消时，原 CancelledError 继续传播。独立最多五秒的清理事务
+仅将已持久 EXECUTING 变为上述终态，同时追加固定 cancellation 审计；不修改调用
+原有的一秒等超时。二次取消等待同一清理任务结束，不产生后台重试。若成功或明确失败
+已经提交，保留该事实并记录取消；尚未确认 EXECUTING 的其他状态不猜测、不覆盖。
+
+审计与终态同事务，写入失败则整笔回滚并记录固定告警和安全调用 ID，不伪称收尾成功，
+不退款或重派。进程被硬杀、数据库不可用、未完成的 claim 和历史 executing 行仍需
+单独人工核对；本改动没有扫描/回填旧行或新增对账 UI。
+
 ### Outreach MessageAttempt（迁移 0011）
 
 ```text

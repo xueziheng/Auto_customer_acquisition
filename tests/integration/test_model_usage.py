@@ -47,6 +47,61 @@ def identity(tenant, employee="emp_test", run=None, version="test-v1"):
     )
 
 
+async def test_unlimited_counts_keep_ledger_idempotency_and_atomic_concurrency(unit_engine):
+    from sqlalchemy import func, select
+
+    from infra.db.model_usage import SqlModelUsageRepository
+    from infra.db.tables import ModelInvocationRow
+
+    sessions = async_sessionmaker(unit_engine, expire_on_commit=False)
+    repo = SqlModelUsageRepository(sessions)
+    tenant = TenantId(new_id("tn"))
+    policy = limits(tenant_calls=None, employee_calls=None)
+    now = datetime.now(UTC)
+    for _ in range(4):
+        actor = identity(tenant)
+        admitted = await repo.reserve(actor, "a" * 64, policy, now, model="test-model")
+        assert admitted.outcome == "reserved"
+        assert (await repo.reserve(actor, "a" * 64, policy, now, model="test-model")).outcome == "duplicate"
+        await repo.mark_dispatched(tenant, admitted.invocation_id)
+        await repo.finish(tenant, admitted.invocation_id,
+                          ModelUsage(input_tokens=1, cached_input_tokens=0, output_tokens=1), "succeeded")
+    from infra.db.reply_retry import SqlReplyRetryRepository
+    retry = SqlReplyRetryRepository(sessions, None)
+    async with sessions() as db:
+        assert await retry._quota(db, actor, policy)
+        assert not await retry._quota(db, actor, limits())
+    results = await asyncio.gather(*[
+        repo.reserve(identity(tenant), "a" * 64, policy, now, model="test-model")
+        for _ in range(2)
+    ])
+    assert sorted(x.outcome for x in results) == ["limited", "reserved"]
+    active = next(x for x in results if x.outcome == "reserved")
+    await repo.mark_dispatched(tenant, active.invocation_id)
+    await repo.finish(tenant, active.invocation_id,
+                      ModelUsage(input_tokens=None, cached_input_tokens=None, output_tokens=None), "unknown")
+    assert (await repo.reserve(identity(tenant), "b" * 64, policy, now, model="test-model")).outcome == "limited"
+    async with sessions() as db:
+        assert not await retry._quota(db, actor, policy)
+        assert await db.scalar(select(func.count()).select_from(ModelInvocationRow).where(ModelInvocationRow.tenant_id == tenant)) == 5
+    assert (await repo.reserve(identity(TenantId(new_id("tn"))), "a" * 64, policy, now, model="test-model")).outcome == "reserved"
+
+
+@pytest.mark.parametrize("counts", [(None, 1), (1, None)])
+async def test_one_unlimited_scope_still_obeys_the_other_count_limit(unit_engine, counts):
+    from infra.db.model_usage import SqlModelUsageRepository
+
+    repo = SqlModelUsageRepository(async_sessionmaker(unit_engine, expire_on_commit=False))
+    tenant = TenantId(new_id("tn"))
+    policy = limits(tenant_calls=counts[0], employee_calls=counts[1])
+    now = datetime.now(UTC)
+    first = await repo.reserve(identity(tenant), "a" * 64, policy, now, model="test-model")
+    await repo.mark_dispatched(tenant, first.invocation_id)
+    await repo.finish(tenant, first.invocation_id,
+                      ModelUsage(input_tokens=1, cached_input_tokens=0, output_tokens=1), "succeeded")
+    assert (await repo.reserve(identity(tenant), "b" * 64, policy, now, model="test-model")).outcome == "limited"
+
+
 async def test_last_quota_is_atomic_and_replay_does_not_consume(unit_engine):
     from infra.db.model_usage import SqlModelUsageRepository
 
@@ -213,3 +268,20 @@ async def test_employee_limit_and_independent_workflow_lock(unit_engine):
         identity(tenant, "emp_other"), "c" * 64, policy, now, model="test-model"
     )
     assert allowed.outcome == "reserved"
+
+
+async def test_selected_provider_is_recorded_without_changing_quota_identity(unit_engine):
+    from sqlalchemy import select
+
+    from infra.db.model_usage import SqlModelUsageRepository
+    from infra.db.tables import ModelInvocationRow
+    sessions = async_sessionmaker(unit_engine, expire_on_commit=False)
+    repo = SqlModelUsageRepository(sessions)
+    tenant = TenantId(new_id('tn'))
+    actor = identity(tenant)
+    result = await repo.reserve(actor, 'e'*64, limits(), datetime.now(UTC), model='another-model', provider='compatible')
+    assert result.outcome == 'reserved'
+    async with sessions() as session:
+        row = (await session.scalars(select(ModelInvocationRow).where(ModelInvocationRow.tenant_id == tenant, ModelInvocationRow.invocation_id == result.invocation_id))).one()
+        assert row.provider == 'compatible' and row.model == 'another-model'
+        assert row.configuration_version == actor.configuration_version

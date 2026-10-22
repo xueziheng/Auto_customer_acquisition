@@ -27,19 +27,19 @@ async function submit(): Promise<void> {
       <p class="phase-eyebrow">
         TradeOS
       </p>
-      <h1>登录内部运营台</h1>
-      <p>使用已配置的登录邮箱或员工用户名登录。</p>
-      <label for="pilot-username">邮箱或用户名</label>
+      <h1>登录 TradeOS</h1>
+      <p>使用管理员创建的 TradeOS 员工账号登录，登录后再填写发件邮箱地址和授权码。</p>
+      <label for="pilot-username">TradeOS 员工账号</label>
       <input
         id="pilot-username"
         v-model="username"
         autocomplete="username"
-        placeholder="邮箱或用户名"
+        placeholder="请输入管理员创建的员工账号"
         required
         maxlength="254"
         :disabled="busy"
       >
-      <label for="pilot-password">密码</label>
+      <label for="pilot-password">TradeOS 登录密码</label>
       <input
         id="pilot-password"
         v-model="password"

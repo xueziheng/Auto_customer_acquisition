@@ -61,6 +61,7 @@ class ModelQuotaCheck:
         now: Callable[[], datetime],
         owner_id: str | None = None,
         lease_duration: timedelta | None = None,
+        provider: str = "deepseek",
     ) -> None:
         self._identity, self._usage, self._limits, self._model, self._now = (
             identity,
@@ -70,6 +71,7 @@ class ModelQuotaCheck:
             now,
         )
         self._owner, self._lease = owner_id, lease_duration
+        self._provider = provider
         self.reservation: Reservation | None = None
         self.failure: ModelGenerationError | None = None
 
@@ -84,6 +86,7 @@ class ModelQuotaCheck:
             self._limits,
             self._now(),
             model=self._model,
+            provider=self._provider,
             owner_id=self._owner,
             lease_expires_at=self._now() + self._lease if self._lease else None,
         )

@@ -96,7 +96,7 @@ def _sample_pairs() -> list[tuple[str, Path, dict[str, object], dict[str, object
 def test_every_reply_category_has_minimum_samples() -> None:
     """14 类每类至少 10 个样本；退订/自动回复至少 20 个（HANDBOOK 切片 6）。"""
     categories = _reply_categories()
-    assert len(categories) == 14, "ReplyCategory 必须是设计稿第十二节的 14 类"
+    assert len(categories) == 15 and "needs_review" in categories, "保留 14 类业务分类并增加中性核对结果"
     counts = {category: 0 for category in categories}
     for category, _case_dir in _case_dirs():
         assert category in counts, f"未知类别目录：{category}"

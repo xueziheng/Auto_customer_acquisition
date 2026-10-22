@@ -17,6 +17,7 @@ _SECRET_MARKER = re.compile(r"(?i)(bearer|token|secret|password|authorization|ak
 
 
 class NotificationKind(str, Enum):
+    CUSTOMER_REPLY = "customer_reply"
     HANDOFF_ESCALATION = "handoff_escalation"
     HANDOFF_QUEUE_BACKLOGGED = "handoff_queue_backlogged"
     SENDING_IDENTITY_SUSPENDED = "sending_identity_suspended"

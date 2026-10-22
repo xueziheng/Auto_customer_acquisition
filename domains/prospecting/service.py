@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from domains.prospecting.customer_preparation import AccountProfilePatch
 from domains.prospecting.repository import (
     ProspectingUnitOfWork as _ProspectingUnitOfWork,
 )
@@ -66,6 +67,13 @@ class ProspectingService(Protocol):
         contact_point_id: ContactPointId,
     ) -> OutreachContactFacts:
         """精确租户/企业/联系方式读取，不暴露地址或扫描账户联系人。"""
+        ...
+
+    async def fill_missing_account_profile(
+        self, tenant_id: TenantId, account_id: ProspectAccountId,
+        request: AccountProfilePatch,
+    ) -> ProspectAccountView:
+        """仅补缺失类型/行业；来源需人工确认，同值幂等，冲突拒绝且不覆盖。"""
         ...
 
     async def resolve_account(
@@ -158,3 +166,23 @@ class ProspectingService(Protocol):
     ) -> list[ContactPointView]:
         """只返回当前租户、指定企业下 VERIFIED 的联系方式。"""
         ...
+
+
+# ADR0091：候选库存的跨模块契约统一从服务入口导出。
+
+from domains.prospecting.inventory import (
+    AcquisitionJob,
+    AcquisitionWorker,
+    CandidateAllocation,
+    InventoryQuery,
+    InventoryResult,
+    InventoryService,
+    InventoryStatus,
+    PublicCandidate,
+    PublicCatalog,
+    SourceHistory,
+    SourceState,
+    select_sources,
+)
+
+__all__ = ['AcquisitionJob', 'AcquisitionWorker', 'CandidateAllocation', 'ContactValueHasher', 'EnrichmentProvider', 'InventoryQuery', 'InventoryResult', 'InventoryService', 'InventoryStatus', 'ProspectingService', 'ProspectingUnitOfWork', 'PublicCandidate', 'PublicCatalog', 'SourceHistory', 'SourceState', 'select_sources']

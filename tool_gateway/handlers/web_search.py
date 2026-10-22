@@ -21,6 +21,7 @@ from connectors.web_search.transport import (
 )
 from shared.errors import TransientError, ValidationError
 from shared.schemas.identifiers import RunId, TenantId, UserId
+from shared.schemas.page_failure import PageReadFailure
 from tool_gateway.checks.web_discovery import WebResearchPreflight
 from tool_gateway.errors import ToolCallStatus, ToolErrorCategory, ToolGatewayError
 from tool_gateway.fingerprint import HmacFingerprintProvider
@@ -360,6 +361,16 @@ class ToolGatewayWebSearcher:
 
 
 def map_web_provider_error(error: BaseException) -> ToolGatewayError:
+    if isinstance(error, PageReadFailure):
+        category = {
+            "http_error": ToolErrorCategory.PROVIDER_TRANSIENT,
+            "network_unknown": ToolErrorCategory.PROVIDER_TRANSIENT,
+            "timeout": ToolErrorCategory.PROVIDER_TRANSIENT,
+            "access_denied": ToolErrorCategory.PAGE_ACCESS_FORBIDDEN,
+            "login_required": ToolErrorCategory.LOGIN_OR_CAPTCHA,
+            "unsafe_redirect": ToolErrorCategory.UNSAFE_REDIRECT,
+        }.get(error.reason, ToolErrorCategory.UNEXPECTED)
+        return ToolGatewayError(category)
     if isinstance(error, ToolGatewayError):
         return error
     if isinstance(error, WebSearchAuthRequiredError):

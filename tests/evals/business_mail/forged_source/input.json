@@ -1,0 +1,9 @@
+{
+  "subject": "Inquiry",
+  "body": "Could you share the hinge catalogue?",
+  "candidate_response": {
+    "category": "business",
+    "reason": "声称已确认采购",
+    "evidence_quote": "Confirmed purchase order for 10000 hinges"
+  }
+}

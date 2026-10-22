@@ -56,3 +56,8 @@ base.py               CapabilityAgent 统一基类
 
 深：context_builder、skill_router、guardrails、base。
 浅：九个能力目录各一份 AGENTS.md + 入口类。sourcing_agent 与 costing_agent 在 Phase 1 只服务人工流程（解释与提醒），不驱动自动寻源。
+
+ADR0112的`business_mail.py`仅生成普通来信分类推断：固定三类、中文理由、逐字原文引句。
+能力身份为business_mail_triage，由受信持久消息run绑定，不读本人Gmail镜像、不创建客户、
+需求或商机，不计算概率或价格；任何凭证标记在模型派发前拦截。输出由确定性代码验证后
+才可由worker通过会话域持久追加。

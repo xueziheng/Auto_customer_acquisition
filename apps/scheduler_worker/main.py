@@ -81,6 +81,12 @@ class InboundDriverProtocol(Protocol):
     async def scan_once(self) -> int: ...
 
 
+class InventoryDriverProtocol(Protocol):
+    """公司绑定的有界采集扫描；任务租约由驱动持久管理。"""
+
+    async def scan(self) -> int: ...
+
+
 class RuntimeLifecycleObserver(Protocol):
     """只观察原 worker 的锁后运行与停止，不获取锁、不启动任务。"""
 
@@ -151,8 +157,13 @@ class SchedulerRuntime:
     lifecycle: RuntimeLifecycleObserver | None = None
     capabilities: tuple[RuntimeCapability, ...] = ()
     knowledge_driver: EnterpriseKnowledgeDriverProtocol | None = None
+    inventory_driver: InventoryDriverProtocol | None = None
 
     def __post_init__(self) -> None:
+        if self.inventory_driver is not None and not callable(
+            getattr(self.inventory_driver, "scan", None)
+        ):
+            raise ValidationError("候选库存调度依赖无效")
         if self.knowledge_driver is not None and not callable(getattr(self.knowledge_driver, "scan_once", None)):
             raise ValidationError("企业资料调度依赖无效")
         if not str(self.tenant_id).strip():
@@ -267,7 +278,8 @@ async def _run_cycle(
     """执行一个固定顺序 cycle；各 phase 隔离且不跨 phase 回滚。
 
     顺序：outbox 前置投递 → Campaign 到期扫描 → 报价到期 → 寻源准入 →
-    Catalog 恢复/评估 → workflow 推进 → 有推进时 outbox 后置投递。
+    Catalog 恢复/评估 → 入站/资料/助手/候选采集 → workflow 推进 →
+    有推进时 outbox 后置投递。
     """
     if (
         runtime.assistant_driver is not None
@@ -276,6 +288,7 @@ async def _run_cycle(
         or runtime.sourcing_admission_driver is not None
         or runtime.catalog_product_driver is not None
         or runtime.inbound_driver is not None
+        or runtime.inventory_driver is not None
     ) and confirm_lock is None:
         raise RuntimeError("单副本阶段扫描缺少 scheduler 锁确认")
     pre_count = 0
@@ -382,6 +395,18 @@ async def _run_cycle(
             )
         await confirm_lock()
 
+    if runtime.inventory_driver is not None:
+        assert confirm_lock is not None
+        await confirm_lock()
+        try:
+            await runtime.inventory_driver.scan()
+        except Exception as error:  # noqa: BLE001 - 外部采集失败只记录固定类别
+            _log_phase_error(
+                phase="inventory", error=error,
+                tenant_id=runtime.tenant_id, cycle=cycle,
+            )
+        await confirm_lock()
+
     workflow_succeeded = False
     try:
         workflow_count = await runtime.workflow.poll_due(
@@ -403,6 +428,7 @@ async def _run_cycle(
             or runtime.sourcing_admission_driver is not None
             or runtime.catalog_product_driver is not None
             or runtime.inbound_driver is not None
+            or runtime.inventory_driver is not None
         ):
             assert confirm_lock is not None
             await confirm_lock()

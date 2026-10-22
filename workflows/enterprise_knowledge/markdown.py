@@ -18,7 +18,7 @@ def render_knowledge(detail: KnowledgeDocumentDetail) -> str:
     if revision is None or revision.document_id != doc.document_id:
         raise ValidationError("资料投影绑定无效")
     lines = [
-        "# " + _text(revision.analysis.title), "",
+        "# " + _text(doc.source.filename), "",
         "状态：" + ("已人工确认" if doc.status == "confirmed" else "待管理员确认"), "",
         "企业：" + _text(str(doc.tenant_id)),
         "资料：" + _text(doc.document_id),

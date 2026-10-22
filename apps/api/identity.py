@@ -104,23 +104,16 @@ def _employee_actor(employee: EmployeeView) -> EmployeeActor:
 def _opportunity_actor(
     employee: EmployeeView, active_employees: list[EmployeeView]
 ) -> OpportunityActor:
-    """由角色和 public 下属 DTO 生成不可变机会域 ABAC scope。"""
+    """由当前角色生成不可变范围；普通经理与销售仅本人客户。"""
     if employee.role == "sales":
         scope = OpportunityScope(
             level=ScopeLevel.SELF,
             allowed_owners=frozenset({employee.employee_id}),
         )
     elif employee.role == "manager":
-        direct_reports = {
-            candidate.employee_id
-            for candidate in active_employees
-            if candidate.tenant_id == employee.tenant_id
-            and candidate.is_active
-            and candidate.manager_id == employee.employee_id
-        }
         scope = OpportunityScope(
             level=ScopeLevel.MANAGER,
-            allowed_owners=frozenset({employee.employee_id, *direct_reports}),
+            allowed_owners=frozenset({employee.employee_id}),
         )
     elif employee.role == "boss":
         scope = OpportunityScope(level=ScopeLevel.TENANT)
@@ -179,13 +172,8 @@ async def resolve_request_identity(
                 or employee.user_id != principal.user_id
             ):
                 raise AuthenticationDenied()
-            active_employees = (
-                await service.list_active(
-                    tenant_id, actor=dependencies.employee_lookup_actor
-                )
-                if employee.role == "manager"
-                else []
-            )
+            active_employees: list[EmployeeView] = []
+
     except (EmployeeNotFoundError, PermissionDenied):
         if session_mode:
             raise AuthenticationDenied() from None

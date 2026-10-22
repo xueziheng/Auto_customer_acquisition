@@ -168,6 +168,7 @@ class ModelRuntimeStatus(AssistantDTO):
 
 
 class ModelConfigurationSnapshot(AssistantDTO):
+    provider: Literal["deepseek", "compatible"] = "deepseek"
     configuration_version: str
     model: str
     limits: ModelLimits
@@ -176,7 +177,7 @@ class ModelConfigurationSnapshot(AssistantDTO):
 
 
 class ModelSettingsView(AssistantDTO):
-    provider: Literal["deepseek"] = "deepseek"
+    provider: Literal["deepseek", "compatible"] = "deepseek"
     model: str | None = None
     configuration_version: str | None = None
     status: Literal["missing", "pending_restart", "unverified", "verified", "failed"]

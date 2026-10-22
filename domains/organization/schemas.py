@@ -6,18 +6,21 @@ import re
 import unicodedata
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
     BeforeValidator,
     ConfigDict,
     Field,
+    SecretStr,
     WithJsonSchema,
     field_validator,
     model_validator,
 )
 
+from shared.schemas.browser_probe import BrowserSourceView
+from shared.schemas.discovery_sources import DiscoverySourceDefinition
 from shared.schemas.identifiers import (
     ApprovalId,
     EmployeeId,
@@ -25,6 +28,109 @@ from shared.schemas.identifiers import (
     PlaybookVersionId,
 )
 from shared.schemas.provenance import Provenance
+from shared.schemas.provider_usage import DataSourceUsageView
+
+
+class DataSourceCredentialsDelete(BaseModel):
+    """删除同一精确版本的全部凭证字段，保留版本墓碑防止旧请求覆盖。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    expected_revision: int = Field(strict=True, ge=0)
+
+
+class DataSourceUsageCheck(BaseModel):
+    """只检查用户当前看到的凭证版本，不接受密钥、租户或外部 URL。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    expected_revision: int = Field(strict=True, ge=1)
+
+
+class DataSourceCredentialsUpdate(BaseModel):
+    """平台凭证只写命令；不允许省略字段或在错误中回显输入。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    expected_revision: int = Field(strict=True, ge=0)
+    credentials: dict[str, SecretStr] = Field(min_length=1, max_length=8, repr=False)
+
+    @field_validator("credentials")
+    @classmethod
+    def validate_credentials(cls, values: dict[str, SecretStr]) -> dict[str, SecretStr]:
+        for name, secret in values.items():
+            value = secret.get_secret_value()
+            if (
+                re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name) is None
+                or not 1 <= len(value) <= 8192 or value != value.strip()
+                or any(ord(char) < 32 or ord(char) == 127 for char in value)
+            ):
+                raise ValueError("数据源凭证格式无效")
+        return values
+
+
+class DataSourceConfigurationView(BaseModel):
+    """只含配置与验证事实，不包含凭证、引用或哈希。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    configured: bool = False
+    revision: int = Field(default=0, ge=0)
+    configuration_version: str | None = None
+    updated_at: datetime | None = None
+    updated_by: str | None = None
+    test_status: Literal["not_run", "passed", "failed", "inconclusive"] = "not_run"
+    last_test_scope: Literal["account", "sample"] | None = None
+    tested_at: datetime | None = None
+
+
+class DataSourceNoteUpdate(BaseModel):
+    """来源管理备注只接收纯文本和备注版本，不承载凭证或系统运行状态。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    expected_revision: int = Field(strict=True, ge=0)
+    text: str = Field(strict=True, max_length=2000, repr=False)
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        if any(unicodedata.category(char) == "Cc" and char not in "\n\r\t" for char in value):
+            raise ValueError("备注格式无效")
+        return value.strip()
+
+
+class DataSourceNoteView(BaseModel):
+    """人工管理备注及修改人、时间；与供应商验证事实分开。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    text: str = Field(default="", max_length=2000, repr=False)
+    revision: int = Field(default=0, strict=True, ge=0)
+    updated_at: datetime | None = None
+    updated_by: str | None = None
+
+
+class DataSourceBrowserCheck(BaseModel):
+    """只允许空命令，站点与会话由受信部署绑定。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+
+class DataSourceView(DataSourceConfigurationView):
+    """目录能力与配置状态分开，保存不能表示接口已经启用。"""
+
+    definition: DiscoverySourceDefinition
+    can_edit: bool
+    status_kind: Literal["api", "session", "website"] = "api"
+    can_check_browser: bool = False
+    browser: BrowserSourceView | None = None
+    can_check_usage: bool = False
+    usage: DataSourceUsageView = Field(default_factory=DataSourceUsageView)
+    can_edit_note: bool = False
+    note: DataSourceNoteView = Field(default_factory=DataSourceNoteView)
+
+
+class DataSourcesView(BaseModel):
+    """平台当前获客来源目录与非秘密配置投影。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    generated_at: datetime
+    sources: tuple[DataSourceView, ...]
 
 _DECIMAL_PATTERN = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
 _ACTION_PATTERN = re.compile(r"[a-z][a-z0-9._:-]{0,127}\Z")

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from time import monotonic_ns
+from typing import Protocol, runtime_checkable
 
-from connectors.gmail.inbound import GmailInboundReader
 from connectors.gmail.inbound_cursor import decode_cursor
 from shared.email_inbound import InboundContentGuard, InboundRawArchiver
 from shared.errors import ValidationError
@@ -19,10 +19,16 @@ from shared.schemas.email_inbound import (
     InboundDisposition,
     InboundError,
     InboundRoute,
+    ProviderInboundPage,
 )
+from shared.schemas.email_inbound_diagnostics import InboundStage, safe_failure
 from shared.schemas.identifiers import TenantId, UserId
 from tool_gateway.errors import ToolCallStatus, ToolErrorCategory, ToolGatewayError
 from tool_gateway.fingerprint import HmacFingerprintProvider
+from tool_gateway.handlers.email_inbound_diagnostics import (
+    InboundDiagnosticSink,
+    InboundDiagnosticSlot,
+)
 from tool_gateway.handlers.email_inbound_slots import InboundPageSlot
 from tool_gateway.manifest import (
     CostClass,
@@ -75,19 +81,34 @@ class _Payload:
     page_limit: int
 
 
+@runtime_checkable
+class InboundProviderReader(Protocol):
+    @property
+    def route(self) -> InboundRoute: ...
+
+    async def fetch_inbound_page(
+        self, mailbox_alias: str, cursor: str, page_limit: int
+    ) -> ProviderInboundPage: ...
+
+
 class EmailInboundFetchHandler:
     """prepare不构造Connector、不取凭证，execute才调用受信factory。"""
 
     def __init__(
         self,
         route: InboundRoute,
-        reader_factory: Callable[[], GmailInboundReader],
+        reader_factory: Callable[[], InboundProviderReader],
         archiver: InboundRawArchiver,
         guard: InboundContentGuard,
         slot: InboundPageSlot,
         fingerprints: HmacFingerprintProvider,
+        *,
+        cursor_validator: Callable[[str, InboundRoute], object] = decode_cursor,
+        diagnostics: InboundDiagnosticSlot | None = None,
     ) -> None:
+        self._diagnostics = diagnostics
         self._route = route
+        self._validate_cursor = cursor_validator
         self._factory = reader_factory
         self._archiver = archiver
         self._guard = guard
@@ -111,7 +132,7 @@ class EmailInboundFetchHandler:
             or not 1 <= limit <= PAGE_ITEMS
         ):
             raise InboundError()
-        decode_cursor(cursor, self._route)
+        self._validate_cursor(cursor, self._route)
         digest, version = self._fingerprints.fingerprint(
             (
                 str(ctx.tenant_id).encode(),
@@ -137,10 +158,11 @@ class EmailInboundFetchHandler:
             or tenant_id != self._route.tenant_id
         ):
             raise InboundError()
+        stage, started = InboundStage.PAGE, monotonic_ns()
         try:
             reader = self._factory()
             if (
-                not isinstance(reader, GmailInboundReader)
+                not isinstance(reader, InboundProviderReader)
                 or reader.route != self._route
             ):
                 raise InboundError()
@@ -153,16 +175,18 @@ class EmailInboundFetchHandler:
                 or len(page.items) > payload.page_limit
             ):
                 raise InboundError()
-            decode_cursor(page.next_cursor, self._route)
+            self._validate_cursor(page.next_cursor, self._route)
             items = []
             for item in page.items:
                 raw = None
                 if item.raw_mime is not None:
+                    stage, started = InboundStage.ARCHIVE, monotonic_ns()
                     raw = await self._archiver.archive(
                         tenant_id, item.raw_mime, maximum_bytes=MIME_BYTES
                     )
                     if raw.tenant_id != tenant_id:
                         raise InboundError()
+                stage, started = InboundStage.PAGE, monotonic_ns()
                 disposition = item.disposition
                 try:
                     self._guard.check(subject=item.subject, body=item.guard_body)
@@ -193,6 +217,11 @@ class EmailInboundFetchHandler:
                 items=tuple(items),
             )
             return {"provider_ref": self._slot.put(archived)}
+        except Exception as error:
+            self._slot.discard_all()
+            if self._diagnostics is not None:
+                self._diagnostics.put(safe_failure(stage, error, (monotonic_ns() - started) // 1_000_000).diagnostic)
+            raise
         except BaseException:
             self._slot.discard_all()
             raise
@@ -211,7 +240,13 @@ class ToolGatewayEmailInboundReader:
         slot: InboundPageSlot,
         user_id: UserId,
         route: InboundRoute,
+        *,
+        cursor_validator: Callable[[str, InboundRoute], object] = decode_cursor,
+        diagnostics: InboundDiagnosticSlot | None = None,
+        diagnostic_sink: InboundDiagnosticSink | None = None,
     ) -> None:
+        self._diagnostics, self._diagnostic_sink = diagnostics, diagnostic_sink
+        self._validate_cursor = cursor_validator
         self._gateway, self._slot, self._user_id, self._route = (
             gateway,
             slot,
@@ -222,6 +257,8 @@ class ToolGatewayEmailInboundReader:
     async def fetch(
         self, tenant_id: TenantId, mailbox_alias: str, cursor: str, page_limit: int
     ) -> ArchivedInboundPage:
+        if self._diagnostics is not None:
+            self._diagnostics.take()
         try:
             if (
                 tenant_id != self._route.tenant_id
@@ -240,6 +277,15 @@ class ToolGatewayEmailInboundReader:
                     },
                 )
             )
+            if self._diagnostics is not None:
+                diagnostic = self._diagnostics.take()
+                if (diagnostic is not None and self._diagnostic_sink is not None
+                    and isinstance(result, ToolCallResult) and result.tool_call_id is not None
+                    and result.status in {ToolCallStatus.FAILED_PERMANENT, ToolCallStatus.FAILED_TRANSIENT}):
+                    try:
+                        await self._diagnostic_sink.record(result.tool_call_id, diagnostic)
+                    except Exception:  # noqa: BLE001, S110 原调用已失败；禁止记录异常正文或改变重试
+                        pass
             if (
                 not isinstance(result, ToolCallResult)
                 or result.status is not ToolCallStatus.SUCCEEDED
@@ -264,7 +310,9 @@ class ToolGatewayEmailInboundReader:
                 or len(page.items) > page_limit
             ):
                 raise InboundError()
-            decode_cursor(page.next_cursor, self._route)
+            self._validate_cursor(page.next_cursor, self._route)
             return page
         finally:
             self._slot.discard_all()
+            if self._diagnostics is not None:
+                self._diagnostics.take()

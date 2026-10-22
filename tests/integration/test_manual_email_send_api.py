@@ -185,12 +185,16 @@ async def _seed_campaign(
     *,
     new_contact_limit: int = 5,
     total_message_limit: int = 10,
+    name: str = "Manual send integration",
+    markets: tuple[str, ...] = ("US",),
+    target_entity_types: tuple[str, ...] = ("importer",),
+    allowed_categories: tuple[str, ...] = ("hardware",),
 ) -> None:
     models = importlib.import_module("domains.outreach.models")
     boundary = models.CampaignBoundary(
-        markets=("US",),
-        target_entity_types=("importer",),
-        allowed_categories=("hardware",),
+        markets=markets,
+        target_entity_types=target_entity_types,
+        allowed_categories=allowed_categories,
         sender_identity_ids=(identity_id,),
         steps=(models.SequenceStepSpec(1, models.StepIntent.DISCOVERY, 0),),
         daily_new_contact_limit=new_contact_limit,
@@ -212,7 +216,7 @@ async def _seed_campaign(
         tenant,
         campaign_id,
         1,
-        "Manual send integration",
+        name,
         boundary,
         boss,
         _NOW,
