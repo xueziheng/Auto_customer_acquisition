@@ -178,7 +178,7 @@ async def seed_country(service, tenant, boss, now, allowed=True):
 @pytest.mark.parametrize("configured,private,failure", [(False,False,None),(True,False,None),(True,True,None),
     (True,False,"no_policy"),(True,False,"policy_revoked"),(True,False,"scope_withdrawn"),
     (True,False,"owner_transfer"),(True,False,"artifact_mismatch"),(True,False,"suppressed"),(True,False,"sender_retired"),(True,False,"no_basis"),(True,False,"unknown_verifier"),(True,False,"legacy")])
-async def test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch, configured, private, failure, browser_width=0, page_only=False, deepseek_search=False, automatic_mail=None):
+async def test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch, configured, private, failure, browser_width=0, page_only=False, deepseek_search=False, automatic_mail=None, previously_composed=False):
     browser_check = None
     if browser_width:
         from tests.customer_preparation_browser import PreparationBrowserCheck
@@ -232,6 +232,8 @@ async def test_actual_request_and_singleton_prepare_with_sending_disabled(integr
         await readiness.declare_configuration(tenant,config,actor=readiness_actor,idempotency_key=IdempotencyKey("configured"))
         await readiness.mark_validation_started(tenant,config.configuration_hash,validation_key=IdempotencyKey("validated"),actor=readiness_actor)
         await readiness.mark_validation_passed(tenant,config.configuration_hash,validation_key=IdempotencyKey("validated"),evidence_ref="tool-call:synthetic-validation",actor=readiness_actor)
+        if previously_composed:
+            await readiness.mark_runtime_composed(tenant,config.configuration_hash,actor=readiness_actor,idempotency_key=IdempotencyKey("previous-runtime"))
     settings = StandaloneModelSettings.model_validate({**model_settings(),"limits": {**model_settings()["limits"], "max_output_tokens": 2048, "max_input_bytes": 16384, "tenant_calls": 10, "employee_calls": 10}, "codex_job_root":tmp_path/"codex-jobs", "api_control_tenant":control, "api_key_file":tmp_path/"synthetic-model-unused", "api_verified_at":now,"api_business_tenant":tenant})
     if deepseek_search:
         from shared.schemas.search_backend import InventorySearchPolicy
@@ -447,3 +449,8 @@ async def test_automatic_qq_current_suppression_prevents_binding(integration_eng
     scenario.suppression_phase=phase; scenario.suppression_target=target
     await test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine,db_url,runtime_database_url,tmp_path,monkeypatch,
         configured=True,private=False,failure=None,automatic_mail=scenario)
+
+
+async def test_preparation_reuses_previously_composed_provider(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch):
+    """A restored READY provider from another runtime must not block singleton startup."""
+    await test_actual_request_and_singleton_prepare_with_sending_disabled(integration_engine, db_url, runtime_database_url, tmp_path, monkeypatch, True, False, None, previously_composed=True)

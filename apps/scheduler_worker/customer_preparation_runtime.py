@@ -279,6 +279,11 @@ async def build_customer_preparation(
             verifier = tools.verifier
 
             async def activate() -> None:
+                if snapshot.state is ProviderReadinessState.READY:
+                    # A restored/previous runtime may have composed this exact version.
+                    # Recheck current durable readiness under the singleton lock.
+                    await readiness.require_current(tenant_id, expected.configuration_hash)
+                    return
                 await readiness.mark_runtime_composed(
                     tenant_id,
                     expected.configuration_hash,
